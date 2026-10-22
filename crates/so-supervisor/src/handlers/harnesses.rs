@@ -201,22 +201,14 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
     let mut out = Map::new();
     out.insert("accounts".into(), Value::Array(rows));
     out.insert("choices".into(), Value::Array(choices));
-    // Free models, once per harness that has an account (opencode lists its own).
-    let mut free = Map::new();
-    for harness in [Harness::Opencode] {
-        if view
-            .accounts
-            .iter()
-            .any(|a| a.harness == harness && a.enabled)
-        {
-            let models = catalog.free_models(harness);
-            if !models.is_empty() {
-                free.insert(harness.as_str().into(), json!(models));
-            }
-        }
-    }
-    if !free.is_empty() {
-        out.insert("free_models".into(), Value::Object(free));
+    // Free models of opencode, once (the catalog is per harness, not per account).
+    let models = catalog.free_models(Harness::Opencode);
+    let has_account = view
+        .accounts
+        .iter()
+        .any(|a| a.harness == Harness::Opencode && a.enabled);
+    if has_account && !models.is_empty() {
+        out.insert("free_models".into(), json!({ "opencode": models }));
     }
     Ok(Value::Object(out))
 }

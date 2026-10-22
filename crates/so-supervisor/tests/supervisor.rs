@@ -910,25 +910,27 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
         description: String::new(),
         enabled,
     };
-    let mut config = Config::default();
-    config.choices = vec![
-        choice("codex-c", Harness::Codex, "gpt-6.1-sol", true),
-        choice(
-            "free-c",
-            Harness::Opencode,
-            "opencode/deepseek-v4.1-flash-free",
-            true,
-        ),
-        choice(
-            "paid-c",
-            Harness::Opencode,
-            "opencode/claude-opus-5-5",
-            true,
-        ),
-        choice("claude-c", Harness::Claude, "claude-sonnet-5-5", true),
-        choice("agy-c", Harness::Agy, "gemini-3.8-flash-low", true),
-        choice("off-c", Harness::Opencode, "opencode/beam-free", false),
-    ];
+    let config = Config {
+        choices: vec![
+            choice("codex-c", Harness::Codex, "gpt-6.1-sol", true),
+            choice(
+                "free-c",
+                Harness::Opencode,
+                "opencode/deepseek-v4.1-flash-free",
+                true,
+            ),
+            choice(
+                "paid-c",
+                Harness::Opencode,
+                "opencode/claude-opus-5-5",
+                true,
+            ),
+            choice("claude-c", Harness::Claude, "claude-sonnet-5-5", true),
+            choice("agy-c", Harness::Agy, "gemini-3.8-flash-low", true),
+            choice("off-c", Harness::Opencode, "opencode/beam-free", false),
+        ],
+        ..Config::default()
+    };
     let opts = SupervisorOptions::new(env.paths.clone(), config, env.sock.clone())
         .with_idle_exit(Duration::from_secs(600))
         .with_lock_wait(Duration::ZERO)
