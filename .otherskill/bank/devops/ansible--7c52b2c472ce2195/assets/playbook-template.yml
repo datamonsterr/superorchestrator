@@ -1,0 +1,31 @@
+---
+- name: Install and enable Tailscale
+  hosts: k3s_cluster
+  become: true
+  vars:
+    enable_ip_forward: true
+  tasks:
+    - name: Install tailscale package
+      ansible.builtin.package:
+        name: tailscale
+        state: present
+
+    - name: Enable tailscaled
+      ansible.builtin.service:
+        name: tailscaled
+        state: started
+        enabled: true
+
+    - name: Ensure IPv4 forwarding
+      ansible.builtin.sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        state: present
+        reload: true
+      when: enable_ip_forward
+
+  handlers:
+    - name: restart tailscaled
+      ansible.builtin.service:
+        name: tailscaled
+        state: restarted

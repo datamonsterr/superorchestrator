@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "logicalId": "b39a8d4ddbbc601e26d45c46b3832d09d884f8d5b4e1f051cf47a385472fd6c6",
+  "source": "https://github.com/actionbook/rust-skills/tree/HEAD/skills/domain-cli",
+  "ref": "HEAD",
+  "revision": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+  "category": "backend/rust",
+  "installedAt": "2026-10-22T08:34:35.216Z"
+}
