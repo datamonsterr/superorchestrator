@@ -33,6 +33,23 @@ enum Step {
 pub(crate) struct Limit {
     pub pool: Option<String>,
     pub reset: Option<chrono::DateTime<Utc>>,
+    /// Flag every pool of the account: an auth failure is the account's, not a pool's.
+    pub all_pools: bool,
+}
+
+impl Limit {
+    /// The limit `account` hit with `kind`: its first pool, or all of them for auth.
+    pub(crate) fn for_account(
+        account: &AccountFile,
+        kind: ErrorKind,
+        reset: Option<chrono::DateTime<Utc>>,
+    ) -> Self {
+        Self {
+            pool: account.pools.first().cloned(),
+            reset,
+            all_pools: kind == ErrorKind::Auth,
+        }
+    }
 }
 
 /// A harness that did not come up, with the kind its output classifies as.
@@ -51,6 +68,8 @@ impl LaunchFail {
     }
 }
 
+/// Lets `?` turn a launch failure into the plain message where only the text matters
+/// (resuming a run, see `reconcile.rs`: those paths fail the run as `other`).
 impl From<LaunchFail> for String {
     fn from(f: LaunchFail) -> String {
         f.message
@@ -226,8 +245,12 @@ impl RunManager {
             Ok(Err(e)) => {
                 // A harness that exits during startup says why in its output; a limit or
                 // an auth error there must still move the run to another account.
+                // Only the process's own output is classified: a spawn, io, websocket or
+                // timeout error may merely mention a word like "quota" in a path.
                 let kind = match &e {
-                    DriverError::Other(text) => driver.classify_error(text),
+                    DriverError::Exited { kind, text } => {
+                        kind.unwrap_or_else(|| driver.classify_error(text))
+                    }
                     _ => ErrorKind::Other,
                 };
                 Err(LaunchFail {
@@ -246,10 +269,9 @@ impl RunManager {
     /// account (SPEC 8.5); anything else, or a run without that option, fails with the
     /// classified kind.
     async fn launch_failed(&self, row: &RunRow, account: &AccountFile, fail: LaunchFail) {
-        let limit = Limit {
-            pool: account.pools.first().cloned(),
-            reset: None,
-        };
+        let limit = Limit::for_account(account, fail.kind, None);
+        // The failed launch is an attempt: failover counts it and never goes back to it.
+        self.record_launch_attempt(&row.id, account).await;
         if self
             .begin_failover(&row.id, None, fail.kind, &fail.message, &limit)
             .await
@@ -259,6 +281,21 @@ impl RunManager {
         let mut o = Outcome::failed(fail.kind, &fail.message, None);
         o.limit = Some(limit);
         self.finish(&row.id, o).await;
+    }
+
+    /// Opens an attempt for a harness that never came up, so it is counted and tried once.
+    pub(crate) async fn record_launch_attempt(&self, run_id: &str, account: &AccountFile) {
+        let (id, name, pool) = (
+            run_id.to_string(),
+            account.name.clone(),
+            account.pools.first().cloned(),
+        );
+        if let Err(e) = self
+            .db(move |s| s.start_attempt(&id, &name, pool.as_deref(), Utc::now()))
+            .await
+        {
+            tracing::warn!(%run_id, error = %e.message, "could not record launch attempt");
+        }
     }
 
     pub(crate) async fn start_run(&self, row: RunRow) {
@@ -681,19 +718,27 @@ impl RunManager {
             return;
         };
         let account_label = account.name.clone();
-        // The pool that failed, else the account's first.
+        // The pool that failed, else the account's first; every pool for an auth failure.
         let pool = limit
             .and_then(|l| l.pool.clone())
             .or_else(|| account.pools.first().cloned())
             .unwrap_or_else(|| "default".into());
+        let pools: Vec<String> = if limit.is_some_and(|l| l.all_pools) && !account.pools.is_empty()
+        {
+            account.pools.clone()
+        } else {
+            vec![pool]
+        };
         let reset = limit.and_then(|l| l.reset);
         let cooldown = self.config().usage.default_cooldown.as_duration();
         let reason = format!("run {run_id}: {}", excerpt(reason, 200));
         let r = self
             .db(move |s| {
-                so_usage::mark_exhausted(s, &name, &pool, reset, cooldown, &reason, Utc::now())
-                    .map(|_| ())
-                    .map_err(|e| StoreError::Constraint(e.to_string()))
+                for pool in &pools {
+                    so_usage::mark_exhausted(s, &name, pool, reset, cooldown, &reason, Utc::now())
+                        .map_err(|e| StoreError::Constraint(e.to_string()))?;
+                }
+                Ok(())
             })
             .await;
         match r {

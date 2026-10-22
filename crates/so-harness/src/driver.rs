@@ -35,6 +35,14 @@ pub enum DriverError {
     Closed,
     #[error("no driver for harness {0}")]
     Unsupported(Harness),
+    /// The process exited while starting and its own output says why. `kind` is what
+    /// the driver classified that output as; only this variant is classified by the
+    /// supervisor, so an unrelated error never passes for a limit.
+    #[error("{text}")]
+    Exited {
+        kind: Option<ErrorKind>,
+        text: String,
+    },
     #[error("{0}")]
     Other(String),
 }
@@ -492,7 +500,7 @@ fn has_word(hay: &str, needle: &str) -> bool {
 
 /// Text-pattern classification shared by all drivers (ADR-0004 cheat sheet).
 /// Quota is checked first because quota text often also carries a 429.
-/// Numeric codes and "login" match whole words only.
+/// Numeric codes match whole words only; sign-in is matched as phrases.
 pub fn classify_common(text: &str) -> ErrorKind {
     let t = text.to_lowercase();
     let has = |pats: &[&str]| pats.iter().any(|p| t.contains(p));
@@ -512,7 +520,13 @@ pub fn classify_common(text: &str) -> ErrorKind {
         "not signed in",
         "eligibility",
         "invalid api key",
-    ]) || word(&["401", "login"])
+        // Sign-in prompts, as phrases only: a bare "login" is also a binary and a path.
+        "not logged in",
+        "run /login",
+        "please login",
+        "please log in",
+        "log in again",
+    ]) || word(&["401"])
     {
         ErrorKind::Auth
     } else {
@@ -541,6 +555,11 @@ mod tests {
             ("There's an issue with the selected model", Other),
             ("listening on port 14012 at 0x4291", Other),
             ("loaded 1429 files, see blogin.rs", Other),
+            ("You are not logged in", Auth),
+            ("Please login", Auth),
+            ("session expired, please log in again", Auth),
+            ("failed to spawn /usr/bin/login: not found", Other),
+            ("cannot read /srv/login/config.toml", Other),
         ];
         for (text, want) in cases {
             assert_eq!(classify_common(text), want, "{text}");

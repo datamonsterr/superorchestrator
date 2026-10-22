@@ -613,3 +613,111 @@ async fn an_exit_after_start_with_a_limit_on_stderr_fails_over() {
     assert_eq!(events(&v, "failover")[0].data["error_kind"], "quota");
     h.shutdown().await;
 }
+
+/// Launch failures are attempts: a run that keeps failing at launch stops after
+/// `MAX_FAILOVERS` moves and never tries an account twice.
+#[tokio::test]
+async fn launch_failures_are_bounded_and_never_revisit_an_account() {
+    let env = agy_env();
+    let names = ["agy-acc1", "agy-acc2", "agy-acc3", "agy-acc4", "agy-acc5"];
+    for n in names {
+        env.agy_account(n, 2, &agy_ineligible_script());
+    }
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Failed, "{r:?}");
+    assert_eq!(r.error_kind, Some(ErrorKind::Auth));
+    let per: Vec<usize> = names.iter().map(|n| env.launches(n).len()).collect();
+    assert!(
+        per.iter().all(|n| *n <= 1),
+        "an account was tried twice: {per:?}"
+    );
+    // The first run plus MAX_FAILOVERS moves.
+    assert_eq!(per.iter().sum::<usize>(), 4, "{per:?}");
+    let store = env.store();
+    let attempts = store.list_attempts(&r.run_id, 10).unwrap();
+    assert_eq!(attempts.len(), 4, "{attempts:?}");
+    // An auth failure flags the account on every pool.
+    for a in &attempts {
+        for pool in ["gemini", "claude"] {
+            assert!(
+                store.get_flag(&a.account, pool).unwrap().is_some(),
+                "{} {pool}",
+                a.account
+            );
+        }
+        assert_eq!(store.count_active_runs_by_account(&a.account).unwrap(), 0);
+    }
+    h.shutdown().await;
+}
+
+/// A launch error that is not the process's own output stays `other`, even when its
+/// text mentions words the classifier knows.
+#[tokio::test]
+async fn a_spawn_error_naming_a_quota_or_login_path_stays_other() {
+    use std::os::unix::fs::PermissionsExt;
+    for dir_name in ["quota-service", "login"] {
+        let env = routed_env();
+        env.account("claude-a", 2, &ok_script(&[]));
+        env.account("claude-b", 2, &ok_script(&[]));
+        // claude-a's binary cannot be executed: its interpreter does not exist.
+        let dir = env.dir.path().join(dir_name);
+        std::fs::create_dir_all(&dir).unwrap();
+        let bin = dir.join("claude");
+        std::fs::write(&bin, "#!/nonexistent/interpreter\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let file = env.paths.account_file("claude-a");
+        let text = std::fs::read_to_string(&file).unwrap();
+        let text: String = text
+            .lines()
+            .map(|l| {
+                if l.starts_with("binary") {
+                    format!("binary = \"{}\"\n", bin.display())
+                } else {
+                    format!("{l}\n")
+                }
+            })
+            .collect();
+        std::fs::write(&file, text).unwrap();
+        let h = env.start().await;
+        let c = env.client(&h).await;
+
+        let r = spawn(&c, auto_params(&env)).await;
+        assert_eq!(r.state, RunState::Failed, "{dir_name}: {r:?}");
+        assert_eq!(r.error_kind, Some(ErrorKind::Other), "{dir_name}");
+        let v = view(&c, &r.run_id).await;
+        assert!(events(&v, "failover").is_empty(), "{dir_name}");
+        let store = env.store();
+        assert!(store.get_flag("claude-a", "default").unwrap().is_none());
+        assert!(env.launches("claude-b").is_empty());
+        h.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn stderr_of_a_clean_exit_is_not_a_limit() {
+    let env = routed_env();
+    let quiet = script(&[
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"stdout": init_msg()}),
+        json!({"stderr": "Claude AI usage limit reached"}),
+        json!({"exit": 0}),
+    ]);
+    env.account("claude-a", 2, &quiet);
+    env.account("claude-b", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    let v = view(&c, &r.run_id).await;
+    assert!(events(&v, "failover").is_empty(), "{:?}", types(&v));
+    assert!(
+        env.store()
+            .get_flag("claude-a", "default")
+            .unwrap()
+            .is_none()
+    );
+    h.shutdown().await;
+}

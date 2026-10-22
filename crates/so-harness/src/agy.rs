@@ -349,10 +349,11 @@ async fn early_exit_error(
         .or_else(|| (!stderr.is_empty()).then(|| stderr.join("; ")))
         .unwrap_or_else(|| "no output".into());
     let text: String = text.chars().take(500).collect();
-    DriverError::Other(format!(
-        "agy exited before init (code {code:?}, {:?}): {text}",
-        classify_agy(&text)
-    ))
+    let kind = classify_agy(&text);
+    DriverError::Exited {
+        kind: Some(kind),
+        text: format!("agy exited before init (code {code:?}, {kind:?}): {text}"),
+    }
 }
 
 /// `classify_common` plus the agy texts from ADR-0004.

@@ -211,12 +211,44 @@ fn check_config(c: &mut Checks, paths: &Paths) -> Option<Config> {
                     "missing; using defaults (run `superorchestrator init`)",
                 );
             }
+            check_old_codex_choices(c, &cfg);
             Some(cfg)
         }
         Err(e) => {
             c.fail("config.toml", format!("does not load: {e}"));
             None
         }
+    }
+}
+
+/// The description older `init` versions gave the codex choices they seeded off.
+const OLD_CODEX_SEED_NOTE: &str = "Disabled until a codex account is signed in.";
+
+/// Codex choices that an older `init` seeded as disabled "until a codex account is signed
+/// in". Routing now skips a choice without a usable account by itself, so they only need
+/// turning on. The config is the user's: this says what to change and never edits it.
+fn check_old_codex_choices(c: &mut Checks, cfg: &Config) {
+    let stale: Vec<&str> = cfg
+        .choices
+        .iter()
+        .filter(|ch| {
+            !ch.enabled
+                && ch.harness == so_core::Harness::Codex
+                && ch.description.contains(OLD_CODEX_SEED_NOTE)
+        })
+        .map(|ch| ch.id.as_str())
+        .collect();
+    if !stale.is_empty() {
+        c.warn(
+            "choices",
+            format!(
+                "{} still off from an older init, so `harness: auto` never routes to codex. \
+                 Routing skips a choice without a signed-in account by itself: set \
+                 `enabled = true` on {} in config.toml",
+                stale.join(", "),
+                if stale.len() == 1 { "it" } else { "each" }
+            ),
+        );
     }
 }
 

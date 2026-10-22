@@ -158,18 +158,26 @@ impl RunManager {
         let run_id = req.run_id.clone();
         let (kind, why) = match self.move_to_next_account(&req).await {
             Ok(Moved::Started(next)) => {
-                let pool = next.account.pools.first().cloned();
+                let account = next.account.clone();
                 match self.start_on(&req, *next).await {
                     Ok(()) => return,
                     // The new account's harness did not come up and said why: a limit or
                     // auth error there moves the run on again (within MAX_FAILOVERS).
                     Err(fail) => {
-                        let limit = Limit { pool, reset: None };
+                        let limit = Limit::for_account(&account, fail.kind, None);
+                        // The failed launch is an attempt, so it counts and is not retried.
+                        self.record_launch_attempt(&run_id, &account).await;
                         if self
                             .begin_failover(&run_id, None, fail.kind, &fail.message, &limit)
                             .await
                         {
                             return;
+                        }
+                        // The bound is reached (or the run cannot move): the account that
+                        // failed here was not flagged by a move, so flag it now.
+                        if failover_kind(fail.kind) {
+                            self.flag_account(&run_id, &fail.message, Some(&limit))
+                                .await;
                         }
                         (fail.kind, fail.message)
                     }

@@ -201,3 +201,47 @@ fn doctor_json_lists_checks_and_reports_unloadable_accounts() {
             .any(|c| c["name"] == "config.toml" && c["status"] == "ok")
     );
 }
+
+fn doctor_checks(e: &Env) -> Vec<serde_json::Value> {
+    let out = e.cmd().args(["--json", "doctor"]).output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    v["checks"].as_array().unwrap().clone()
+}
+
+#[test]
+fn doctor_warns_about_codex_choices_left_off_by_the_old_seed() {
+    let e = Env::new();
+    e.init();
+    // A fresh seed has nothing to warn about.
+    assert!(!doctor_checks(&e).iter().any(|c| c["name"] == "choices"));
+
+    // An older config: the seeded text with the codex choices off.
+    let path = e.cfg.join("config.toml");
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    for id in ["codex-high", "codex-medium"] {
+        let at = text.find(&format!("id = \"{id}\"")).unwrap();
+        let off = text[at..].find("enabled = true").unwrap() + at;
+        text.replace_range(off..off + "enabled = true".len(), "enabled = false");
+    }
+    text = text.replace(
+        "Not eligible until a codex account is signed in.",
+        "Disabled until a codex account is signed in.",
+    );
+    std::fs::write(&path, &text).unwrap();
+    let checks = doctor_checks(&e);
+    let w = checks.iter().find(|c| c["name"] == "choices").unwrap();
+    assert_eq!(w["status"], "warn");
+    let d = w["detail"].as_str().unwrap();
+    assert!(
+        d.contains("codex-high") && d.contains("codex-medium") && d.contains("enabled = true"),
+        "{d}"
+    );
+
+    // A choice the user turned off with their own description is theirs.
+    let text = text.replace(
+        "Disabled until a codex account is signed in.",
+        "Off on purpose.",
+    );
+    std::fs::write(&path, text).unwrap();
+    assert!(!doctor_checks(&e).iter().any(|c| c["name"] == "choices"));
+}

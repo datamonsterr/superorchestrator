@@ -148,7 +148,8 @@ impl RunManager {
                 let id = pc.run_id.clone();
                 let _ = self.db(move |s| s.patch_run(&id, &patch)).await;
             }
-            HarnessEvent::TurnStarted => {}
+            // Earlier stderr is not why a later exit happens.
+            HarnessEvent::TurnStarted => st.stderr_tail.clear(),
             HarnessEvent::AssistantMessage { text } => {
                 self.emit_run(
                     pc,
@@ -268,10 +269,7 @@ impl RunManager {
     ) {
         st.done = true;
         // A limit on the account may only mean another account should take over (SPEC 8.5).
-        let limit = Limit {
-            pool: Some(pc.pool.clone()),
-            reset: st.reset,
-        };
+        let limit = Limit::for_account(&pc.account, kind, st.reset);
         if self
             .begin_failover(&pc.run_id, Some(control), kind, text, &limit)
             .await
@@ -403,6 +401,7 @@ impl RunManager {
             .await;
         st.stage = Stage::Active;
         st.nudges = 0;
+        st.stderr_tail.clear();
     }
 
     async fn exited(&self, pc: &PumpCtx, st: &mut State, control: &RunControl, code: Option<i32>) {
@@ -412,7 +411,7 @@ impl RunManager {
         st.done = true;
         let mut limit_out = None;
         // No error event, but the stderr output may classify as a limit or an auth error.
-        if st.pending_error.is_none() && !st.stderr_tail.is_empty() {
+        if st.pending_error.is_none() && code != Some(0) && !st.stderr_tail.is_empty() {
             let text = st
                 .stderr_tail
                 .iter()
@@ -429,10 +428,7 @@ impl RunManager {
             // A quota, auth or similar error: resuming would only repeat it, but another
             // account may take the run over.
             Some((kind, text)) => {
-                let limit = Limit {
-                    pool: Some(pc.pool.clone()),
-                    reset: st.reset,
-                };
+                let limit = Limit::for_account(&pc.account, kind, st.reset);
                 if self
                     .begin_failover(&pc.run_id, Some(control), kind, &text, &limit)
                     .await

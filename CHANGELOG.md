@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A harness that exits while starting with a quota, rate-limit or auth error (for example agy's
+  "Eligibility check failed") now fails the run with that kind and fails it over to the next
+  account. Launch failures count as attempts, so failover is bounded and never returns to an
+  account, and an auth failure flags every pool of the account.
+- Codex choices are now seeded enabled; a choice without a signed-in account is skipped at
+  routing time, so adding a codex account makes `harness: auto` use it. Configs made by an
+  older `init` keep their codex choices off: `doctor` warns and says to set `enabled = true`.
+  Claude choices stay off by default.
+
 ## [0.1.0] - Unreleased
 
 First release. Pending the `v0.1.0` tag.
