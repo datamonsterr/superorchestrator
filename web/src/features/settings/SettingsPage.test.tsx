@@ -1,11 +1,14 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { describe, expect, it } from 'vitest'
+import { toast } from 'sonner'
+import { describe, expect, it, vi } from 'vitest'
 import { server } from '@/test/server'
 import { renderWithProviders } from '@/test/render'
 import * as fx from '@/api/msw/fixtures'
 import { SettingsPage } from './SettingsPage'
+
+vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }), Toaster: () => null }))
 
 const openTab = async (name: string) => userEvent.click(await screen.findByRole('tab', { name }))
 
@@ -89,6 +92,55 @@ describe('SettingsPage config', () => {
   })
 })
 
+describe('SettingsPage drafts and key file', () => {
+  it('keeps the draft when the System tab is opened and closed', async () => {
+    renderWithProviders(<SettingsPage />)
+    const cap = await screen.findByLabelText('Global run cap')
+    await userEvent.clear(cap)
+    await userEvent.type(cap, '3')
+    await openTab('System')
+    await screen.findByRole('row', { name: /agy binary/ })
+    expect(screen.queryByRole('button', { name: 'Save' })).not.toBeInTheDocument()
+    await openTab('General')
+    expect(await screen.findByLabelText('Global run cap')).toHaveValue(3)
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+  })
+
+  it('rejects clearing a saved key file with an inline error and sends nothing', async () => {
+    let called = false
+    server.use(
+      http.get('/api/v1/config', () =>
+        HttpResponse.json({ ...fx.config, config: { ...fx.config.config, router: { jev: { key_env: 'OPENROUTER_API_KEY', key_file: '/etc/or.env' } } } }),
+      ),
+      http.patch('/api/v1/config', () => ((called = true), HttpResponse.json(fx.config))),
+    )
+    renderWithProviders(<SettingsPage />)
+    await screen.findByLabelText('Global run cap')
+    await openTab('Routing')
+    const file = await screen.findByLabelText('Key file')
+    expect(file).toHaveValue('/etc/or.env')
+    await userEvent.clear(file)
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText(/cannot be cleared here/)).toBeInTheDocument()
+    expect(called).toBe(false)
+  })
+
+  it('says "Nothing to save" and resets when the edit changes nothing', async () => {
+    let called = false
+    server.use(http.patch('/api/v1/config', () => ((called = true), HttpResponse.json(fx.config))))
+    renderWithProviders(<SettingsPage />)
+    await screen.findByLabelText('Global run cap')
+    await openTab('Worktrees')
+    const dir = await screen.findByLabelText('Worktree folder')
+    await userEvent.type(dir, '   ')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(toast).toHaveBeenCalledWith('Nothing to save'))
+    expect(called).toBe(false)
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled())
+    expect(screen.getByLabelText('Worktree folder')).toHaveValue('')
+  })
+})
+
 describe('SettingsPage system tab', () => {
   it('lists doctor results and worktrees', async () => {
     renderWithProviders(<SettingsPage />)
@@ -104,17 +156,19 @@ describe('SettingsPage system tab', () => {
       http.post('/api/v1/worktrees/prune', async ({ request }) => {
         const b = (await request.json()) as { dry_run: boolean }
         calls.push(b)
-        return HttpResponse.json({ removed: ['run-0'] })
+        return HttpResponse.json({ removed: ['run-0'], skipped: b.dry_run ? [] : ['run-9'] })
       }),
     )
     renderWithProviders(<SettingsPage />)
     await openTab('System')
     await userEvent.click(await screen.findByRole('button', { name: 'Prune orphaned' }))
     const dialog = await screen.findByRole('alertdialog')
-    expect(dialog).toHaveTextContent('run-0')
+    expect(dialog).toHaveTextContent('run-0 (/work/wt/old)')
     expect(calls).toEqual([{ dry_run: true }])
     await userEvent.click(within(dialog).getByRole('button', { name: 'Prune' }))
-    await waitFor(() => expect(calls).toEqual([{ dry_run: true }, { dry_run: false }]))
+    // The real prune is limited to the runs the user confirmed.
+    await waitFor(() => expect(calls).toEqual([{ dry_run: true }, { dry_run: false, ids: ['run-0'] }]))
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Pruned 1 run, skipped 1'))
   })
 
   it('does not ask for confirmation when nothing would be pruned', async () => {

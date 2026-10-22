@@ -23,7 +23,7 @@ export function SettingsPage() {
         </Alert>
       )}
       <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="h-auto flex-wrap">
+        <TabsList className="max-w-full justify-start overflow-x-auto">
           <TabsTrigger value="general">General</TabsTrigger>
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="worktrees">Worktrees</TabsTrigger>
@@ -32,20 +32,25 @@ export function SettingsPage() {
           <TabsTrigger value="system">System</TabsTrigger>
         </TabsList>
         <div className="mt-4">
-          {tab === 'system' ? null : q.isError && !q.data ? (
-            <TabsContent value={tab}>
-              <ErrorAlert error={q.error} title="Could not load settings" onRetry={() => void q.refetch()} />
-            </TabsContent>
+          {q.isError && !q.data ? (
+            tab !== 'system' && (
+              <TabsContent value={tab}>
+                <ErrorAlert error={q.error} title="Could not load settings" onRetry={() => void q.refetch()} />
+              </TabsContent>
+            )
           ) : !q.data ? (
-            <TabsContent value={tab}>
-              <div role="status" aria-busy="true" aria-label="Loading" className="max-w-xl space-y-3">
-                <Skeleton className="h-9 w-full" />
-                <Skeleton className="h-9 w-full" />
-                <Skeleton className="h-9 w-full" />
-              </div>
-            </TabsContent>
+            tab !== 'system' && (
+              <TabsContent value={tab}>
+                <div role="status" aria-busy="true" aria-label="Loading" className="max-w-xl space-y-3">
+                  <Skeleton className="h-9 w-full" />
+                  <Skeleton className="h-9 w-full" />
+                  <Skeleton className="h-9 w-full" />
+                </div>
+              </TabsContent>
+            )
           ) : (
-            <ConfigForm view={q.data} />
+            // Stays mounted on the System tab so an unsaved draft survives a look at the doctor report.
+            <ConfigForm view={q.data} hidden={tab === 'system'} />
           )}
           <TabsContent value="system">
             <SystemTab />

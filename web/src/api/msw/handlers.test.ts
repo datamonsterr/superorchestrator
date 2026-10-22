@@ -83,6 +83,15 @@ describe('behaviour', () => {
   })
 })
 
+describe('mock sign-in mode follows the harness the account was created with', () => {
+  it('returns a command for a claude account whatever its name, and a device code for the others', async () => {
+    await endpoints.createAccount({ harness: 'claude', name: 'work-a' })
+    await endpoints.createAccount({ harness: 'codex', name: 'claude-lookalike' })
+    expect(await endpoints.startLogin('work-a')).toMatchObject({ mode: 'manual', command: 'claude login' })
+    expect(await endpoints.startLogin('claude-lookalike')).toMatchObject({ mode: 'device_auth' })
+  })
+})
+
 describe('large session', () => {
   const small = { events: 2500, runs: 10, transcriptRows: 600, seed: 3 }
   it('serves events across pages, a session detail and runs', async () => {

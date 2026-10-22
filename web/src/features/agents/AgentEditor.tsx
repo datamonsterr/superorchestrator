@@ -12,6 +12,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
+import { NotAvailable } from '@/components/common/NotAvailable'
+import { isEndpointMissing } from '@/lib/errors'
 import { ApiError } from '@/api/client'
 import { useAgent, useCreateAgent, useDeleteAgent, usePutAgent } from '@/api/queries'
 import type { AgentDetail } from '@/api/types'
@@ -82,21 +84,32 @@ function EditorForm({ agent }: FormProps) {
   const del = useDeleteAgent()
   const [name, setName] = useState('')
   const [source, setSource] = useState(agent?.source ?? NEW_AGENT_TEMPLATE)
+  // The file as this draft started from it; a refetch that differs means it changed on disk.
+  const [base, setBase] = useState(agent?.source)
   const [warnings, setWarnings] = useState<string[]>([])
   const [confirmDelete, setConfirmDelete] = useState(false)
 
+  const hasMarker = source.includes('[REDACTED]')
   const readOnly = agent?.read_only ?? false
   const redacted = agent?.redacted ?? false
   const saving = create.isPending || put.isPending
   const dirty = agent ? source !== agent.source : true
-  const canSave = !readOnly && !redacted && !saving && dirty && (agent !== undefined || name.trim() !== '')
+  const canSave = !readOnly && !redacted && !hasMarker && !saving && dirty && (agent !== undefined || name.trim() !== '')
   const saveError = create.error ?? put.error
+  const diskChanged = agent !== undefined && agent.source !== base
+  if (diskChanged && (source === base || source === agent.source)) {
+    // Nothing of ours to lose: follow the file.
+    setBase(agent.source)
+    setSource(agent.source)
+  }
+  const staleDraft = diskChanged && source !== base && source !== agent.source
 
   async function save() {
     setWarnings([])
     try {
       const res = agent ? await put.mutateAsync({ name: agent.name, source }) : await create.mutateAsync({ name: name.trim(), source })
       setWarnings(res.warnings)
+      setBase(source)
       toast.success(agent ? 'Agent saved' : 'Agent created')
       if (!agent) void navigate(`/agents/${encodeURIComponent(name.trim())}`, { replace: true })
     } catch {
@@ -139,13 +152,39 @@ function EditorForm({ agent }: FormProps) {
           <Textarea
             value={source}
             onChange={(e) => setSource(e.target.value)}
-            readOnly={readOnly}
+            readOnly={readOnly || redacted}
             spellCheck={false}
             className="min-h-96 font-mono text-xs"
           />
         </label>
         <FrontmatterCard source={source} />
       </div>
+      {hasMarker && !redacted && (
+        <p role="alert" className="text-sm text-destructive">
+          Remove the <span className="font-mono">[REDACTED]</span> markers before saving; they would overwrite real values.
+        </p>
+      )}
+      {staleDraft && agent && (
+        <Alert role="alert">
+          <AlertTriangle aria-hidden />
+          <AlertTitle>Changed on disk</AlertTitle>
+          <AlertDescription>
+            <p>The file was changed outside this page while you were editing. Saving overwrites it.</p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-2"
+              onClick={() => {
+                setSource(agent.source)
+                setBase(agent.source)
+              }}
+            >
+              Reload from disk (discard my edits)
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
       {saveError && <SaveError error={saveError} />}
       {warnings.length > 0 && (
         <Alert>
@@ -160,7 +199,7 @@ function EditorForm({ agent }: FormProps) {
           </AlertDescription>
         </Alert>
       )}
-      <div className="flex flex-wrap items-center gap-2">
+      <div data-slot="form-actions" className="flex flex-wrap items-center gap-2 max-md:[&_button]:min-h-10">
         <Button onClick={() => void save()} disabled={!canSave}>
           {saving ? 'Saving...' : agent ? 'Save' : 'Create agent'}
         </Button>
@@ -227,7 +266,11 @@ export function AgentEditor() {
       {creating ? (
         <EditorForm />
       ) : query.isError ? (
+        isEndpointMissing(query.error) ? (
+          <NotAvailable what="Custom agents" />
+        ) : (
         <ErrorAlert error={query.error} title="Could not load the agent" onRetry={() => void query.refetch()} />
+        )
       ) : !agent ? (
         <div role="status" aria-busy="true" aria-label="Loading">
           <Skeleton className="h-96 w-full" />

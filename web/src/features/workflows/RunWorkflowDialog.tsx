@@ -40,6 +40,8 @@ function Body({ name, initial, onClose }: { name: string; initial: string; onClo
         </Button>
         <Button
           disabled={!!jsonError || run.isPending}
+          // A failed start (including a 501 from a supervisor without workflows) toasts through the
+          // MutationCache.onError handler in lib/query-client.ts, so nothing is swallowed here.
           onClick={() =>
             run.mutate(
               { name, args: parsed },

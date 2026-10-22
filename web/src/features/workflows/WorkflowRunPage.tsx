@@ -10,6 +10,7 @@ import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { JsonView } from '@/components/common/JsonView'
 import { NotAvailable } from '@/components/common/NotAvailable'
+import { ScrollTable } from '@/components/common/ScrollTable'
 import { isNotAvailable } from '@/lib/errors'
 import { useWorkflowRun } from '@/api/queries'
 import { RunWorkflowDialog } from './RunWorkflowDialog'
@@ -66,7 +67,7 @@ export function WorkflowRunPage() {
           {run.steps.length === 0 ? (
             <EmptyState title="No steps yet" description="Steps appear as the workflow starts them." />
           ) : (
-            <div className="overflow-x-auto rounded-md border">
+            <ScrollTable>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -97,7 +98,7 @@ export function WorkflowRunPage() {
                   ))}
                 </TableBody>
               </Table>
-            </div>
+            </ScrollTable>
           )}
           {run.result !== undefined && <JsonView value={run.result} label="Result" />}
         </div>

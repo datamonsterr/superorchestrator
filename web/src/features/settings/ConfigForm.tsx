@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useForm, useWatch, type FieldPath } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { toast } from 'sonner'
@@ -12,14 +12,16 @@ import { applyApiFieldErrors } from '@/lib/form-errors'
 import { errorMessage } from '@/lib/errors'
 import type { ConfigView } from '@/api/types'
 import { KeySource } from './KeySource'
-import { diffToPatch, settingsSchema, valuesFromConfig, type SettingsValues } from './schemas'
+import { diffToPatch, FIELD_PATHS, settingsSchema, valuesFromConfig, type SettingsValues } from './schemas'
 
 type Name = FieldPath<SettingsValues>
 
-export function ConfigForm({ view }: { view: ConfigView }) {
+/** `hidden` keeps the form (and the draft in it) mounted while another tab is shown. */
+export function ConfigForm({ view, hidden = false }: { view: ConfigView; hidden?: boolean }) {
   const patch = usePatchConfig()
   const initial = valuesFromConfig(view)
-  const form = useForm<SettingsValues>({ resolver: zodResolver(settingsSchema), defaultValues: initial })
+  const schema = useMemo(() => settingsSchema(valuesFromConfig(view).router.jev.key_file), [view])
+  const form = useForm<SettingsValues>({ resolver: zodResolver(schema), defaultValues: initial })
   const { control, register, handleSubmit, reset, setError, setValue, formState } = form
   const switches = { 'notifications.desktop': useWatch({ control, name: 'notifications.desktop' }), 'ui.enabled': useWatch({ control, name: 'ui.enabled' }) }
   const { errors, isDirty } = formState
@@ -31,14 +33,18 @@ export function ConfigForm({ view }: { view: ConfigView }) {
 
   async function onSubmit(values: SettingsValues) {
     const body = diffToPatch(valuesFromConfig(view), values)
-    if (Object.keys(body).length === 0) return
+    if (Object.keys(body).length === 0) {
+      // Nothing the API can store (for example only an unset key file): do not stay dirty.
+      toast('Nothing to save')
+      reset(valuesFromConfig(view))
+      return
+    }
     try {
       const next = await patch.mutateAsync(body)
       reset(valuesFromConfig(next))
       toast.success(next.restart_required ? 'Saved. Restart the supervisor to apply.' : 'Settings saved')
     } catch (e) {
-      const fields = Object.keys(settingsFlat)
-      if (!applyApiFieldErrors(e, setError, fields)) setError('root', { type: 'server', message: errorMessage(e) })
+      if (!applyApiFieldErrors(e, setError, FIELD_PATHS)) setError('root', { type: 'server', message: errorMessage(e) })
     }
   }
 
@@ -73,7 +79,7 @@ export function ConfigForm({ view }: { view: ConfigView }) {
   )
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} noValidate className="space-y-4">
+    <form onSubmit={handleSubmit(onSubmit)} noValidate hidden={hidden} className="space-y-4">
       <TabsContent value="general">
         <FieldGroup className="max-w-xl">
           {text('limits.global_cap', 'Global run cap', 'Runs allowed at the same time across all accounts.', { number: true })}
@@ -121,7 +127,7 @@ export function ConfigForm({ view }: { view: ConfigView }) {
           {errors.root.message}
         </p>
       )}
-      <div className="flex items-center gap-2">
+      <div data-slot="form-actions" className="flex items-center gap-2 max-md:[&_button]:min-h-10">
         <Button type="submit" disabled={!isDirty || patch.isPending}>
           {patch.isPending ? 'Saving...' : 'Save'}
         </Button>
@@ -132,12 +138,3 @@ export function ConfigForm({ view }: { view: ConfigView }) {
     </form>
   )
 }
-
-/** Dotted names that a 422 `data` object may point at. */
-const settingsFlat: Record<string, true> = Object.fromEntries(
-  [
-    'limits.global_cap', 'limits.max_children', 'runs.stall_ms', 'runs.ask_timeout', 'notifications.desktop', 'notifications.discord_webhook_env',
-    'worktrees.dir', 'worktrees.branch_prefix', 'router.policy.min_confidence', 'router.policy.min_margin', 'router.jev.key_env', 'router.jev.key_file',
-    'ui.bind', 'ui.port', 'ui.enabled',
-  ].map((k) => [k, true] as const),
-)

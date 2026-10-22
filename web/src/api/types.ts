@@ -1,9 +1,10 @@
 /**
  * API types for `/api/v1` (docs/ui/design.md 2.1 and 6.1).
  *
- * Hand-written stubs, one-to-one with `crates/so-core/src/proto.rs`. T2.1 will
- * generate the same types from schemars; this file then re-exports them. Page
- * tasks must not edit this file.
+ * The shapes the server generates live in `generated.ts` (`cargo run -p so-web --bin gen-ts`).
+ * This file re-exports the ones pages use from there, and keeps hand-written types only where the
+ * generated one is not usable yet: the workflow run types (the supervisor does not serve runs yet),
+ * and types the pages narrow further (for example string unions).
  */
 
 import type { Config } from './generated'
@@ -261,7 +262,7 @@ export interface ApiErrorBody {
   error: { code: number; message: string; data?: unknown }
 }
 
-// ---- Choices, models, worktrees, doctor (stubs matching 2.1) ----
+// ---- Choices and models ----
 
 export interface ChoicesView {
   choices: Choice[]
@@ -276,7 +277,7 @@ export interface ModelCatalog {
   refreshed_at: string | null
   models: ModelEntry[]
 }
-// ---- Workflows (summary is generated; runs are stubs until the supervisor serves them) ----
+// ---- Workflows (the summary is generated; run types are hand-written until the supervisor serves runs) ----
 
 export type WorkflowState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 export interface WorkflowStep {
@@ -306,7 +307,7 @@ export interface RunWorkflowResult {
   session_id?: string
 }
 
-// ---- Config (stub; T2.8 refines) ----
+// ---- Agents, config, doctor, worktrees (generated) ----
 
 export type {
   AgentDetail,
@@ -317,6 +318,7 @@ export type {
   Config,
   ConfigView,
   DoctorReport,
+  PruneRequest,
   PruneResult,
   SecretOrigin,
   SecretSource,

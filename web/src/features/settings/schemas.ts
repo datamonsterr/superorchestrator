@@ -8,8 +8,11 @@ const whole = (min: number, max?: number) => {
 }
 const fraction = z.number({ error: 'Enter a number between 0 and 1' }).min(0, 'At least 0').max(1, 'At most 1')
 
+/** The key file path the config had when the form opened; once set it cannot be cleared over the API. */
+export const KEY_FILE_CLEARED = 'A saved key file cannot be cleared here. Edit config.toml to remove it.'
+
 /** The editable subset of `config.toml`, shaped like the config so field names are dotted config keys. */
-export const settingsSchema = z.object({
+const baseSchema = z.object({
   limits: z.object({ global_cap: whole(1, 64), max_children: whole(1, 64) }),
   runs: z.object({ stall_ms: whole(1000), ask_timeout: z.string().trim().min(1, 'Enter a duration such as 10m') }),
   notifications: z.object({ desktop: z.boolean(), discord_webhook_env: z.string().trim() }),
@@ -20,7 +23,22 @@ export const settingsSchema = z.object({
   }),
   ui: z.object({ bind: z.string().trim().min(1, 'Enter an address'), port: whole(1, 65535), enabled: z.boolean() }),
 })
-export type SettingsValues = z.infer<typeof settingsSchema>
+export type SettingsValues = z.infer<typeof baseSchema>
+
+/** `savedKeyFile` is the path in the config now; clearing it is rejected with an inline error. */
+export function settingsSchema(savedKeyFile = '') {
+  return baseSchema.refine((v) => savedKeyFile === '' || v.router.jev.key_file !== '', {
+    path: ['router', 'jev', 'key_file'],
+    message: KEY_FILE_CLEARED,
+  })
+}
+
+/** Every editable field as a dotted path, read off the schema so the two cannot drift. */
+export const FIELD_PATHS: string[] = (() => {
+  const walk = (shape: Record<string, z.ZodType>, prefix: string): string[] =>
+    Object.entries(shape).flatMap(([k, v]) => (v instanceof z.ZodObject ? walk(v.shape as Record<string, z.ZodType>, `${prefix}${k}.`) : [`${prefix}${k}`]))
+  return walk(baseSchema.shape, '')
+})()
 
 /** Form values from the server config, with the file's defaults for absent keys. Never reads `ui.token`. */
 export function valuesFromConfig(view: ConfigView): SettingsValues {
@@ -45,19 +63,20 @@ type Tree = { [k: string]: Tree | string | number | boolean }
  * (`key_file`) is not sent: the API has no way to unset a key, so it keeps its value.
  */
 export function diffToPatch(before: SettingsValues, after: SettingsValues): ConfigPatch {
-  const walk = (a: Tree, b: Tree): Tree => {
+  const walk = (a: Tree, b: Tree, path: string): Tree => {
     const out: Tree = {}
     for (const k of Object.keys(b)) {
       const x = a[k]
       const y = b[k]
+      const here = path ? `${path}.${k}` : k
       if (typeof y === 'object') {
-        const sub = walk(x as Tree, y)
+        const sub = walk(x as Tree, y, here)
         if (Object.keys(sub).length > 0) out[k] = sub
-      } else if (x !== y && !(k === 'key_file' && y === '')) {
+      } else if (x !== y && !(here === 'router.jev.key_file' && y === '')) {
         out[k] = y
       }
     }
     return out
   }
-  return walk(before as unknown as Tree, after as unknown as Tree) as ConfigPatch
+  return walk(before as unknown as Tree, after as unknown as Tree, '') as ConfigPatch
 }

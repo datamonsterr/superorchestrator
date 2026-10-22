@@ -6,6 +6,7 @@ import { HeadroomBar } from '@/components/common/HeadroomBar'
 import { EmptyState } from '@/components/common/EmptyState'
 import { Users } from 'lucide-react'
 import type { AccountView } from '@/api/types'
+import { ScrollTable } from '@/components/common/ScrollTable'
 
 /** One row per (account, pool); accounts without headroom data get a single unknown row. */
 export function AccountsSummaryTable({ accounts }: { accounts: AccountView[] }) {
@@ -24,6 +25,7 @@ export function AccountsSummaryTable({ accounts }: { accounts: AccountView[] }) 
     )
   }
   return (
+    <ScrollTable className="border-0">
     <Table>
       <TableHeader>
         <TableRow>
@@ -76,5 +78,6 @@ export function AccountsSummaryTable({ accounts }: { accounts: AccountView[] }) 
         })}
       </TableBody>
     </Table>
+    </ScrollTable>
   )
 }

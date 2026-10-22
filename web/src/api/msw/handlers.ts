@@ -1,5 +1,5 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
-import type { ApiErrorBody, Event, Page, TranscriptLine } from '../types'
+import type { ApiErrorBody, Event, Harness, Page, TranscriptLine } from '../types'
 import { LARGE_SESSION_ID, makeLargeSession, type LargeSession } from '@/test/fixtures/large'
 import * as fx from './fixtures'
 
@@ -30,6 +30,9 @@ export interface HandlerOptions {
 export function createHandlers({ large = false, largeOptions }: HandlerOptions = {}): RequestHandler[] {
   let cached: LargeSession | null = null
   const getLarge = () => (cached ??= makeLargeSession({ seed: 1, ...largeOptions }))
+  // Harness of accounts created through the mock API, by name.
+  const createdHarness = new Map<string, Harness>()
+  const harnessOf = (name: string): Harness | undefined => createdHarness.get(name) ?? fx.accounts.find((a) => a.name === name)?.harness
   const largeRunIds = () => new Set(getLarge().session.runs.map((r) => r.run_id))
 
   const sessionList = () => (large ? [{ ...getLarge().session, runs: undefined } as never, ...fx.sessions] : fx.sessions)
@@ -110,7 +113,8 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
 
     http.get(`${B}/accounts`, () => HttpResponse.json(fx.accounts)),
     http.post(`${B}/accounts`, async ({ request }) => {
-      const b = (await request.json()) as { harness: never; name: string }
+      const b = (await request.json()) as { harness: Harness; name: string }
+      createdHarness.set(b.name, b.harness)
       return HttpResponse.json({ ...fx.accounts[0], name: b.name, harness: b.harness, signed_in: 'signed_out', active_runs: 0, headroom: [] }, { status: 201 })
     }),
     http.post(`${B}/accounts/import`, async ({ request }) => {
@@ -126,9 +130,10 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
     http.delete(`${B}/accounts/:name`, () => HttpResponse.json(ok)),
     http.post(`${B}/accounts/:name/flag`, ({ params }) => HttpResponse.json(fx.accounts.find((a) => a.name === params.name) ?? fx.accounts[0])),
     http.post(`${B}/accounts/:name/login`, ({ params }) =>
-      // Claude accounts sign in with a command; the others use a device code.
-      String(params.name).startsWith('claude')
-        ? HttpResponse.json({ mode: 'manual', command: `${String(params.name).split('-')[0]} login`, cwd: '/home/me' })
+      // Claude accounts sign in with a command; the others use a device code. The harness is what the
+      // account was created with, never guessed from its name.
+      harnessOf(String(params.name)) === 'claude'
+        ? HttpResponse.json({ mode: 'manual', command: 'claude login', cwd: '/home/me' })
         : HttpResponse.json({ mode: 'device_auth', url: 'https://example.test/device', code: 'ABCD-1234', expires_at: new Date(Date.UTC(2026, 0, 1, 12, 15)).toISOString() }),
     ),
     http.get(`${B}/accounts/:name/login`, () => HttpResponse.json({ signed_in: 'signed_out', mode: 'device_auth', state: 'pending' })),
@@ -139,7 +144,12 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
     http.post(`${B}/models/refresh`, () => HttpResponse.json(fx.models)),
 
     http.get(`${B}/worktrees`, () => HttpResponse.json(fx.worktrees)),
-    http.post(`${B}/worktrees/prune`, () => HttpResponse.json({ removed: fx.worktrees.filter((w) => w.orphaned).map((w) => w.run_id) })),
+    http.post(`${B}/worktrees/prune`, async ({ request }) => {
+      const b = (await request.json().catch(() => ({}))) as { ids?: string[] }
+      const prunable = fx.worktrees.filter((w) => w.orphaned).map((w) => w.run_id)
+      if (!b.ids) return HttpResponse.json({ removed: prunable, skipped: [] })
+      return HttpResponse.json({ removed: b.ids.filter((id) => prunable.includes(id)), skipped: b.ids.filter((id) => !prunable.includes(id)) })
+    }),
 
     http.get(`${B}/agents`, () => HttpResponse.json({ agents: fx.agentViews })),
     http.post(`${B}/agents`, async ({ request }) => {

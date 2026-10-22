@@ -12,6 +12,7 @@ import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { NotAvailable } from '@/components/common/NotAvailable'
 import { RelativeTime } from '@/components/common/RelativeTime'
 import { TableSkeleton } from '@/components/common/TableSkeleton'
+import { ScrollTable } from '@/components/common/ScrollTable'
 import { isNotAvailable } from '@/lib/errors'
 import { useWorkflowRuns, useWorkflows } from '@/api/queries'
 import { RunWorkflowDialog } from './RunWorkflowDialog'
@@ -31,7 +32,7 @@ function Saved({ onRun }: { onRun: (name: string) => void }) {
     return <EmptyState icon={GitBranch} title="No saved workflows" description="Save a workflow script in the project or config workflows folder and it shows up here." />
   }
   return (
-    <div className="overflow-x-auto rounded-md border">
+    <ScrollTable>
       <Table>
         <TableHeader>
           <TableRow>
@@ -62,7 +63,7 @@ function Saved({ onRun }: { onRun: (name: string) => void }) {
           ))}
         </TableBody>
       </Table>
-    </div>
+    </ScrollTable>
   )
 }
 
@@ -80,7 +81,7 @@ function Runs() {
   if (runs.length === 0) return <EmptyState icon={GitBranch} title="No workflow runs yet" description="Run a saved workflow and its steps are listed here." />
   return (
     <div className="space-y-3">
-      <div className="overflow-x-auto rounded-md border">
+      <ScrollTable>
         <Table>
           <TableHeader>
             <TableRow>
@@ -123,7 +124,7 @@ function Runs() {
             ))}
           </TableBody>
         </Table>
-      </div>
+      </ScrollTable>
       {q.hasNextPage && (
         <Button variant="outline" onClick={() => void q.fetchNextPage()} disabled={q.isFetchingNextPage}>
           {q.isFetchingNextPage ? 'Loading...' : 'Load more'}

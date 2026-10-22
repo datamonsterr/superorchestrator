@@ -99,7 +99,8 @@ describe('GanttCanvas', () => {
   it('has a screen-reader summary table with one row per segment and marker', () => {
     setup()
     const table = screen.getByTestId('timeline-summary')
-    expect(table).toHaveClass('sr-only')
+    // The wrapper is hidden, not the table: a table ignores width/clip and would widen the page.
+    expect(table.parentElement).toHaveClass('sr-only')
     expect(within(table).getByRole('columnheader', { name: 'Account' })).toBeInTheDocument()
     expect(within(table).getAllByRole('row').length).toBeGreaterThan(5)
     expect(within(table).getByText('Stall detected (idle 60s)')).toBeInTheDocument()

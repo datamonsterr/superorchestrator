@@ -5,6 +5,7 @@ import { Route, Routes } from 'react-router'
 import { describe, expect, it } from 'vitest'
 import { server } from '@/test/server'
 import { renderWithProviders } from '@/test/render'
+import * as fx from '@/api/msw/fixtures'
 import { AgentEditor } from './AgentEditor'
 import { AgentsPage } from './AgentsPage'
 
@@ -24,6 +25,12 @@ describe('AgentsPage', () => {
     expect(within(row).getByText('Claude (read-only)')).toBeInTheDocument()
     expect(within(row).getByText('claude')).toBeInTheDocument()
     expect(within(await screen.findByRole('row', { name: /reviewer/ })).getByText('auto')).toBeInTheDocument()
+  })
+
+  it.each([501, 404])('shows "not available" when the agents endpoint returns %i', async (status) => {
+    server.use(http.get('/api/v1/agents', () => HttpResponse.json({ error: { code: status === 501 ? 'not_implemented' : 'not_found', message: 'x' } }, { status })))
+    renderWithProviders(<AgentsPage />)
+    expect(await screen.findByText('Not available on this supervisor')).toBeInTheDocument()
   })
 
   it('shows empty and error states', async () => {
@@ -114,5 +121,53 @@ describe('AgentEditor', () => {
   it('shows an error when the agent cannot be loaded', async () => {
     renderEditor('/agents/missing')
     expect(await screen.findByRole('alert')).toHaveTextContent('no agent named')
+  })
+
+  it('shows "not available" for a missing agents route, but a normal error for an unknown agent', async () => {
+    server.use(http.get('/api/v1/agents/:name', () => HttpResponse.json({ error: { code: 'not_implemented', message: 'x' } }, { status: 501 })))
+    const { unmount } = renderEditor('/agents/reviewer')
+    expect(await screen.findByText('Not available on this supervisor')).toBeInTheDocument()
+    unmount()
+    server.resetHandlers()
+    renderEditor('/agents/missing')
+    expect(await screen.findByRole('alert')).toHaveTextContent('no agent named')
+    expect(screen.queryByText('Not available on this supervisor')).not.toBeInTheDocument()
+  })
+
+  it('makes the textarea read-only when the source is redacted', async () => {
+    renderEditor('/agents/secretive')
+    expect(await screen.findByRole('textbox', { name: 'AGENT.md' })).toHaveAttribute('readonly')
+  })
+
+  it('blocks saving a new agent that contains a [REDACTED] marker', async () => {
+    renderEditor('/agents/new')
+    await userEvent.type(screen.getByRole('textbox', { name: /Name/ }), 'my-agent')
+    const box = screen.getByRole('textbox', { name: 'AGENT.md' })
+    await userEvent.click(box)
+    await userEvent.paste('key: [REDACTED]')
+    expect(screen.getByRole('button', { name: 'Create agent' })).toBeDisabled()
+    expect(screen.getByText(/Remove the/)).toBeInTheDocument()
+  })
+
+  it('tells the user when the file changed on disk under a dirty draft, and can reload', async () => {
+    const { queryClient } = renderEditor('/agents/reviewer')
+    const box = await screen.findByRole('textbox', { name: 'AGENT.md' })
+    await userEvent.type(box, ' mine')
+    const changed = { ...fx.agents[0], source: fx.agents[0].source + 'edited elsewhere\n' }
+    server.use(http.get('/api/v1/agents/reviewer', () => HttpResponse.json(changed)))
+    await queryClient.invalidateQueries({ queryKey: ['agent', 'reviewer'] })
+    expect(await screen.findByText('Changed on disk')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /Reload from disk/ }))
+    expect(screen.queryByText('Changed on disk')).not.toBeInTheDocument()
+    expect((screen.getByRole('textbox', { name: 'AGENT.md' }) as HTMLTextAreaElement).value).toContain('edited elsewhere')
+  })
+
+  it('silently follows the file when the draft is untouched', async () => {
+    const { queryClient } = renderEditor('/agents/reviewer')
+    await screen.findByRole('textbox', { name: 'AGENT.md' })
+    server.use(http.get('/api/v1/agents/reviewer', () => HttpResponse.json({ ...fx.agents[0], source: 'new text' })))
+    await queryClient.invalidateQueries({ queryKey: ['agent', 'reviewer'] })
+    await waitFor(() => expect((screen.getByRole('textbox', { name: 'AGENT.md' }) as HTMLTextAreaElement).value).toBe('new text'))
+    expect(screen.queryByText('Changed on disk')).not.toBeInTheDocument()
   })
 })

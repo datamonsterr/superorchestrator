@@ -6,7 +6,10 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { PageHeader } from '@/components/layout/PageHeader'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
+import { NotAvailable } from '@/components/common/NotAvailable'
 import { TableSkeleton } from '@/components/common/TableSkeleton'
+import { ScrollTable } from '@/components/common/ScrollTable'
+import { isNotAvailable } from '@/lib/errors'
 import { useAgents } from '@/api/queries'
 
 const SOURCE_LABEL: Record<string, string> = { user: 'User', superorchestrator: 'Config', claude: 'Claude (read-only)' }
@@ -28,7 +31,11 @@ export function AgentsPage() {
         }
       />
       {query.isError && !query.data ? (
-        <ErrorAlert error={query.error} title="Could not load agents" onRetry={() => void query.refetch()} />
+        isNotAvailable(query.error) ? (
+          <NotAvailable what="Custom agents" />
+        ) : (
+          <ErrorAlert error={query.error} title="Could not load agents" onRetry={() => void query.refetch()} />
+        )
       ) : query.isPending ? (
         <TableSkeleton rows={3} columns={5} />
       ) : agents.length === 0 ? (
@@ -43,7 +50,7 @@ export function AgentsPage() {
           }
         />
       ) : (
-        <div className="overflow-x-auto rounded-md border">
+        <ScrollTable>
           <Table>
             <TableHeader>
               <TableRow>
@@ -74,7 +81,7 @@ export function AgentsPage() {
               ))}
             </TableBody>
           </Table>
-        </div>
+        </ScrollTable>
       )}
     </>
   )
