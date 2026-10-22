@@ -85,15 +85,6 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
-/// Messages meant as input to the run itself. The others (a child's progress, question or
-/// result) are for the run to read with `read_messages`.
-pub(crate) fn is_input(m: &so_store::MessageRow) -> bool {
-    matches!(
-        m.kind,
-        so_core::MessageKind::Message | so_core::MessageKind::Answer
-    )
-}
-
 /// At most `max` characters, ending in an ellipsis when cut.
 pub(crate) fn excerpt(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -263,20 +254,7 @@ impl RunManager {
     /// Messages sent to the run while it was queued, ready to append to its prompt. They
     /// are marked read.
     async fn start_messages(&self, row: &RunRow) -> String {
-        let (sid, id) = (row.session_id.clone(), row.id.clone());
-        let msgs = self
-            .db(move |s| {
-                let msgs: Vec<_> = s
-                    .unread_messages(&sid, Some(&id), 100)?
-                    .into_iter()
-                    .filter(is_input)
-                    .collect();
-                let ids: Vec<String> = msgs.iter().map(|m| m.id.clone()).collect();
-                s.mark_messages_read(&ids, Utc::now())?;
-                Ok(msgs)
-            })
-            .await
-            .unwrap_or_default();
+        let msgs = self.claim_input(row).await;
         if msgs.is_empty() {
             return String::new();
         }
@@ -494,28 +472,43 @@ impl RunManager {
     /// over the same messages each get a different share and none is delivered twice.
     pub(crate) async fn claim_input(&self, row: &RunRow) -> Vec<so_store::MessageRow> {
         let (sid, id) = (row.session_id.clone(), row.id.clone());
-        // An answer to a blocked `ask_parent` goes to that call.
-        let asking = self.is_asking(&row.id);
-        self.db(move |s| {
-            let pending: Vec<_> = s
-                .unread_messages(&sid, Some(&id), 100)?
-                .into_iter()
-                .filter(is_input)
-                .filter(|m| !(m.kind == so_core::MessageKind::Answer && asking))
+        // Only the kinds meant as input are read (in SQL, so the limit cannot cut them
+        // off behind a child's progress messages), and all are claimed in one step.
+        let kinds = [so_core::MessageKind::Message, so_core::MessageKind::Answer];
+        let mut claimed = self
+            .db(move |s| {
+                let pending = s.unread_messages_of_kinds(&sid, Some(&id), &kinds, 100)?;
+                let ids: Vec<String> = pending.iter().map(|m| m.id.clone()).collect();
+                let won = s.claim_messages(&ids, Utc::now())?;
+                Ok(pending
+                    .into_iter()
+                    .filter(|m| won.contains(&m.id))
+                    .collect::<Vec<_>>())
+            })
+            .await
+            .unwrap_or_default();
+        // An answer to a blocked `ask_parent` belongs to that call. Checked after the
+        // claim, so an `ask_parent` that began in between still gets it back.
+        if self.is_asking(&row.id) {
+            let back: Vec<String> = claimed
+                .iter()
+                .filter(|m| m.kind == so_core::MessageKind::Answer)
+                .map(|m| m.id.clone())
                 .collect();
-            let ids: Vec<String> = pending.iter().map(|m| m.id.clone()).collect();
-            let won = s.claim_messages(&ids, Utc::now())?;
-            Ok(pending
-                .into_iter()
-                .filter(|m| won.contains(&m.id))
-                .collect())
-        })
-        .await
-        .unwrap_or_default()
+            if !back.is_empty() {
+                claimed.retain(|m| m.kind != so_core::MessageKind::Answer);
+                self.unclaim(back).await;
+            }
+        }
+        claimed
     }
 
     /// Sends claimed messages in order. At the first failure that message and the rest go
     /// back to unread, for the next flush.
+    ///
+    /// Two flushes running at once each hold a different share of the messages, so the
+    /// order across them is not guaranteed; within one flush it is. In practice flushes
+    /// are rare (a process start) and the messages are independent notes.
     pub(crate) async fn hand_over<F, Fut>(&self, batch: Vec<so_store::MessageRow>, mut send: F)
     where
         F: FnMut(String) -> Fut,

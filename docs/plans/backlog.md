@@ -19,3 +19,6 @@ Minor review findings deferred to M9 hardening. Each line names the file and the
 - `crates/so-supervisor/src/runs/events.rs`: the firehose subscription uses an unbounded mpsc; bound it and resync on overflow.
 - `crates/so-supervisor/src/runs/events.rs`: `RunManager::emit` is now `pub` for tests; gate it behind a test-support feature or a narrower method.
 - `crates/so-web/src/assets.rs`: static files have no ETag/conditional GET; add a hash ETag for non-hashed files.
+- `crates/so-supervisor/src/runs/comm.rs` `unclaim`: log a failed put-back instead of ignoring it, since it can leave a message marked read.
+- `crates/so-supervisor/tests/comm.rs`: the cancel-during-gate test never exercises `relabel_attempt`. Add a unit test, and give the reject-after-gate timing check a margin.
+- `crates/so-supervisor/src/runs/resume.rs`: the gate is held across `wait_wrapped_up` (up to 15 s) and the worktree recreate. Narrow the hold if contention shows.

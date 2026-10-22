@@ -20,9 +20,6 @@ use so_supervisor::{Supervisor, SupervisorClient, SupervisorOptions, default_han
 const TRANSCRIPT: &str = include_str!("../../so-harness/tests/fixtures/claude/transcript.jsonl");
 
 fn fake_harness() -> PathBuf {
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"));
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let st = Command::new(cargo)
         .args([
@@ -37,7 +34,7 @@ fn fake_harness() -> PathBuf {
         .status()
         .unwrap();
     assert!(st.success());
-    target.join("debug/fake-harness")
+    common::sibling_bin("fake-harness")
 }
 
 /// Script replaying the first recorded claude turn.
