@@ -33,6 +33,10 @@ const MAX_ELICIT_ROUNDS: usize = 20;
 
 /// How often a client should poll `tasks/get`.
 const TASK_POLL_MS: u64 = 2_000;
+/// How long a task may run, and how long rmcp keeps it after it ends.
+const TASK_TTL_MS: u64 = 24 * 60 * 60 * 1000;
+/// How often a running task checks that the client is still connected.
+const DISCONNECT_POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
 type Cancelled = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
@@ -124,7 +128,12 @@ impl McpBridge {
             }
             let mut answered = 0;
             for q in &questions {
-                let Some(text) = elicit(&cx.peer, q).await else {
+                // The person may take a while; a cancelled call or task must not wait for them.
+                let asked = tokio::select! {
+                    t = elicit(&cx.peer, q) => t,
+                    () = (cx.cancelled)() => return Err(ClientError::Disconnected),
+                };
+                let Some(text) = asked else {
                     continue;
                 };
                 let sent = self
@@ -354,6 +363,16 @@ fn into_result(value: Value) -> CallToolResult {
 }
 
 impl McpBridge {
+    /// Number of tasks that are still running.
+    pub fn running_tasks(&self) -> usize {
+        self.inner.tasks.running_task_count()
+    }
+
+    /// Stops every running task. Call it when the MCP connection ends.
+    pub fn shutdown(&self) {
+        self.inner.tasks.shutdown();
+    }
+
     /// Forwards one tool call, with the elicitation loop for `wait_agent`.
     async fn run_tool(
         &self,
@@ -378,10 +397,13 @@ impl McpBridge {
         peer: Peer<RoleServer>,
     ) -> CreateTaskResult {
         let bridge = self.clone();
+        let closed_peer = peer.clone();
+        // rmcp fails a running task, and aborts it, once its TTL passes, and keeps a finished
+        // task for another TTL so clients can poll the result. It has no cap on retained
+        // results, so the TTL bounds memory. 24 hours covers any wait or workflow in practice
+        // (`workflows.max_duration` defaults to 6 hours); a longer wait fails with a TTL error.
         let options = TaskOptions::new()
-            // A wait can last for hours. The bridge lives as long as one MCP connection,
-            // so keeping finished tasks until then is bounded.
-            .with_ttl_ms(None::<u64>)
+            .with_ttl_ms(TASK_TTL_MS)
             .with_poll_interval_ms(TASK_POLL_MS)
             .with_status_message(format!("{} started", spec.name));
         let task = self.inner.tasks.spawn(options, move |task_cx| {
@@ -396,12 +418,22 @@ impl McpBridge {
                         Box::pin(async move { t.cancelled().await })
                     }),
                 };
-                match bridge.run_tool(spec, args, &cx).await {
-                    Err(ClientError::Disconnected) if task_cx.is_cancel_requested() => {
-                        Err(TaskExit::Cancelled)
+                // A task outlives its request, so the request's cancellation does not stop it.
+                // Stop it when the client goes away.
+                let closed = async move {
+                    while !closed_peer.is_transport_closed() {
+                        tokio::time::sleep(DISCONNECT_POLL).await;
                     }
-                    Ok(v) => Ok(into_result(v)),
-                    Err(e) => Ok(tool_error(e.to_string())),
+                };
+                tokio::select! {
+                    r = bridge.run_tool(spec, args, &cx) => match r {
+                        Err(ClientError::Disconnected) if task_cx.is_cancel_requested() => {
+                            Err(TaskExit::Cancelled)
+                        }
+                        Ok(v) => Ok(into_result(v)),
+                        Err(e) => Ok(tool_error(e.to_string())),
+                    },
+                    () = closed => Err(TaskExit::Cancelled),
                 }
             })
         });

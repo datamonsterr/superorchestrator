@@ -2,6 +2,7 @@
 //! everything else keeps the plain call (see `bridge.rs`).
 #![allow(clippy::unwrap_used)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rmcp::model::{
@@ -15,7 +16,11 @@ use so_core::{Config, Paths};
 use so_supervisor::{Supervisor, SupervisorClient, SupervisorHandle, SupervisorOptions};
 use tempfile::TempDir;
 
+/// Times the supervisor was asked to cancel a run.
+static CANCEL_CALLS: AtomicUsize = AtomicUsize::new(0);
+
 struct Fixture {
+    bridge: so_mcp::McpBridge,
     _dir: TempDir,
     sup: SupervisorHandle,
     client: RunningService<RoleClient, ClientConfig>,
@@ -48,6 +53,10 @@ async fn fixture(tasks: bool) -> Fixture {
             st.router.register("wait_agent", |_c, p| async move {
                 Ok(json!({"finished": p["runs"], "updates": [], "timed_out": false}))
             });
+            st.router.register("cancel_agent", |_c, _p| async {
+                CANCEL_CALLS.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({"ok": true}))
+            });
             st.router.register("run_workflow", |_c, p| async move {
                 if p["script"] == "hang" {
                     tokio::time::sleep(Duration::from_secs(60)).await;
@@ -65,8 +74,9 @@ async fn fixture(tasks: bool) -> Fixture {
             .unwrap();
     let (st, ct) = tokio::io::duplex(65536);
     let bridge = so_mcp::McpBridge::new(sc, false);
+    let served = bridge.clone();
     tokio::spawn(async move {
-        let svc = bridge.serve(st).await.unwrap();
+        let svc = served.serve(st).await.unwrap();
         let _ = svc.waiting().await;
     });
     let caps = if tasks {
@@ -79,6 +89,7 @@ async fn fixture(tasks: bool) -> Fixture {
         .await
         .unwrap();
     Fixture {
+        bridge,
         _dir: dir,
         sup,
         client,
@@ -254,5 +265,63 @@ async fn an_unknown_task_id_is_an_error() {
             .await
             .is_err()
     );
+    f.sup.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_a_task_does_not_cancel_the_run() {
+    let f = fixture(true).await;
+    let t = task_of(call(&f, "run_workflow", json!({"script": "hang"})).await);
+    f.client
+        .peer()
+        .cancel_task(CancelTaskParams::new(t.task.task_id.clone()))
+        .await
+        .unwrap();
+    assert_eq!(
+        settle(&f, &t.task.task_id).await.status(),
+        TaskStatus::Cancelled
+    );
+    assert_eq!(CANCEL_CALLS.load(Ordering::SeqCst), 0);
+    f.sup.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_a_finished_task_keeps_its_result() {
+    let f = fixture(true).await;
+    let t = task_of(call(&f, "spawn_agent", json!({"prompt": "x", "wait": true})).await);
+    let id = t.task.task_id;
+    assert_eq!(settle(&f, &id).await.status(), TaskStatus::Completed);
+    f.client
+        .peer()
+        .cancel_task(CancelTaskParams::new(id.clone()))
+        .await
+        .unwrap();
+    let r = completed(settle(&f, &id).await);
+    assert_eq!(r.is_error, Some(false));
+    f.sup.shutdown().await;
+}
+
+#[tokio::test]
+async fn dropping_the_client_ends_a_running_task() {
+    let f = fixture(true).await;
+    let _t = task_of(call(&f, "run_workflow", json!({"script": "hang"})).await);
+    assert_eq!(f.bridge.running_tasks(), 1);
+    f.client.cancel().await.unwrap();
+    for _ in 0..100 {
+        if f.bridge.running_tasks() == 0 {
+            f.sup.shutdown().await;
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the task kept running after the client left");
+}
+
+#[tokio::test]
+async fn shutdown_stops_running_tasks() {
+    let f = fixture(true).await;
+    let _t = task_of(call(&f, "run_workflow", json!({"script": "hang"})).await);
+    f.bridge.shutdown();
+    assert_eq!(f.bridge.running_tasks(), 0);
     f.sup.shutdown().await;
 }

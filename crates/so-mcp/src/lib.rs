@@ -55,9 +55,12 @@ pub async fn serve_stdio(opts: McpOptions) -> anyhow::Result<()> {
     let subagent = hello.run_id.is_some() || opts.run_id.is_some();
     let bridge = McpBridge::new(client, subagent);
     let service = bridge
+        .clone()
         .serve(rmcp::transport::stdio())
         .await
         .context("starting the MCP server")?;
-    service.waiting().await.context("MCP server task failed")?;
+    let waited = service.waiting().await.context("MCP server task failed");
+    bridge.shutdown();
+    waited?;
     Ok(())
 }

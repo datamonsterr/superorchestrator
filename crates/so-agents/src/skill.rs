@@ -5,6 +5,7 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use so_core::{AccountFile, Choice, Config, Paths};
 
@@ -166,13 +167,20 @@ pub fn refresh(paths: &Paths, home: &Path) -> Refresh {
     if std::env::var_os(SKIP_ENV).is_some_and(|v| !v.is_empty()) {
         return out;
     }
-    let existing: Vec<(PathBuf, String)> = skill_files(home)
-        .into_iter()
-        .filter_map(|p| {
-            let text = std::fs::read_to_string(&p).ok()?;
-            text.contains(MARKER).then_some((p, text))
-        })
-        .collect();
+    let mut existing: Vec<(PathBuf, String)> = Vec::new();
+    for p in skill_files(home) {
+        if std::fs::symlink_metadata(&p).is_ok_and(|m| m.file_type().is_symlink()) {
+            out.errors
+                .push(format!("not updating {}: it is a symlink", p.display()));
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&p) else {
+            continue;
+        };
+        if text.lines().any(|l| l.trim_end() == MARKER) {
+            existing.push((p, text));
+        }
+    }
     if existing.is_empty() {
         return out;
     }
@@ -197,13 +205,26 @@ pub fn refresh(paths: &Paths, home: &Path) -> Refresh {
     out
 }
 
+/// A temp file name next to `path`, unique per call (process id plus a counter), so
+/// concurrent refreshes from the CLI, the supervisor and the web API never share one.
+fn temp_path(path: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    path.with_file_name(format!(".SKILL.md.tmp.{}.{n}", std::process::id()))
+}
+
 /// Writes through a temp file in the same directory, keeping the file's mode.
 fn write_replace(path: &Path, text: &str) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mode = std::fs::metadata(path)?.permissions().mode() & 0o7777;
-    let tmp = path.with_file_name(format!(".SKILL.md.tmp.{}", std::process::id()));
+    let tmp = temp_path(path);
     let result = (|| {
-        std::fs::write(&tmp, text)?;
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?
+            .write_all(text.as_bytes())?;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
         std::fs::rename(&tmp, path)
     })();
@@ -431,6 +452,38 @@ mod tests {
         let r = refresh(&f.paths, &f.home);
         assert_eq!(r, Refresh::default());
         assert_eq!(std::fs::read_to_string(p).unwrap(), "mine");
+    }
+
+    #[test]
+    fn the_marker_must_be_a_whole_line() {
+        let f = fixture();
+        let p = &skill_files(&f.home)[0];
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let mine = format!("notes that mention {MARKER} in a sentence\n");
+        std::fs::write(p, &mine).unwrap();
+        assert_eq!(refresh(&f.paths, &f.home), Refresh::default());
+        assert_eq!(std::fs::read_to_string(p).unwrap(), mine);
+    }
+
+    #[test]
+    fn a_symlinked_skill_is_skipped_with_a_warning() {
+        let f = fixture();
+        let real = f.home.join("elsewhere.md");
+        std::fs::write(&real, format!("old\n{MARKER}\n")).unwrap();
+        let p = &skill_files(&f.home)[0];
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&real, p).unwrap();
+        let r = refresh(&f.paths, &f.home);
+        assert!(r.updated.is_empty());
+        assert_eq!(r.errors.len(), 1, "{r:?}");
+        assert!(r.errors[0].contains("symlink"));
+        assert!(std::fs::read_to_string(&real).unwrap().starts_with("old"));
+    }
+
+    #[test]
+    fn temp_names_are_unique_per_call() {
+        let p = Path::new("/h/.claude/skills/superorchestrator/SKILL.md");
+        assert_ne!(temp_path(p), temp_path(p));
     }
 
     #[test]

@@ -22,6 +22,11 @@
 # credential homes you pass are linked, not copied, and the harnesses read and write them
 # as they always do. The script never runs `install`.
 #
+# The `claude -p` orchestrator also runs with your real HOME and login. It is started with
+# `--setting-sources project` from an empty directory, so it does not load your user
+# settings, and with them your hooks and enabled plugins. Check `claude --help` if a future
+# version renames that flag. Your user CLAUDE.md and auth are not settings, so they still apply.
+#
 # Usage: scripts/smoke.sh [options]
 #   --binary PATH         superorchestrator binary (default: the one on PATH)
 #   --codex-home DIR      codex credential home   (env SMOKE_CODEX_HOME)
@@ -34,6 +39,8 @@
 # Other environment: SMOKE_TIMEOUT (seconds per delegation, default 900),
 #   OPENROUTER_API_KEY (enables the route eval step).
 # Name at least one harness home. Every account must already be signed in.
+# No `set -e` on purpose: a failing step is recorded and the run goes on, so the summary
+# table lists every step. Setup that guards isolation uses `die` instead.
 set -uo pipefail
 
 usage() { sed -n '2,/^set -uo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; }
@@ -75,12 +82,37 @@ tmp=$(mktemp -d "${TMPDIR:-/tmp}/so-smoke.XXXXXX")
 sockdir=$(mktemp -d /tmp/so.XXXXXX)
 mkdir -p "$tmp/wrappers" "$tmp/work" "$tmp/logs"
 
-# Isolation. Nothing below may point at the real config dir, socket or wrappers.
+# Isolation first: cleanup runs `status` and must never reach a real supervisor.
+# Nothing below may point at the real config dir, socket or wrappers.
 export SUPERORCHESTRATOR_CONFIG_DIR=$tmp/config
 export SUPERORCHESTRATOR_SOCKET=$sockdir/s.sock
 export SUPERORCHESTRATOR_SKIP_SKILL_REFRESH=1
 unset XDG_RUNTIME_DIR SUPERORCHESTRATOR_RUN_ID
 case $SUPERORCHESTRATOR_CONFIG_DIR in "$tmp"/*) ;; *) die "isolation check failed" ;; esac
+
+so() { "$bin" "$@"; }
+
+cleanup() {
+  local pid i
+  pid=$(so --json status 2>/dev/null | sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' | head -n 1)
+  if [ -n "${pid:-}" ]; then
+    kill "$pid" 2>/dev/null
+    for i in $(seq 1 50); do
+      kill -0 "$pid" 2>/dev/null || break
+      sleep 0.2
+    done
+    # Still alive after 10 s: it would keep the temp dir busy, so stop it for good.
+    kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+  fi
+  if [ "$keep" = 1 ]; then
+    echo "smoke: kept $tmp (logs in $tmp/logs)"
+  else
+    rm -rf "$tmp"
+  fi
+  rm -rf "$sockdir"
+}
+trap cleanup EXIT
+
 
 names=()
 results=()
@@ -92,7 +124,6 @@ record() { # record NAME PASS|FAIL|SKIP NOTE
   echo "smoke: [$2] $1 ${3:+- $3}"
 }
 
-so() { "$bin" "$@"; }
 
 bounded() { # bounded SECONDS CMD...
   local s=$1; shift
@@ -101,24 +132,6 @@ bounded() { # bounded SECONDS CMD...
   else "$@"; fi
 }
 
-cleanup() {
-  local pid i
-  pid=$(so --json status 2>/dev/null | sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' | head -n 1)
-  if [ -n "${pid:-}" ]; then
-    kill "$pid" 2>/dev/null
-    for i in $(seq 1 50); do
-      kill -0 "$pid" 2>/dev/null || break
-      sleep 0.2
-    done
-  fi
-  if [ "$keep" = 1 ]; then
-    echo "smoke: kept $tmp (logs in $tmp/logs)"
-  else
-    rm -rf "$tmp"
-  fi
-  rm -rf "$sockdir"
-}
-trap cleanup EXIT
 
 # Ids of runs matching harness, account and state (empty string matches any), one per line.
 run_ids() { # run_ids HARNESS ACCOUNT STATE
@@ -138,13 +151,13 @@ new_run_id() { # new_run_id BEFORE_FILE HARNESS ACCOUNT STATE -> newest id not i
 echo "smoke: this spends real quota on the accounts you named"
 echo "smoke: config $SUPERORCHESTRATOR_CONFIG_DIR, wrappers $tmp/wrappers"
 
-if so init --yes >"$tmp/logs/init.log" 2>&1 &&
-  so config set accounts.wrapper_dir "$tmp/wrappers" >>"$tmp/logs/init.log" 2>&1; then
-  record init PASS
-else
-  record init FAIL "see $tmp/logs/init.log"
-  keep=1
-fi
+# Wrappers must land in the isolated dir. Without it they would go to the real ~/.local/bin.
+so init --yes >"$tmp/logs/init.log" 2>&1 || die "init failed; see $tmp/logs/init.log"
+so config set accounts.wrapper_dir "$tmp/wrappers" >>"$tmp/logs/init.log" 2>&1 ||
+  die "could not set accounts.wrapper_dir; see $tmp/logs/init.log"
+[ "$(so config get accounts.wrapper_dir 2>/dev/null)" = "$tmp/wrappers" ] ||
+  die "accounts.wrapper_dir is not the isolated directory; refusing to import accounts"
+record init PASS
 
 # MCP config for the orchestrator. The server runs with the isolated environment.
 python3 -I - "$tmp/mcp.json" "$bin" "$PATH" <<'PY'
@@ -189,10 +202,11 @@ if [ -n "$agy_home" ] && import_account agy smoke-agy "$agy_home"; then harnesse
 
 # Runs `claude -p` as the orchestrator with only the superorchestrator tools.
 orchestrate() { # orchestrate LOGNAME PROMPT
-  bounded "$timeout_s" claude -p "$2" \
+  (cd "$tmp/work" && bounded "$timeout_s" claude -p "$2" \
+    --setting-sources project \
     --mcp-config "$tmp/mcp.json" --strict-mcp-config \
     --allowedTools 'mcp__superorchestrator__*' \
-    --output-format json >"$tmp/logs/$1.json" 2>"$tmp/logs/$1.err"
+    --output-format json >"$tmp/logs/$1.json" 2>"$tmp/logs/$1.err")
 }
 
 delegate_prompt() { # delegate_prompt HARNESS ACCOUNT WAIT PROMPT

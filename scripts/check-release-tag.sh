@@ -1,6 +1,7 @@
 #!/bin/sh
 # Release gate: the tag must be `v` + the workspace version in Cargo.toml, and CHANGELOG.md must
-# have a section for that version. The plugin manifest must carry the same version. Usage: scripts/check-release-tag.sh TAG
+# have a section for that version. The plugin manifest must carry the same version.
+# Usage: scripts/check-release-tag.sh TAG
 set -eu
 
 [ $# -eq 1 ] || { echo "usage: $0 TAG" >&2; exit 2; }

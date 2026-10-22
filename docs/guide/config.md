@@ -143,7 +143,7 @@ See [routing](routing.md). Fields: `id`, `harness`, `model`, `effort`, `roles`, 
 | `SUPERORCHESTRATOR_SOCKET` | The supervisor socket path |
 | `SUPERORCHESTRATOR_RUN_ID` | Set for a subagent's MCP server, so it acts for that run |
 | `SUPERORCHESTRATOR_LOG` | Log filter, for example `debug` |
-| `SUPERORCHESTRATOR_SKIP_SKILL_REFRESH` | Any value turns off skill regeneration. Use it with a throwaway config dir against a real `HOME`. |
+| `SUPERORCHESTRATOR_SKIP_SKILL_REFRESH` | Any non-empty value turns off skill regeneration. Use it with a throwaway config dir against a real `HOME`. |
 | `SUPERORCHESTRATOR_DOCTOR_TIMEOUT_MS` | `doctor` timeout for each `--version` call (default 5000) |
 | `OPENROUTER_API_KEY` | The Jev key (name set by `router.jev.key_env`) |
 | `SO_DISCORD_WEBHOOK` | The Discord webhook URL (name set by `notifications.discord_webhook_env`) |
