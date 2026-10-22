@@ -119,8 +119,13 @@ pub fn infer_agy_pool(model: &str) -> &'static str {
     }
 }
 
+/// Whether a model id names itself free: a `-free` or `:free` suffix.
+fn named_free(model: &str) -> bool {
+    model.ends_with("-free") || model.ends_with(":free")
+}
+
 fn infer_cost(harness: Harness, model: &str) -> Cost {
-    if model.ends_with("-free") {
+    if named_free(model) {
         Cost::Free
     } else if harness == Harness::Opencode {
         Cost::Paid
@@ -205,6 +210,23 @@ impl Catalog {
     pub fn cost(&self, harness: Harness, model: &str) -> Cost {
         self.get(harness, model)
             .map_or_else(|| infer_cost(harness, model), |m| m.cost)
+    }
+
+    /// Whether a model costs nothing: a free catalog entry, or an id that ends in `-free` or
+    /// `:free`.
+    pub fn is_free(&self, harness: Harness, model: &str) -> bool {
+        self.cost(harness, model) == Cost::Free || named_free(model)
+    }
+
+    /// Ids of the free models of `harness`, in catalog order.
+    pub fn free_models(&self, harness: Harness) -> Vec<&str> {
+        self.harnesses
+            .get(&harness)
+            .into_iter()
+            .flat_map(|h| h.models.iter())
+            .filter(|m| self.is_free(harness, &m.id))
+            .map(|m| m.id.as_str())
+            .collect()
     }
 
     /// Usage pool a choice draws on: the catalog pool for agy models, `default` otherwise.
@@ -726,6 +748,20 @@ mod tests {
     use super::*;
 
     const FX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../so-harness/tests/fixtures");
+
+    #[test]
+    fn free_models_are_catalog_free_or_named_free() {
+        let c = Catalog::default_catalog();
+        assert!(c.is_free(Harness::Opencode, "opencode/deepseek-v4.1-flash-free"));
+        assert!(c.is_free(Harness::Opencode, "vendor/unlisted:free"));
+        assert!(c.is_free(Harness::Opencode, "vendor/unlisted-free"));
+        assert!(!c.is_free(Harness::Opencode, "opencode/claude-opus-5-5"));
+        assert!(!c.is_free(Harness::Claude, "claude-sonnet-5-5"));
+        let free = c.free_models(Harness::Opencode);
+        assert!(free.contains(&"opencode/beam-free"));
+        assert!(!free.contains(&"opencode/claude-opus-5-5"));
+        assert!(c.free_models(Harness::Codex).is_empty());
+    }
 
     #[test]
     fn default_catalog_parses_and_covers_fixtures() {

@@ -362,6 +362,9 @@ pub struct GetRunParams {
     /// Include `diff`: what the run changed in its worktree (default false).
     #[serde(default)]
     pub diff: bool,
+    /// MCP only: return the full record instead of the short view. The supervisor ignores it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub verbose: bool,
 }
 
 /// Params of `accept_run`.

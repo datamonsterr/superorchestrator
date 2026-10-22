@@ -14,18 +14,17 @@ use rmcp::service::{ElicitationMode, Peer, RequestContext};
 use rmcp::task_manager::{TaskContext, TaskExit, TaskManager, TaskOptions};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{Value, json};
-use so_core::proto::{METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, Notification};
+use so_core::proto::{
+    METHOD_GET_RUN, METHOD_LIST_HARNESSES, METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT,
+    METHOD_WAIT_AGENT, Notification,
+};
 use so_supervisor::{ClientError, SupervisorClient};
 use tokio::sync::{broadcast, mpsc};
 
+use crate::compact;
 use crate::tools::{ToolSpec, tool_specs};
 
-const INSTRUCTIONS: &str = "Superorchestrator delegates work to coding agents on other harnesses and accounts. \
-Use list_harnesses to see accounts and headroom and route to preview a routing decision; spawn_agent starts a run \
-(wait=true blocks for the result), wait_agent waits on runs, get_run inspects one, send_message and read_messages \
-exchange messages, cancel_agent stops a run and its subtree, accept_run and reject_run decide reviewed runs, \
-fork_agent branches a finished run, list_agents lists custom agents, and run_workflow and workflow_status run \
-scripted workflows. Subagents also get report_progress and ask_parent. Tool failures are returned as errors you can read.";
+const INSTRUCTIONS: &str = "Delegates work to coding agents on other harnesses and accounts. Start with list_harnesses. Run ids accept unique prefixes. Omitted keys in replies mean null, empty or false. Failures come back as readable errors.";
 
 const PROGRESS_QUEUE: usize = 64;
 /// Most times one `wait_agent` call asks the person before it returns what it has.
@@ -380,11 +379,41 @@ impl McpBridge {
         args: Value,
         cx: &CallCx,
     ) -> Result<Value, ClientError> {
-        if spec.name == METHOD_WAIT_AGENT {
-            self.forward_wait(spec, args, cx).await
+        let raw = if spec.name == METHOD_WAIT_AGENT {
+            self.forward_wait(spec, args.clone(), cx).await?
+        } else if spec.name == METHOD_LIST_HARNESSES {
+            // The short view is built by the supervisor: it has the catalog and the load.
+            self.forward(spec, json!({"brief": true}), cx).await?
         } else {
-            self.forward(spec, args, cx).await
+            self.forward(spec, args.clone(), cx).await?
+        };
+        Ok(if spec.name == METHOD_WAIT_AGENT {
+            self.wait_view(&raw).await
+        } else {
+            compact::project(spec.name, &args, raw)
+        })
+    }
+
+    /// `wait_agent`'s reply with each finished run as a short view (state, result), so the
+    /// caller can act without a `get_run`.
+    async fn wait_view(&self, raw: &Value) -> Value {
+        let mut finished = Vec::new();
+        for id in raw["finished"].as_array().into_iter().flatten() {
+            let Some(id) = id.as_str() else { continue };
+            let run = self
+                .inner
+                .client
+                .call::<_, Value>(METHOD_GET_RUN, &json!({"run": id}))
+                .await
+                .map_or(Value::Null, |v| compact::run_view(v, true));
+            // A run that cannot be read still reports as finished.
+            finished.push(if run.get("run_id").is_some() {
+                run
+            } else {
+                json!({"run_id": id})
+            });
         }
+        compact::wait_view(raw, finished)
     }
 
     /// Starts a long call as an MCP task (SEP-2663) and returns its handle. Progress goes to

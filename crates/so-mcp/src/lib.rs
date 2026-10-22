@@ -14,6 +14,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod bridge;
+pub mod compact;
 mod tools;
 
 use std::path::PathBuf;

@@ -28,19 +28,35 @@ struct Report {
 }
 
 impl Report {
-    /// Calls `method`, records the size of the raw reply, and returns it.
+    /// Calls `method`, records the size of the raw reply and of the MCP view, and returns the
+    /// raw reply. The MCP view is built the way the bridge builds it.
     async fn call(&mut self, label: &str, c: &SupervisorClient, method: &str, p: Value) -> Value {
         let raw: Value = c.call(method, &p).await.unwrap();
+        let mcp = match method {
+            METHOD_LIST_HARNESSES => c
+                .call::<_, Value>(method, &json!({"brief": true}))
+                .await
+                .unwrap(),
+            METHOD_WAIT_AGENT => {
+                let mut finished = Vec::new();
+                for id in raw["finished"].as_array().unwrap() {
+                    let run: Value = c.call(METHOD_GET_RUN, &json!({"run": id})).await.unwrap();
+                    finished.push(so_mcp::compact::run_view(run, true));
+                }
+                so_mcp::compact::wait_view(&raw, finished)
+            }
+            _ => so_mcp::compact::project(method, &p, raw.clone()),
+        };
         if std::env::var("SHOW").is_ok() {
             println!(
                 "== {label}\n{}",
-                serde_json::to_string_pretty(&raw).unwrap()
+                serde_json::to_string_pretty(&mcp).unwrap()
             );
         }
         self.rows.push(Row {
             name: label.into(),
             rpc: raw.to_string().len(),
-            mcp: raw.to_string().len(),
+            mcp: mcp.to_string().len(),
         });
         raw
     }
@@ -208,4 +224,13 @@ async fn canonical_flow_report() {
     }
     println!("{:<28}{:>8}{:>8}", "responses total", rpc, mcp);
     h.shutdown().await;
+}
+
+#[test]
+fn show_tools() {
+    if std::env::var("DUMP").is_ok() {
+        for spec in so_mcp::tool_specs(true) {
+            println!("{}", serde_json::to_string(&spec.tool()).unwrap());
+        }
+    }
 }

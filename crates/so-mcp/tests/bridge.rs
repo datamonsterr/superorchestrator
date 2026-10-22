@@ -63,10 +63,12 @@ async fn fixture(subagent: bool) -> Fixture {
                 ))
             });
             // Echo the params so a test can see what reached the supervisor.
-            for method in ["accept_run", "get_run"] {
-                st.router
-                    .register(method, |_c, p| async move { Ok(json!({"params": p})) });
-            }
+            st.router.register("accept_run", |_c, p| async move {
+                Ok(json!({"ok": true, "merged": p["merge"], "note": p["run"]}))
+            });
+            st.router.register("get_run", |_c, p| async move {
+                Ok(json!({"params": p, "run_id": p["run"], "state": "succeeded", "result": "ok"}))
+            });
             st.router.register("fork_agent", |_c, _p| async {
                 Err(RpcError::new(DEPTH_LIMIT, "depth limit reached"))
             });
@@ -157,7 +159,7 @@ async fn server_info_and_tool_counts() {
         info.instructions
             .as_deref()
             .unwrap()
-            .contains("spawn_agent")
+            .contains("list_harnesses")
     );
     let tools = f.client.list_all_tools().await.unwrap();
     assert_eq!(tools.len(), 14);
@@ -244,7 +246,12 @@ async fn wait_agent_streams_progress() {
         .unwrap();
     let resp = handle.await_response().await.unwrap();
     let v = serde_json::to_value(&resp).unwrap();
-    assert_eq!(v["structuredContent"]["finished"], json!(["abcdefgh1234"]));
+    // Each finished run comes back as a short view from `get_run`.
+    assert_eq!(
+        v["structuredContent"]["finished"],
+        json!([{"run_id": "abcdefgh1234", "state": "succeeded", "result": "ok"}])
+    );
+    assert!(v["structuredContent"].get("timed_out").is_none());
     let got = f.collector.progress.lock().unwrap().clone();
     assert!(got.len() >= 2, "got {got:?}");
     assert!(got[1].progress > got[0].progress);
@@ -398,16 +405,31 @@ async fn accept_merge_and_get_run_diff_reach_the_supervisor() {
     assert_eq!(r.is_error, Some(false));
     assert_eq!(
         r.structured_content,
-        Some(json!({"params": {"run": "r1", "merge": true}}))
+        Some(json!({"merged": true, "note": "r1"}))
     );
-    let r = call("get_run", json!({"run": "r1", "diff": true})).await;
+    // Verbose is the supervisor's full reply.
+    let r = call(
+        "get_run",
+        json!({"run": "r1", "diff": true, "verbose": true}),
+    )
+    .await;
+    assert_eq!(
+        r.structured_content.unwrap()["params"],
+        json!({"run": "r1", "diff": true, "verbose": true})
+    );
+    // The default is the short view.
+    let r = call("get_run", json!({"run": "r1"})).await;
     assert_eq!(
         r.structured_content,
-        Some(json!({"params": {"run": "r1", "diff": true}}))
+        Some(json!({"run_id": "r1", "state": "succeeded", "result": "ok"}))
     );
     // The schemas advertise the flags.
     let tools = f.client.list_all_tools().await.unwrap();
-    for (tool, flag) in [("accept_run", "merge"), ("get_run", "diff")] {
+    for (tool, flag) in [
+        ("accept_run", "merge"),
+        ("get_run", "diff"),
+        ("get_run", "verbose"),
+    ] {
         let t = tools.iter().find(|t| t.name == tool).unwrap();
         assert!(
             serde_json::to_string(&t.input_schema)
