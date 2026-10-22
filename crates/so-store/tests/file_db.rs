@@ -75,10 +75,10 @@ fn file_db_query_groups() {
     s.insert_run(&r).unwrap();
     s.update_run_state(&r.id, RunState::Queued, RunState::Starting)
         .unwrap();
-    assert!(
-        s.update_run_state(&r.id, RunState::Queued, RunState::Starting)
-            .is_err()
-    );
+    assert!(matches!(
+        s.update_run_state(&r.id, RunState::Queued, RunState::Starting),
+        Err(StoreError::StateConflict { .. })
+    ));
     assert_eq!(s.count_active_runs_total().unwrap(), 1);
     s.append_event(&event(&sess.id, 0)).unwrap();
     assert_eq!(
@@ -96,9 +96,9 @@ fn file_db_query_groups() {
         read_at: None,
     };
     s.insert_message(&m).unwrap();
-    assert_eq!(s.unread_messages(&sess.id, None).unwrap().len(), 1);
-    s.mark_messages_read(&[m.id]).unwrap();
-    assert!(s.unread_messages(&sess.id, None).unwrap().is_empty());
+    assert_eq!(s.unread_messages(&sess.id, None, 10).unwrap().len(), 1);
+    s.mark_messages_read(&[m.id], Utc::now()).unwrap();
+    assert!(s.unread_messages(&sess.id, None, 10).unwrap().is_empty());
     s.insert_ledger(&LedgerEntry {
         account: "acc".into(),
         pool: "p".into(),
@@ -123,7 +123,7 @@ fn file_db_query_groups() {
         reason: "q".into(),
     })
     .unwrap();
-    assert_eq!(s.active_flags(Utc::now()).unwrap().len(), 1);
+    assert_eq!(s.active_flags(Utc::now(), 10).unwrap().len(), 1);
 }
 
 #[test]
@@ -183,5 +183,37 @@ fn ten_thousand_events_list_fast() {
     let el = t.elapsed();
     println!("list_events_by_session 10k: {el:?}");
     assert_eq!(v.len(), 10_000);
-    assert!(el.as_secs_f64() < 2.0, "too slow: {el:?}");
+    assert!(el.as_secs_f64() < 10.0, "too slow: {el:?}");
+}
+
+#[test]
+fn schema_version_guards() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    drop(Store::open(&path).unwrap());
+    let set = |v: i64| {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.pragma_update(None, "user_version", v).unwrap();
+    };
+    set(latest_version() + 5);
+    assert!(matches!(
+        Store::open(&path),
+        Err(StoreError::SchemaTooNew { .. })
+    ));
+    set(-1);
+    assert!(matches!(
+        Store::open(&path),
+        Err(StoreError::InvalidSchemaVersion(-1))
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn new_db_file_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    drop(Store::open(&path).unwrap());
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
 }

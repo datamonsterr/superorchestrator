@@ -1,5 +1,6 @@
 //! Message queries.
 
+use chrono::{DateTime, Utc};
 use rusqlite::{Row, params};
 
 use crate::codec::*;
@@ -45,19 +46,20 @@ impl Store {
         &self,
         session_id: &str,
         to_run: Option<&str>,
+        limit: usize,
     ) -> Result<Vec<MessageRow>> {
         let conn = self.conn();
         let mut st = conn.prepare(&format!(
             "SELECT {COLS} FROM messages WHERE session_id = ?1 AND to_run IS ?2 \
-             AND read_at IS NULL ORDER BY created_at, id"
+             AND read_at IS NULL ORDER BY created_at, id LIMIT ?3"
         ))?;
-        let rows = st.query_map(params![session_id, to_run], map)?;
+        let rows = st.query_map(params![session_id, to_run, limit as i64], map)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Marks messages read now; returns how many were newly marked.
-    pub fn mark_messages_read(&self, ids: &[String]) -> Result<usize> {
-        let now = ts_to_sql(&chrono::Utc::now());
+    pub fn mark_messages_read(&self, ids: &[String], now: DateTime<Utc>) -> Result<usize> {
+        let now = ts_to_sql(&now);
         let mut conn = self.conn();
         let tx = conn.transaction()?;
         let mut n = 0;
@@ -100,17 +102,22 @@ mod tests {
         for m in [&a, &b, &c] {
             s.insert_message(m).unwrap();
         }
-        assert_eq!(s.unread_messages("s", None).unwrap(), vec![a.clone()]);
-        assert_eq!(s.unread_messages("s", Some("r1")).unwrap(), vec![b.clone()]);
+        assert_eq!(s.unread_messages("s", None, 10).unwrap(), vec![a.clone()]);
         assert_eq!(
-            s.mark_messages_read(std::slice::from_ref(&a.id)).unwrap(),
+            s.unread_messages("s", Some("r1"), 10).unwrap(),
+            vec![b.clone()]
+        );
+        assert_eq!(
+            s.mark_messages_read(std::slice::from_ref(&a.id), crate::codec::now())
+                .unwrap(),
             1
         );
         assert_eq!(
-            s.mark_messages_read(std::slice::from_ref(&a.id)).unwrap(),
+            s.mark_messages_read(std::slice::from_ref(&a.id), crate::codec::now())
+                .unwrap(),
             0
         );
-        assert!(s.unread_messages("s", None).unwrap().is_empty());
-        assert_eq!(s.unread_messages("s", Some("r1")).unwrap().len(), 1);
+        assert!(s.unread_messages("s", None, 10).unwrap().is_empty());
+        assert_eq!(s.unread_messages("s", Some("r1"), 10).unwrap().len(), 1);
     }
 }

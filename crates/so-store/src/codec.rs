@@ -3,8 +3,7 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::Row;
 use rusqlite::types::Type;
-use serde::Serialize;
-use serde::de::DeserializeOwned;
+use std::str::FromStr;
 
 /// RFC3339 UTC with fixed microsecond width, so text order equals time order.
 pub fn ts_to_sql(t: &DateTime<Utc>) -> String {
@@ -15,28 +14,29 @@ pub fn opt_ts_to_sql(t: &Option<DateTime<Utc>>) -> Option<String> {
     t.as_ref().map(ts_to_sql)
 }
 
-/// Encodes a unit-variant serde enum as its plain string.
-pub fn enum_to_sql<T: Serialize>(v: &T) -> String {
-    match serde_json::to_value(v) {
-        Ok(serde_json::Value::String(s)) => s,
-        // Unit enums always serialise to strings; fall back to JSON text otherwise.
-        Ok(other) => other.to_string(),
-        Err(_) => String::new(),
-    }
+/// Encodes an enum as its stable wire name (`Display`, i.e. `as_str`).
+pub fn enum_to_sql<T: std::fmt::Display>(v: &T) -> String {
+    v.to_string()
 }
 
 fn conv_err(idx: usize, e: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(idx, Type::Text, Box::new(e))
 }
 
-pub fn get_enum<T: DeserializeOwned>(row: &Row<'_>, idx: usize) -> rusqlite::Result<T> {
+pub fn get_enum<T: FromStr>(row: &Row<'_>, idx: usize) -> rusqlite::Result<T>
+where
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
     let s: String = row.get(idx)?;
-    serde_json::from_value(serde_json::Value::String(s)).map_err(|e| conv_err(idx, e))
+    s.parse().map_err(|e| conv_err(idx, e))
 }
 
-pub fn get_opt_enum<T: DeserializeOwned>(row: &Row<'_>, idx: usize) -> rusqlite::Result<Option<T>> {
+pub fn get_opt_enum<T: FromStr>(row: &Row<'_>, idx: usize) -> rusqlite::Result<Option<T>>
+where
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
     let s: Option<String> = row.get(idx)?;
-    s.map(|s| serde_json::from_value(serde_json::Value::String(s)).map_err(|e| conv_err(idx, e)))
+    s.map(|s| s.parse().map_err(|e| conv_err(idx, e)))
         .transpose()
 }
 

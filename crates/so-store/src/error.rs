@@ -6,7 +6,13 @@ use so_core::RunState;
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
     #[error("sqlite error: {0}")]
-    Sqlite(#[from] rusqlite::Error),
+    Sqlite(rusqlite::Error),
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("constraint violation: {0}")]
+    Constraint(String),
+    #[error("invalid schema version {0}")]
+    InvalidSchemaVersion(i64),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("{entity} `{id}` not found")]
@@ -22,10 +28,23 @@ pub enum StoreError {
     StateConflict {
         id: String,
         expected: RunState,
-        actual: String,
+        actual: RunState,
     },
     #[error("database schema version {found} is newer than supported {supported}")]
     SchemaTooNew { found: i64, supported: i64 },
+}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(e: rusqlite::Error) -> Self {
+        match &e {
+            rusqlite::Error::SqliteFailure(f, msg)
+                if f.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                StoreError::Constraint(msg.clone().unwrap_or_else(|| e.to_string()))
+            }
+            _ => StoreError::Sqlite(e),
+        }
+    }
 }
 
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;

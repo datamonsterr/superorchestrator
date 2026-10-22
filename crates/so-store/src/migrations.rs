@@ -23,6 +23,9 @@ CREATE TABLE runs (
 );
 CREATE INDEX idx_runs_session ON runs(session_id);
 CREATE INDEX idx_runs_state ON runs(state);
+CREATE INDEX idx_runs_parent ON runs(parent_run_id);
+CREATE INDEX idx_runs_account_state ON runs(account, state);
+CREATE INDEX idx_runs_state_created ON runs(state, created_at);
 
 CREATE TABLE attempts (
   id TEXT PRIMARY KEY,
@@ -57,7 +60,7 @@ CREATE TABLE ledger (
   ts TEXT NOT NULL, input_tokens INTEGER NOT NULL DEFAULT 0,
   output_tokens INTEGER NOT NULL DEFAULT 0, cost REAL NOT NULL DEFAULT 0
 );
-CREATE INDEX idx_ledger_account_ts ON ledger(account, ts);
+CREATE INDEX idx_ledger_account_pool_ts ON ledger(account, pool, ts);
 
 CREATE TABLE flags (
   account TEXT NOT NULL, pool TEXT NOT NULL, until TEXT NOT NULL, reason TEXT NOT NULL,
@@ -91,6 +94,9 @@ pub fn latest_version() -> i64 {
 pub fn migrate(conn: &mut Connection) -> Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let current: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if current < 0 {
+        return Err(StoreError::InvalidSchemaVersion(current));
+    }
     if current > latest_version() {
         return Err(StoreError::SchemaTooNew {
             found: current,

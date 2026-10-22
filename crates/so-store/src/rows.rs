@@ -51,20 +51,31 @@ pub struct RunRow {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
-/// Fields to set on a run; `None` leaves the column unchanged.
+/// Fields to set on a run. `None` leaves the column unchanged; for clearable columns
+/// `Some(None)` sets it to NULL.
+///
+/// Changing `harness`/`account` is meant for failover only; new runs get them at insert.
 #[derive(Debug, Clone, Default)]
 pub struct RunPatch {
     pub choice_id: Option<String>,
     pub harness: Option<Harness>,
-    pub account: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
-    pub worktree_path: Option<String>,
-    pub branch: Option<String>,
-    pub native_session_id: Option<String>,
+    pub account: Option<Option<String>>,
+    pub worktree_path: Option<Option<String>>,
+    pub branch: Option<Option<String>>,
+    pub native_session_id: Option<Option<String>>,
+    pub result_json: Option<Option<String>>,
+    pub error_kind: Option<Option<ErrorKind>>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub finished_at: Option<Option<DateTime<Utc>>>,
+}
+
+/// Fields written together with the final state change in `finish_run`.
+#[derive(Debug, Clone, Default)]
+pub struct FinishPatch {
     pub result_json: Option<String>,
     pub error_kind: Option<ErrorKind>,
-    pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
 }
 

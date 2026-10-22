@@ -1,6 +1,6 @@
 //! Workflow cache and workflow run queries.
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{Row, params};
 
 use crate::codec::*;
@@ -54,6 +54,14 @@ impl Store {
         Ok(())
     }
 
+    /// Deletes cache entries created before `ts`; returns how many were removed.
+    pub fn prune_workflow_cache_before(&self, ts: DateTime<Utc>) -> Result<usize> {
+        Ok(self.conn().execute(
+            "DELETE FROM workflow_cache WHERE created_at < ?1",
+            [ts_to_sql(&ts)],
+        )?)
+    }
+
     pub fn insert_workflow_run(&self, w: &WorkflowRunRow) -> Result<()> {
         self.conn().execute(
             &format!("INSERT INTO workflow_runs ({COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7)"),
@@ -70,9 +78,14 @@ impl Store {
         Ok(())
     }
 
-    /// Sets the state; `finished` stamps `finished_at` with now.
-    pub fn update_workflow_run_state(&self, id: &str, state: &str, finished: bool) -> Result<()> {
-        let fin = finished.then(|| ts_to_sql(&Utc::now()));
+    /// Sets the state; a `Some` `finished_at` stamps the finish time.
+    pub fn update_workflow_run_state(
+        &self,
+        id: &str,
+        state: &str,
+        finished_at: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        let fin = opt_ts_to_sql(&finished_at);
         let n = self.conn().execute(
             "UPDATE workflow_runs SET state = ?2, finished_at = COALESCE(?3, finished_at) \
              WHERE id = ?1",
@@ -95,12 +108,12 @@ impl Store {
     }
 
     /// Newest first.
-    pub fn list_workflow_runs(&self, limit: Option<usize>) -> Result<Vec<WorkflowRunRow>> {
+    pub fn list_workflow_runs(&self, limit: usize) -> Result<Vec<WorkflowRunRow>> {
         let conn = self.conn();
         let mut st = conn.prepare(&format!(
             "SELECT {COLS} FROM workflow_runs ORDER BY started_at DESC, id DESC LIMIT ?1"
         ))?;
-        let rows = st.query_map([limit.map_or(-1, |l| l as i64)], map)?;
+        let rows = st.query_map([limit as i64], map)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 }
@@ -124,6 +137,10 @@ mod tests {
         row.result_json = "2".into();
         s.put_workflow_cache(&row).unwrap();
         assert_eq!(s.get_workflow_cache("k").unwrap().unwrap(), row);
+        let later = row.created_at + chrono::Duration::seconds(1);
+        assert_eq!(s.prune_workflow_cache_before(row.created_at).unwrap(), 0);
+        assert_eq!(s.prune_workflow_cache_before(later).unwrap(), 1);
+        assert!(s.get_workflow_cache("k").unwrap().is_none());
     }
 
     #[test]
@@ -140,12 +157,15 @@ mod tests {
         };
         s.insert_workflow_run(&w).unwrap();
         assert_eq!(s.get_workflow_run(&w.id).unwrap().unwrap(), w);
-        s.update_workflow_run_state(&w.id, "succeeded", true)
+        s.update_workflow_run_state(&w.id, "succeeded", Some(crate::codec::now()))
             .unwrap();
         let got = s.get_workflow_run(&w.id).unwrap().unwrap();
         assert_eq!(got.state, "succeeded");
         assert!(got.finished_at.is_some());
-        assert_eq!(s.list_workflow_runs(Some(5)).unwrap().len(), 1);
-        assert!(s.update_workflow_run_state("nope", "x", false).is_err());
+        assert_eq!(s.list_workflow_runs(5).unwrap().len(), 1);
+        assert!(matches!(
+            s.update_workflow_run_state("nope", "x", None),
+            Err(StoreError::NotFound { .. })
+        ));
     }
 }

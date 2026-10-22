@@ -65,12 +65,12 @@ impl Store {
         Ok(rows.next().transpose()?)
     }
 
-    pub fn list_headroom(&self) -> Result<Vec<Headroom>> {
+    pub fn list_headroom(&self, limit: usize) -> Result<Vec<Headroom>> {
         let conn = self.conn();
         let mut st = conn.prepare(&format!(
-            "SELECT {H_COLS} FROM headroom ORDER BY account, pool"
+            "SELECT {H_COLS} FROM headroom ORDER BY account, pool LIMIT ?1"
         ))?;
-        let rows = st.query_map([], map_headroom)?;
+        let rows = st.query_map([limit as i64], map_headroom)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -144,13 +144,13 @@ impl Store {
     }
 
     /// Flags whose `until` is after `now`.
-    pub fn active_flags(&self, now: DateTime<Utc>) -> Result<Vec<FlagRow>> {
+    pub fn active_flags(&self, now: DateTime<Utc>, limit: usize) -> Result<Vec<FlagRow>> {
         let conn = self.conn();
         let mut st = conn.prepare(
             "SELECT account, pool, until, reason FROM flags WHERE until > ?1 \
-             ORDER BY account, pool",
+             ORDER BY account, pool LIMIT ?2",
         )?;
-        let rows = st.query_map([ts_to_sql(&now)], map_flag)?;
+        let rows = st.query_map(params![ts_to_sql(&now), limit as i64], map_flag)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 }
@@ -187,7 +187,7 @@ mod tests {
         let mut other = headroom(5.0);
         other.account = "b".into();
         s.upsert_headroom(&other).unwrap();
-        let all = s.list_headroom().unwrap();
+        let all = s.list_headroom(100).unwrap();
         assert_eq!(all, vec![h2, other]);
     }
 
@@ -241,10 +241,10 @@ mod tests {
         s.set_flag(&live).unwrap();
         s.set_flag(&expired).unwrap();
         assert_eq!(s.get_flag("a", "p").unwrap().unwrap(), live);
-        assert_eq!(s.active_flags(now).unwrap(), vec![live.clone()]);
+        assert_eq!(s.active_flags(now, 100).unwrap(), vec![live.clone()]);
         assert!(s.clear_flag("a", "p").unwrap());
         assert!(!s.clear_flag("a", "p").unwrap());
         assert!(s.get_flag("a", "p").unwrap().is_none());
-        assert!(s.active_flags(now).unwrap().is_empty());
+        assert!(s.active_flags(now, 100).unwrap().is_empty());
     }
 }

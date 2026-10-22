@@ -1,7 +1,8 @@
 //! Session queries.
 
-use chrono::Utc;
-use rusqlite::{Row, params};
+use chrono::{DateTime, Utc};
+use rusqlite::{Connection, Row, params};
+use so_core::SessionKind;
 
 use crate::codec::*;
 use crate::error::{Result, StoreError};
@@ -22,6 +23,14 @@ fn map(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
         ended_at: get_opt_ts(r, 7)?,
         status: r.get(8)?,
     })
+}
+
+pub(crate) fn count_interactive(conn: &Connection, account: &str) -> Result<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM sessions WHERE kind = ?1 AND account = ?2 AND ended_at IS NULL",
+        params![enum_to_sql(&SessionKind::Interactive), account],
+        |r| r.get(0),
+    )?)
 }
 
 impl Store {
@@ -50,12 +59,8 @@ impl Store {
         Ok(rows.next().transpose()?)
     }
 
-    /// Newest first. `limit` of `None` returns everything.
-    pub fn list_sessions(
-        &self,
-        filter: SessionFilter,
-        limit: Option<usize>,
-    ) -> Result<Vec<SessionRow>> {
+    /// Newest first.
+    pub fn list_sessions(&self, filter: SessionFilter, limit: usize) -> Result<Vec<SessionRow>> {
         let where_ = match filter {
             SessionFilter::Active => "WHERE ended_at IS NULL",
             SessionFilter::All => "",
@@ -64,16 +69,15 @@ impl Store {
         let mut st = conn.prepare(&format!(
             "SELECT {COLS} FROM sessions {where_} ORDER BY started_at DESC, id DESC LIMIT ?1"
         ))?;
-        let lim = limit.map_or(-1, |l| l as i64);
-        let rows = st.query_map([lim], map)?;
+        let rows = st.query_map([limit as i64], map)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Marks a session ended with a final status.
-    pub fn end_session(&self, id: &str, status: &str) -> Result<()> {
+    pub fn end_session(&self, id: &str, status: &str, now: DateTime<Utc>) -> Result<()> {
         let n = self.conn().execute(
             "UPDATE sessions SET ended_at = ?2, status = ?3 WHERE id = ?1",
-            params![id, ts_to_sql(&Utc::now()), status],
+            params![id, ts_to_sql(&now), status],
         )?;
         if n == 0 {
             return Err(StoreError::NotFound {
@@ -86,12 +90,7 @@ impl Store {
 
     /// Open interactive sessions on `account` (they count toward its cap, SPEC 5.1).
     pub fn count_active_interactive_sessions_by_account(&self, account: &str) -> Result<i64> {
-        Ok(self.conn().query_row(
-            "SELECT COUNT(*) FROM sessions WHERE kind = 'interactive' AND account = ?1 \
-             AND ended_at IS NULL",
-            [account],
-            |r| r.get(0),
-        )?)
+        count_interactive(&self.conn(), account)
     }
 
     pub fn find_active_session_by_pid(&self, pid: i64) -> Result<Option<SessionRow>> {
@@ -135,23 +134,20 @@ pub(crate) mod tests {
         assert!(s.get_session("nope").unwrap().is_none());
         assert_eq!(s.find_active_session_by_pid(42).unwrap().unwrap().id, a.id);
         assert_eq!(
-            s.list_sessions(SessionFilter::Active, None).unwrap().len(),
+            s.list_sessions(SessionFilter::Active, 100).unwrap().len(),
             2
         );
-        assert_eq!(
-            s.list_sessions(SessionFilter::All, Some(1)).unwrap().len(),
-            1
-        );
-        s.end_session(&a.id, "ended").unwrap();
+        assert_eq!(s.list_sessions(SessionFilter::All, 1).unwrap().len(), 1);
+        s.end_session(&a.id, "ended", crate::codec::now()).unwrap();
         let ended = s.get_session(&a.id).unwrap().unwrap();
         assert!(ended.ended_at.is_some());
         assert_eq!(ended.status, "ended");
         assert!(s.find_active_session_by_pid(42).unwrap().is_none());
         assert_eq!(
-            s.list_sessions(SessionFilter::Active, None).unwrap().len(),
+            s.list_sessions(SessionFilter::Active, 100).unwrap().len(),
             1
         );
-        assert_eq!(s.list_sessions(SessionFilter::All, None).unwrap().len(), 2);
+        assert_eq!(s.list_sessions(SessionFilter::All, 100).unwrap().len(), 2);
         let mut i = session(None);
         i.kind = SessionKind::Interactive;
         i.account = Some("acc".into());
@@ -165,14 +161,14 @@ pub(crate) mod tests {
             s.count_active_interactive_sessions_by_account("x").unwrap(),
             0
         );
-        s.end_session(&i.id, "ended").unwrap();
+        s.end_session(&i.id, "ended", crate::codec::now()).unwrap();
         assert_eq!(
             s.count_active_interactive_sessions_by_account("acc")
                 .unwrap(),
             0
         );
         assert!(matches!(
-            s.end_session("nope", "x"),
+            s.end_session("nope", "x", crate::codec::now()),
             Err(StoreError::NotFound { .. })
         ));
     }

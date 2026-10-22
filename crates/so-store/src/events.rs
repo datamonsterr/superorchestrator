@@ -42,21 +42,40 @@ impl Store {
         Ok(e.id.clone())
     }
 
-    /// Events of a session in time order; `after_ts` is exclusive.
+    /// Events of a session in `(ts, id)` order. `after` is an exclusive cursor, normally the
+    /// `(ts, id)` of the last event already seen.
     pub fn list_events_by_session(
         &self,
         session_id: &str,
-        after_ts: Option<DateTime<Utc>>,
+        after: Option<(DateTime<Utc>, &str)>,
         limit: usize,
     ) -> Result<Vec<Event>> {
-        let after = after_ts.as_ref().map(ts_to_sql);
         let conn = self.conn();
-        let mut st = conn.prepare_cached(&format!(
-            "SELECT {COLS} FROM events WHERE session_id = ?1 AND (?2 IS NULL OR ts > ?2) \
-             ORDER BY ts, id LIMIT ?3"
-        ))?;
-        let rows = st.query_map(params![session_id, after, limit as i64], map)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
+        let rows = match after {
+            None => {
+                let mut st = conn.prepare_cached(&format!(
+                    "SELECT {COLS} FROM events WHERE session_id = ?1 ORDER BY ts, id LIMIT ?2"
+                ))?;
+                st.query_map(params![session_id, limit as i64], map)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            }
+            Some((ts, id)) => {
+                let mut st = conn.prepare_cached(&format!(
+                    "SELECT {COLS} FROM events WHERE session_id = ?1 \
+                     AND (ts > ?2 OR (ts = ?2 AND id > ?3)) ORDER BY ts, id LIMIT ?4"
+                ))?;
+                st.query_map(params![session_id, ts_to_sql(&ts), id, limit as i64], map)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            }
+        };
+        Ok(rows)
+    }
+
+    /// Deletes events older than `ts`; returns how many were removed.
+    pub fn prune_events_before(&self, ts: DateTime<Utc>) -> Result<usize> {
+        Ok(self
+            .conn()
+            .execute("DELETE FROM events WHERE ts < ?1", [ts_to_sql(&ts)])?)
     }
 
     pub fn list_events_by_run(&self, run_id: &str, limit: usize) -> Result<Vec<Event>> {
@@ -98,10 +117,23 @@ mod tests {
         }
         let all = s.list_events_by_session("s1", None, 10).unwrap();
         assert_eq!(all, vec![e1.clone(), e2.clone()]);
-        let after = s.list_events_by_session("s1", Some(e1.ts), 10).unwrap();
-        assert_eq!(after, vec![e2]);
+        let after = s
+            .list_events_by_session("s1", Some((e1.ts, e1.id.as_str())), 10)
+            .unwrap();
+        assert_eq!(after, vec![e2.clone()]);
+        // same-timestamp events page by id
+        let mut e4 = ev("s1", None, e1.ts);
+        e4.id = format!("{}z", e1.id);
+        s.append_event(&e4).unwrap();
+        let after = s
+            .list_events_by_session("s1", Some((e1.ts, e1.id.as_str())), 10)
+            .unwrap();
+        assert_eq!(after, vec![e4, e2.clone()]);
         assert_eq!(s.list_events_by_session("s1", None, 1).unwrap().len(), 1);
         let by_run = s.list_events_by_run("r1", 10).unwrap();
-        assert_eq!(by_run, vec![e1, e3]);
+        assert_eq!(by_run, vec![e1, e3.clone()]);
+        assert_eq!(s.prune_events_before(e2.ts).unwrap(), 2);
+        assert_eq!(s.list_events_by_session("s1", None, 10).unwrap(), vec![e2]);
+        assert_eq!(s.list_events_by_session("s2", None, 10).unwrap(), vec![e3]);
     }
 }
