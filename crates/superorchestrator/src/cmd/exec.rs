@@ -39,8 +39,9 @@ pub fn run(ctx: &Ctx, account: &str, args: &[String]) -> Result<std::convert::In
 fn record_session(db: &Path, account: &str) {
     let result = (|| -> Result<()> {
         let store = Store::open(db)?;
+        let id = new_id();
         store.insert_session(&SessionRow {
-            id: new_id(),
+            id: id.clone(),
             kind: SessionKind::Interactive,
             client: "wrapper".into(),
             cwd: std::env::current_dir()
@@ -52,6 +53,11 @@ fn record_session(db: &Path, account: &str) {
             ended_at: None,
             status: "active".into(),
         })?;
+        // `exec` keeps the pid and the start time, so the supervisor can tell this process
+        // from an unrelated one that later reuses the pid.
+        if let Some(start) = so_core::procinfo::process_start(i64::from(std::process::id())) {
+            store.set_session_pid_start(&id, &start)?;
+        }
         Ok(())
     })();
     if let Err(e) = result

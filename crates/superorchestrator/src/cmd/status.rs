@@ -7,10 +7,7 @@ use so_core::proto::{METHOD_STATUS, StatusResult};
 use so_supervisor::SupervisorClient;
 
 use crate::ctx::Ctx;
-use crate::views::{
-    collect_views, end_dead_interactive_sessions, open_existing_store, views_json,
-    write_views_table,
-};
+use crate::views::{collect_views, open_existing_store, views_json, write_views_table};
 
 /// Asks a running supervisor for its status; `None` when none answers.
 pub fn supervisor_status() -> Option<StatusResult> {
@@ -37,7 +34,7 @@ pub fn supervisor_status() -> Option<StatusResult> {
 
 pub fn run(ctx: &Ctx) -> Result<()> {
     if let Some(store) = open_existing_store(&ctx.paths) {
-        end_dead_interactive_sessions(&store);
+        let _ = store.reap_dead_interactive_sessions();
     }
     let sup = supervisor_status();
     let views = collect_views(ctx)?;

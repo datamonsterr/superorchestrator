@@ -2730,7 +2730,6 @@ dependencies = [
  "predicates",
  "reqwest",
  "rmcp",
- "rustix",
  "serde",
  "serde_json",
  "so-accounts",

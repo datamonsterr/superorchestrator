@@ -25,7 +25,35 @@ fn map(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
     })
 }
 
+/// Ends open interactive sessions whose process is gone. `exec` replaces the wrapper
+/// process, so nothing else records the end. Runs inside every cap check.
+pub(crate) fn reap_dead_interactive(conn: &Connection) -> Result<usize> {
+    let open: Vec<(String, i64, Option<String>)> = {
+        let mut st = conn.prepare(
+            "SELECT id, pid, pid_start FROM sessions \
+             WHERE kind = ?1 AND ended_at IS NULL AND pid IS NOT NULL",
+        )?;
+        st.query_map([enum_to_sql(&SessionKind::Interactive)], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    let now = ts_to_sql(&chrono::Utc::now());
+    let mut ended = 0;
+    for (id, pid, start) in open {
+        if !so_core::procinfo::same_process_alive(pid, start.as_deref()) {
+            ended += conn.execute(
+                "UPDATE sessions SET ended_at = ?2, status = 'ended' \
+                 WHERE id = ?1 AND ended_at IS NULL",
+                params![id, now],
+            )?;
+        }
+    }
+    Ok(ended)
+}
+
 pub(crate) fn count_interactive(conn: &Connection, account: &str) -> Result<i64> {
+    reap_dead_interactive(conn)?;
     Ok(conn.query_row(
         "SELECT COUNT(*) FROM sessions WHERE kind = ?1 AND account = ?2 AND ended_at IS NULL",
         params![enum_to_sql(&SessionKind::Interactive), account],
@@ -111,6 +139,20 @@ impl Store {
         Ok(())
     }
 
+    /// Ends open interactive sessions whose process is gone; returns how many ended.
+    pub fn reap_dead_interactive_sessions(&self) -> Result<usize> {
+        reap_dead_interactive(&self.conn())
+    }
+
+    /// Records when the session's process started (see `so_core::procinfo::process_start`).
+    pub fn set_session_pid_start(&self, id: &str, start: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE sessions SET pid_start = ?2 WHERE id = ?1",
+            params![id, start],
+        )?;
+        Ok(())
+    }
+
     /// Open interactive sessions on `account` (they count toward its cap, SPEC 5.1).
     pub fn count_active_interactive_sessions_by_account(&self, account: &str) -> Result<i64> {
         count_interactive(&self.conn(), account)
@@ -144,6 +186,68 @@ pub(crate) mod tests {
             ended_at: None,
             status: "active".into(),
         }
+    }
+
+    fn interactive(pid: i64, account: &str) -> SessionRow {
+        let mut s = session(Some(pid));
+        s.kind = SessionKind::Interactive;
+        s.account = Some(account.into());
+        s
+    }
+
+    #[test]
+    fn cap_checks_reap_dead_interactive_sessions() {
+        let s = Store::open_in_memory().unwrap();
+        let me = i64::from(std::process::id());
+        let live = interactive(me, "a");
+        let dead = interactive(i64::from(i32::MAX), "a");
+        let unknown = {
+            let mut u = interactive(0, "a");
+            u.pid = None;
+            u
+        };
+        for x in [&live, &dead, &unknown] {
+            s.insert_session(x).unwrap();
+        }
+        // The count itself frees the dead session's slot; no other call needed.
+        assert_eq!(
+            s.count_active_interactive_sessions_by_account("a").unwrap(),
+            2
+        );
+        let ended = s.get_session(&dead.id).unwrap().unwrap();
+        assert!(ended.ended_at.is_some());
+        assert_eq!(ended.status, "ended");
+        assert!(s.get_session(&live.id).unwrap().unwrap().ended_at.is_none());
+        assert!(
+            s.get_session(&unknown.id)
+                .unwrap()
+                .unwrap()
+                .ended_at
+                .is_none()
+        );
+        assert_eq!(s.reap_dead_interactive_sessions().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_reused_pid_is_reaped_by_its_start_time() {
+        let s = Store::open_in_memory().unwrap();
+        let me = i64::from(std::process::id());
+        let reused = interactive(me, "a");
+        s.insert_session(&reused).unwrap();
+        s.set_session_pid_start(&reused.id, "not-my-start").unwrap();
+        let mine = interactive(me, "a");
+        s.insert_session(&mine).unwrap();
+        s.set_session_pid_start(&mine.id, &so_core::procinfo::process_start(me).unwrap())
+            .unwrap();
+        assert_eq!(s.reap_dead_interactive_sessions().unwrap(), 1);
+        assert!(
+            s.get_session(&reused.id)
+                .unwrap()
+                .unwrap()
+                .ended_at
+                .is_some()
+        );
+        assert!(s.get_session(&mine.id).unwrap().unwrap().ended_at.is_none());
     }
 
     #[test]
