@@ -6,7 +6,6 @@
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use so_core::{AccountFile, Choice, Config, Paths};
 
@@ -259,7 +258,9 @@ pub fn refresh(paths: &Paths, home: &Path) -> Refresh {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 sync(&mut out, &cli, &cli_new);
             }
-            Err(_) => {}
+            Err(e) => out
+                .errors
+                .push(format!("could not read {}: {e}", cli.display())),
         }
     }
     out
@@ -278,42 +279,9 @@ fn sync(out: &mut Refresh, path: &Path, text: &str) {
     }
 }
 
-/// A temp file name next to `path`, unique per call (process id plus a counter), so
-/// concurrent refreshes from the CLI, the supervisor and the web API never share one.
-fn temp_path(path: &Path) -> PathBuf {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    path.with_file_name(format!(".SKILL.md.tmp.{}.{n}", std::process::id()))
-}
-
-/// Writes through a temp file in the same directory, keeping the file's mode (0600 and the
-/// directory created when the file is new).
+/// Writes through [`so_core::fsutil::write_file_atomic`].
 fn write_replace(path: &Path, text: &str) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = match std::fs::metadata(path) {
-        Ok(m) => m.permissions().mode() & 0o7777,
-        Err(_) => {
-            if let Some(dir) = path.parent() {
-                std::fs::create_dir_all(dir)?;
-            }
-            0o600
-        }
-    };
-    let tmp = temp_path(path);
-    let result = (|| {
-        use std::io::Write;
-        std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp)?
-            .write_all(text.as_bytes())?;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(mode))?;
-        std::fs::rename(&tmp, path)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-    result
+    so_core::fsutil::write_file_atomic(path, text.as_bytes())
 }
 
 const BODY: &str = "\
@@ -630,6 +598,18 @@ mod tests {
     }
 
     #[test]
+    fn refresh_reports_an_unreadable_cli_skill() {
+        let f = fixture();
+        install_marked(&f);
+        // A directory where the file should be: reading it fails with something other than
+        // NotFound.
+        std::fs::create_dir_all(&cli_skill_files(&f.home)[0]).unwrap();
+        let r = refresh(&f.paths, &f.home);
+        assert_eq!(r.errors.len(), 1, "{r:?}");
+        assert!(r.errors[0].contains("could not read"), "{r:?}");
+    }
+
+    #[test]
     fn refresh_does_not_create_the_cli_skill_without_an_mcp_skill() {
         let f = fixture();
         let _ = refresh(&f.paths, &f.home);
@@ -689,12 +669,6 @@ mod tests {
         assert_eq!(r.errors.len(), 1, "{r:?}");
         assert!(r.errors[0].contains("symlink"));
         assert!(std::fs::read_to_string(&real).unwrap().starts_with("old"));
-    }
-
-    #[test]
-    fn temp_names_are_unique_per_call() {
-        let p = Path::new("/h/.claude/skills/superorchestrator/SKILL.md");
-        assert_ne!(temp_path(p), temp_path(p));
     }
 
     #[test]
