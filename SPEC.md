@@ -526,12 +526,15 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
 `superorchestrator` with no arguments opens an interactive menu: init, accounts, agents, status, open web UI, install into Claude Code, migrate. Every menu item is also a subcommand:
 
 ```
+setup [--codex N] [--claude N] [--opencode N] [--agy N] [--no-login] [--no-install]
+                          first-run guide: init, detect harnesses, offer account import --scan,
+                          add N accounts per harness, sign in, install, doctor summary
 init                      create config dir, seed config, choices, catalog, starter agents
 install                   register the MCP server with Claude Code (claude mcp add) and other harnesses, install skills
 uninstall
 doctor                    binaries on PATH, versions, bwrap, sign-ins, socket, db, UI port
 status                    accounts and headroom, active runs, supervisor state
-account add|import|login|list|remove|enable|disable|flag
+account add [--name N] [--count K] [--login]|import|login|list|remove|enable|disable|flag
 agent create|list|show|edit|remove
 models refresh|list
 route "<task>" [--role R] [--explain]
@@ -547,6 +550,12 @@ exec <account> -- <args>
 mcp
 migrate [--apply]
 ```
+
+`setup` is the first command a new user runs and is idempotent. It runs `init` (silent when nothing is created), prints the installed harnesses, offers the `account import --scan` results, asks for each installed harness how many accounts to add (default 0, or 1 when the harness has no account or importable login; claude defaults to 0 because its accounts are kept for the orchestrator and its choices are disabled, 8.2), signs in to the new accounts on a terminal (otherwise prints the commands), runs `install`, and prints a short `doctor` summary. `--yes` takes the defaults, `--codex N --claude N --opencode N --agy N` set the counts, `--no-login` and `--no-install` skip those steps. Accounts that are still signed out, new or from an earlier run, are offered a sign-in on a terminal and get their `account login` command printed otherwise. A run that adds nothing prints which accounts are already set up. A harness whose count was asked for but whose binary is not on `PATH` fails the run (exit 1) after the other steps. Ctrl-C at a prompt exits 130. `setup --yes --json` prints one summary object (`ok`, `created`, `imported`, `installed`, `signed_in_needed`, `doctor`). Without a terminal and without `--yes` it prints the plan and exits 0. Counts that are not asked are never added twice, so a second run changes nothing. On macOS only one agy account is added (ADR-0005).
+
+`account add <harness>` without `--name` names the account `<harness>-<n>` with the lowest free `n` from 1; a name is skipped when the account exists or when it would shadow a command on `PATH`. `--count K` creates K accounts; `--name` with `--count` above 1 is a usage error (exit 2). `--login` signs in to each new account in turn on a terminal, and prints the commands otherwise. With `--json` the result lists every created account under `accounts`.
+
+`exec`, `daemon` and `mcp` are internal (wrappers, the supervisor and MCP clients start them): they work but are hidden from `--help`, which ends with "Get started: superorchestrator setup".
 
 ## 16. Configuration
 

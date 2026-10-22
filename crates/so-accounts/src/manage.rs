@@ -156,6 +156,55 @@ pub fn add(
     finish(paths, cfg, host, &account)
 }
 
+/// Highest `n` tried by [`add_numbered`] before giving up.
+const MAX_NUMBERED: u32 = 999;
+
+/// Result of [`add_numbered`]: the accounts created, and the error that stopped the
+/// batch early, if any. Accounts created before the error stay created.
+#[derive(Debug)]
+pub struct AddBatch {
+    pub created: Vec<AccountFile>,
+    pub error: Option<AccountsError>,
+}
+
+/// Creates `count` accounts named `<harness>-<n>`, each with the lowest `n` (from 1) whose
+/// name is free: a name is skipped when an account file exists or when the shadow check
+/// refuses it. Any other failure stops the batch.
+pub fn add_numbered(
+    paths: &Paths,
+    cfg: &Config,
+    host: &HostEnv,
+    harness: Harness,
+    count: u32,
+) -> AddBatch {
+    let mut created = Vec::new();
+    let mut n = 1u32;
+    while (created.len() as u32) < count {
+        if n > MAX_NUMBERED {
+            let error = Some(AccountsError::InvalidName(format!(
+                "no free {harness}-<n> name up to {MAX_NUMBERED}"
+            )));
+            return AddBatch { created, error };
+        }
+        let name = format!("{harness}-{n}");
+        n += 1;
+        match add(paths, cfg, host, harness, &name, None) {
+            Ok(a) => created.push(a),
+            Err(AccountsError::AlreadyExists(_) | AccountsError::ShadowsCommand { .. }) => {}
+            Err(e) => {
+                return AddBatch {
+                    created,
+                    error: Some(e),
+                };
+            }
+        }
+    }
+    AddBatch {
+        created,
+        error: None,
+    }
+}
+
 /// Links an existing credential home without copying anything.
 pub fn import(
     paths: &Paths,
@@ -402,6 +451,37 @@ mod tests {
         let mut f = fx();
         f.host = host(f.d.path(), Platform::MacOs);
         f
+    }
+
+    #[test]
+    fn add_numbered_takes_the_lowest_free_numbers() {
+        let f = fx();
+        add(&f.paths, &f.cfg, &f.host, Harness::Codex, "codex-2", None).unwrap();
+        let b = add_numbered(&f.paths, &f.cfg, &f.host, Harness::Codex, 2);
+        assert!(b.error.is_none());
+        let names: Vec<_> = b.created.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["codex-1", "codex-3"]);
+        assert!(f.paths.account_file("codex-3").is_file());
+    }
+
+    #[test]
+    fn add_numbered_skips_names_that_shadow_a_command() {
+        let f = fx();
+        crate::testutil::stub_bin(f.d.path(), "codex-1");
+        let b = add_numbered(&f.paths, &f.cfg, &f.host, Harness::Codex, 1);
+        assert!(b.error.is_none());
+        assert_eq!(b.created[0].name, "codex-2");
+    }
+
+    #[test]
+    fn add_numbered_reports_the_error_that_stops_the_batch() {
+        let f = mac_fx();
+        let b = add_numbered(&f.paths, &f.cfg, &f.host, Harness::Agy, 2);
+        assert_eq!(b.created.len(), 1);
+        assert!(matches!(
+            b.error,
+            Some(AccountsError::AgySecondAccount { .. })
+        ));
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub mod migrate;
 pub mod models;
 pub mod route;
 pub mod runs;
+pub mod setup;
 pub mod status;
 pub mod ui;
 pub mod workflow;

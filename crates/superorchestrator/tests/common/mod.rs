@@ -7,6 +7,22 @@ use std::process::Command as StdCommand;
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
+/// Removes the variables that could point a child at the real user's files or services.
+pub fn scrub(c: &mut Command) {
+    for k in [
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "XDG_RUNTIME_DIR",
+        "CLAUDE_CONFIG_DIR",
+        "SUPERORCHESTRATOR_RUN_ID",
+        "SUPERORCHESTRATOR_MODELS_DEV_URL",
+    ] {
+        c.env_remove(k);
+    }
+}
+
 pub struct Env {
     pub tmp: tempfile::TempDir,
     pub cfg: PathBuf,
@@ -40,9 +56,9 @@ impl Env {
             .env("SUPERORCHESTRATOR_SOCKET", self.tmp.path().join("so.sock"))
             .env_remove("SUPERORCHESTRATOR_CONFIG_DIR")
             .env_remove("SUPERORCHESTRATOR_LOG")
-            .env_remove("XDG_CONFIG_HOME")
             .env_remove("EDITOR")
             .env_remove("VISUAL");
+        scrub(&mut c);
         c
     }
 

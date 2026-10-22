@@ -352,3 +352,128 @@ fn login_other_harness_without_tty_prints_command() {
         .success()
         .stdout(predicate::str::contains("auth login"));
 }
+
+#[test]
+fn account_add_without_a_name_numbers_from_one_and_fills_gaps() {
+    let e = Env::new();
+    e.init();
+    e.script("codex", "exit 0");
+    e.cmd()
+        .args(["account", "add", "codex", "--name", "codex-2"])
+        .assert()
+        .success();
+    let out = e
+        .cmd()
+        .args(["--json", "account", "add", "codex", "--count", "2"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let names: Vec<_> = v["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names, ["codex-1", "codex-3"], "{v}");
+    assert_eq!(
+        v["accounts"][0]["login"]["cli"],
+        "superorchestrator account login codex-1"
+    );
+    for n in ["codex-1", "codex-2", "codex-3"] {
+        assert!(e.cfg.join(format!("accounts/{n}.toml")).is_file(), "{n}");
+    }
+    let out = e.cmd().args(["account", "add", "codex"]).assert().success();
+    assert!(
+        stdout(&out).contains("added account codex-4"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn account_add_numbering_skips_a_name_that_shadows_a_command() {
+    let e = Env::new();
+    e.init();
+    e.script("codex", "exit 0");
+    e.script("claude-1", "exit 0");
+    let out = e
+        .cmd()
+        .args(["account", "add", "claude"])
+        .assert()
+        .success();
+    assert!(
+        stdout(&out).contains("added account claude-2"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn account_add_name_with_count_is_a_usage_error() {
+    let e = Env::new();
+    e.init();
+    e.cmd()
+        .args(["account", "add", "codex", "--name", "x-acc", "--count", "2"])
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("--count"));
+    assert!(!e.cfg.join("accounts/x-acc.toml").exists());
+    // --count 0 is rejected by the parser.
+    e.cmd()
+        .args(["account", "add", "codex", "--count", "0"])
+        .assert()
+        .code(2);
+}
+
+#[test]
+fn account_add_with_login_but_no_tty_prints_the_commands() {
+    let e = Env::new();
+    e.init();
+    e.script("codex", "exit 0");
+    let out = e
+        .cmd()
+        .args(["account", "add", "codex", "--count", "2", "--login"])
+        .assert()
+        .success();
+    let s = stdout(&out);
+    assert!(s.contains("account login codex-1"), "{s}");
+    assert!(s.contains("account login codex-2"), "{s}");
+}
+
+#[test]
+fn account_add_partial_failure_keeps_hints_and_exits_non_zero() {
+    let e = Env::new();
+    e.init();
+    e.script("codex", "exit 0");
+    // A file where the second credential home must go makes the second add fail.
+    std::fs::write(e.home.join(".codex-2"), "").unwrap();
+    let out = e
+        .cmd()
+        .args(["account", "add", "codex", "--count", "3"])
+        .assert()
+        .code(1);
+    let s = stdout(&out);
+    assert!(s.contains("added account codex-1"), "{s}");
+    assert!(s.contains("account login codex-1"), "{s}");
+    assert!(e.cfg.join("accounts/codex-1.toml").is_file());
+    assert!(!e.cfg.join("accounts/codex-3.toml").exists());
+
+    e.cmd()
+        .args(["--yes", "account", "remove", "codex-1"])
+        .assert()
+        .success();
+    // With --json: one object on stdout, ok false, the error inside, nothing else.
+    let out = e
+        .cmd()
+        .args(["--json", "account", "add", "codex", "--count", "3"])
+        .assert()
+        .code(1);
+    let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["accounts"].as_array().unwrap().len(), 1, "{v}");
+    assert!(v["error"].as_str().unwrap().contains(".codex-2"), "{v}");
+    assert!(
+        !String::from_utf8_lossy(&out.get_output().stderr).contains("error:"),
+        "no second error print"
+    );
+}

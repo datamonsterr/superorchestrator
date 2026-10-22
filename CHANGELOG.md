@@ -13,6 +13,15 @@ First release. Pending the `v0.1.0` tag.
 
 ### Added
 
+- `superorchestrator setup`: a guided, idempotent first-run command (init, detect harnesses,
+  import existing logins, add accounts, sign in, install, doctor summary). `--yes`, per-harness
+  counts (`--codex N --claude N --opencode N --agy N`), `--no-login`, `--no-install` and `--no-claude-md` drive it
+  without prompts; without a terminal it prints the plan.
+- `account add <harness>` takes `--count K` and `--login`; without `--name` it names accounts
+  `<harness>-<n>` with the lowest free `n`.
+- `--help` hides the internal `exec`, `daemon` and `mcp` commands, lists the rest in order of
+  use and ends with "Get started: superorchestrator setup". `init` points to `setup` first, and
+  `install.sh` ends with the same hint.
 - Two skills replace the single generated one: `use-superorchestrator-mcp` (delegation through
   the MCP tools, with the accounts, choices and agents lists) and `superorchestrator-cli` (a
   static guide to the command line). `install` writes both to `~/.claude/skills` and
