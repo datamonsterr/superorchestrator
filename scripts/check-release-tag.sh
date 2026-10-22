@@ -1,6 +1,6 @@
 #!/bin/sh
 # Release gate: the tag must be `v` + the workspace version in Cargo.toml, and CHANGELOG.md must
-# have a section for that version. Usage: scripts/check-release-tag.sh TAG
+# have a section for that version. The plugin manifest must carry the same version. Usage: scripts/check-release-tag.sh TAG
 set -eu
 
 [ $# -eq 1 ] || { echo "usage: $0 TAG" >&2; exit 2; }
@@ -17,6 +17,12 @@ fi
 
 if ! grep -Eq "^## \[$(printf '%s' "$version" | sed 's/[.]/\\./g')\]" "$root/CHANGELOG.md"; then
   echo "release-check: CHANGELOG.md has no '## [$version]' section" >&2
+  exit 1
+fi
+
+manifest="$root/plugin/.claude-plugin/plugin.json"
+if ! grep -Eq "\"version\"[[:space:]]*:[[:space:]]*\"$(printf '%s' "$version" | sed 's/[.]/\\./g')\"" "$manifest"; then
+  echo "release-check: plugin/.claude-plugin/plugin.json version is not $version" >&2
   exit 1
 fi
 echo "release-check: ok ($tag)"

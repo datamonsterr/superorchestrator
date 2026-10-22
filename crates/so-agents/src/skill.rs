@@ -13,6 +13,10 @@ use crate::{AgentDef, discover::discover_user};
 /// Directory name of the skill under `~/.claude/skills` and `~/.agents/skills`.
 pub const NAME: &str = "superorchestrator";
 
+const FRONT_MATTER: &str = "---\nname: superorchestrator\ndescription: Delegate coding work to other agents across \
+harnesses and accounts (claude, codex, opencode, agy) through the superorchestrator MCP \
+server. Use it to route, spawn, wait on, message and review subagent runs.\n---\n";
+
 /// Longest agent description kept in the skill, in characters.
 const DESCRIPTION_MAX: usize = 160;
 
@@ -23,11 +27,7 @@ pub const MARKER: &str = "<!-- superorchestrator:managed -->";
 /// Renders the skill's `SKILL.md`.
 pub fn render_skill(accounts: &[AccountFile], choices: &[Choice], agents: &[AgentDef]) -> String {
     let mut out = String::new();
-    out.push_str(
-        "---\nname: superorchestrator\ndescription: Delegate coding work to other agents across \
-         harnesses and accounts (claude, codex, opencode, agy) through the superorchestrator MCP \
-         server. Use it to route, spawn, wait on, message and review subagent runs.\n---\n",
-    );
+    out.push_str(FRONT_MATTER);
     let _ = writeln!(out, "{MARKER}\n");
     out.push_str("# superorchestrator\n\n");
     out.push_str(
@@ -92,6 +92,25 @@ pub fn render_skill(accounts: &[AccountFile], choices: &[Choice], agents: &[Agen
         out.push('\n');
     }
 
+    out.push_str(BODY);
+    out
+}
+
+/// The `SKILL.md` shipped in the Claude Code plugin (`plugin/`). It cannot list accounts,
+/// choices or agents, because nothing regenerates it, so it points to `list_harnesses`
+/// and `list_agents`. It carries no [`MARKER`]: `refresh` never touches it.
+pub fn render_plugin_skill() -> String {
+    let mut out = String::from(FRONT_MATTER);
+    out.push_str("\n# superorchestrator\n\n");
+    out.push_str(
+        "Use the `superorchestrator` MCP tools to hand work to subagents that run on other \
+         harnesses and accounts. This skill comes with the superorchestrator plugin.\n\n\
+         ## Accounts, choices and agents\n\n\
+         Call `list_harnesses` for the accounts and choices on this machine, and `list_agents` \
+         for custom agents. Pass `agent: \"<name>\"` to `spawn_agent` to use one. \
+         `superorchestrator account add` and `superorchestrator init` set accounts and choices \
+         up.\n\n",
+    );
     out.push_str(BODY);
     out
 }
@@ -313,6 +332,14 @@ mod tests {
         assert!(line.ends_with("..."));
         assert!(line.chars().count() < DESCRIPTION_MAX + 30);
         assert_eq!(HarnessPref::Auto.as_str(), "auto");
+    }
+
+    #[test]
+    fn plugin_skill_has_no_marker_and_points_to_the_tools() {
+        let s = render_plugin_skill();
+        assert!(s.starts_with("---\nname: superorchestrator\n"));
+        assert!(!s.contains(MARKER));
+        assert!(s.contains("`list_harnesses`") && s.contains("## route or spawn_agent"));
     }
 
     struct Fixture {
