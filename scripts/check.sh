@@ -13,10 +13,15 @@ case "${1:-}" in
   *) echo "usage: $0 [--rust-only|--web-only]" >&2; exit 2 ;;
 esac
 
+if [ "$run_web" = 1 ] && ! command -v pnpm >/dev/null 2>&1; then
+  echo "check: pnpm not found. Install Node 24 and pnpm (corepack enable), or use --rust-only." >&2
+  exit 1
+fi
+
 if [ "$run_rust" = 1 ]; then
   cargo fmt --all --check
-  cargo clippy --workspace --all-targets -- -D warnings
-  cargo test --workspace
+  cargo clippy --workspace --all-targets --locked -- -D warnings
+  cargo test --workspace --locked
 fi
 
 if [ "$run_web" = 1 ]; then

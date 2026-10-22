@@ -3,18 +3,39 @@
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
-staged=$(git diff --cached --name-only --diff-filter=ACMR)
 
-if grep -qE '\.rs$' <<<"$staged"; then
+ran=0
+rust=0
+web=0
+while IFS= read -r -d '' f; do
+  case "$f" in
+    *.rs | Cargo.toml | Cargo.lock | */Cargo.toml) rust=1 ;;
+  esac
+  case "$f" in
+    web/*.ts | web/*.tsx | web/*.js | web/*.jsx | web/*.mjs | web/*.cjs | web/*.json | web/*.css) web=1 ;;
+  esac
+done < <(git -c core.quotepath=off diff --cached --name-only -z --diff-filter=ACMR)
+
+if [ "$rust" = 1 ]; then
+  ran=1
   if ! cargo fmt --all --check; then
     echo "pre-commit: rustfmt failed. Run 'cargo fmt --all' and re-stage." >&2
     exit 1
   fi
 fi
 
-if grep -qE '^web/.*\.(ts|tsx|js)$' <<<"$staged"; then
-  if ! pnpm -C web lint; then
-    echo "pre-commit: web lint failed. Fix the issues above and re-stage." >&2
-    exit 1
+if [ "$web" = 1 ]; then
+  if ! command -v pnpm >/dev/null 2>&1 || [ ! -d web/node_modules ]; then
+    echo "pre-commit: WARNING: pnpm or web/node_modules missing, skipping web lint (run 'pnpm -C web install')" >&2
+  else
+    ran=1
+    if ! pnpm -C web lint; then
+      echo "pre-commit: web lint failed. Fix the issues above and re-stage." >&2
+      exit 1
+    fi
   fi
+fi
+
+if [ "$ran" = 0 ]; then
+  echo "pre-commit: nothing to check"
 fi

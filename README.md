@@ -22,4 +22,6 @@ scripts/setup-hooks.sh   # once: enables the pre-commit and pre-push hooks
 scripts/check.sh         # full gate; --rust-only or --web-only to narrow
 ```
 
+The full check needs pnpm and Node 24 (see `web/.nvmrc`); use `scripts/check.sh --rust-only` without them.
+
 Set `SKIP_PREPUSH=1` to bypass the pre-push gate (CI still runs it).
