@@ -100,6 +100,8 @@ export interface RunViewPublic {
   name?: string
   depth: number
   parent_run?: string
+  /** Session the run belongs to (present on every server response; generated.ts has it as required). */
+  session_id?: string
   error_kind?: ErrorKind
   cwd?: string
   created_at?: string

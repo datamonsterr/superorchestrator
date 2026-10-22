@@ -5,12 +5,12 @@ import { StateBadge } from '@/components/common/StateBadge'
 import { Duration } from '@/components/common/Duration'
 import type { RunViewPublic } from '@/api/types'
 
-export function LiveRuns({ runs, sessionOf }: { runs: RunViewPublic[]; sessionOf: (run: RunViewPublic) => string | undefined }) {
+export function LiveRuns({ runs }: { runs: RunViewPublic[] }) {
   if (runs.length === 0) return <EmptyState icon={Activity} title="No active runs" />
   return (
     <ul className="flex max-h-72 flex-col divide-y overflow-y-auto rounded-md border" aria-label="Live runs">
       {runs.map((r) => {
-        const sid = sessionOf(r)
+        const sid = r.session_id
         const label = r.name ?? r.run_id
         return (
           <li key={r.run_id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-sm">
