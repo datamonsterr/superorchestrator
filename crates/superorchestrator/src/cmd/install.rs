@@ -540,6 +540,9 @@ fn entry_matches(entry: &serde_json::Value, exe: &str) -> bool {
         && entry.get("args") == Some(&serde_json::json!(["mcp"]))
 }
 
+/// What `claude_install` ran, shown beside its outcome.
+const ADD_NOTE: &str = "claude mcp add superorchestrator";
+
 fn claude_install(host: &HostEnv, exe: &str, force: bool, dry_run: bool) -> Result<Outcome> {
     let label = "claude";
     let entry = claude_entry(host)?;
@@ -556,12 +559,12 @@ fn claude_install(host: &HostEnv, exe: &str, force: bool, dry_run: bool) -> Resu
     };
     let action = if entry.is_some() { "update" } else { "create" };
     if dry_run {
-        return Ok(Outcome::new(label, action, None, None));
+        return Ok(Outcome::new(label, action, None, Some(ADD_NOTE.into())));
     }
     let add_args = ["mcp", "add", "--scope", "user", NAME, "--", exe, "mcp"];
     let add = run_claude(&bin, &add_args)?;
     if add.status.success() {
-        return Ok(Outcome::new(label, action, None, None));
+        return Ok(Outcome::new(label, action, None, Some(ADD_NOTE.into())));
     }
     let err = stderr_of(&add);
     if !err.contains("already exists") && entry.is_none() {
@@ -582,7 +585,7 @@ fn claude_install(host: &HostEnv, exe: &str, force: bool, dry_run: bool) -> Resu
             stderr_of(&add)
         ));
     }
-    Ok(Outcome::new(label, "update", None, None))
+    Ok(Outcome::new(label, "update", None, Some(ADD_NOTE.into())))
 }
 
 fn claude_uninstall(host: &HostEnv, dry_run: bool) -> Result<Outcome> {
@@ -604,10 +607,16 @@ fn claude_uninstall(host: &HostEnv, dry_run: bool) -> Result<Outcome> {
             return Err(anyhow!("`claude mcp remove` failed: {}", stderr_of(&rm)));
         }
     }
-    Ok(Outcome::new(label, "remove", None, None))
+    Ok(Outcome::new(
+        label,
+        "remove",
+        None,
+        Some(format!("claude mcp remove {NAME}")),
+    ))
 }
 
 fn print(ctx: &Ctx, outcomes: &[Outcome], dry_run: bool) -> Result<()> {
+    let host = ctx.host()?;
     ctx.emit(&outcomes, |w| {
         if dry_run {
             writeln!(w, "dry run: nothing was changed")?;
@@ -615,10 +624,13 @@ fn print(ctx: &Ctx, outcomes: &[Outcome], dry_run: bool) -> Result<()> {
         for o in outcomes {
             let mut line = format!("{:<9} {}", o.action, o.target);
             if let Some(p) = &o.path {
-                line.push_str(&format!("  {p}"));
+                line.push_str(&format!("  {}", host.tildify(Path::new(p))));
             }
             if let Some(n) = &o.note {
-                line.push_str(&format!("  ({n})"));
+                line.push_str(&format!(
+                    "  ({})",
+                    n.replace(&*host.home.to_string_lossy(), "~")
+                ));
             }
             writeln!(w, "{line}")?;
         }

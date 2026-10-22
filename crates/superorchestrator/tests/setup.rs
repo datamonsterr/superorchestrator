@@ -76,12 +76,14 @@ fn yes_adds_the_default_accounts_and_runs_install_in_the_isolated_home() {
     assert!(e.home.join(".local/bin/codex-1").is_file());
     assert!(s.contains("added account codex-1"), "{s}");
     assert!(s.contains("install:"), "{s}");
+    let md = std::fs::read_to_string(e.home.join(".claude/CLAUDE.md")).unwrap();
+    assert!(md.contains("superorchestrator:begin"), "{md}");
     assert!(s.contains("doctor:"), "{s}");
     assert!(s.contains("ask it to delegate"), "{s}");
     // install wrote into the isolated HOME.
     assert!(
         e.home
-            .join(".claude/skills/superorchestrator/SKILL.md")
+            .join(".claude/skills/use-superorchestrator-mcp/SKILL.md")
             .is_file(),
         "{s}"
     );
@@ -225,7 +227,7 @@ fn json_with_yes_prints_one_summary_object_and_nothing_else() {
     assert!(v["doctor"]["ok"].is_number());
     assert!(
         e.home
-            .join(".claude/skills/superorchestrator/SKILL.md")
+            .join(".claude/skills/use-superorchestrator-mcp/SKILL.md")
             .is_file()
     );
 }
@@ -271,7 +273,73 @@ fn setup_leaves_a_poisoned_parent_environment_alone() {
     }
     assert!(
         e.home
-            .join(".claude/skills/superorchestrator/SKILL.md")
+            .join(".claude/skills/use-superorchestrator-mcp/SKILL.md")
             .is_file()
     );
+}
+
+#[test]
+fn no_claude_md_skips_the_claude_md_block() {
+    let e = env_with_harnesses();
+    cmd(&e)
+        .args(["setup", "--yes", "--no-login", "--no-claude-md"])
+        .assert()
+        .success();
+    assert!(
+        e.home
+            .join(".claude/skills/use-superorchestrator-mcp/SKILL.md")
+            .is_file()
+    );
+    assert!(!e.home.join(".claude/CLAUDE.md").exists());
+}
+
+#[test]
+fn a_second_setup_does_not_import_homes_that_install_and_probes_created() {
+    let e = Env::new();
+    // Fakes that create what the real harnesses create on first use, without signing in.
+    e.script(
+        "claude",
+        "/bin/mkdir -p \"$HOME/.claude/backups\"; echo '{}' > \"$HOME/.claude.json\"; \
+         echo '{}' > \"$HOME/.claude/backups/.claude.json.backup.1\"; echo claude 1.0",
+    );
+    e.script(
+        "opencode",
+        "/bin/mkdir -p \"$HOME/.local/share/opencode/log\" \"$HOME/.local/share/opencode/repos\"; \
+         echo opencode 1.0",
+    );
+    let args = ["setup", "--yes", "--no-login"];
+    let o1 = cmd(&e).args(args).assert().success();
+    let first = accounts(&e);
+    assert!(e.home.join(".claude/backups").is_dir(), "{}", stdout(&o1));
+    assert!(e.home.join(".claude/backups").is_dir());
+    assert!(e.home.join(".local/share/opencode/log").is_dir());
+    let out = cmd(&e).args(args).assert().success();
+    assert_eq!(accounts(&e), first);
+    assert!(
+        !first.iter().any(|n| n.ends_with("-acc1")),
+        "unexpected imports: {first:?}"
+    );
+    let t = stdout(&out);
+    assert!(
+        !t.contains("claude-acc1") && !t.contains("opencode-acc1"),
+        "{t}"
+    );
+}
+
+#[test]
+fn install_output_uses_tilde_paths_and_names_the_claude_registration() {
+    let e = env_with_harnesses();
+    let out = cmd(&e).args(["install"]).assert().success();
+    let t = stdout(&out);
+    assert!(
+        t.contains("claude  (claude mcp add superorchestrator)"),
+        "{t}"
+    );
+    assert!(!t.contains(e.home.to_str().unwrap()), "{t}");
+    assert!(t.contains("~/"), "{t}");
+    let out = cmd(&e)
+        .args(["--json", "install", "--force"])
+        .assert()
+        .success();
+    assert!(stdout(&out).contains(e.home.to_str().unwrap()));
 }

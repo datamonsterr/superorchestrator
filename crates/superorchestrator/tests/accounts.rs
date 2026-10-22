@@ -128,6 +128,9 @@ fn import_scan_lists_without_yes_and_imports_with_yes() {
     for d in [".codex-acc1", ".codex-acc2", ".claude/projects"] {
         std::fs::create_dir_all(e.home.join(d)).unwrap();
     }
+    for f in [".codex-acc1/auth.json", ".codex-acc2/auth.json"] {
+        std::fs::write(e.home.join(f), "{}").unwrap();
+    }
     let out = e
         .cmd()
         .args(["account", "import", "--scan"])

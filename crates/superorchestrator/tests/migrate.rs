@@ -37,6 +37,7 @@ fn seed(e: &Env) {
         "#!/bin/sh\nexec codex-old\n",
     );
     // Old tooling to remove.
+    std::fs::create_dir_all(h.join(".claude/projects")).unwrap(); // history of real use
     write(&h.join(".claude/orchestrator/run.sh"), "old orchestrate");
     write(&h.join(".claude/orchestrator-state.json"), "{}");
     write(&h.join(".claude/orchestrator-state-2.json"), "{}");

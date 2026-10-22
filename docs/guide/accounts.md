@@ -68,7 +68,7 @@ superorchestrator setup --yes --codex 3 --opencode 2 --no-login
 
 Claude accounts are kept for the orchestrator. `setup` adds none by default (`--claude N` adds them), and the `claude-sonnet` and `claude-haiku` choices stay disabled, so routing never spends them. To let routing use them as a last resort, run `superorchestrator config edit` and set `enabled = true` on those choices. Without a terminal and without `--yes`, `setup` prints what it would do and changes nothing.
 
-`--scan` looks for `~/.codex`, `~/.codex-accN`, `~/.agent-farm/profiles/agy_worker_N/.gemini`, `~/.local/share/opencode` and `~/.claude`.
+`--scan` looks for `~/.codex`, `~/.codex-accN`, `~/.agent-farm/profiles/agy_worker_N/.gemini`, `~/.local/share/opencode` and `~/.claude`. `--scan` offers homes you have signed in to: a home counts only when it holds the harness's auth file (checked by existence, never read). Directories that `install` or a harness probe leave behind, such as `~/.claude/backups` or `~/.local/share/opencode/log`, are not offered. Claude may keep its login in the keychain, so `~/.claude` also counts when it has a `projects` directory.
 
 ## Logging in, per harness
 

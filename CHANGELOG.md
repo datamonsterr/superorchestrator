@@ -113,6 +113,10 @@ First release. Pending the `v0.1.0` tag.
 
 ### Fixed
 
+- `account import --scan` and `setup` only offer homes that show a sign-in (the harness's auth
+  file, or a `projects` directory for Claude's default home). A second `setup --yes` no longer
+  imports `claude-acc1` and `opencode-acc1` from directories that `install` and harness probes
+  created. `install` prints `~/` paths and names the `claude mcp add` it ran.
 - Routing against live Jev. `router.policy` defaults are now `min_confidence = 0.45` and
   `min_margin = 0.15`, and the seeded choice descriptions and routing instruction describe the
   tiers in general terms. Live results (one run each, 2026-10-23): tuning set 87% on
