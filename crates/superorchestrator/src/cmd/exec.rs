@@ -6,8 +6,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use so_accounts::{LaunchMode, build_launch, resolve_binary};
-use so_core::{AccountFile, Harness, SessionKind, new_id};
+use so_accounts::{LaunchMode, build_launch};
+use so_core::{AccountFile, SessionKind, new_id};
 use so_store::{SessionRow, Store};
 
 use crate::ctx::{Ctx, debug_enabled};
@@ -21,11 +21,8 @@ pub fn run(ctx: &Ctx, account: &str, args: &[String]) -> Result<std::convert::In
     }
     let acc = AccountFile::load(&file).with_context(|| format!("account `{account}`"))?;
     let host = ctx.host()?;
-    let bwrap = (acc.harness == Harness::Agy)
-        .then(|| resolve_binary("bwrap", host.path_var.as_deref()).ok())
-        .flatten();
-    // A missing bwrap for an agy account surfaces as a clear `BwrapMissing` error.
-    let launch = build_launch(&acc, &host, bwrap.as_deref(), LaunchMode::Interactive)
+    // agy accounts need no bwrap interactively (ADR-0005): `--gemini_dir` selects them.
+    let launch = build_launch(&acc, &host, None, LaunchMode::Interactive)
         .with_context(|| format!("cannot launch account `{account}`"))?;
 
     record_session(&ctx.paths.state_db(), account);
