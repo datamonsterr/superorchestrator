@@ -45,9 +45,9 @@ cp target/release/superorchestrator ~/.local/bin/
 1. Install the binary (above) and check it runs: `superorchestrator --version`.
 2. Create the config: `superorchestrator init`. It seeds `config.toml`, the model choices and three starter agents.
 3. Add accounts. Link logins you already have with `superorchestrator account import --scan`. Or make a new account and sign in: `superorchestrator account add codex --name codex-acc1`, then `superorchestrator account login codex-acc1`.
-4. Register with Claude Code: `superorchestrator install`. It runs `claude mcp add`, adds the MCP entry to the other harness configs, writes the skill, and backs up every file it changes. Use `--dry-run` to preview.
+4. Register with Claude Code: `superorchestrator install`. It runs `claude mcp add`, adds the MCP entry to the other harness configs, writes the `use-superorchestrator-mcp` and `superorchestrator-cli` skills, adds a short delegation block to `~/.claude/CLAUDE.md` (skip it with `--no-claude-md`), and backs up every file it changes. Use `--dry-run` to preview.
 5. Check the setup: `superorchestrator doctor`. See [troubleshooting](docs/guide/troubleshooting.md) for each check.
-6. Use it from Claude Code. Start a session and ask it to delegate a task. Claude Code now has the `superorchestrator` tools and skill.
+6. Use it from Claude Code. Start a session and ask it to delegate a task. Claude Code now has the `superorchestrator` tools and the two skills.
 
 Check progress any time with `superorchestrator status` and `superorchestrator runs list`.
 

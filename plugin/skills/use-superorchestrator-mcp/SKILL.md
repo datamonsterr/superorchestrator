@@ -1,9 +1,9 @@
 ---
-name: superorchestrator
-description: Delegate coding work to other agents across harnesses and accounts (claude, codex, opencode, agy) through the superorchestrator MCP server. Use it to route, spawn, wait on, message and review subagent runs.
+name: use-superorchestrator-mcp
+description: Delegate coding work to other agents, harnesses and accounts (claude, codex, opencode, agy) through the superorchestrator MCP tools. Use it when handing implementation, review or research work to another agent: route, spawn, wait on, message and review subagent runs.
 ---
 
-# superorchestrator
+# Delegate through superorchestrator
 
 Use the `superorchestrator` MCP tools to hand work to subagents that run on other harnesses and accounts. This skill comes with the superorchestrator plugin.
 
@@ -50,4 +50,4 @@ You run with a run id and must never wait for a person.
 
 ## Checking on things
 
-Run `superorchestrator status` for accounts, headroom and the supervisor, and `superorchestrator runs list` for runs.
+Run `superorchestrator status` for accounts, headroom and the supervisor, and `superorchestrator runs list` for runs. The `superorchestrator-cli` skill covers the rest of the command line.

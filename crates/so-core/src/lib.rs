@@ -5,7 +5,7 @@ pub mod account;
 pub mod config;
 pub mod duration;
 pub mod error;
-mod fsutil;
+pub mod fsutil;
 pub mod paths;
 pub mod procinfo;
 pub mod proto;
