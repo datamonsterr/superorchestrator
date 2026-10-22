@@ -120,8 +120,12 @@ impl ApiError {
         Self::rpc(UNAVAILABLE, message)
     }
 
+    /// A 500. Only the first line of the message is sent: parse errors quote the file
+    /// they came from on the following lines.
     pub fn internal(message: impl std::fmt::Display) -> Self {
-        Self::rpc(INTERNAL_ERROR, message.to_string())
+        let m = message.to_string();
+        tracing::warn!("internal error: {m}");
+        Self::rpc(INTERNAL_ERROR, m.lines().next().unwrap_or_default())
     }
 
     pub fn with_data(mut self, data: Value) -> Self {

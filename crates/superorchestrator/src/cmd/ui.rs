@@ -69,10 +69,12 @@ fn open_browser(url: &str) -> bool {
 }
 
 fn quote_systemd(arg: &str) -> String {
+    // `%` starts a specifier in unit files, so it is doubled.
+    let arg = arg.replace('%', "%%");
     if arg.contains([' ', '"', '\\']) {
         format!("\"{}\"", arg.replace('\\', "\\\\").replace('"', "\\\""))
     } else {
-        arg.to_string()
+        arg
     }
 }
 
@@ -183,6 +185,7 @@ mod tests {
             "ExecStart=\"/opt/my app/so\" --config-dir /home/u/.config/so daemon --foreground"
         ));
         assert!(unit.contains("WantedBy=default.target"));
+        assert_eq!(quote_systemd("/opt/100%/so"), "/opt/100%%/so");
         let plist = launchd_plist(&argv, Path::new("/tmp/a&b.log"));
         assert!(plist.contains("<string>--foreground</string>") && plist.contains("a&amp;b.log"));
     }

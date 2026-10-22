@@ -55,16 +55,21 @@ pub enum WebError {
     },
 }
 
-/// Builds the router for `state` with an already running [`stream::Hub`] pump.
-pub fn router(state: Arc<SupervisorState>, opts: WebOptions) -> Router {
+fn make_app(state: Arc<SupervisorState>, opts: WebOptions) -> AppState {
     let hub = stream::Hub::new();
     hub.spawn_pump(state.clone());
-    build(AppState {
+    AppState {
         sup: state,
         hub,
         opts: Arc::new(opts),
         limiter: Arc::default(),
-    })
+        stop: Arc::new(tokio::sync::watch::channel(false).0),
+    }
+}
+
+/// Builds the router for `state` with a running [`stream::Hub`] pump.
+pub fn router(state: Arc<SupervisorState>, opts: WebOptions) -> Router {
+    build(make_app(state, opts))
 }
 
 fn build(app: AppState) -> Router {
@@ -86,8 +91,18 @@ fn validate(opts: &WebOptions) -> Result<(), WebError> {
 /// A running web server.
 pub struct WebServer {
     addr: SocketAddr,
-    task: JoinHandle<()>,
-    stop: tokio::sync::watch::Sender<bool>,
+    task: Option<JoinHandle<()>>,
+    stop: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+impl Drop for WebServer {
+    /// Dropping the handle stops the server (open streams are cut).
+    fn drop(&mut self) {
+        let _ = self.stop.send(true);
+        if let Some(t) = self.task.take() {
+            t.abort();
+        }
+    }
 }
 
 impl WebServer {
@@ -107,9 +122,12 @@ impl WebServer {
         format!("http://{host}:{}", self.addr.port())
     }
 
-    pub async fn shutdown(self) {
+    /// Stops accepting, ends open streams and waits for the server task.
+    pub async fn shutdown(mut self) {
         let _ = self.stop.send(true);
-        let _ = self.task.await;
+        if let Some(t) = self.task.take() {
+            let _ = t.await;
+        }
     }
 }
 
@@ -134,8 +152,10 @@ pub async fn start(
         source,
     })?;
     opts.port = addr.port();
-    let app = router(state, opts);
-    let (stop, mut stopped) = tokio::sync::watch::channel(false);
+    let app = make_app(state, opts);
+    let stop = app.stop.clone();
+    let mut stopped = stop.subscribe();
+    let app = build(app);
     let task = tokio::spawn(async move {
         let served = axum::serve(
             listener,
@@ -150,7 +170,11 @@ pub async fn start(
         }
     });
     tracing::info!(%addr, "web UI listening");
-    Ok(WebServer { addr, task, stop })
+    Ok(WebServer {
+        addr,
+        task: Some(task),
+        stop,
+    })
 }
 
 /// Serves until `shutdown` resolves.
@@ -215,8 +239,13 @@ pub fn install(state: &Arc<SupervisorState>) {
     if state.config.ui.enabled {
         let (st, slot) = (state.clone(), slot);
         tokio::spawn(async move {
+            // Holding the slot across `start` keeps a concurrent `ui_start` from binding too.
+            let mut guard = slot.lock().await;
+            if guard.is_some() {
+                return;
+            }
             match start(st.clone(), WebOptions::from_config(&st.config.ui)).await {
-                Ok(server) => *slot.lock().await = Some(server),
+                Ok(server) => *guard = Some(server),
                 Err(e) => tracing::error!("web UI not started: {e}"),
             }
         });

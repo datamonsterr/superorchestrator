@@ -101,7 +101,10 @@ impl RunManager {
             &row.session_id,
             Some(&row.id),
             EventType::JoinCommandIssued,
-            json!({"argv": join.argv, "env": join.env.iter().map(|(k, _)| k).collect::<Vec<_>>()}),
+            json!({
+                "argv": mask_argv(&join.argv, &join.env),
+                "env": join.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            }),
         )
         .await;
         Ok(JoinResult {
@@ -204,6 +207,20 @@ async fn push_event(ctx: &ConnCtx, ids: &[String], seq: u64, ev: Event, out: &mu
     }
 }
 
+/// argv with the values of the command's environment and anything that looks like a key
+/// replaced by `***`. Used for the audit event and the web API.
+pub fn mask_argv(argv: &[String], env: &[(String, String)]) -> Vec<String> {
+    argv.iter()
+        .map(|a| {
+            let mut out = a.clone();
+            for (_, v) in env.iter().filter(|(_, v)| v.len() >= 4) {
+                out = out.replace(v.as_str(), "***");
+            }
+            so_core::redact::redact(&out).replace("[REDACTED]", "***")
+        })
+        .collect()
+}
+
 /// argv for display: arguments with spaces or shell characters are single-quoted.
 pub fn display_argv(argv: &[String]) -> String {
     argv.iter()
@@ -224,6 +241,23 @@ pub fn display_argv(argv: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn argv_masking_hides_env_values_and_key_patterns() {
+        let argv = [
+            "acc",
+            "--token",
+            "hunter2-secret",
+            "sk-abcdef1234567890",
+            "plain",
+        ]
+        .map(String::from);
+        let env = [("API".to_string(), "hunter2-secret".to_string())];
+        assert_eq!(
+            mask_argv(&argv, &env),
+            ["acc", "--token", "***", "***", "plain"].map(String::from)
+        );
+    }
 
     #[test]
     fn argv_display_quotes_only_when_needed() {

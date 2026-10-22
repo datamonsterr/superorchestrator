@@ -76,7 +76,7 @@ pub fn harnesses_view(state: &SupervisorState) -> Result<HarnessesView, String> 
     for path in files {
         match AccountFile::load(&path) {
             Ok(account) => accounts.push(account_view(state, host, &index, &flags, &account)),
-            Err(e) => accounts.push(broken_account(&path, &e.to_string())),
+            Err(e) => accounts.push(broken_account(&path, first_line(&e.to_string()))),
         }
     }
     accounts.sort_by(|a, b| a.name.cmp(&b.name));
@@ -150,6 +150,11 @@ fn account_view(
                 .collect(),
         ),
     }
+}
+
+/// First line only: parse errors quote the offending file contents on later lines.
+fn first_line(s: &str) -> &str {
+    s.lines().next().unwrap_or_default()
 }
 
 /// Entry for an account file that could not be loaded. The harness is unknown, so the

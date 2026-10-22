@@ -1,18 +1,18 @@
 //! Accounts: the same operations as `account add|import|remove|enable|flag|login`.
 
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use chrono::{Duration, Utc};
 use serde::Deserialize;
 use so_accounts::{HostEnv, manage};
 use so_core::proto::{AccountView, AckResult, SignInState};
-use so_core::{AccountFile, Config};
+use so_core::{AccountFile, Config, validate_account_name};
 use so_supervisor::harnesses_view;
 use so_supervisor::services::accounts::{FlagAction, apply_flag, flag_pools};
 
 use crate::error::{ApiError, ApiResult};
-use crate::extract::{ApiJson, OptionalJson};
+use crate::extract::{ApiJson, ApiQuery, OptionalJson};
 use crate::state::AppState;
 use crate::stream::publish_account;
 use crate::types::{
@@ -27,15 +27,24 @@ fn host(st: &AppState) -> ApiResult<HostEnv> {
         .ok_or_else(|| ApiError::unavailable("the host environment (HOME) is not available"))
 }
 
+/// Rejects names that are not valid account names (path separators, `..`, ...) before they
+/// reach a file path.
+fn valid_name(name: &str) -> ApiResult<()> {
+    validate_account_name(name).map_err(|e| ApiError::invalid(e.to_string()))
+}
+
 fn load(st: &AppState, name: &str) -> ApiResult<AccountFile> {
+    valid_name(name)?;
     let file = st.sup.paths.account_file(name);
     if !file.exists() {
         return Err(ApiError::not_found(format!("account `{name}` not found")));
     }
-    Ok(AccountFile::load(&file)?)
+    AccountFile::load(&file)
+        .map_err(|e| ApiError::internal(format!("account `{name}` could not be loaded: {e}")))
 }
 
 fn view_of(st: &AppState, name: &str) -> ApiResult<AccountView> {
+    valid_name(name)?;
     harnesses_view(&st.sup)
         .map_err(ApiError::unavailable)?
         .accounts
@@ -69,6 +78,7 @@ pub async fn add(
 ) -> ApiResult<(StatusCode, Json<AccountView>)> {
     let s = st.clone();
     s.blocking(move || {
+        valid_name(&b.name)?;
         let cfg = Config::load(&st.sup.paths)?;
         let host = host(&st)?;
         manage::add(
@@ -90,6 +100,7 @@ pub async fn import(
 ) -> ApiResult<(StatusCode, Json<AccountView>)> {
     let s = st.clone();
     s.blocking(move || {
+        valid_name(&b.name)?;
         let cfg = Config::load(&st.sup.paths)?;
         let host = host(&st)?;
         manage::import(&st.sup.paths, &cfg, &host, &b.name, b.harness, &b.home)?;
@@ -155,10 +166,11 @@ pub struct RemoveQuery {
 pub async fn remove(
     State(st): State<AppState>,
     Path(name): Path<String>,
-    Query(q): Query<RemoveQuery>,
+    ApiQuery(q): ApiQuery<RemoveQuery>,
 ) -> ApiResult<Json<AckResult>> {
     let s = st.clone();
     s.blocking(move || {
+        valid_name(&name)?;
         let cfg = Config::load(&st.sup.paths)?;
         manage::remove(&st.sup.paths, &cfg, &host(&st)?, &name, q.purge)?;
         Ok(Json(AckResult { ok: true }))

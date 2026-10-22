@@ -488,37 +488,52 @@ impl Config {
         Self::edit_file(paths, key_path, |cfg| cfg.unset(key_path).map(|_| None))
     }
 
-    fn edit_file(
-        paths: &Paths,
-        key_path: &str,
-        change: impl FnOnce(&mut Config) -> Result<Option<toml::Value>>,
-    ) -> Result<Config> {
+    /// Sets several keys in `config.toml` with one atomic write, keeping comments. All values
+    /// are validated first; on any error nothing is written.
+    pub fn set_many_in_file(paths: &Paths, entries: &[(&str, &str)]) -> Result<Config> {
         let path = paths.config_toml();
-        let text = match std::fs::read_to_string(&path) {
+        let (mut cfg, mut doc) = Self::read_for_edit(&path)?;
+        for (key, value) in entries {
+            let accepted = cfg.set_value(key, value)?;
+            Self::apply_to_doc(&mut doc, key, Some(accepted))?;
+        }
+        Self::write_doc(paths, &doc)?;
+        Ok(cfg)
+    }
+
+    fn read_for_edit(path: &std::path::Path) -> Result<(Config, toml_edit::DocumentMut)> {
+        let text = match std::fs::read_to_string(path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(CoreError::io(&path, e)),
+            Err(e) => return Err(CoreError::io(path, e)),
         };
-        let mut cfg: Config = toml::from_str(&text).map_err(|source| CoreError::TomlDe {
-            path: path.clone(),
+        let cfg: Config = toml::from_str(&text).map_err(|source| CoreError::TomlDe {
+            path: path.to_path_buf(),
             source,
         })?;
-        let mut doc: toml_edit::DocumentMut =
+        let doc: toml_edit::DocumentMut =
             text.parse()
                 .map_err(|e: toml_edit::TomlError| CoreError::TomlEdit {
-                    path: path.clone(),
+                    path: path.to_path_buf(),
                     message: e.to_string(),
                 })?;
-        let accepted = change(&mut cfg)?;
+        Ok((cfg, doc))
+    }
 
+    /// Puts (or, with `None`, removes) a dotted key in the document. `false` when there was
+    /// nothing to remove.
+    fn apply_to_doc(
+        doc: &mut toml_edit::DocumentMut,
+        key_path: &str,
+        accepted: Option<toml::Value>,
+    ) -> Result<bool> {
         let bad = || CoreError::InvalidConfigKey(key_path.to_string());
         let parts: Vec<&str> = key_path.split('.').collect();
         let (last, parents) = parts.split_last().ok_or_else(bad)?;
         let mut table = doc.as_table_mut();
         for part in parents {
             if accepted.is_none() && !table.contains_key(part) {
-                // Nothing to remove.
-                return Ok(cfg);
+                return Ok(false);
             }
             let item = table.entry(part).or_insert_with(|| {
                 let mut t = toml_edit::Table::new();
@@ -535,9 +550,27 @@ impl Config {
                 table.remove(last);
             }
         }
+        Ok(true)
+    }
+
+    /// Writes the document atomically; the file is created with mode 0600 (it may hold
+    /// `ui.token`).
+    fn write_doc(paths: &Paths, doc: &toml_edit::DocumentMut) -> Result<()> {
         std::fs::create_dir_all(&paths.config_dir)
             .map_err(|e| CoreError::io(&paths.config_dir, e))?;
-        crate::fsutil::write_atomic(&path, doc.to_string().as_bytes())?;
+        crate::fsutil::write_atomic(&paths.config_toml(), doc.to_string().as_bytes())
+    }
+
+    fn edit_file(
+        paths: &Paths,
+        key_path: &str,
+        change: impl FnOnce(&mut Config) -> Result<Option<toml::Value>>,
+    ) -> Result<Config> {
+        let (mut cfg, mut doc) = Self::read_for_edit(&paths.config_toml())?;
+        let accepted = change(&mut cfg)?;
+        if Self::apply_to_doc(&mut doc, key_path, accepted)? {
+            Self::write_doc(paths, &doc)?;
+        }
         Ok(cfg)
     }
 }
@@ -767,6 +800,42 @@ mod tests {
         c.unset("limits.global_cap").unwrap();
         assert_eq!(c.limits.global_cap, 16);
         assert!(c.unset("nope").is_err());
+    }
+
+    #[test]
+    fn set_many_in_file_writes_once_keeps_comments_and_is_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, paths) = tmp();
+        std::fs::create_dir_all(&paths.config_dir).unwrap();
+        std::fs::write(paths.config_toml(), "# keep me\n[limits]\nglobal_cap = 3\n").unwrap();
+        std::fs::set_permissions(paths.config_toml(), std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        let cfg = Config::set_many_in_file(
+            &paths,
+            &[("limits.global_cap", "5"), ("ui.token", "\"secret\"")],
+        )
+        .unwrap();
+        assert_eq!(
+            (cfg.limits.global_cap, cfg.ui.token.as_deref()),
+            (5, Some("secret"))
+        );
+        let text = std::fs::read_to_string(paths.config_toml()).unwrap();
+        assert!(text.contains("# keep me"));
+        let mode = std::fs::metadata(paths.config_toml())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        // One bad entry means nothing is written.
+        let before = std::fs::read_to_string(paths.config_toml()).unwrap();
+        assert!(
+            Config::set_many_in_file(&paths, &[("limits.global_cap", "9"), ("limits.nope", "1")])
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read_to_string(paths.config_toml()).unwrap(),
+            before
+        );
     }
 
     #[test]

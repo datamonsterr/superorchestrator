@@ -280,9 +280,9 @@ pub async fn config_patch(
             trial.set(&key, &text)?;
             sets.push((key, text));
         }
-        for (key, text) in sets {
-            Config::set_in_file(&s.sup.paths, &key, &text)?;
-        }
+        let entries: Vec<(&str, &str)> =
+            sets.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        Config::set_many_in_file(&s.sup.paths, &entries)?;
         Ok(Json(config_view(&s)?))
     })
     .await

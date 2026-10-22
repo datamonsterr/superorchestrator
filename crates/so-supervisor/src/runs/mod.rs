@@ -29,7 +29,7 @@ use tokio::sync::{Notify, watch};
 use tokio::task::JoinHandle;
 
 pub use events::{Delivered, Subscription};
-pub use view::{WaitOutcome, display_argv};
+pub use view::{WaitOutcome, display_argv, mask_argv};
 
 use crate::dispatch::internal;
 use crate::server::SupervisorState;

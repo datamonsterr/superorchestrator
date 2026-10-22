@@ -26,7 +26,7 @@ pub const MAX_FAILURES: usize = 5;
 pub const WINDOW: Duration = Duration::from_secs(60);
 const MAX_TRACKED_IPS: usize = 1024;
 
-pub const CSP: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'";
+pub const CSP: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 const TOKEN_PATHS: [&str; 2] = ["/api/v1/token", "/api/v1/auth"];
 
@@ -187,8 +187,15 @@ fn check_api_request(req: &Request, host: &str, opts: &WebOptions) -> ApiResult<
         // Browsers omit Origin on same-origin reads. Without one, only non-browser clients
         // on a loopback server may change state or open the stream.
         None => {
+            // `EventSource` on the same origin sends no Origin, but browsers do send
+            // `Sec-Fetch-Site: same-origin`; a client with neither is not a browser tab.
             let stream = req.uri().path() == "/api/v1/stream";
-            if (!is_safe_method(req.method()) || stream) && !opts.is_loopback() {
+            let same_origin_fetch = h
+                .get("sec-fetch-site")
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v == "same-origin");
+            let needs_origin = !is_safe_method(req.method()) || (stream && !same_origin_fetch);
+            if needs_origin && !opts.is_loopback() {
                 return Err(ApiError::forbidden("an Origin header is required"));
             }
         }
@@ -233,9 +240,17 @@ pub async fn guard(State(st): State<AppState>, mut req: Request, next: Next) -> 
             check_api_request(&req, &host, &st.opts)?;
             if let Some(token) = &st.opts.token
                 && !TOKEN_PATHS.contains(&path.as_str())
-                && !authorized(req.headers(), token)
             {
-                return Err(ApiError::unauthorized());
+                st.limiter.check(ip).map_err(ApiError::rate_limited)?;
+                if !authorized(req.headers(), token) {
+                    // Only guesses count: a request with no credentials at all is just a
+                    // client that has not logged in yet.
+                    let h = req.headers();
+                    if h.contains_key(header::AUTHORIZATION) || cookie(h, COOKIE_NAME).is_some() {
+                        st.limiter.record_failure(ip);
+                    }
+                    return Err(ApiError::unauthorized());
+                }
             }
         }
         Ok(())
@@ -249,6 +264,7 @@ pub async fn guard(State(st): State<AppState>, mut req: Request, next: Next) -> 
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    h.insert("x-frame-options", HeaderValue::from_static("DENY"));
     h.insert(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),

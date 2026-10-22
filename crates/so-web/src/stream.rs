@@ -10,7 +10,7 @@ use std::convert::Infallible;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::Sse;
 use axum::response::sse::{Event as SseEvent, KeepAlive};
@@ -23,6 +23,7 @@ use so_supervisor::SupervisorState;
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 
+use crate::extract::ApiQuery;
 use crate::state::AppState;
 use crate::types::{RunViewPublic, StreamHello};
 
@@ -87,6 +88,23 @@ impl Hub {
 
     pub fn seq(&self) -> u64 {
         self.inner.lock().unwrap_or_else(|e| e.into_inner()).seq
+    }
+
+    /// Reads a `Last-Event-ID` (`<boot_id>:<seq>`). `Some(None)`: no header. `None`: the
+    /// header is unusable (another boot, or not parsable), so the client must resync.
+    pub fn parse_last_id(&self, raw: Option<&str>) -> Option<Option<u64>> {
+        let Some(raw) = raw else {
+            return Some(None);
+        };
+        let (boot, seq) = raw.trim().rsplit_once(':')?;
+        (boot == self.boot_id).then_some(())?;
+        Some(Some(seq.parse().ok()?))
+    }
+
+    /// Like [`Hub::attach`] for a client whose id cannot be honoured.
+    fn attach_resync(&self) -> (Replay, broadcast::Receiver<Arc<Msg>>) {
+        let _g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        (Replay::Resync, self.tx.subscribe())
     }
 
     /// Replay for a reconnecting client plus a receiver for everything after it.
@@ -168,17 +186,17 @@ async fn derive(hub: &Hub, sup: &Arc<SupervisorState>, ev: &so_core::Event) {
     }
 }
 
-fn sse(m: &Msg) -> SseEvent {
+fn sse(hub: &Hub, m: &Msg) -> SseEvent {
     SseEvent::default()
         .event(m.name)
-        .id(m.id.to_string())
+        .id(format!("{}:{}", hub.boot_id, m.id))
         .data(&m.data)
 }
 
 fn resync_event(hub: &Hub) -> SseEvent {
     SseEvent::default()
         .event("resync")
-        .id(hub.seq().to_string())
+        .id(format!("{}:{}", hub.boot_id, hub.seq()))
         .data("{}")
 }
 
@@ -189,15 +207,19 @@ pub struct StreamQuery {
 
 pub async fn get_stream(
     State(st): State<AppState>,
-    Query(q): Query<StreamQuery>,
+    ApiQuery(q): ApiQuery<StreamQuery>,
     headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let hub = st.hub.clone();
-    let last_id = headers
+    let raw = headers
         .get("last-event-id")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.trim().parse::<u64>().ok());
-    let (replay, rx) = hub.attach(last_id);
+        .map(|v| v.to_str().unwrap_or(""));
+    let parsed = hub.parse_last_id(raw);
+    let last_id = parsed.flatten();
+    let (replay, rx) = match parsed {
+        Some(last) => hub.attach(last),
+        None => hub.attach_resync(),
+    };
     let hello = StreamHello {
         seq: hub.seq(),
         server_time: Utc::now(),
@@ -221,15 +243,16 @@ pub async fn get_stream(
         }
         Replay::Messages(ms) => {
             for m in ms.iter().filter(|m| wanted(m)) {
-                first.push(sse(m));
+                first.push(sse(&hub, m));
             }
             floor = ms.last().map_or(floor, |m| m.id.max(floor));
         }
     }
     let live_hub = hub.clone();
+    let sse_hub = hub.clone();
     let live = BroadcastStream::new(rx).filter_map(move |r| {
         let out = match r {
-            Ok(m) if m.id > floor && wanted(&m) => Some(sse(&m)),
+            Ok(m) if m.id > floor && wanted(&m) => Some(sse(&sse_hub, &m)),
             Ok(_) => None,
             Err(_) => Some(resync_event(&live_hub)),
         };
@@ -237,10 +260,17 @@ pub async fn get_stream(
     });
     // Held by the stream, so the supervisor does not idle-exit while a client is connected.
     let guard = st.sup.activity_guard();
-    let body = stream::iter(first).chain(live).map(move |e| {
-        let _keep = &guard;
-        Ok(e)
-    });
+    let mut stop = st.stop.subscribe();
+    let ended = async move {
+        let _ = stop.wait_for(|v| *v).await;
+    };
+    let body = stream::iter(first)
+        .chain(live)
+        .take_until(ended)
+        .map(move |e| {
+            let _keep = &guard;
+            Ok(e)
+        });
     Sse::new(body).keep_alive(KeepAlive::new().interval(KEEPALIVE).text("keepalive"))
 }
 
@@ -252,6 +282,17 @@ pub fn publish_account(hub: &Hub, view: &AccountView) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn last_event_id_carries_the_boot() {
+        let hub = Hub::new();
+        let id = |seq: u64| format!("{}:{seq}", hub.boot_id);
+        assert_eq!(hub.parse_last_id(Some(&id(7))), Some(Some(7)));
+        assert_eq!(hub.parse_last_id(None), Some(None));
+        for bad in ["7", "x:7", &format!("{}:z", hub.boot_id), ""] {
+            assert_eq!(hub.parse_last_id(Some(bad)), None, "{bad}");
+        }
+    }
 
     fn replay_len(hub: &Hub, last: Option<u64>) -> Option<usize> {
         match hub.attach(last).0 {

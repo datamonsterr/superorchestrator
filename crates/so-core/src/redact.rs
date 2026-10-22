@@ -2,7 +2,16 @@
 
 const MARK: &str = "[REDACTED]";
 /// Prefixes of API keys and tokens. Longer prefixes first.
-const PREFIXES: [&str; 4] = ["sk-or-", "sk-", "ghp_", "gho_"];
+const PREFIXES: [&str; 8] = [
+    "github_pat_",
+    "sk-or-",
+    "sk-",
+    "ghp_",
+    "gho_",
+    "ghs_",
+    "ghu_",
+    "ghr_",
+];
 const MIN_TOKEN: usize = 8;
 
 fn is_token_char(c: char) -> bool {
@@ -39,11 +48,47 @@ fn match_secret(rest: &str, at_boundary: bool) -> Option<(String, usize)> {
     if let Some(bearer) = match_bearer(rest) {
         return Some(bearer);
     }
+    if let Some(n) = match_structured(rest) {
+        return Some((MARK.to_string(), n));
+    }
     PREFIXES.iter().find_map(|p| {
         let after = rest.strip_prefix(p)?;
         let n = token_len(after);
         (n >= MIN_TOKEN).then(|| (MARK.to_string(), p.len() + n))
     })
+}
+
+/// Slack tokens (`xox[bpars]-...`), AWS access key ids (`AKIA` + 16 characters) and JWTs
+/// (`eyJ....eyJ....signature`). Returns the number of bytes matched.
+fn match_structured(rest: &str) -> Option<usize> {
+    let b = rest.as_bytes();
+    if rest.starts_with("xox") && b.len() > 4 && b"bpars".contains(&b[3]) && b[4] == b'-' {
+        let n = token_len(&rest[5..]);
+        return (n >= MIN_TOKEN).then_some(5 + n);
+    }
+    if let Some(after) = rest.strip_prefix("AKIA") {
+        let n = after
+            .bytes()
+            .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            .count();
+        return (n >= 16).then_some(4 + 16);
+    }
+    if rest.starts_with("eyJ") {
+        let seg = |s: &str| {
+            s.bytes()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+                .count()
+        };
+        let first = seg(rest);
+        let r = rest[first..].strip_prefix('.')?;
+        if !r.starts_with("eyJ") {
+            return None;
+        }
+        let second = seg(r);
+        let sig = rest[first + 1 + second..].strip_prefix('.')?;
+        return Some(first + 1 + second + 1 + seg(sig));
+    }
+    None
 }
 
 fn token_len(s: &str) -> usize {
@@ -128,6 +173,27 @@ mod tests {
             "no secrets here: ünïcode ✓",
         ] {
             assert_eq!(redact(s), s);
+        }
+    }
+
+    #[test]
+    fn redacts_more_secret_shapes() {
+        let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r";
+        let cases = [
+            (
+                "t github_pat_11ABCDEFG0abcdefghij_klmnop x",
+                "t [REDACTED] x",
+            ),
+            ("t xoxb-123456789012-abcdefABCDEF x", "t [REDACTED] x"),
+            ("id AKIAIOSFODNN7EXAMPLE end", "id [REDACTED] end"),
+            (&format!("jwt {jwt} end"), "jwt [REDACTED] end"),
+            ("ghs_ABCDEFGH12345678", "[REDACTED]"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(redact(input), want, "{input}");
+        }
+        for ok in ["AKIA short", "eyJnotajwt", "xoxz-123456789", "my xox-thing"] {
+            assert_eq!(redact(ok), ok);
         }
     }
 

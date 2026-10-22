@@ -1,6 +1,6 @@
 //! Runs: detail, events, transcript, route decision, cancel and join.
 
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -62,24 +62,10 @@ pub async fn join(State(st): State<AppState>, Path(id): Path<String>) -> ApiResu
     let row = st.sup.runs.resolve_run(&id).await?;
     let j = st.sup.runs.join_run(row).await?;
     Ok(Json(JoinView {
-        argv: mask_argv(&j.argv, &j.env),
+        argv: so_supervisor::runs::mask_argv(&j.argv, &j.env),
         cwd: j.cwd,
         env_names: j.env.iter().map(|(k, _)| k.clone()).collect(),
     }))
-}
-
-/// argv with the values of the command's environment and anything that looks like a key
-/// replaced by `***`.
-pub fn mask_argv(argv: &[String], env: &[(String, String)]) -> Vec<String> {
-    argv.iter()
-        .map(|a| {
-            let mut out = a.clone();
-            for (_, v) in env.iter().filter(|(_, v)| v.len() >= 4) {
-                out = out.replace(v.as_str(), "***");
-            }
-            redact(&out).replace("[REDACTED]", "***")
-        })
-        .collect()
 }
 
 /// A `RouteResult` from a `route_decision` event (the result itself, or under `result`).
@@ -117,6 +103,8 @@ pub struct TranscriptQuery {
 
 /// Longest text of one transcript line.
 const MAX_TEXT: usize = 64 * 1024;
+/// Longest transcript entry read; a longer one is skipped.
+const MAX_LINE: u64 = 1024 * 1024;
 /// Most bytes one transcript request reads.
 const MAX_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -214,18 +202,46 @@ pub async fn transcript(
         let mut rd = BufReader::new(file);
         rd.seek(SeekFrom::Start(start))
             .map_err(ApiError::internal)?;
-        let (mut pos, mut lines, mut buf) = (start, Vec::new(), String::new());
+        let (mut pos, mut lines, mut buf) = (start, Vec::new(), Vec::new());
         while lines.len() < limit && pos - start < MAX_BYTES {
             buf.clear();
-            let n = rd.read_line(&mut buf).map_err(ApiError::internal)?;
-            // A line without its newline is still being written.
-            if n == 0 || !buf.ends_with('\n') {
+            let n = (&mut rd)
+                .take(MAX_LINE + 1)
+                .read_until(b'\n', &mut buf)
+                .map_err(ApiError::internal)? as u64;
+            if n == 0 {
                 break;
             }
-            if let Ok(entry) = serde_json::from_str::<Value>(&buf) {
-                lines.extend(lines_of(&entry, pos));
+            if buf.ends_with(b"\n") {
+                if n <= MAX_LINE
+                    && let Ok(entry) = serde_json::from_slice::<Value>(&buf)
+                {
+                    lines.extend(lines_of(&entry, pos));
+                }
+                pos += n;
+            } else if n > MAX_LINE {
+                // Too long to hold: skip to the end of the entry.
+                let mut skipped = n;
+                loop {
+                    buf.clear();
+                    let m = (&mut rd)
+                        .take(MAX_LINE)
+                        .read_until(b'\n', &mut buf)
+                        .map_err(ApiError::internal)? as u64;
+                    skipped += m;
+                    if m == 0 || buf.ends_with(b"\n") {
+                        break;
+                    }
+                }
+                if buf.ends_with(b"\n") {
+                    pos += skipped;
+                } else {
+                    break;
+                }
+            } else {
+                // A line without its newline is still being written.
+                break;
             }
-            pos += n as u64;
         }
         Ok(Json(TranscriptPage {
             lines,
@@ -240,23 +256,6 @@ pub async fn transcript(
 mod tests {
     use super::*;
     use serde_json::json;
-
-    #[test]
-    fn join_argv_masks_env_values_and_key_patterns() {
-        let argv = [
-            "acc",
-            "--token",
-            "hunter2-secret",
-            "sk-abcdef1234567890",
-            "plain",
-        ]
-        .map(String::from);
-        let env = [("API".to_string(), "hunter2-secret".to_string())];
-        assert_eq!(
-            mask_argv(&argv, &env),
-            ["acc", "--token", "***", "***", "plain"].map(String::from)
-        );
-    }
 
     #[test]
     fn transcript_lines_are_normalised_and_redacted_and_raw_is_dropped() {

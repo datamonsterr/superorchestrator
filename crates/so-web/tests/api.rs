@@ -830,7 +830,8 @@ async fn token_flow_cookie_and_rate_limit() {
         .insert(header::COOKIE, "so_token=nope".parse().unwrap());
     assert_eq!(send(&f.app, bad).await.0, StatusCode::UNAUTHORIZED);
 
-    for _ in 0..5 {
+    // The bad cookie above already counted as one failure.
+    for _ in 0..4 {
         let (s, _, _) = send(
             &f.app,
             request("POST", "/api/v1/token", Some(json!({"token": "wrong"}))),
@@ -964,6 +965,12 @@ async fn sse_hello_event_delivery_replay_and_resync() {
     let first = read_until(&mut body, "\n\n").await;
     assert!(first.starts_with("event: hello"), "{first}");
     assert!(first.contains("boot_id") && first.contains("\"seq\":0"));
+    let boot = first
+        .split("\"boot_id\":\"")
+        .nth(1)
+        .and_then(|r| r.split('"').next())
+        .unwrap()
+        .to_string();
     assert!(state.busy(), "an open stream counts as activity");
 
     state
@@ -980,7 +987,7 @@ async fn sse_hello_event_delivery_replay_and_resync() {
         .split("\n\n")
         .find(|b| b.contains("event: event"))
         .unwrap();
-    assert!(block.contains("id: 1"), "{block}");
+    assert!(block.contains(&format!("id: {boot}:1\n")), "{block}");
     assert!(block.contains("\"seq\":1"), "per-session seq: {block}");
     assert!(block.contains("\"type\":\"progress\""));
     assert!(!block.contains(SECRET), "events are redacted");
@@ -1005,25 +1012,37 @@ async fn sse_hello_event_delivery_replay_and_resync() {
     let res = f
         .app
         .clone()
-        .oneshot(stream_request(Some("1")))
+        .oneshot(stream_request(Some(&format!("{boot}:1"))))
         .await
         .unwrap();
     let mut body = res.into_body();
     let replay = read_until(&mut body, "\"step\":2").await;
     assert!(replay.contains("event: hello"));
     assert!(!replay.contains("\"step\":1"), "already seen: {replay}");
-    assert!(replay.contains("id: 2"));
+    assert!(replay.contains(&format!("id: {boot}:2\n")));
 
     // An id from before a restart (ahead of the counter) asks for a full resync.
     let res = f
         .app
         .clone()
-        .oneshot(stream_request(Some("999999")))
+        .oneshot(stream_request(Some(&format!("{boot}:999999"))))
         .await
         .unwrap();
     let mut body = res.into_body();
     let r = read_until(&mut body, "event: resync").await;
     assert!(r.contains("event: hello"));
+
+    // An id from another boot, or one that does not parse, also resyncs.
+    for bad in ["other-boot:1", "1", "garbage"] {
+        let res = f
+            .app
+            .clone()
+            .oneshot(stream_request(Some(bad)))
+            .await
+            .unwrap();
+        let mut body = res.into_body();
+        read_until(&mut body, "event: resync").await;
+    }
 
     // The session filter hides other sessions' events.
     let mut req = request("GET", "/api/v1/stream?session=other", None);
@@ -1117,4 +1136,179 @@ async fn non_loopback_stream_requires_an_origin() {
     r.headers_mut()
         .insert(header::AUTHORIZATION, "Bearer tok".parse().unwrap());
     assert_eq!(app.oneshot(r).await.unwrap().status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn wrong_credentials_count_toward_the_rate_limit() {
+    let f = fx_with(Some("good-token")).await;
+    let bad = || {
+        let mut r = request("GET", "/api/v1/status", None);
+        r.headers_mut()
+            .insert(header::AUTHORIZATION, "Bearer wrong".parse().unwrap());
+        r
+    };
+    for _ in 0..5 {
+        assert_eq!(send(&f.app, bad()).await.0, StatusCode::UNAUTHORIZED);
+    }
+    assert_eq!(send(&f.app, bad()).await.0, StatusCode::TOO_MANY_REQUESTS);
+    let mut good = request("GET", "/api/v1/status", None);
+    good.headers_mut()
+        .insert(header::AUTHORIZATION, "Bearer good-token".parse().unwrap());
+    assert_eq!(send(&f.app, good).await.0, StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn html_responses_forbid_framing() {
+    let f = fx().await;
+    let (_, h, _) = send(&f.app, request("GET", "/", None)).await;
+    let csp = h[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+    for want in [
+        "frame-ancestors 'none'",
+        "base-uri 'none'",
+        "form-action 'self'",
+    ] {
+        assert!(csp.contains(want), "{csp}");
+    }
+    assert_eq!(h["x-frame-options"], "DENY");
+}
+
+#[tokio::test]
+async fn account_names_are_validated_before_touching_the_filesystem() {
+    let f = fx().await;
+    std::fs::write(f.path("cfg/config.toml"), "not = [valid toml\n").unwrap();
+    for (m, uri) in [
+        ("GET", "/api/v1/accounts/..%2Fconfig/login"),
+        ("POST", "/api/v1/accounts/..%2Fconfig/login"),
+        ("DELETE", "/api/v1/accounts/..%2Fconfig"),
+        ("POST", "/api/v1/accounts/..%2Fconfig/flag"),
+    ] {
+        let body = (m == "POST" && uri.ends_with("flag")).then(|| json!({"hours": 1}));
+        let (s, _, v) = send(&f.app, request(m, uri, body)).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{m} {uri}: {v}");
+    }
+    let (s, _) = send_json(
+        &f.app,
+        "PATCH",
+        "/api/v1/accounts/..%2Fconfig",
+        json!({"cap": 1}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _) = post(
+        &f.app,
+        "/api/v1/accounts",
+        Some(json!({"harness": "codex", "name": "../x"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn parse_errors_do_not_echo_file_contents() {
+    let f = fx().await;
+    post(
+        &f.app,
+        "/api/v1/accounts",
+        Some(json!({"harness": "codex", "name": "codex-acc1"})),
+    )
+    .await;
+    std::fs::write(
+        f.path("cfg/accounts/codex-acc1.toml"),
+        "token = \"hunter2-secret\" = oops\n",
+    )
+    .unwrap();
+    let (s, _, v) = send(
+        &f.app,
+        request("GET", "/api/v1/accounts/codex-acc1/login", None),
+    )
+    .await;
+    let _ = s;
+    assert!(!v.to_string().contains("hunter2"), "{v}");
+}
+
+#[tokio::test]
+async fn stream_without_origin_needs_same_origin_fetch_metadata_off_loopback() {
+    let f = fx().await;
+    let opts = WebOptions {
+        bind: "192.168.1.5".into(),
+        port: 7878,
+        token: Some("tok".into()),
+        ..WebOptions::default()
+    };
+    let app = router(f.handle.state().clone(), opts);
+    let build = |site: Option<&str>| {
+        let mut b = Request::builder()
+            .uri("/api/v1/stream")
+            .header(header::HOST, "192.168.1.5:7878")
+            .header(header::AUTHORIZATION, "Bearer tok");
+        if let Some(v) = site {
+            b = b.header("sec-fetch-site", v);
+        }
+        b.body(Body::empty()).unwrap()
+    };
+    assert_eq!(
+        app.clone()
+            .oneshot(build(Some("same-origin")))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        app.clone()
+            .oneshot(build(Some("cross-site")))
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        app.clone().oneshot(build(None)).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[tokio::test]
+async fn shutdown_ends_open_streams() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let f = fx().await;
+    let opts = WebOptions {
+        port: 0,
+        ..WebOptions::default()
+    };
+    let server = so_web::start(f.handle.state().clone(), opts).await.unwrap();
+    let addr = server.addr();
+    let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "GET /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: keep-alive\r\n\r\n",
+        addr.port()
+    );
+    sock.write_all(req.as_bytes()).await.unwrap();
+    let mut buf = vec![0u8; 4096];
+    let n = tokio::time::timeout(Duration::from_secs(5), sock.read(&mut buf))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&buf[..n]).contains("200"));
+    tokio::time::timeout(Duration::from_secs(5), server.shutdown())
+        .await
+        .expect("shutdown must not wait for open streams");
+}
+
+#[tokio::test]
+async fn oversized_transcript_entries_are_skipped_not_loaded() {
+    let f = fx().await;
+    let path = f.path(&format!("cfg/runs/{}/transcript.jsonl", f.run));
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    let big = json!({"ts": "t", "event": {"type": "assistant_message", "text": "x".repeat(2 * 1024 * 1024)}});
+    text = format!("{big}\n{text}");
+    std::fs::write(&path, text).unwrap();
+    let (s, v) = get(&f.app, &format!("/api/v1/runs/{}/transcript", f.run)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        v["lines"].as_array().unwrap().len(),
+        2,
+        "the two normal lines survive"
+    );
+    assert_eq!(v["next_offset"], v["total_bytes"]);
 }
