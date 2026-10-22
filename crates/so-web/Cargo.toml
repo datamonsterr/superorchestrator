@@ -34,7 +34,7 @@ tracing.workspace = true
 rust-embed = { workspace = true, features = ["interpolate-folder-path", "mime-guess"] }
 toml.workspace = true
 subtle = "2"
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
