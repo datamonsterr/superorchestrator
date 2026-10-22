@@ -403,6 +403,9 @@ impl ProcessHandle {
 #[derive(Debug)]
 pub struct Supervised {
     pub events: mpsc::UnboundedReceiver<HarnessEvent>,
+    /// The run's transcript, shared so a driver can append its own channels
+    /// (opencode HTTP and SSE) with consistent offsets.
+    pub transcript: SharedTranscript,
     pub handle: ProcessHandle,
 }
 
@@ -462,7 +465,7 @@ pub fn spawn_supervised(
     tokio::spawn(stdin_actor(
         child.stdin.take(),
         stdin_rx,
-        transcript,
+        transcript.clone(),
         tx.clone(),
         exit_rx.clone(),
     ));
@@ -495,6 +498,7 @@ pub fn spawn_supervised(
 
     Ok(Supervised {
         events: rx,
+        transcript,
         handle: ProcessHandle {
             stdin: StdinHandle { tx: stdin_tx },
             guard,

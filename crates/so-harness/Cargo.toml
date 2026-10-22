@@ -24,6 +24,7 @@ required-features = ["test-support"]
 so-core = { path = "../so-core" }
 so-accounts = { path = "../so-accounts" }
 chrono.workspace = true
+reqwest.workspace = true
 rustix = { version = "1", features = ["process"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -33,6 +34,8 @@ tokio.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
+futures-core = "0.3"
 # Self dev-dependency enables the feature (and so the fake-harness binary) for tests.
 so-harness = { path = ".", features = ["test-support"] }
 tempfile.workspace = true

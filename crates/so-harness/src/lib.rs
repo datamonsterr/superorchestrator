@@ -4,6 +4,7 @@
 pub mod agy;
 pub mod claude;
 pub mod driver;
+pub mod opencode;
 pub mod process;
 pub mod transcript;
 
@@ -14,5 +15,6 @@ pub use driver::{
     JoinInfo, LaunchSpec, McpServerSpec, RateLimits, RunControl, RunHandle, ShutdownOutcome,
     classify_common,
 };
+pub use opencode::{EventMapper, OpencodeControl, OpencodeDriver};
 pub use process::{ProcessGuard, ProcessHandle, Supervised, spawn_supervised};
 pub use transcript::{Dir, TranscriptWriter};
