@@ -77,10 +77,23 @@ pub fn scan(home: &Path) -> Vec<ImportCandidate> {
         push("opencode-acc1".into(), Harness::Opencode, oc);
     }
     let claude = home.join(".claude");
-    if claude.is_dir() {
+    if claude.is_dir() && !only_our_skill(&claude) {
         push("claude-acc1".into(), Harness::Claude, claude);
     }
     dedupe(out)
+}
+
+/// True when the claude home holds nothing but our own `skills/superorchestrator` (or
+/// nothing at all): installing the skill must not make it look like an account.
+fn only_our_skill(claude: &Path) -> bool {
+    let Ok(rd) = std::fs::read_dir(claude) else {
+        return false;
+    };
+    rd.flatten().all(|e| {
+        e.file_name() == "skills"
+            && std::fs::read_dir(e.path())
+                .is_ok_and(|s| s.flatten().all(|x| x.file_name() == "superorchestrator"))
+    })
 }
 
 /// Drops repeated names and candidates whose resolved home was already emitted.
@@ -140,7 +153,7 @@ mod tests {
         mk(r, ".agent-farm/profiles/agy_worker_4 SKILL=1 X=/");
         mk(r, ".agent-farm/profiles/agy_worker_9"); // no .gemini
         mk(r, ".local/share/opencode");
-        mk(r, ".claude");
+        mk(r, ".claude/projects");
         let c = scan(r);
         assert_eq!(
             names(&c),
@@ -158,6 +171,20 @@ mod tests {
         );
         assert_eq!(c[0].home, r.join(".codex-acc1"));
         assert_eq!(c[5].home, r.join(".agent-farm/profiles/agy_worker_1"));
+    }
+
+    #[test]
+    fn claude_home_with_only_our_skill_is_not_an_account() {
+        let d = tempfile::tempdir().unwrap();
+        mk(d.path(), ".claude");
+        assert!(scan(d.path()).is_empty());
+        mk(d.path(), ".claude/skills/superorchestrator");
+        assert!(scan(d.path()).is_empty());
+        mk(d.path(), ".claude/skills/other");
+        assert_eq!(names(&scan(d.path())), ["claude-acc1"]);
+        let e = tempfile::tempdir().unwrap();
+        mk(e.path(), ".claude/projects");
+        assert_eq!(names(&scan(e.path())), ["claude-acc1"]);
     }
 
     #[test]
@@ -184,7 +211,7 @@ mod tests {
     fn scan_new_skips_existing_and_empty_home_is_empty() {
         let d = tempfile::tempdir().unwrap();
         assert!(scan(d.path()).is_empty());
-        mk(d.path(), ".claude");
+        mk(d.path(), ".claude/projects");
         mk(d.path(), ".local/share/opencode");
         let paths = Paths::from_dir(d.path().join("cfg"));
         let host = HostEnv {

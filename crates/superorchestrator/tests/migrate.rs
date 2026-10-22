@@ -575,7 +575,8 @@ fn choices_are_not_written_into_an_invalid_config() {
     cmd(&e)
         .args(["migrate", "--apply", "--yes"])
         .assert()
-        .code(1);
+        .code(1)
+        .stderr(predicates::str::contains("config.toml"));
     assert_eq!(read(&e.cfg.join("config.toml")), broken);
 }
 
@@ -601,4 +602,30 @@ fn cooldowns_for_unknown_accounts_are_skipped_and_stay_idempotent() {
     let s = stdout(&out);
     assert!(s.contains("nothing to migrate"), "{s}");
     assert_eq!(before, snapshot(&e));
+}
+
+#[test]
+fn installing_the_skill_does_not_create_a_claude_account_on_the_next_run() {
+    let e = Env::new();
+    write(&e.home.join(".codex/auth.json"), SECRET);
+    write(&e.home.join(".local/bin/add-agy-worker"), "#!/bin/sh\n");
+    assert!(!e.home.join(".claude").exists());
+    cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .success();
+    assert!(
+        e.home
+            .join(".claude/skills/superorchestrator/SKILL.md")
+            .is_file()
+    );
+    let before = snapshot(&e);
+    let out = cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .success();
+    let s = stdout(&out);
+    assert!(s.contains("nothing to migrate"), "{s}");
+    assert_eq!(before, snapshot(&e));
+    assert!(!e.cfg.join("accounts/claude-acc1.toml").exists());
 }

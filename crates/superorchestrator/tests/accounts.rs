@@ -79,7 +79,7 @@ fn account_import_and_list_json() {
 fn import_scan_lists_without_yes_and_imports_with_yes() {
     let e = Env::new();
     e.init();
-    for d in [".codex-acc1", ".codex-acc2", ".claude"] {
+    for d in [".codex-acc1", ".codex-acc2", ".claude/projects"] {
         std::fs::create_dir_all(e.home.join(d)).unwrap();
     }
     let out = e

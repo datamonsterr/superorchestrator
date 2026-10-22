@@ -153,7 +153,18 @@ pub fn run(ctx: &Ctx, apply_it: bool) -> Result<ExitCode> {
             bail!("not confirmed; nothing was changed");
         }
     }
-    let done = apply(ctx, &plan)?;
+    let done = match apply(ctx, &plan)? {
+        Applied::Done(r) => r,
+        Applied::PlanChanged(now) => {
+            let msg = "the system changed since the plan was shown, so nothing was changed; \
+                       re-run to confirm the new plan";
+            print_with(ctx, &now, true, Some(msg))?;
+            if !ctx.json {
+                eprint!("{}", render(&now, true));
+            }
+            bail!(msg);
+        }
+    };
     print(ctx, &done, false)?;
     match done.failures() {
         0 => Ok(ExitCode::SUCCESS),
@@ -186,8 +197,18 @@ fn render(report: &Report, dry_run: bool) -> String {
 }
 
 fn print(ctx: &Ctx, report: &Report, dry_run: bool) -> Result<()> {
+    print_with(ctx, report, dry_run, None)
+}
+
+/// Prints the report; with `error` set, `ok` is false and the JSON has an `error` field.
+/// Human output is skipped for an error: the caller prints it on stderr.
+fn print_with(ctx: &Ctx, report: &Report, dry_run: bool, error: Option<&str>) -> Result<()> {
+    if error.is_some() && !ctx.json {
+        return Ok(());
+    }
     let value = json!({
-        "ok": report.failures() == 0,
+        "ok": report.failures() == 0 && error.is_none(),
+        "error": error,
         "dry_run": dry_run,
         "changed": report.changed(),
         "legacy": report.legacy,
@@ -229,15 +250,17 @@ fn plan(ctx: &Ctx) -> Result<Report> {
     Ok(r)
 }
 
-/// Re-plans, aborts when the plan differs from the confirmed one, then executes.
-fn apply(ctx: &Ctx, confirmed: &Report) -> Result<Report> {
+enum Applied {
+    Done(Report),
+    /// The system changed since the confirmed plan; nothing was done. Carries the new plan.
+    PlanChanged(Report),
+}
+
+/// Re-plans, stops when the plan differs from the confirmed one, then executes.
+fn apply(ctx: &Ctx, confirmed: &Report) -> Result<Applied> {
     let now = plan(ctx)?;
     if !same_plan(&now, confirmed) {
-        bail!(
-            "the system changed since the plan was shown, so nothing was changed; \
-             re-run to confirm the new plan:\n{}",
-            render(&now, true)
-        );
+        return Ok(Applied::PlanChanged(now));
     }
     let host = ctx.host()?;
     let w = Writer::new(&ctx.paths, false);
@@ -256,7 +279,7 @@ fn apply(ctx: &Ctx, confirmed: &Report) -> Result<Report> {
     if w.backup_root().exists() {
         r.backup = Some(w.backup_root().to_path_buf());
     }
-    Ok(r)
+    Ok(Applied::Done(r))
 }
 
 fn step_init(ctx: &Ctx, host: &HostEnv, r: &mut Report) {
@@ -792,12 +815,24 @@ fn is_word_char(c: Option<char>) -> bool {
     c.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-')
 }
 
+/// True when `text` (lower case, quotes removed) has the word `never` or `dont`, or the
+/// words `do not`.
+fn has_prohibition(text: &str) -> bool {
+    let words: Vec<&str> = text
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.iter().any(|w| matches!(*w, "never" | "dont"))
+        || words.windows(2).any(|p| p == ["do", "not"])
+}
+
 /// Classifies `line` per the heuristic in the module docs.
 fn mention(line: &str) -> Mention {
     let n: String = line
         .chars()
         .filter(|c| !matches!(c, '`' | '"' | '\'' | '\u{2019}'))
-        .collect();
+        .collect::<String>()
+        .to_ascii_lowercase();
     for (i, m) in n.match_indices("orchestrate") {
         let (before, after) = (&n[..i], &n[i + m.len()..]);
         if is_word_char(before.chars().next_back()) || is_word_char(after.chars().next()) {
@@ -814,11 +849,7 @@ fn mention(line: &str) -> Mention {
         if !(skill_after || skill_before) {
             continue;
         }
-        let lower = before.to_lowercase();
-        let prohibited = ["never", "dont", "do not"]
-            .iter()
-            .any(|p| lower.contains(p));
-        return if prohibited {
+        return if has_prohibition(before) {
             Mention::Prohibition
         } else {
             Mention::Rule
@@ -942,6 +973,31 @@ mod tests {
         assert_eq!(
             mention("- do not call the orchestrate skill"),
             Mention::Prohibition
+        );
+    }
+
+    #[test]
+    fn prohibitions_are_whole_words_and_case_is_ignored() {
+        assert_eq!(
+            mention("- Whenever coding, use the orchestrate skill"),
+            Mention::Rule
+        );
+        assert_eq!(mention("- Orchestrate skill for all work"), Mention::Rule);
+        assert_eq!(
+            mention("- Use the ORCHESTRATE skill, nevertheless"),
+            Mention::Rule
+        );
+        assert_eq!(
+            mention("- NEVER use the Orchestrate skill"),
+            Mention::Prohibition
+        );
+        assert_eq!(
+            mention("- We do   not use the orchestrate skill"),
+            Mention::Prohibition
+        );
+        assert_eq!(
+            mention("- Do nothing but use the orchestrate skill"),
+            Mention::Rule
         );
     }
 
