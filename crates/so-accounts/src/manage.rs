@@ -6,9 +6,9 @@ use std::path::{Path, PathBuf};
 
 use so_core::{AccountFile, Config, Harness, Paths, Platform};
 
-use crate::env::{build_launch_vars, resolve_binary};
+use crate::env::build_launch_vars;
 use crate::error::{AccountsError, Result};
-use crate::host::{HostEnv, canon};
+use crate::host::{HostEnv, canon, same_path};
 use crate::wrapper::{is_managed, remove_wrapper, write_wrapper};
 
 /// Command name wrappers `exec` into.
@@ -107,16 +107,25 @@ fn ensure_new(paths: &Paths, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Refuses a name that resolves on the host's PATH to a file that is not one of
-/// our wrappers: the new wrapper would shadow that command.
-fn ensure_no_shadow(host: &HostEnv, name: &str) -> Result<()> {
-    match resolve_binary(name, host.path_var.as_deref()) {
-        Ok(path) if !is_managed(&path) => Err(AccountsError::ShadowsCommand {
-            name: name.to_string(),
-            path,
-        }),
-        _ => Ok(()),
+/// Refuses a name that already exists as a file in a PATH directory other than the
+/// wrapper directory and is not one of our wrappers: the new wrapper would shadow
+/// that command. Files inside the wrapper directory are left to `write_wrapper`,
+/// which backs a foreign file up.
+fn ensure_no_shadow(cfg: &Config, host: &HostEnv, name: &str) -> Result<()> {
+    let wrapper_dir = wrapper_dir(cfg, host)?;
+    for dir in host.path_var.as_deref().unwrap_or_default().split(':') {
+        if dir.is_empty() || same_path(Path::new(dir), &wrapper_dir) {
+            continue;
+        }
+        let path = Path::new(dir).join(name);
+        if path.is_file() && !is_managed(&path) {
+            return Err(AccountsError::ShadowsCommand {
+                name: name.to_string(),
+                path,
+            });
+        }
     }
+    Ok(())
 }
 
 /// Creates the credential home (agy: with `.gemini/`, mode 0700), the account
@@ -132,7 +141,7 @@ pub fn add(
     let home_spec = home.map_or_else(|| format!("~/.{name}"), str::to_string);
     let account = AccountFile::new(name, harness, &home_spec, harness.as_str())?;
     ensure_new(paths, name)?;
-    ensure_no_shadow(host, name)?;
+    ensure_no_shadow(cfg, host, name)?;
     check_single_agy(paths, host, name, harness)?;
     let dir = host.expand(&home_spec)?;
     create_private_dir(&if harness == Harness::Agy {
@@ -154,7 +163,7 @@ pub fn import(
 ) -> Result<AccountFile> {
     let account = AccountFile::new(name, harness, home, harness.as_str())?;
     ensure_new(paths, name)?;
-    ensure_no_shadow(host, name)?;
+    ensure_no_shadow(cfg, host, name)?;
     check_single_agy(paths, host, name, harness)?;
     let dir = host.expand(home)?;
     let must_exist = if harness == Harness::Agy {
@@ -403,6 +412,28 @@ mod tests {
         assert!(!f.paths.account_file("ls").exists());
         std::fs::create_dir_all(f.d.path().join("h")).unwrap();
         let err = import(&f.paths, &f.cfg, &f.host, "ls", Harness::Codex, "~/h").unwrap_err();
+        assert!(matches!(err, AccountsError::ShadowsCommand { .. }));
+    }
+
+    #[test]
+    fn a_foreign_file_in_the_wrapper_dir_is_backed_up_not_refused() {
+        let mut f = fx();
+        f.cfg.accounts.wrapper_dir = "~/bin".into();
+        let old = crate::testutil::stub_bin(f.d.path(), "work");
+        add(&f.paths, &f.cfg, &f.host, Harness::Codex, "work", None).unwrap();
+        assert!(is_managed(&old));
+        let baks = std::fs::read_dir(f.paths.wrappers_bak_dir())
+            .unwrap()
+            .count();
+        assert_eq!(baks, 1);
+    }
+
+    #[test]
+    fn a_same_named_file_in_another_path_dir_is_refused() {
+        let mut f = fx();
+        f.cfg.accounts.wrapper_dir = "~/wrappers".into();
+        crate::testutil::stub_bin(f.d.path(), "work");
+        let err = add(&f.paths, &f.cfg, &f.host, Harness::Codex, "work", None).unwrap_err();
         assert!(matches!(err, AccountsError::ShadowsCommand { .. }));
     }
 
