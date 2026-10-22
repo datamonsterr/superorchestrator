@@ -236,6 +236,9 @@ impl RunManager {
                     model: model.clone(),
                     effort: effort.clone(),
                     allow_accounts: allow,
+                    tool_controls: agent
+                        .as_ref()
+                        .is_some_and(|a| !a.tools.is_empty() || !a.disallowed_tools.is_empty()),
                 };
                 let routed = self.route_run(&prompt, &pins, &[], None, true).await?;
                 let mut found = None;

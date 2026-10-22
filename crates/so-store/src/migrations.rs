@@ -125,8 +125,13 @@ ALTER TABLE run_meta ADD COLUMN turn_prompt TEXT;
 ALTER TABLE run_meta ADD COLUMN failover_json TEXT;
 ";
 
+const V7: &str = "
+-- A queued run moved to another account: its route_decision is announced once it starts.
+ALTER TABLE run_meta ADD COLUMN queued_route_json TEXT;
+";
+
 /// Ordered migrations; entry `i` brings the database to version `i + 1`.
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
 
 /// Latest schema version known to this build.
 pub fn latest_version() -> i64 {

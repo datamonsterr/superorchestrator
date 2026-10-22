@@ -441,7 +441,7 @@ impl RunManager {
     async fn prepare_resume_after_death(&self, pc: &PumpCtx) -> Result<so_store::RunRow, String> {
         let id = pc.run_id.clone();
         let (row, attempts) = self
-            .db(move |s| Ok((s.get_run(&id)?, s.list_attempts(&id, 10)?)))
+            .db(move |s| Ok((s.get_run(&id)?, s.list_attempts(&id, 1000)?)))
             .await
             .map_err(|e| e.message)?;
         let row = row.ok_or("run is gone")?;

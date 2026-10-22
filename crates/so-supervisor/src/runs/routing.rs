@@ -11,7 +11,7 @@ use so_core::proto::{RouteParams, RouteResult, RouteSource, RpcError, UNAVAILABL
 use so_core::{AccountFile, Harness};
 use so_router::{Catalog, RouteOutcome, Snapshot, route::MAX_PROMPT_CHARS};
 
-use super::{R, RunManager, rpc};
+use super::{R, RunManager, lock, rpc};
 use crate::handlers::route::{RouteEnv, decision_data, route_decide};
 
 /// What fixed a run's route.
@@ -25,6 +25,10 @@ pub(crate) struct RoutePins {
     /// The agent file's `accounts` list; empty means any account.
     #[serde(default)]
     pub allow_accounts: Vec<String>,
+    /// The agent has tool controls (`tools`/`disallowedTools`): a failover must keep them
+    /// enforced, and fails closed when it cannot check.
+    #[serde(default)]
+    pub tool_controls: bool,
 }
 
 /// A route decision plus the pins it was made under, ready to be stored with the run.
@@ -39,6 +43,9 @@ pub(crate) struct Routed {
     pub result: RouteResult,
     pub decision: Value,
 }
+
+/// Least time between two re-routing passes for the same queued run.
+const REROUTE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl RunManager {
     fn route_env(&self, ignore_caps: bool) -> RouteEnv<'_> {
@@ -223,8 +230,36 @@ impl RunManager {
         {
             return false;
         }
+        // No full routing pass per drain wake for the same run.
+        {
+            let mut seen = lock(&self.inner.reroute_at);
+            let now = std::time::Instant::now();
+            seen.retain(|_, t| now.duration_since(*t) < REROUTE_BACKOFF);
+            if seen.insert(run.id.clone(), now).is_some() {
+                return false;
+            }
+        }
+        // A run waiting out a failover keeps its constraints: not the accounts it failed
+        // on, and not a harness that cannot enforce its agent's tools.
+        let id = run.id.clone();
+        let failing_over = self
+            .db(move |s| s.get_failover_pending(&id))
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        let mut exclude = Vec::new();
+        if failing_over {
+            let id = run.id.clone();
+            if let Ok(attempts) = self.db(move |s| s.list_attempts(&id, 1000)).await {
+                exclude.extend(attempts.into_iter().map(|a| a.account));
+            }
+            exclude.extend(self.tool_ineligible_accounts(run, pins.tool_controls).await);
+            exclude.sort();
+            exclude.dedup();
+        }
         let prompt = self.turn_prompt(run).await;
-        let Ok(routed) = self.route_run(&prompt, &pins, &[], None, false).await else {
+        let Ok(routed) = self.route_run(&prompt, &pins, &exclude, None, false).await else {
             return false;
         };
         for name in &routed.result.ranked_accounts {
@@ -243,16 +278,139 @@ impl RunManager {
             };
             let (rid, f) = (run.id.clone(), from.clone());
             if let Ok(true) = self.db_raw(move |s| s.retarget_queued(&rid, &f, &to)).await {
-                self.emit(
-                    &run.session_id,
-                    Some(&run.id),
-                    so_core::EventType::RouteDecision,
-                    routed.decision.clone(),
-                )
-                .await;
+                // Announced when the run starts, not while it still waits.
+                let (rid, json) = (run.id.clone(), routed.decision.to_string());
+                let _ = self
+                    .db(move |s| s.set_queued_route_event(&rid, &json))
+                    .await;
+                lock(&self.inner.reroute_at).remove(&run.id);
                 return true;
             }
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runs::testutil::insert_run;
+    use so_accounts::HostEnv;
+    use so_core::{Config, Harness, Paths, Platform, RunState};
+    use so_store::Store;
+
+    /// A manager with a host (so accounts can be launched) and two claude accounts, the
+    /// first of which is full.
+    fn two_accounts() -> (RunManager, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(dir.path().to_path_buf());
+        for n in ["claude-t", "claude-u"] {
+            AccountFile::new(n, Harness::Claude, &format!("~/.{n}"), "/bin/sh")
+                .unwrap()
+                .save(&paths)
+                .unwrap();
+        }
+        let host = HostEnv {
+            home: dir.path().to_path_buf(),
+            path_var: Some("/usr/bin:/bin".into()),
+            platform: Platform::current(),
+        };
+        let m = RunManager::new(
+            Store::open_in_memory().unwrap(),
+            Config::default(),
+            paths,
+            Some(host),
+            dir.path().join("s.sock"),
+            None,
+        );
+        (m, dir)
+    }
+
+    fn queued_on_the_full_account(m: &RunManager) -> so_store::RunRow {
+        // Two running runs fill `claude-t` (cap 2).
+        for _ in 0..2 {
+            insert_run(m, RunState::Running);
+        }
+        let run = insert_run(m, RunState::Queued);
+        let pins = RoutePins {
+            harness: Some("claude".into()),
+            ..RoutePins::default()
+        };
+        m.store()
+            .set_run_route(&run.id, &serde_json::to_string(&pins).unwrap())
+            .unwrap();
+        m.store().set_run_turn_prompt(&run.id, "do it").unwrap();
+        run
+    }
+
+    #[tokio::test]
+    async fn a_queued_run_moves_to_a_free_account_but_not_more_than_once_in_a_while() {
+        let (m, _d) = two_accounts();
+        let run = queued_on_the_full_account(&m);
+        assert!(m.reroute_queued(&run).await);
+        let now = m.store().get_run(&run.id).unwrap().unwrap();
+        assert_eq!(now.account.as_deref(), Some("claude-u"));
+        // The decision waits for the launch; nothing is announced yet.
+        assert!(
+            m.store()
+                .take_queued_route_event(&run.id)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            m.store()
+                .list_events_by_run(&run.id, 100)
+                .unwrap()
+                .iter()
+                .all(|e| e.event_type != so_core::EventType::RouteDecision)
+        );
+        // Looked at again right away: no second routing pass for the same run.
+        m.store()
+            .retarget_queued(
+                &run.id,
+                "claude-u",
+                &so_store::Reassign {
+                    account: "claude-t".into(),
+                    harness: Harness::Claude,
+                    choice_id: None,
+                    model: None,
+                    effort: None,
+                },
+            )
+            .unwrap();
+        lock(&m.inner.reroute_at).insert(run.id.clone(), std::time::Instant::now());
+        let again = m.store().get_run(&run.id).unwrap().unwrap();
+        assert!(!m.reroute_queued(&again).await, "backed off");
+    }
+
+    #[tokio::test]
+    async fn a_run_waiting_out_a_failover_does_not_go_back_to_an_account_it_failed_on() {
+        let (m, _d) = two_accounts();
+        let run = queued_on_the_full_account(&m);
+        // It failed on `claude-u` earlier, and is waiting for a slot.
+        let aid = m
+            .store()
+            .start_attempt(&run.id, "claude-u", None, chrono::Utc::now())
+            .unwrap();
+        m.store()
+            .finish_attempt(&aid, "failover", chrono::Utc::now())
+            .unwrap();
+        // `failover_json` is what marks it as a failover that is waiting.
+        let pending = serde_json::json!({
+            "from": "claude-u", "from_harness": "claude", "reason": "x",
+            "error_kind": "quota", "decision": {}
+        });
+        m.store()
+            .set_failover_pending(&run.id, &pending.to_string());
+        assert!(!m.reroute_queued(&run).await);
+        assert_eq!(
+            m.store()
+                .get_run(&run.id)
+                .unwrap()
+                .unwrap()
+                .account
+                .as_deref(),
+            Some("claude-t")
+        );
     }
 }

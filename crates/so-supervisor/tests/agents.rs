@@ -362,3 +362,75 @@ async fn a_tool_restricted_agent_does_not_fail_over_to_a_harness_that_cannot_enf
     assert_eq!(v.account.as_deref(), Some("claude-a"));
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_tool_restricted_agent_fails_closed_when_its_file_cannot_be_read_at_failover() {
+    let mut env = env();
+    env.config.choices.push(Choice {
+        id: "codex-big".into(),
+        harness: Harness::Codex,
+        model: "gpt-6.1-sol".into(),
+        effort: None,
+        roles: vec!["worker".into()],
+        description: "d".into(),
+        enabled: true,
+    });
+    write_agent(
+        &env,
+        "careful.md",
+        "---\nname: careful\ndescription: d\ntools: [Read]\n---\nbody\n",
+    );
+    // A claude account that fails after a moment, and a codex account (never launched).
+    env.account(
+        "claude-a",
+        2,
+        &script(&[
+            json!({"expect_stdin_contains": PROMPT}),
+            json!({"sleep_ms": 600}),
+            json!({"stdout": init_msg()}),
+            json!({"stdout": result_msg(json!({"is_error": true, "result": "Claude AI usage limit reached"}))}),
+        ]),
+    );
+    so_core::AccountFile::new("codex-a", Harness::Codex, "/h/codex", "/nonexistent/codex")
+        .unwrap()
+        .save(&env.paths)
+        .unwrap();
+    // The codex account is out of rotation while the run is routed, so it starts on claude.
+    let store = env.store();
+    so_usage::mark_exhausted(
+        &store,
+        "codex-a",
+        "default",
+        Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+        Duration::from_secs(3600),
+        "t",
+        chrono::Utc::now(),
+    )
+    .unwrap();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = agent_params(&env, "careful");
+    p.prompt = Some(PROMPT.into());
+    p.wait = false;
+    let r = spawn(&c, p).await;
+    wait_state(&c, &r.run_id, RunState::Running).await;
+    // The agent file disappears: the failover cannot check what codex could enforce.
+    std::fs::remove_file(env.paths.agents_dir().join("careful.md")).unwrap();
+    // Now codex is available: a failover could go there, but codex cannot enforce `tools`.
+    store.clear_flag("codex-a", "default").unwrap();
+    for _ in 0..800 {
+        if view(&c, &r.run_id).await.state == RunState::Failed {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let v = view(&c, &r.run_id).await;
+    assert_eq!(v.state, RunState::Failed, "{:?}", v.recent_events);
+    assert_eq!(
+        v.error_kind,
+        Some(so_core::ErrorKind::Quota),
+        "not a codex launch failure"
+    );
+    assert_eq!(v.account.as_deref(), Some("claude-a"));
+    h.shutdown().await;
+}

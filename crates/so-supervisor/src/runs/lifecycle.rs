@@ -274,17 +274,42 @@ impl RunManager {
             }
             (None, None) => row.prompt.clone().unwrap_or_default(),
         };
-        prompt.push_str(&self.start_messages(row).await);
+        let early = self.start_messages(row).await;
+        if !early.is_empty() {
+            // Part of what the run was told, so a failover keeps it.
+            let (id, t) = (row.id.clone(), early.trim_start().to_string());
+            let _ = self.db(move |s| s.append_run_turn_prompt(&id, &t)).await;
+        }
+        prompt.push_str(&early);
         let fork = fork_from.is_some() && resume_prompt.is_none();
         let spec = self
             .build_spec(row, &account, cwd, prompt, fork_from, fork)
             .await?;
         let handle = self.launch_harness(row, spec).await?;
-        if let Some(p) = &failover {
-            // Announced once the harness is up; the row is as the queue left it.
+        // Announced once the harness is up; the row is as the queue left it. A move made
+        // while the run waited replaces the decision a pending failover carries.
+        let moved = {
             let id = row.id.clone();
-            if let Ok(Some(now)) = self.db(move |s| s.get_run(&id)).await {
-                self.announce_failover(&now, p).await;
+            self.db(move |s| s.take_queued_route_event(&id))
+                .await
+                .ok()
+                .flatten()
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+        };
+        let id = row.id.clone();
+        if let Ok(Some(now)) = self.db(move |s| s.get_run(&id)).await {
+            match (failover, moved) {
+                (Some(mut p), moved) => {
+                    if let Some(d) = moved {
+                        p.set_decision(d);
+                    }
+                    self.announce_failover(&now, &p).await;
+                }
+                (None, Some(d)) => {
+                    self.emit(&now.session_id, Some(&now.id), EventType::RouteDecision, d)
+                        .await;
+                }
+                (None, None) => {}
             }
         }
         self.go_live(row, &account, handle, false).await;
@@ -724,6 +749,11 @@ impl RunManager {
         let run_id = row.id.as_str();
         let to = o.to;
         let sid = row.session_id.clone();
+        // A queued failover or move that never started has nothing left to announce.
+        {
+            let id = run_id.to_string();
+            let _ = self.db(move |s| s.clear_queued_pending(&id)).await;
+        }
         self.emit(
             &sid,
             Some(run_id),

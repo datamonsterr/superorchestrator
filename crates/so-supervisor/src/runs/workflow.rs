@@ -94,8 +94,9 @@ impl RunManager {
     }
 
     /// `run_workflow`: runs a saved workflow or an inline script as the caller's steps. With
-    /// `wait` (the default) it returns when the workflow has finished; the workflow itself
-    /// runs on a task of its own, so a caller that goes away does not stop it.
+    /// `wait` (the default) it returns when the workflow has finished, and a caller that goes
+    /// away while waiting cancels it; with `wait: false` it returns the id at once and the
+    /// workflow, which runs on a task of its own, carries on without the caller.
     pub async fn run_workflow(&self, ctx: &ConnCtx, p: RunWorkflowParams) -> R<RunWorkflowResult> {
         let session_id = ctx
             .session_id
@@ -357,7 +358,10 @@ impl RunManager {
     pub async fn cancel_workflow(&self, id: &str) -> R<AckResult> {
         let p = id.to_string();
         let row = self.db(move |s| s.get_workflow_run_by_prefix(&p)).await?;
-        let token = lock(&self.inner.workflow_cancels).get(&row.id).cloned();
+        // A token can outlive the row's `running` state for a moment; the row decides.
+        let token = (row.state == "running")
+            .then(|| lock(&self.inner.workflow_cancels).get(&row.id).cloned())
+            .flatten();
         match token {
             Some(t) => {
                 t.cancel();
@@ -491,10 +495,22 @@ impl Drop for WorkflowGuard {
             .active_workflows
             .fetch_sub(1, Ordering::SeqCst);
         if !self.done {
-            let _ = self
+            let failed = self
                 .mgr
                 .store()
                 .fail_workflow_if_running(&self.id, "the workflow task stopped unexpectedly");
+            if failed.is_ok_and(|changed| changed) {
+                let name = self
+                    .mgr
+                    .store()
+                    .get_workflow_run(&self.id)
+                    .ok()
+                    .flatten()
+                    .map(|r| r.name)
+                    .unwrap_or_default();
+                self.mgr
+                    .publish_workflow(&self.id, &name, "failed", None, Some(&self.session_id));
+            }
         }
         let (mgr, sid, hold) = (self.mgr.clone(), self.session_id.clone(), self.hold_session);
         if let Ok(rt) = tokio::runtime::Handle::try_current() {

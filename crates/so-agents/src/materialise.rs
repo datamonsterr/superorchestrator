@@ -208,7 +208,7 @@ pub fn materialise(
     if def
         .mcp_servers
         .iter()
-        .any(|r| r.name() == crate::parse::RESERVED_MCP_NAME)
+        .any(|r| crate::parse::is_reserved_mcp_name(r.name()))
     {
         return Err(AgentError::Parse {
             path: def.file.clone(),

@@ -58,6 +58,13 @@ pub(crate) struct Pending {
     decision: Value,
 }
 
+impl Pending {
+    /// Replaces the route decision announced with the failover.
+    pub(crate) fn set_decision(&mut self, decision: Value) {
+        self.decision = decision;
+    }
+}
+
 /// What came of looking for another account.
 enum Moved {
     /// The run ended meanwhile.
@@ -184,7 +191,13 @@ impl RunManager {
 
     /// Accounts a failed-over agent run must not go to: those of a harness that cannot
     /// enforce the agent's tool controls, unless it is the harness the run is on (SPEC 10).
-    async fn tool_ineligible_accounts(&self, row: &RunRow) -> Vec<String> {
+    /// With `tool_controls` (the agent had them when it was spawned) this fails closed:
+    /// when the agent file cannot be read again, every other harness is ineligible.
+    pub(crate) async fn tool_ineligible_accounts(
+        &self,
+        row: &RunRow,
+        tool_controls: bool,
+    ) -> Vec<String> {
         let Some(name) = row.agent.clone() else {
             return Vec::new();
         };
@@ -194,19 +207,19 @@ impl RunManager {
         );
         let on = row.harness;
         self.blocking(move || {
-            let cwd = cwd?;
-            let def = so_agents::resolve_for_spawn(&cwd, &paths, &name).ok()?;
-            let all = AccountFile::list(&paths).ok()?;
-            Some(
-                all.into_iter()
-                    .filter(|a| a.harness != on && tool_gaps(&def, a.harness))
+            let all = AccountFile::list(&paths).unwrap_or_default();
+            let def = cwd.and_then(|c| so_agents::resolve_for_spawn(&c, &paths, &name).ok());
+            let others = all.into_iter().filter(|a| a.harness != on);
+            match def {
+                Some(def) => others
+                    .filter(|a| tool_gaps(&def, a.harness))
                     .map(|a| a.name)
-                    .collect::<Vec<_>>(),
-            )
+                    .collect(),
+                None if tool_controls => others.map(|a| a.name).collect(),
+                None => Vec::new(),
+            }
         })
         .await
-        .ok()
-        .flatten()
         .unwrap_or_default()
     }
 
@@ -236,14 +249,13 @@ impl RunManager {
             let _ = req.control.shutdown(SHUTDOWN_DEADLINE).await;
             return Ok(Moved::Gone);
         }
+        // The account that hit the limit is marked whatever happens next, and its process
+        // goes away before another one starts for the same run.
+        self.flag_account(&id, &req.reason, Some(&req.limit)).await;
         let pins: RoutePins = route
             .and_then(|j| serde_json::from_str(&j).ok())
             .ok_or("the run has no route to repeat")?;
         let from = row.account.clone().ok_or("the run has no account")?;
-
-        // The account that hit the limit is marked, and its process goes away before
-        // another one starts for the same run.
-        self.flag_account(&id, &req.reason, Some(&req.limit)).await;
         if let Some(rt) = lock(&self.inner.runs).get_mut(&id) {
             rt.live = None;
         }
@@ -251,7 +263,10 @@ impl RunManager {
 
         let mut tried: Vec<String> = attempts.iter().map(|a| a.account.clone()).collect();
         tried.push(from.clone());
-        tried.extend(self.tool_ineligible_accounts(&row).await);
+        tried.extend(
+            self.tool_ineligible_accounts(&row, pins.tool_controls)
+                .await,
+        );
         tried.sort();
         tried.dedup();
         let prompt = row.prompt.clone().unwrap_or_default();
@@ -264,6 +279,12 @@ impl RunManager {
 
         // The next account: the same choice first, then any eligible choice, never an
         // account this run already failed on. Taking the slot is one atomic step.
+        // The attempt this move ends, by id: a new one may open before it is closed.
+        let old_attempt = attempts
+            .iter()
+            .rev()
+            .find(|a| a.ended_at.is_none())
+            .map(|a| a.id.clone());
         let mut chosen = None;
         for _ in 0..MAX_ROUTE_TRIES {
             let routed = match self
@@ -277,7 +298,9 @@ impl RunManager {
                         .route_run(&prompt, &pins, &tried, row.choice_id.as_deref(), true)
                         .await
                         .map_err(|_| fail(&tried, e.message.clone()))?;
-                    return self.requeue(req, &row, &from, queued, &mut tried).await;
+                    return self
+                        .requeue(req, &row, &from, queued, &mut tried, old_attempt)
+                        .await;
                 }
             };
             let mut picked = None;
@@ -314,7 +337,7 @@ impl RunManager {
         let (account, routed) =
             chosen.ok_or_else(|| fail(&tried, "no account with a free slot".to_string()))?;
         // Only now is the old attempt over.
-        self.close_attempt(&id, "failover").await;
+        self.close_attempt(old_attempt, "failover").await;
         Ok(Moved::Started(Box::new(Next {
             account,
             pending: Pending {
@@ -327,21 +350,12 @@ impl RunManager {
         })))
     }
 
-    async fn close_attempt(&self, run_id: &str, outcome: &'static str) {
-        let id = run_id.to_string();
-        let _ = self
-            .db(move |s| {
-                let open = s
-                    .list_attempts(&id, 1000)?
-                    .into_iter()
-                    .rev()
-                    .find(|a| a.ended_at.is_none());
-                match open {
-                    Some(a) => s.finish_attempt(&a.id, outcome, Utc::now()),
-                    None => Ok(()),
-                }
-            })
-            .await;
+    async fn close_attempt(&self, attempt_id: Option<String>, outcome: &'static str) {
+        if let Some(aid) = attempt_id {
+            let _ = self
+                .db(move |s| s.finish_attempt(&aid, outcome, Utc::now()))
+                .await;
+        }
     }
 
     /// Every other account is full: the run goes back to the queue, on the account that is
@@ -353,6 +367,7 @@ impl RunManager {
         from: &str,
         routed: super::routing::Routed,
         tried: &mut Vec<String>,
+        old_attempt: Option<String>,
     ) -> Result<Moved, String> {
         let mut target = None;
         for name in &routed.result.ranked_accounts {
@@ -386,7 +401,7 @@ impl RunManager {
             Err(so_store::StoreError::StateConflict { .. }) => return Ok(Moved::Gone),
             Err(e) => return Err(format!("could not queue the run: {e}")),
         }
-        self.close_attempt(&row.id, "failover").await;
+        self.close_attempt(old_attempt, "failover").await;
         self.emit(
             &row.session_id,
             Some(&row.id),

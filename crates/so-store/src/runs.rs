@@ -330,8 +330,60 @@ impl Store {
         Ok(())
     }
 
+    /// Adds text the run was given mid-turn (a message), so a failover re-sends it too.
+    pub fn append_run_turn_prompt(&self, run_id: &str, text: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO run_meta (run_id, turn_prompt) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET turn_prompt = \
+             CASE WHEN turn_prompt IS NULL THEN excluded.turn_prompt \
+             ELSE turn_prompt || char(10) || char(10) || excluded.turn_prompt END",
+            params![run_id, text],
+        )?;
+        Ok(())
+    }
+
+    /// The route decision of a queued run that moved, to announce when it starts.
+    pub fn set_queued_route_event(&self, run_id: &str, json: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO run_meta (run_id, queued_route_json) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET queued_route_json = excluded.queued_route_json",
+            params![run_id, json],
+        )?;
+        Ok(())
+    }
+
+    pub fn take_queued_route_event(&self, run_id: &str) -> Result<Option<String>> {
+        let v = self.meta_text(run_id, "queued_route_json")?;
+        if v.is_some() {
+            self.conn().execute(
+                "UPDATE run_meta SET queued_route_json = NULL WHERE run_id = ?1",
+                [run_id],
+            )?;
+        }
+        Ok(v)
+    }
+
+    /// Drops what a queued run was waiting to announce (it ended before it started).
+    pub fn clear_queued_pending(&self, run_id: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE run_meta SET failover_json = NULL, queued_route_json = NULL WHERE run_id = ?1",
+            [run_id],
+        )?;
+        Ok(())
+    }
+
     pub fn get_run_turn_prompt(&self, run_id: &str) -> Result<Option<String>> {
         self.meta_text(run_id, "turn_prompt")
+    }
+
+    pub fn set_failover_pending(&self, run_id: &str, json: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO run_meta (run_id, failover_json) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET failover_json = excluded.failover_json",
+            params![run_id, json],
+        )?;
+        Ok(())
     }
 
     /// The failover a queued run is waiting to carry out (JSON), if any.
@@ -1419,6 +1471,16 @@ pub(crate) mod tests {
         s.insert_run(&r).unwrap();
         assert_eq!(s.get_run_turn_prompt(&r.id).unwrap(), None);
         s.set_run_turn_prompt(&r.id, "first").unwrap();
+        s.append_run_turn_prompt(&r.id, "and this").unwrap();
+        assert_eq!(
+            s.get_run_turn_prompt(&r.id).unwrap().as_deref(),
+            Some("first\n\nand this")
+        );
+        s.set_run_turn_prompt(&r.id, "first").unwrap();
+        s.set_queued_route_event(&r.id, "{}").unwrap();
+        s.clear_queued_pending(&r.id).unwrap();
+        assert_eq!(s.take_queued_route_event(&r.id).unwrap(), None);
+        assert_eq!(s.get_failover_pending(&r.id).unwrap(), None);
         s.set_run_checks(&r.id, &["ci".into()]).unwrap();
         assert_eq!(
             s.get_run_turn_prompt(&r.id).unwrap().as_deref(),

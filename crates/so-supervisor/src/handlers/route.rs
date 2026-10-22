@@ -98,16 +98,13 @@ const QUOTE_WORDS: usize = 4;
 /// replaced by `[task text]`.
 pub fn scrub_task(text: &str, task: &str) -> String {
     let words: Vec<&str> = task.split_whitespace().collect();
+    // A task shorter than a quote is too short to tell from ordinary words: left alone.
     if words.len() < QUOTE_WORDS {
-        return if !task.trim().is_empty() {
-            text.replace(task.trim(), "[task text]")
-        } else {
-            text.to_string()
-        };
+        return text.to_string();
     }
     let mut out = text.to_string();
-    // Longest quotes first would be ideal; shingles of the minimum length, applied in
-    // order, also remove the longer ones piece by piece.
+    // Every window of `QUOTE_WORDS` words is removed where it appears, so a longer quote
+    // goes piece by piece.
     for w in words.windows(QUOTE_WORDS) {
         let quote = w.join(" ");
         if out.contains(&quote) {
@@ -220,6 +217,6 @@ mod tests {
         );
         // Unrelated text and short tasks are left alone.
         assert_eq!(scrub_task("fine as is", task), "fine as is");
-        assert_eq!(scrub_task("fix typo here", "fix typo"), "[task text] here");
+        assert_eq!(scrub_task("fix typo here", "fix typo"), "fix typo here");
     }
 }

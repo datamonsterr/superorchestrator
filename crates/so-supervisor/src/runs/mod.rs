@@ -129,6 +129,8 @@ struct Inner {
     fault_gate_result: std::sync::atomic::AtomicBool,
     /// Runs whose process died, to be resumed by the resumer task.
     resume_tx: tokio::sync::mpsc::UnboundedSender<reconcile::ResumeRequest>,
+    /// When a queued run was last looked at for a free account elsewhere.
+    reroute_at: Mutex<HashMap<String, std::time::Instant>>,
     /// Cancel tokens of the workflows running now, by workflow run id.
     workflow_cancels: Mutex<HashMap<String, so_workflow::CancelToken>>,
     /// Workflows running now: while there are any the supervisor is busy, even between two
@@ -198,6 +200,7 @@ impl RunManager {
             msg_tick: watch::channel(0).0,
             resume_tx,
             failover_tx,
+            reroute_at: Mutex::default(),
             workflow_cancels: Mutex::default(),
             active_workflows: std::sync::atomic::AtomicUsize::new(0),
             workflow_bus: tokio::sync::broadcast::channel(256).0,

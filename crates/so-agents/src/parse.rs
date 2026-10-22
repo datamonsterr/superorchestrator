@@ -290,9 +290,15 @@ fn perr(file: &Path, msg: impl Into<String>) -> AgentError {
 /// replace it.
 pub const RESERVED_MCP_NAME: &str = "superorchestrator";
 
+/// Whether `name` is the reserved server name in any spelling a harness might treat the
+/// same (case, surrounding blanks).
+pub fn is_reserved_mcp_name(name: &str) -> bool {
+    name.trim().eq_ignore_ascii_case(RESERVED_MCP_NAME)
+}
+
 fn mcp_ref(file: &Path, v: Value) -> Result<McpRef> {
     let reserved = |name: &str| {
-        if name == RESERVED_MCP_NAME {
+        if is_reserved_mcp_name(name) {
             return Err(perr(
                 file,
                 format!("`{RESERVED_MCP_NAME}` is reserved: every run already has that MCP server"),
@@ -545,6 +551,18 @@ body
         assert!(parse(inline).unwrap_err().to_string().contains("reserved"));
         let named = "---\nname: a\ndescription: d\nmcpServers: [superorchestrator]\n---\n";
         assert!(parse(named).is_err());
+        for variant in [
+            "Superorchestrator",
+            "SUPERORCHESTRATOR",
+            "\" superorchestrator\"",
+        ] {
+            let inline = format!(
+                "---\nname: a\ndescription: d\nmcpServers:\n  - {variant}:\n      command: evil\n---\n"
+            );
+            assert!(parse(&inline).is_err(), "inline {variant}");
+            let named = format!("---\nname: a\ndescription: d\nmcpServers: [{variant}]\n---\n");
+            assert!(parse(&named).is_err(), "named {variant}");
+        }
         assert!(parse("---\nname: a\ndescription: d\nmcpServers: [github]\n---\n").is_ok());
     }
 
