@@ -3,7 +3,8 @@
 //! Everything here blocks; async callers wrap it in `spawn_blocking`.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// A git repository that contains the requested cwd.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +46,8 @@ pub fn git_command(dir: &Path) -> Command {
     for var in INHERITED_GIT_ENV {
         cmd.env_remove(var);
     }
+    // Reads must not take the index lock to refresh it behind someone's back.
+    cmd.env("GIT_OPTIONAL_LOCKS", "0");
     cmd
 }
 
@@ -251,14 +254,24 @@ pub fn current_branch(dir: &Path) -> Option<String> {
         .filter(|b| !b.is_empty())
 }
 
-/// The first lines of `git status --porcelain` for `dir` when it has any change (untracked
-/// files included).
+/// Changed paths of `dir` (untracked files included): up to five of them, then a count of
+/// the rest. `None` when the tree is clean.
 pub fn uncommitted(dir: &Path) -> Option<String> {
     let out = git(dir, &["status", "--porcelain"]).ok()?;
-    if out.is_empty() {
+    let lines: Vec<&str> = out.lines().collect();
+    if lines.is_empty() {
         return None;
     }
-    Some(out.lines().take(5).collect::<Vec<_>>().join("; "))
+    let mut text = lines
+        .iter()
+        .take(5)
+        .map(|l| l.get(3..).unwrap_or(l).trim())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if lines.len() > 5 {
+        text.push_str(&format!(" (+{} more)", lines.len() - 5));
+    }
+    Some(text)
 }
 
 /// True when the local branch exists in `repo`.
@@ -275,6 +288,32 @@ pub fn branch_exists(repo: &Path, branch: &str) -> bool {
     .is_ok()
 }
 
+/// `s` quoted for a POSIX shell, left bare when it only has safe characters.
+pub fn sh_quote(s: &str) -> String {
+    let safe = !s.is_empty()
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c));
+    if safe {
+        s.to_string()
+    } else {
+        format!("'{}'", s.replace('\'', "'\\''"))
+    }
+}
+
+/// The command that merges `branch` into the checkout at `repo`.
+pub fn merge_command(repo: &Path, branch: &str) -> String {
+    format!(
+        "git -C {} merge {}",
+        sh_quote(&repo.to_string_lossy()),
+        sh_quote(branch)
+    )
+}
+
+/// A commit id as stored on the run row: hex, so it can never be read as an option.
+fn is_sha(s: &str) -> bool {
+    s.len() >= 7 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
 /// What a successful [`merge_branch`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Merged {
@@ -282,20 +321,190 @@ pub enum Merged {
     MergeCommit,
 }
 
+/// The branch the base checkout was on when the run was spawned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BaseBranch {
+    Named(String),
+    /// `HEAD` was detached.
+    Detached,
+    /// Not recorded (a run from before this was kept).
+    Unknown,
+}
+
+/// Longest `git merge` may run (hooks and signing can hang).
+pub const MERGE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// The operation (merge, rebase, ...) a repository is in the middle of, if any.
+pub fn in_progress(repo: &Path) -> Option<&'static str> {
+    const MARKERS: [(&str, &str); 6] = [
+        ("MERGE_HEAD", "merge"),
+        ("REBASE_HEAD", "rebase"),
+        ("rebase-merge", "rebase"),
+        ("rebase-apply", "rebase"),
+        ("CHERRY_PICK_HEAD", "cherry-pick"),
+        ("REVERT_HEAD", "revert"),
+    ];
+    MARKERS.into_iter().find_map(|(name, label)| {
+        let path = git(repo, &["rev-parse", "--git-path", name]).ok()?;
+        let path = Path::new(&path);
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            repo.join(path)
+        };
+        path.exists().then_some(label)
+    })
+}
+
+fn merge_head_exists(repo: &Path) -> bool {
+    in_progress(repo) == Some("merge")
+}
+
+struct Captured {
+    status: Option<std::process::ExitStatus>,
+    out: String,
+}
+
+/// Runs `cmd` with no stdin, in its own process group, and gives up after `timeout`, killing
+/// the whole group. `status` is `None` on a timeout.
+fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Captured, String> {
+    use std::io::Read;
+    use std::os::unix::process::CommandExt;
+    use std::sync::{Arc, Mutex};
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    let mut child = cmd.spawn().map_err(|e| format!("could not run git: {e}"))?;
+    let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let mut readers = Vec::new();
+    for pipe in [
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let buf = Arc::clone(&buf);
+        readers.push(std::thread::spawn(move || {
+            let mut pipe = pipe;
+            let mut chunk = [0u8; 4096];
+            while let Ok(n) = pipe.read(&mut chunk) {
+                if n == 0 {
+                    break;
+                }
+                if let Ok(mut b) = buf.lock() {
+                    b.extend_from_slice(&chunk[..n]);
+                }
+            }
+        }));
+    }
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(s)) => break Some(s),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => break None,
+            Err(e) => return Err(format!("could not wait for git: {e}")),
+        }
+    };
+    if status.is_none() {
+        let _ = Command::new("kill")
+            .args(["-KILL", "--", &format!("-{}", child.id())])
+            .status();
+        let _ = child.kill();
+        let _ = child.wait();
+    } else {
+        // A background process may hold the pipes open; do not wait for it forever.
+        let end = Instant::now() + Duration::from_secs(2);
+        for r in readers {
+            while !r.is_finished() && Instant::now() < end {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+    let out = buf
+        .lock()
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+    Ok(Captured { status, out })
+}
+
+/// A merge commit when `HEAD` has two parents, otherwise a fast-forward.
+fn merged_kind(repo: &Path) -> Result<Merged, String> {
+    let parents = git(repo, &["rev-list", "--parents", "-n", "1", "HEAD"])?;
+    Ok(if parents.split(' ').count() > 2 {
+        Merged::MergeCommit
+    } else {
+        Merged::FastForward
+    })
+}
+
+/// Puts the base checkout back after a merge this call started failed or was killed. Only
+/// called after the checkout was verified clean (no merge in progress, no tracked
+/// changes), so anything found now is ours: an unfinished merge is aborted, and tracked
+/// changes a killed merge left in the index are reset.
+fn undo_merge(repo: &Path) {
+    if merge_head_exists(repo) {
+        let _ = git(repo, &["merge", "--abort"]);
+    }
+    let dirty = git(repo, &["status", "--porcelain", "--untracked-files=no"]).unwrap_or_default();
+    if !dirty.is_empty() {
+        let _ = git(repo, &["reset", "-q", "--hard", "HEAD"]);
+    }
+}
+
 /// Merges `branch` into the branch checked out in `repo` (SPEC 7.5, `accept_run` with
-/// `merge`). Refuses, changing nothing, unless the checkout has no tracked changes and is on
-/// `base_branch`; when that is unknown, on any branch that contains `base_commit`. A conflict
-/// is aborted. Every error is a message for the orchestrator.
+/// `merge`). Refuses, changing nothing, unless no merge, rebase, cherry-pick or revert is in
+/// progress, the checkout has no tracked changes and it is on `base_branch` (when that is
+/// unknown, on any branch that contains `base_commit`). A conflict, hook failure or timeout
+/// aborts the merge. The user's hooks run. Every error is a message for the orchestrator.
 pub fn merge_branch(
     repo: &Path,
     branch: &str,
-    base_branch: Option<&str>,
+    base_branch: &BaseBranch,
     base_commit: &str,
     message: &str,
+) -> Result<Merged, String> {
+    merge_branch_with(
+        repo,
+        branch,
+        base_branch,
+        base_commit,
+        message,
+        MERGE_TIMEOUT,
+    )
+}
+
+pub fn merge_branch_with(
+    repo: &Path,
+    branch: &str,
+    base_branch: &BaseBranch,
+    base_commit: &str,
+    message: &str,
+    timeout: Duration,
 ) -> Result<Merged, String> {
     if !branch_exists(repo, branch) {
         return Err(format!(
             "branch {branch} no longer exists in {}; there is nothing to merge",
+            repo.display()
+        ));
+    }
+    if *base_branch == BaseBranch::Detached {
+        return Err(format!(
+            "the run started on a detached HEAD; merge {branch} by hand: {}",
+            merge_command(repo, branch)
+        ));
+    }
+    if let Some(op) = in_progress(repo) {
+        return Err(format!(
+            "finish or abort the {op} in progress in {} first",
             repo.display()
         ));
     }
@@ -306,18 +515,19 @@ pub fn merge_branch(
         ));
     };
     match base_branch {
-        Some(want) if want != on => {
+        BaseBranch::Named(want) if *want != on => {
             return Err(format!(
                 "{} is on branch {on}, but this run was started from {want}; check out {want}, then accept again",
                 repo.display()
             ));
         }
-        Some(_) => {}
-        None => {
-            let contains = git_command(repo)
-                .args(["merge-base", "--is-ancestor", base_commit, "HEAD"])
-                .status()
-                .is_ok_and(|s| s.success());
+        BaseBranch::Named(_) => {}
+        _ => {
+            let contains = is_sha(base_commit)
+                && git_command(repo)
+                    .args(["merge-base", "--is-ancestor", base_commit, "HEAD"])
+                    .status()
+                    .is_ok_and(|s| s.success());
             if !contains {
                 return Err(format!(
                     "{} is on branch {on}, which does not contain the commit this run started from ({}); check out its base branch, then accept again",
@@ -335,33 +545,47 @@ pub fn merge_branch(
         ));
     }
     let before = git(repo, &["rev-parse", "HEAD"])?;
-    let out = git_command(repo)
-        .args(["merge", "--no-edit", "-m", message, branch])
+    let mut cmd = git_command(repo);
+    cmd.args(["merge", "--no-edit", "-m", message])
+        .arg(format!("refs/heads/{branch}"))
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_MERGE_AUTOEDIT", "no")
-        .output()
-        .map_err(|e| format!("could not run git: {e}"))?;
-    if out.status.success() {
-        let parents = git(repo, &["rev-list", "--parents", "-n", "1", "HEAD"])?;
+        .env("GIT_EDITOR", "true")
+        .env("GIT_ASKPASS", "true")
+        .env("SSH_ASKPASS", "true");
+    let ran = run_with_timeout(cmd, timeout)?;
+    let Some(status) = ran.status else {
+        // A hook can hang after the commit was made; then the merge itself is done.
+        if git(repo, &["rev-parse", "HEAD"])? != before {
+            return merged_kind(repo);
+        }
+        undo_merge(repo);
+        return Err(format!(
+            "merge timed out (hooks or signing?) after {}s in {}; it was aborted",
+            timeout.as_secs(),
+            repo.display()
+        ));
+    };
+    if status.success() {
         let after = git(repo, &["rev-parse", "HEAD"])?;
-        return Ok(if after != before && parents.split(' ').count() > 2 {
-            Merged::MergeCommit
-        } else {
+        return Ok(if after == before {
             Merged::FastForward
+        } else {
+            merged_kind(repo)?
         });
     }
-    let detail = format!(
-        "{}{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
     let conflicts = git(repo, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
-    // Leave the base checkout as it was found.
-    let _ = git(repo, &["merge", "--abort"]);
+    undo_merge(repo);
+    if ran.out.contains("index.lock") {
+        return Err(format!(
+            "another git operation is running in {}; try again",
+            repo.display()
+        ));
+    }
     if conflicts.is_empty() {
         return Err(format!(
-            "merging {branch} into {on} failed: {}",
-            detail.trim()
+            "merging {branch} into {on} failed (a hook may have refused it): {}. The merge was aborted and nothing changed",
+            ran.out.trim()
         ));
     }
     let files: Vec<&str> = conflicts.lines().collect();
@@ -382,14 +606,44 @@ pub struct DiffOut {
 
 /// Most untracked files added to a diff.
 const MAX_UNTRACKED: usize = 100;
+/// Most bytes read of the list of untracked files.
+const LIST_CAP: usize = 1 << 20;
 
-fn git_raw(dir: &Path, args: &[&str]) -> Result<(bool, Vec<u8>), String> {
-    let out = git_command(dir)
+/// Output of one git call, read only up to `cap` bytes: the child is killed when there is
+/// more. `code` is git's exit code.
+struct Capped {
+    bytes: Vec<u8>,
+    truncated: bool,
+    code: Option<i32>,
+}
+
+fn git_capped(dir: &Path, args: &[&str], cap: usize) -> Result<Capped, String> {
+    use std::io::Read;
+    let mut child = git_command(dir)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .map_err(|e| format!("could not run git: {e}"))?;
-    Ok((out.status.success(), out.stdout))
+    let mut bytes = Vec::new();
+    if let Some(out) = child.stdout.take() {
+        out.take(cap as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("could not read git output: {e}"))?;
+    }
+    let truncated = bytes.len() > cap;
+    if truncated {
+        bytes.truncate(cap);
+        let _ = child.kill();
+    }
+    let code = child.wait().ok().and_then(|s| s.code());
+    Ok(Capped {
+        bytes,
+        truncated,
+        code,
+    })
 }
 
 fn truncate_utf8(text: &mut String, cap: usize) -> bool {
@@ -404,50 +658,74 @@ fn truncate_utf8(text: &mut String, cap: usize) -> bool {
     true
 }
 
+const DIFF_FLAGS: [&str; 3] = ["diff", "--no-color", "--no-ext-diff"];
+
 /// The changes of a run since the merge base of its branch: committed work plus, when the
 /// worktree exists, uncommitted changes and untracked files. The patch is cut at `cap`
-/// bytes.
+/// bytes; git is stopped there rather than read to the end.
 pub fn diff(c: &Created, cap: usize) -> Result<DiffOut, String> {
-    let base = git(&c.repo, &["merge-base", &c.base, &c.branch]).unwrap_or_else(|_| c.base.clone());
+    if !is_sha(&c.base) {
+        return Err(format!(
+            "the run's base commit {:?} is not a commit id",
+            c.base
+        ));
+    }
+    let tip = format!("refs/heads/{}", c.branch);
+    let base = git(&c.repo, &["merge-base", &c.base, &tip]).unwrap_or_else(|_| c.base.clone());
     let live = c.path.is_dir();
     let (dir, target): (&Path, String) = if live {
         (&c.path, base.clone())
     } else {
-        (&c.repo, format!("{base}..{}", c.branch))
+        (&c.repo, format!("{base}..{tip}"))
     };
-    let (ok, stat) = git_raw(dir, &["diff", "--no-color", "--stat", &target])?;
-    if !ok {
-        return Err(format!("could not diff {} against {base}", c.branch));
-    }
-    let mut stat = String::from_utf8_lossy(&stat).trim_end().to_string();
-    let (ok, patch) = git_raw(dir, &["diff", "--no-color", &target])?;
-    if !ok {
-        return Err(format!("could not diff {} against {base}", c.branch));
-    }
-    let mut patch = String::from_utf8_lossy(&patch).into_owned();
+    let run = |extra: &[&str], limit: usize| -> Result<Capped, String> {
+        let mut args: Vec<&str> = DIFF_FLAGS.to_vec();
+        args.push("--no-textconv");
+        args.extend_from_slice(extra);
+        args.push(&target);
+        args.push("--");
+        let out = git_capped(dir, &args, limit)?;
+        if out.code != Some(0) && !out.truncated {
+            return Err(format!("could not diff {} against {base}", c.branch));
+        }
+        Ok(out)
+    };
+    let stat_out = run(&["--stat"], cap)?;
+    let mut stat = String::from_utf8_lossy(&stat_out.bytes)
+        .trim_end()
+        .to_string();
+    let patch_out = run(&[], cap)?;
+    let mut patch = patch_out.bytes;
+    let mut truncated = patch_out.truncated;
     if live {
-        let (_, names) = git_raw(dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
-        let names = String::from_utf8_lossy(&names).into_owned();
-        for name in names
-            .split('\0')
-            .filter(|n| !n.is_empty())
-            .take(MAX_UNTRACKED)
-        {
+        let names = git_capped(
+            dir,
+            &["ls-files", "--others", "--exclude-standard", "-z"],
+            LIST_CAP,
+        )?;
+        let names = String::from_utf8_lossy(&names.bytes).into_owned();
+        let all: Vec<&str> = names.split('\0').filter(|n| !n.is_empty()).collect();
+        for name in all.iter().take(MAX_UNTRACKED) {
             if !stat.is_empty() {
                 stat.push('\n');
             }
             stat.push_str(&format!(" {name} (untracked)"));
-            if patch.len() <= cap {
+            if !truncated {
+                let left = cap + 1 - patch.len();
+                let mut args: Vec<&str> = DIFF_FLAGS.to_vec();
+                args.extend(["--no-textconv", "--no-index", "--", "/dev/null", name]);
                 // `--no-index` exits 1 when the files differ.
-                let (_, one) = git_raw(
-                    dir,
-                    &["diff", "--no-color", "--no-index", "--", "/dev/null", name],
-                )?;
-                patch.push_str(&String::from_utf8_lossy(&one));
+                let one = git_capped(dir, &args, left)?;
+                patch.extend_from_slice(&one.bytes);
+                truncated = patch.len() > cap || one.truncated;
             }
         }
+        if all.len() > MAX_UNTRACKED {
+            stat.push_str(&format!("\n (+{} more files)", all.len() - MAX_UNTRACKED));
+        }
     }
-    let truncated = truncate_utf8(&mut patch, cap);
+    let mut patch = String::from_utf8_lossy(&patch).into_owned();
+    truncated |= truncate_utf8(&mut patch, cap);
     Ok(DiffOut {
         base,
         stat,
@@ -474,6 +752,82 @@ mod tests {
         for var in INHERITED_GIT_ENV {
             assert!(cleared.iter().any(|k| k == var), "{var} not cleared");
         }
+    }
+
+    #[test]
+    fn shell_quoting() {
+        assert_eq!(sh_quote("/tmp/repo-1"), "/tmp/repo-1");
+        assert_eq!(sh_quote("/tmp/my repo"), "'/tmp/my repo'");
+        assert_eq!(sh_quote("it's"), r"'it'\''s'");
+        assert_eq!(sh_quote(""), "''");
+        assert_eq!(
+            merge_command(Path::new("/r p"), "so/x-1"),
+            "git -C '/r p' merge so/x-1"
+        );
+    }
+
+    fn repo_with_branch() -> (tempfile::TempDir, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let p = d.path().to_path_buf();
+        for a in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.email", "t@e"],
+            vec!["config", "user.name", "t"],
+        ] {
+            git(&p, &a).unwrap();
+        }
+        let commit = |file: &str| {
+            std::fs::write(p.join(file), file).unwrap();
+            git(&p, &["add", "."]).unwrap();
+            git(&p, &["commit", "-q", "-m", file]).unwrap();
+        };
+        commit("a");
+        git(&p, &["checkout", "-q", "-b", "feat"]).unwrap();
+        commit("f");
+        git(&p, &["checkout", "-q", "main"]).unwrap();
+        commit("m");
+        (d, p)
+    }
+
+    #[test]
+    fn a_hung_merge_hook_times_out_and_leaves_the_base_clean() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, p) = repo_with_branch();
+        let hook = p.join(".git/hooks/pre-merge-commit");
+        std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        std::fs::write(&hook, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let base = git(&p, &["rev-parse", "main~1"]).unwrap();
+        let started = Instant::now();
+        let e = merge_branch_with(
+            &p,
+            "feat",
+            &BaseBranch::Named("main".into()),
+            &base,
+            "merge: t (x)",
+            Duration::from_millis(500),
+        )
+        .unwrap_err();
+        assert!(e.contains("merge timed out"), "{e}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(!p.join(".git/MERGE_HEAD").exists());
+        assert!(git(&p, &["status", "--porcelain"]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_dirty_list_names_five_files_and_counts_the_rest() {
+        let d = tempfile::tempdir().unwrap();
+        git(d.path(), &["init", "-q"]).unwrap();
+        assert_eq!(uncommitted(d.path()), None);
+        for i in 0..7 {
+            std::fs::write(d.path().join(format!("f{i}")), "x").unwrap();
+        }
+        let s = uncommitted(d.path()).unwrap();
+        assert!(
+            s.contains("f0") && s.contains("f4") && !s.contains("f5"),
+            "{s}"
+        );
+        assert!(s.ends_with("(+2 more)"), "{s}");
     }
 
     #[test]

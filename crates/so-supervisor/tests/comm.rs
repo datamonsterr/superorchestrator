@@ -1961,16 +1961,7 @@ async fn accept_merge_makes_a_merge_commit_when_the_base_moved() {
     commit_in(&env.repo, "c.txt", "c");
     accept(&c, &v.run_id, true).await.unwrap();
     wait_state(&c, &v.run_id, RunState::Succeeded).await;
-    let short: String = v
-        .run_id
-        .chars()
-        .filter(|c| *c != '-')
-        .rev()
-        .take(8)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
+    let short = so_supervisor::runs::worktree::short_id(&v.run_id);
     assert_eq!(
         git(&env.repo, &["log", "-1", "--format=%s"]),
         format!("merge: Add b ({short})")
@@ -2152,5 +2143,234 @@ async fn get_run_diff_is_absent_without_a_worktree() {
     let id = spawn(&c, env.params("claude-a")).await;
     wait_state(&c, &id, RunState::Succeeded).await;
     assert!(view_diff(&c, &id).await.diff.is_none());
+    h.shutdown().await;
+}
+
+fn git_ignoring_status(dir: &Path, args: &[&str]) {
+    let _ = so_supervisor::runs::worktree::git_command(dir)
+        .args(args)
+        .output()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn accept_merge_leaves_a_users_staged_merge_alone() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "inprogress").await;
+    git(&env.repo, &["checkout", "-q", "-b", "x"]);
+    commit_in(&env.repo, "a.txt", "from x");
+    git(&env.repo, &["checkout", "-q", "main"]);
+    commit_in(&env.repo, "a.txt", "from main");
+    git_ignoring_status(&env.repo, &["merge", "--no-edit", "x"]);
+    std::fs::write(env.repo.join("a.txt"), "resolved").unwrap();
+    git(&env.repo, &["add", "a.txt"]);
+    assert!(env.repo.join(".git/MERGE_HEAD").exists());
+    let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
+    assert!(
+        msg.contains("merge in progress") && msg.contains("first"),
+        "{msg}"
+    );
+    assert!(
+        env.repo.join(".git/MERGE_HEAD").exists(),
+        "the user's merge was aborted"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.repo.join("a.txt")).unwrap(),
+        "resolved"
+    );
+    assert_eq!(
+        git(&env.repo, &["diff", "--cached", "--name-only"]),
+        "a.txt"
+    );
+    assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_reports_a_failing_hook_and_leaves_the_base_clean() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "hooked").await;
+    commit_in(&env.repo, "c.txt", "c"); // forces a merge commit
+    let hook = env.repo.join(".git/hooks/pre-merge-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\necho 'no merges today' >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let head = git(&env.repo, &["rev-parse", "HEAD"]);
+    let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
+    assert!(
+        msg.contains("no merges today") && msg.contains("hook"),
+        "{msg}"
+    );
+    assert_eq!(git(&env.repo, &["rev-parse", "HEAD"]), head);
+    assert!(git(&env.repo, &["status", "--porcelain"]).is_empty());
+    assert!(!env.repo.join(".git/MERGE_HEAD").exists());
+    assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_maps_a_held_index_lock_to_a_retry_message() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "locked").await;
+    let lock = env.repo.join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
+    assert!(
+        msg.contains("another git operation is running") && msg.contains("try again"),
+        "{msg}"
+    );
+    assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
+    std::fs::remove_file(&lock).unwrap();
+    assert!(accept(&c, &v.run_id, true).await.unwrap().merged);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_of_a_run_started_on_a_detached_head_says_to_merge_by_hand() {
+    let env = Env::new();
+    git(&env.repo, &["checkout", "-q", "--detach"]);
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "detached").await;
+    let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
+    assert!(
+        msg.contains("started on a detached HEAD")
+            && msg.contains("merge")
+            && msg.contains(v.branch.as_deref().unwrap()),
+        "{msg}"
+    );
+    assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_and_reject_of_one_run_take_turns() {
+    let env = Env::new();
+    let resume = script(
+        &[expect("redo it")]
+            .into_iter()
+            .chain(turn())
+            .collect::<Vec<_>>(),
+    );
+    env.account(
+        "claude-a",
+        2,
+        &ok_script(&[write_step("b.txt", "b", true)]),
+        Some(&resume),
+        None,
+    );
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = env.params("claude-a");
+    p.review = true;
+    p.isolation = Some(Isolation::Worktree);
+    let id = spawn(&c, p).await;
+    wait_state(&c, &id, RunState::PendingReview).await;
+    let reject = c.call::<_, AckResult>(
+        METHOD_REJECT_RUN,
+        RejectParams {
+            run: id.clone(),
+            feedback: "redo it".into(),
+        },
+    );
+    let (r, a) = tokio::join!(reject, accept(&c, &id, true));
+    assert!(
+        r.is_ok() != a.is_ok(),
+        "exactly one wins: reject {r:?}, accept {a:?}"
+    );
+    if a.is_ok() {
+        wait_state(&c, &id, RunState::Succeeded).await;
+        assert!(env.repo.join("b.txt").is_file());
+    } else {
+        // The rejected run resumes and reaches the gate again, unmerged.
+        let v = loop {
+            let v = view(&c, &id).await;
+            if v.state == RunState::PendingReview && count(&v, EventType::AttemptStarted) == 2 {
+                break v;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert_eq!(count(&v, EventType::ReviewAccepted), 0);
+        assert!(!env.repo.join("b.txt").exists());
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn two_runs_accepted_into_one_repo_both_land() {
+    let env = Env::new();
+    env.simple(
+        "claude-a",
+        4,
+        &ok_script(&[write_step("one.txt", "1", true)]),
+    );
+    env.simple(
+        "claude-b",
+        4,
+        &ok_script(&[write_step("two.txt", "2", true)]),
+    );
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut ids = Vec::new();
+    for acct in ["claude-a", "claude-b"] {
+        let mut p = env.params(acct);
+        p.review = true;
+        p.isolation = Some(Isolation::Worktree);
+        ids.push(spawn(&c, p).await);
+    }
+    for id in &ids {
+        wait_state(&c, id, RunState::PendingReview).await;
+    }
+    let (a, b) = tokio::join!(accept(&c, &ids[0], true), accept(&c, &ids[1], true));
+    assert!(a.unwrap().merged && b.unwrap().merged);
+    assert!(env.repo.join("one.txt").is_file() && env.repo.join("two.txt").is_file());
+    assert!(git(&env.repo, &["status", "--porcelain"]).is_empty());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn get_run_diff_handles_binary_files_and_many_untracked_files() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let steps = [
+        json!({"shell": "printf 'a\\000b\\377' > blob.bin"}),
+        json!({"shell": "for i in $(seq 1 105); do echo x > u$i.txt; done"}),
+    ];
+    let v = gated(&env, &c, &steps, "many").await;
+    let d = view_diff(&c, &v.run_id).await.diff.unwrap();
+    assert!(d.error.is_none(), "{:?}", d.error);
+    assert!(d.stat.contains("(+6 more files)"), "{}", d.stat);
+    // blob.bin sorts before the u*.txt files, so its patch is within the first untracked ones.
+    assert!(d.patch.contains("Binary files"), "{}", d.patch);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn get_run_survives_a_diff_that_cannot_be_made() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "gone").await;
+    git(
+        &env.repo,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            v.worktree.as_deref().unwrap(),
+        ],
+    );
+    git(&env.repo, &["branch", "-D", v.branch.as_deref().unwrap()]);
+    let d = view_diff(&c, &v.run_id).await.diff.unwrap();
+    assert!(d.error.unwrap().contains("no longer exists"));
+    assert!(d.patch.is_empty());
     h.shutdown().await;
 }

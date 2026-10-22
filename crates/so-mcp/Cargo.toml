@@ -14,7 +14,6 @@ workspace = true
 [dependencies]
 so-core = { path = "../so-core" }
 so-supervisor = { path = "../so-supervisor" }
-so-workflow = { path = "../so-workflow" }
 rmcp = { workspace = true, features = ["server", "transport-io", "elicitation"] }
 schemars.workspace = true
 tokio.workspace = true
@@ -25,3 +24,4 @@ tracing.workspace = true
 [dev-dependencies]
 rmcp = { workspace = true, features = ["client", "elicitation"] }
 tempfile.workspace = true
+so-workflow = { path = "../so-workflow" }

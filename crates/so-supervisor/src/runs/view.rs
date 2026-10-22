@@ -127,27 +127,43 @@ impl RunManager {
         })
     }
 
-    /// The diff of a run with a worktree branch; `None` for a run without one.
+    /// The diff of a run with a worktree branch; `None` for a run without one. A diff that
+    /// cannot be made is reported in `error`, never as a failure of `get_run`.
     async fn run_diff(&self, row: &RunRow, cap: usize) -> R<Option<RunDiff>> {
         let Some(created) = crate::services::worktrees::created_of(row) else {
             return Ok(None);
         };
         let branch = created.branch.clone();
+        let failed = |error: String| RunDiff {
+            base: String::new(),
+            branch: branch.clone(),
+            stat: String::new(),
+            patch: String::new(),
+            truncated: false,
+            error: Some(error),
+        };
         let out = self
             .blocking(move || {
                 if !super::worktree::branch_exists(&created.repo, &created.branch) {
-                    return Ok(None);
+                    return Err(format!(
+                        "branch {} no longer exists (merged and removed, or pruned)",
+                        created.branch
+                    ));
                 }
-                super::worktree::diff(&created, cap).map(Some)
+                super::worktree::diff(&created, cap)
             })
-            .await?
-            .map_err(|e| rpc(UNAVAILABLE, e))?;
-        Ok(out.map(|d| RunDiff {
-            base: d.base,
-            branch,
-            stat: d.stat,
-            patch: d.patch,
-            truncated: d.truncated,
+            .await;
+        Ok(Some(match out {
+            Ok(Ok(d)) => RunDiff {
+                base: d.base,
+                branch: branch.clone(),
+                stat: d.stat,
+                patch: d.patch,
+                truncated: d.truncated,
+                error: None,
+            },
+            Ok(Err(e)) => failed(e),
+            Err(e) => failed(e.message),
         }))
     }
 

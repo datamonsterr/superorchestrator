@@ -406,6 +406,9 @@ pub struct RunDiff {
     pub patch: String,
     #[serde(default)]
     pub truncated: bool,
+    /// Why the diff could not be made (the other fields are then empty).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

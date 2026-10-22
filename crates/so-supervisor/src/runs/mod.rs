@@ -77,6 +77,10 @@ pub(crate) enum LockKind {
     Gate,
     /// Putting a run's worktree back, and undoing it.
     Worktree,
+    /// `accept_run` and `reject_run` of one run: exactly one of them acts.
+    Review,
+    /// Merging into one repository (keyed by its canonical path): one merge at a time.
+    Repo,
 }
 
 /// A run with a harness process.

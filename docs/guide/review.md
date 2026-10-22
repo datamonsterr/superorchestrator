@@ -26,4 +26,12 @@ A merge is refused, and the run stays at `pending_review`, when:
 - the run's worktree has uncommitted changes (they would not be merged);
 - the merge conflicts. It is aborted, the base checkout is left as it was, and the error names the branch and the files.
 
+Notes on the merge:
+
+- It also refuses while a merge, rebase, cherry-pick or revert is in progress in the base checkout. That work is yours and is never aborted.
+- Your repository's git hooks run (`pre-merge-commit`, `post-merge`, commit signing). The merge has no terminal: no editor, no password prompts, and a 120 second limit. A hook that refuses the merge, or a timeout, gives an error and the merge is undone.
+- Accepting two runs into one repository at the same time is safe: the merges take turns. Accept and reject of the same run also take turns, so only one of them takes effect.
+- If a run started while the base checkout had a detached `HEAD`, it is not merged. The error gives the command to run yourself.
+- If `diff` cannot be made (for example the branch was pruned), `get_run` still works and `diff.error` says why.
+
 For a run with isolation `none`, `merge: true` does nothing and says so in `note`. Nothing is merged without the flag, and nothing is pushed.
