@@ -53,6 +53,8 @@ export interface AgentDetail {
   path: string;
   /** Imported from `.claude/agents`: cannot be edited or removed here. */
   read_only: boolean;
+  /** Secret-looking values were replaced in `source`; saving it as is is refused. */
+  redacted: boolean;
   /** The raw `AGENT.md`. */
   source: string;
 }

@@ -107,6 +107,16 @@ fn find(st: &AppState, name: &str) -> ApiResult<Target> {
     })
 }
 
+/// The UI shows redacted sources; saving one back would write the marker over a secret.
+fn refuse_redacted(source: &str) -> ApiResult<()> {
+    if source.contains("[REDACTED]") {
+        return Err(ApiError::invalid(
+            "source contains redacted values; edit the file directly or re-enter the secret",
+        ));
+    }
+    Ok(())
+}
+
 /// What the agent's pinned harness cannot honour (nothing for `auto`).
 fn warnings(def: &AgentDef) -> Vec<String> {
     match def.harness {
@@ -200,7 +210,8 @@ pub async fn get(
         .blocking(move || {
             let t = find(&st, &name)?;
             t.ensure_regular()?;
-            let source = redact(&read_source_of(&t.file)?);
+            let raw = read_source_of(&t.file)?;
+            let source = redact(&raw);
             Ok(Json(AgentDetail {
                 description: t
                     .def
@@ -208,6 +219,7 @@ pub async fn get(
                     .map(|d| d.description.clone())
                     .unwrap_or_default(),
                 path: t.file.display().to_string(),
+                redacted: source != raw,
                 origin: t.source.as_str().to_string(),
                 read_only: t.source.read_only(),
                 name: t.name,
@@ -224,6 +236,7 @@ pub async fn create(
     st.clone()
         .blocking(move || {
             validate_agent_name(&b.name)?;
+            refuse_redacted(&b.source)?;
             let dir = st.sup.paths.agents_dir();
             let folder = dir.join(&b.name);
             let file = folder.join("AGENT.md");
@@ -270,6 +283,7 @@ pub async fn update(
             let t = find(&st, &name)?;
             t.editable("edit")?;
             t.ensure_regular()?;
+            refuse_redacted(&b.source)?;
             let def = parse_for(&name, &b.source, &t.file, t.dir.clone(), t.source)?;
             write_atomic(&t.file, b.source.as_bytes()).map_err(ApiError::internal)?;
             Ok(Json(AgentWriteResult {

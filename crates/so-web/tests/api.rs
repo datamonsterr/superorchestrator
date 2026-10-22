@@ -1803,6 +1803,21 @@ async fn read_only_imports_broken_agents_and_redaction() {
         !v["source"].as_str().unwrap().contains(SECRET),
         "agent source is redacted"
     );
+    assert_eq!(v["redacted"], true);
+    let src = v["source"].as_str().unwrap().to_string();
+    let (s, e) = send_json(&app, "PUT", "/api/v1/agents/broken", json!({"source": src})).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        e["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("redacted values"),
+        "{e}"
+    );
+    let (s, e) = post(&app, "/api/v1/agents", Some(json!({"name": "fresh", "source": AGENT.replace("Be careful.", "key [REDACTED]").replace("reviewer", "fresh")}))).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{e}");
+    let (_, c) = get(&app, "/api/v1/agents/ro").await;
+    assert_eq!(c["redacted"], false);
     let (s, v) = send_json(
         &app,
         "PUT",

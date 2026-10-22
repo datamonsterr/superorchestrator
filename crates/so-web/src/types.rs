@@ -482,6 +482,8 @@ pub struct AgentDetail {
     pub origin: String,
     /// Imported from `.claude/agents`: cannot be edited or removed here.
     pub read_only: bool,
+    /// Secret-looking values were replaced in `source`; saving it as is is refused.
+    pub redacted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
