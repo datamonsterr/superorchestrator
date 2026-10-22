@@ -218,6 +218,7 @@ async fn quota_error_fails_over_to_the_next_account() {
     assert_eq!(env.launches("claude-b").len(), 1);
     // The new account was told what happened, after the original task.
     let said = env.wait_stdin_lines("claude-b", 1).await;
+    // The first stdin line is the failover prompt (task plus the quota note).
     assert!(
         said[0].contains(PROMPT) && said[0].contains("ran out of quota"),
         "{said:?}"
@@ -426,6 +427,7 @@ async fn a_resumed_run_fails_over_with_the_resume_prompt() {
     assert_eq!(v.account.as_deref(), Some("claude-b"), "{:?}", types(&v));
     assert_eq!(v.result, Some(json!("second")));
     let said = env.wait_stdin_lines("claude-b", 1).await;
+    // The first stdin line is the failover prompt (task plus the quota note).
     assert!(
         said[0].contains("again please") && !said[0].contains(PROMPT),
         "{said:?}"

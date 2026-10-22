@@ -99,7 +99,7 @@ First release. Pending the `v0.1.0` tag.
   session, a CSP console error from zod, and a `1970-01-01` headroom `observed_at` (now `null`).
 
 - `account add` and `account import` refuse a name that would shadow an existing command: when
-  the name resolves on `PATH` to a file that is not one of our wrappers, they fail and name the
+  the name resolves on `PATH` to an executable that is not one of our wrappers, they fail and name the
   path, so `account add codex --name ls` no longer hides `/usr/bin/ls`.
 
 - `superorchestrator route fix a typo in README` works without quotes; the words are joined with

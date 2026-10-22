@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use so_core::{AccountFile, Config, Harness, Paths, Platform};
 
-use crate::env::build_launch_vars;
+use crate::env::{build_launch_vars, is_executable};
 use crate::error::{AccountsError, Result};
 use crate::host::{HostEnv, canon, same_path};
 use crate::wrapper::{is_managed, remove_wrapper, write_wrapper};
@@ -114,11 +114,15 @@ fn ensure_new(paths: &Paths, name: &str) -> Result<()> {
 fn ensure_no_shadow(cfg: &Config, host: &HostEnv, name: &str) -> Result<()> {
     let wrapper_dir = wrapper_dir(cfg, host)?;
     for dir in host.path_var.as_deref().unwrap_or_default().split(':') {
+        // An empty PATH entry means the current directory; resolution elsewhere in this
+        // crate ignores it too, and a wrapper is never run from the cwd.
         if dir.is_empty() || same_path(Path::new(dir), &wrapper_dir) {
             continue;
         }
         let path = Path::new(dir).join(name);
-        if path.is_file() && !is_managed(&path) {
+        // A symlink to one of our wrappers counts as ours.
+        let ours = is_managed(&path) || path.canonicalize().is_ok_and(|p| is_managed(&p));
+        if is_executable(&path) && !ours {
             return Err(AccountsError::ShadowsCommand {
                 name: name.to_string(),
                 path,
@@ -435,6 +439,28 @@ mod tests {
         crate::testutil::stub_bin(f.d.path(), "work");
         let err = add(&f.paths, &f.cfg, &f.host, Harness::Codex, "work", None).unwrap_err();
         assert!(matches!(err, AccountsError::ShadowsCommand { .. }));
+    }
+
+    #[test]
+    fn a_non_executable_file_does_not_shadow() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut f = fx();
+        f.cfg.accounts.wrapper_dir = "~/wrappers".into();
+        let p = crate::testutil::stub_bin(f.d.path(), "work");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644)).unwrap();
+        add(&f.paths, &f.cfg, &f.host, Harness::Codex, "work", None).unwrap();
+    }
+
+    #[test]
+    fn a_symlink_to_our_wrapper_in_another_path_dir_is_not_a_shadow() {
+        let mut f = fx();
+        f.cfg.accounts.wrapper_dir = "~/wrappers".into();
+        add(&f.paths, &f.cfg, &f.host, Harness::Codex, "work", None).unwrap();
+        std::fs::remove_file(f.paths.account_file("work")).unwrap();
+        let bin = f.d.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(f.d.path().join("wrappers/work"), bin.join("work")).unwrap();
+        add(&f.paths, &f.cfg, &f.host, Harness::Codex, "work", None).unwrap();
     }
 
     #[test]
