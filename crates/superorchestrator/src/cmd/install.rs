@@ -663,9 +663,9 @@ fn collect(results: Vec<Step>) -> (Vec<Outcome>, usize) {
 }
 
 /// `install` without printing: the outcomes as JSON, or an error when a step failed.
-pub(crate) fn install_quiet(ctx: &Ctx, force: bool) -> Result<serde_json::Value> {
+pub(crate) fn install_quiet(ctx: &Ctx, force: bool, claude_md: bool) -> Result<serde_json::Value> {
     let w = Writer::new(&ctx.paths, false);
-    let (outcomes, failures) = collect(install_steps(ctx, &w, force)?);
+    let (outcomes, failures) = collect(install_steps(ctx, &w, force, claude_md)?);
     if failures > 0 {
         return Err(anyhow!("{failures} step(s) failed"));
     }
