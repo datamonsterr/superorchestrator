@@ -83,16 +83,26 @@ pub fn scan(home: &Path) -> Vec<ImportCandidate> {
     dedupe(out)
 }
 
-/// True when the claude home holds nothing but our own `skills/superorchestrator` (or
-/// nothing at all): installing the skill must not make it look like an account.
+/// Our own skill directories under `~/.claude/skills`.
+const OUR_SKILLS: [&str; 3] = [
+    "superorchestrator",
+    "use-superorchestrator-mcp",
+    "superorchestrator-cli",
+];
+
+/// True when the claude home holds nothing but what `install` writes (our skills and the
+/// `CLAUDE.md` block) or nothing at all: installing must not make it look like an account.
 fn only_our_skill(claude: &Path) -> bool {
     let Ok(rd) = std::fs::read_dir(claude) else {
         return false;
     };
     rd.flatten().all(|e| {
-        e.file_name() == "skills"
-            && std::fs::read_dir(e.path())
-                .is_ok_and(|s| s.flatten().all(|x| x.file_name() == "superorchestrator"))
+        e.file_name() == "CLAUDE.md"
+            || e.file_name() == "skills"
+                && std::fs::read_dir(e.path()).is_ok_and(|s| {
+                    s.flatten()
+                        .all(|x| OUR_SKILLS.iter().any(|n| x.file_name() == *n))
+                })
     })
 }
 
