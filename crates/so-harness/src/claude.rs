@@ -1,48 +1,44 @@
 //! Claude Code driver (ADR-0004 "claude"): `claude -p` with stream-json on stdin
 //! and stdout. One process serves many turns; closing stdin ends it.
 
-use std::process::Stdio;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use so_core::{ErrorKind, Harness};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::process::Command;
+use tokio::sync::oneshot;
 
 use crate::driver::{
-    Driver, DriverError, HarnessEvent, JoinInfo, LaunchSpec, ProcessGuard, RateLimits, RunControl,
-    RunHandle, classify_common,
+    Driver, DriverConfig, DriverError, HarnessEvent, JoinCommand, JoinInfo, LaunchSpec, RateLimits,
+    RunControl, RunHandle, ShutdownOutcome, classify_common,
 };
-use crate::transcript::{Dir, TranscriptWriter};
+use crate::process::{
+    LineParser, ProcessHandle, create_private_dir, spawn_supervised, write_private,
+};
 
-type SharedTranscript = Arc<Mutex<TranscriptWriter>>;
+/// How long `interrupt` waits for claude's `control_response`.
+const INTERRUPT_ACK_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Driver for `claude`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ClaudeDriver {
-    shutdown_grace: Duration,
-}
-
-impl Default for ClaudeDriver {
-    fn default() -> Self {
-        Self {
-            shutdown_grace: Duration::from_secs(5),
-        }
-    }
+    config: DriverConfig,
 }
 
 impl ClaudeDriver {
-    /// How long `shutdown` waits after closing stdin before killing.
-    pub fn with_shutdown_grace(mut self, grace: Duration) -> Self {
-        self.shutdown_grace = grace;
-        self
+    pub fn new(config: DriverConfig) -> Self {
+        Self { config }
     }
 }
 
 /// Harness arguments (after `program argv_prefix extra_args`). The prompt is
 /// never part of argv.
+///
+/// `--dangerously-skip-permissions` is deliberate: SPEC 4 ("Full permissions")
+/// requires workers to run unattended with every permission granted.
 pub fn build_args(spec: &LaunchSpec, session_id: &str) -> Vec<String> {
     let mut a: Vec<String> = [
         "-p",
@@ -81,7 +77,7 @@ pub fn build_args(spec: &LaunchSpec, session_id: &str) -> Vec<String> {
 }
 
 fn write_run_files(spec: &LaunchSpec) -> std::io::Result<()> {
-    std::fs::create_dir_all(&spec.run_dir)?;
+    create_private_dir(&spec.run_dir)?;
     let env: serde_json::Map<String, Value> = spec
         .mcp
         .env
@@ -93,11 +89,14 @@ fn write_run_files(spec: &LaunchSpec) -> std::io::Result<()> {
         "args": spec.mcp.args,
         "env": env,
     }}});
-    std::fs::write(
-        spec.run_dir.join("mcp.json"),
-        serde_json::to_vec_pretty(&mcp)?,
+    write_private(
+        &spec.run_dir.join("mcp.json"),
+        &serde_json::to_vec_pretty(&mcp)?,
     )?;
-    std::fs::write(spec.run_dir.join("system.md"), &spec.system_addendum)
+    write_private(
+        &spec.run_dir.join("system.md"),
+        spec.system_addendum.as_bytes(),
+    )
 }
 
 impl Driver for ClaudeDriver {
@@ -111,77 +110,54 @@ impl Driver for ClaudeDriver {
             .resume
             .clone()
             .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());
-        let transcript: SharedTranscript =
-            Arc::new(Mutex::new(TranscriptWriter::create(&spec.run_dir)?));
 
         let mut cmd = Command::new(&spec.launch.program);
         cmd.args(&spec.launch.argv_prefix)
             .args(&spec.launch.extra_args)
             .args(build_args(&spec, &session_id))
             .envs(spec.launch.vars.iter().map(|(k, v)| (k, v)))
-            .current_dir(&spec.cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .process_group(0);
-        let mut child = cmd.spawn().map_err(|source| DriverError::Spawn {
-            program: spec.launch.program.display().to_string(),
-            source,
-        })?;
-        let pid = child.id();
-        let stdin = child.stdin.take();
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        let (tx, rx) = mpsc::channel(256);
-        let out_task = stdout.map(|o| tokio::spawn(read_stdout(o, tx.clone(), transcript.clone())));
-        let err_task = stderr.map(|e| tokio::spawn(read_stderr(e, tx.clone(), transcript.clone())));
-
-        let (kill_tx, kill_rx) = oneshot::channel::<()>();
-        let (exited_tx, exited_rx) = watch::channel(false);
-        tokio::spawn(async move {
-            let status = tokio::select! {
-                s = child.wait() => s,
-                _ = kill_rx => {
-                    let _ = child.kill().await;
-                    child.wait().await
-                }
-            };
-            for t in [out_task, err_task].into_iter().flatten() {
-                let _ = tokio::time::timeout(Duration::from_secs(2), t).await;
-            }
-            let code = status.ok().and_then(|s| s.code());
-            let _ = tx.send(HarnessEvent::Exited { code }).await;
-            let _ = exited_tx.send(true);
-        });
-
-        let mut control = ClaudeControl {
-            stdin,
-            guard: ProcessGuard::new(pid, exited_rx.clone()),
-            pid,
-            kill_tx: Some(kill_tx),
-            exited: exited_rx,
-            transcript,
-            grace: self.shutdown_grace,
-            interrupts: 0,
+            .current_dir(&spec.cwd);
+        let acks = Acks::default();
+        let sup = spawn_supervised(
+            cmd,
+            &spec.run_dir,
+            self.config.shutdown_grace,
+            ClaudeParser::new(acks.clone()),
+        )?;
+        let control = ClaudeControl {
+            proc: Arc::new(sup.handle),
+            acks,
+            seq: Arc::new(AtomicU32::new(0)),
         };
-        control.send(&spec.prompt).await?;
+        if let Err(e) = control.send(&spec.prompt).await {
+            control.proc.shutdown(Duration::ZERO).await;
+            return Err(e);
+        }
         Ok(RunHandle {
-            events: rx,
+            events: sup.events,
             control: RunControl::Claude(control),
-            native_session_id: Some(session_id),
+            native_session_id: Some(session_id.clone()),
+            join: JoinInfo {
+                account_name: spec.account.name.clone(),
+                native_session_id: session_id,
+                endpoint: None,
+                cwd: spec.cwd.clone(),
+            },
         })
     }
 
     /// `<account wrapper> --resume <uuid>`, run from the run's cwd with the
     /// session paused or ended (the live process owns stdin).
-    fn join_command(&self, j: &JoinInfo) -> Vec<String> {
-        vec![
-            j.account_name.clone(),
-            "--resume".into(),
-            j.native_session_id.clone(),
-        ]
+    fn join_command(&self, j: &JoinInfo) -> JoinCommand {
+        JoinCommand {
+            argv: vec![
+                j.account_name.clone(),
+                "--resume".into(),
+                j.native_session_id.clone(),
+            ],
+            env: vec![],
+            cwd: j.cwd.clone(),
+        }
     }
 
     fn classify_error(&self, text: &str) -> ErrorKind {
@@ -189,67 +165,83 @@ impl Driver for ClaudeDriver {
     }
 }
 
-/// Control handle for a running claude process.
-#[derive(Debug)]
+/// Pending interrupt acknowledgements, keyed by `request_id`.
+#[derive(Debug, Clone, Default)]
+pub struct Acks(Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>);
+
+impl Acks {
+    fn register(&self, id: &str) -> oneshot::Receiver<bool> {
+        let (tx, rx) = oneshot::channel();
+        if let Ok(mut m) = self.0.lock() {
+            m.insert(id.to_string(), tx);
+        }
+        rx
+    }
+
+    fn forget(&self, id: &str) {
+        if let Ok(mut m) = self.0.lock() {
+            m.remove(id);
+        }
+    }
+
+    fn resolve(&self, id: &str, ok: bool) {
+        let tx = self.0.lock().ok().and_then(|mut m| m.remove(id));
+        if let Some(tx) = tx {
+            let _ = tx.send(ok);
+        }
+    }
+}
+
+/// Clonable control handle for a running claude process. Dropping the last
+/// clone kills the process group.
+#[derive(Debug, Clone)]
 pub struct ClaudeControl {
-    stdin: Option<ChildStdin>,
-    guard: ProcessGuard,
-    pid: Option<u32>,
-    kill_tx: Option<oneshot::Sender<()>>,
-    exited: watch::Receiver<bool>,
-    transcript: SharedTranscript,
-    grace: Duration,
-    interrupts: u32,
+    proc: Arc<ProcessHandle>,
+    acks: Acks,
+    seq: Arc<AtomicU32>,
 }
 
 impl ClaudeControl {
-    async fn write_line(&mut self, v: &Value) -> Result<(), DriverError> {
-        let stdin = self.stdin.as_mut().ok_or(DriverError::Closed)?;
-        let mut line = v.to_string();
-        if let Ok(mut t) = self.transcript.lock() {
-            let _ = t.append(Dir::Out, &line, &[]);
-        }
-        line.push('\n');
-        stdin.write_all(line.as_bytes()).await?;
-        stdin.flush().await?;
-        Ok(())
+    pub async fn send(&self, text: &str) -> Result<(), DriverError> {
+        self.proc
+            .stdin
+            .write_line(user_message(text).to_string())
+            .await
     }
 
-    pub async fn send(&mut self, text: &str) -> Result<(), DriverError> {
-        self.write_line(&user_message(text)).await
-    }
-
-    pub async fn interrupt(&mut self) -> Result<(), DriverError> {
-        self.interrupts += 1;
+    /// Writes the interrupt `control_request` and waits for claude's
+    /// `control_response`.
+    pub async fn interrupt(&self) -> Result<(), DriverError> {
+        let n = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let id = format!("so-int-{n}");
+        let ack = self.acks.register(&id);
         let req = json!({
             "type": "control_request",
-            "request_id": format!("so-int-{}", self.interrupts),
+            "request_id": id,
             "request": {"subtype": "interrupt"},
         });
-        self.write_line(&req).await
-    }
-
-    /// Closes stdin, waits `grace` for a clean exit, then kills.
-    pub async fn shutdown(&mut self) -> Result<(), DriverError> {
-        self.stdin = None;
-        if !self.wait_exit(self.grace).await {
-            self.guard.terminate(Duration::from_secs(2)).await;
-            if let Some(k) = self.kill_tx.take() {
-                let _ = k.send(());
-            }
-            self.wait_exit(Duration::from_secs(5)).await;
+        if let Err(e) = self.proc.stdin.write_line(req.to_string()).await {
+            self.acks.forget(&id);
+            return Err(e);
         }
-        Ok(())
+        match tokio::time::timeout(INTERRUPT_ACK_TIMEOUT, ack).await {
+            Ok(Ok(true)) => Ok(()),
+            Ok(Ok(false)) => Err(DriverError::Other("claude rejected the interrupt".into())),
+            _ => {
+                self.acks.forget(&id);
+                Err(DriverError::Other(
+                    "interrupt was not acknowledged within 5 s".into(),
+                ))
+            }
+        }
     }
 
-    async fn wait_exit(&mut self, d: Duration) -> bool {
-        tokio::time::timeout(d, self.exited.wait_for(|e| *e))
-            .await
-            .is_ok()
+    pub async fn shutdown(&self, deadline: Duration) -> Result<ShutdownOutcome, DriverError> {
+        Ok(self.proc.shutdown(deadline).await)
     }
 
     pub fn pid(&self) -> Option<u32> {
-        self.pid
+        self.proc.pid
     }
 }
 
@@ -257,76 +249,60 @@ fn user_message(text: &str) -> Value {
     json!({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
 }
 
-async fn read_stdout(out: ChildStdout, tx: mpsc::Sender<HarnessEvent>, t: SharedTranscript) {
-    let mut lines = BufReader::new(out).lines();
-    let mut parser = ClaudeParser::default();
-    while let Ok(Some(line)) = lines.next_line().await {
-        let events = parser.parse_line(&line);
-        let offset = t
-            .lock()
-            .ok()
-            .and_then(|mut w| w.append(Dir::In, &line, &events).ok())
-            .unwrap_or(0);
-        if tx.send(HarnessEvent::Raw { line, offset }).await.is_err() {
-            return;
-        }
-        for e in events {
-            if tx.send(e).await.is_err() {
-                return;
-            }
-        }
-    }
-}
-
-async fn read_stderr(err: ChildStderr, tx: mpsc::Sender<HarnessEvent>, t: SharedTranscript) {
-    let mut lines = BufReader::new(err).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let Ok(mut w) = t.lock() {
-            let _ = w.append(Dir::Err, &line, &[]);
-        }
-        if tx.send(HarnessEvent::Stderr { line }).await.is_err() {
-            return;
-        }
-    }
-}
-
 /// Stateful stdout parser: remembers tool names so results can be named.
 #[derive(Debug, Default)]
 pub struct ClaudeParser {
     started: bool,
-    tools: std::collections::HashMap<String, String>,
+    tools: HashMap<String, String>,
     rate_limits: Option<RateLimits>,
+    acks: Acks,
 }
 
 impl ClaudeParser {
+    pub fn new(acks: Acks) -> Self {
+        Self {
+            acks,
+            ..Self::default()
+        }
+    }
+
     /// Normalised events for one stdout line (without the `Raw` event).
+    /// Non-JSON lines produce nothing.
     pub fn parse_line(&mut self, line: &str) -> Vec<HarnessEvent> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
-            return match classify_common(line) {
-                ErrorKind::Other => vec![],
-                kind => vec![HarnessEvent::Error {
-                    kind,
-                    message: line.to_string(),
-                }],
-            };
+            return vec![];
         };
         match v["type"].as_str() {
-            Some("system") if v["subtype"] == "init" && !self.started => {
-                self.started = true;
-                v["session_id"]
-                    .as_str()
-                    .map(|s| HarnessEvent::SessionStarted {
-                        native_session_id: s.to_string(),
-                    })
-                    .into_iter()
-                    .collect()
-            }
+            Some("system") if v["subtype"] == "init" => self.init(&v),
             Some("assistant") => self.assistant(&v),
             Some("user") => self.user(&v),
             Some("rate_limit_event") => self.rate_limit(&v),
             Some("result") => self.result(&v),
+            Some("control_response") => {
+                let r = &v["response"];
+                if let Some(id) = r["request_id"].as_str() {
+                    self.acks.resolve(id, r["subtype"] == "success");
+                }
+                vec![]
+            }
             _ => vec![],
         }
+    }
+
+    /// Claude re-sends `init` every turn: the first starts the session, each
+    /// starts a turn.
+    fn init(&mut self, v: &Value) -> Vec<HarnessEvent> {
+        let mut out = Vec::new();
+        if !self.started {
+            self.started = true;
+            if let Some(s) = v["session_id"].as_str() {
+                out.push(HarnessEvent::SessionStarted {
+                    native_session_id: s.to_string(),
+                });
+            }
+        }
+        out.push(HarnessEvent::TurnStarted);
+        out
     }
 
     fn assistant(&mut self, v: &Value) -> Vec<HarnessEvent> {
@@ -367,7 +343,8 @@ impl ClaudeParser {
             .collect()
     }
 
-    /// Kept and attached to the next `Usage`; a non-allowed status is an error.
+    /// Kept and attached to the next `Usage`. Only a known rejection status is
+    /// an error (`allowed` and `allowed_warning` are not).
     fn rate_limit(&mut self, v: &Value) -> Vec<HarnessEvent> {
         let info = &v["rate_limit_info"];
         let win = &info["unifiedWindows"];
@@ -378,7 +355,7 @@ impl ClaudeParser {
             weekly_resets_at: win["seven_day"]["resetsAt"].as_i64(),
         });
         match info["status"].as_str() {
-            Some(s) if !s.starts_with("allowed") => vec![HarnessEvent::Error {
+            Some(s @ ("rejected" | "exceeded")) => vec![HarnessEvent::Error {
                 kind: ErrorKind::Quota,
                 message: format!(
                     "rate limit status {s} ({})",
@@ -392,14 +369,14 @@ impl ClaudeParser {
     fn result(&mut self, v: &Value) -> Vec<HarnessEvent> {
         let u = &v["usage"];
         let n = |k: &str| u[k].as_u64().unwrap_or(0);
-        let mut out = vec![HarnessEvent::Usage {
+        let usage = HarnessEvent::Usage {
             input_tokens: n("input_tokens")
                 + n("cache_creation_input_tokens")
                 + n("cache_read_input_tokens"),
             output_tokens: n("output_tokens"),
             cost: v["total_cost_usd"].as_f64(),
             rate_limits: self.rate_limits.take(),
-        }];
+        };
         let is_error = v["is_error"].as_bool().unwrap_or(false);
         let result_text = v["result"].as_str().map(String::from);
         let error_text = is_error.then(|| {
@@ -408,19 +385,23 @@ impl ClaudeParser {
                 .or_else(|| v["subtype"].as_str().map(String::from))
                 .unwrap_or_else(|| "claude reported an error".into())
         });
-        out.push(HarnessEvent::TurnFinished {
-            result_text,
-            structured: v.get("structured_output").filter(|s| !s.is_null()).cloned(),
-            is_error,
-            error_text: error_text.clone(),
-        });
-        if let Some(message) = error_text {
-            out.push(HarnessEvent::Error {
-                kind: classify_common(&message),
-                message,
-            });
-        }
-        out
+        let error_kind = error_text.as_deref().map(classify_common);
+        vec![
+            usage,
+            HarnessEvent::TurnFinished {
+                result_text,
+                structured: v.get("structured_output").filter(|s| !s.is_null()).cloned(),
+                is_error,
+                error_kind,
+                error_text,
+            },
+        ]
+    }
+}
+
+impl LineParser for ClaudeParser {
+    fn parse_line(&mut self, line: &str) -> Vec<HarnessEvent> {
+        ClaudeParser::parse_line(self, line)
     }
 }
 
@@ -445,11 +426,12 @@ mod tests {
             .iter()
             .map(|e| match e {
                 SessionStarted { .. } => "start",
+                TurnStarted => "turn_start",
                 AssistantMessage { .. } => "msg",
                 ToolCallStarted { .. } => "tool+",
                 ToolCallFinished { .. } => "tool-",
                 Usage { .. } => "usage",
-                TurnFinished { .. } => "turn",
+                TurnFinished { .. } => "turn_end",
                 Error { .. } => "err",
                 _ => "other",
             })
@@ -457,7 +439,17 @@ mod tests {
         assert_eq!(
             kinds,
             [
-                "start", "tool+", "tool-", "msg", "usage", "turn", "msg", "usage", "turn"
+                "start",
+                "turn_start",
+                "tool+",
+                "tool-",
+                "msg",
+                "usage",
+                "turn_end",
+                "turn_start",
+                "msg",
+                "usage",
+                "turn_end"
             ]
         );
         assert_eq!(
@@ -467,13 +459,13 @@ mod tests {
             }
         );
         assert_eq!(
-            events[1],
+            events[2],
             ToolCallStarted {
                 name: "Bash".into()
             }
         );
         assert_eq!(
-            events[2],
+            events[3],
             ToolCallFinished {
                 name: "Bash".into(),
                 ok: true
@@ -484,7 +476,7 @@ mod tests {
             output_tokens,
             cost,
             rate_limits,
-        } = &events[4]
+        } = &events[5]
         else {
             panic!()
         };
@@ -494,18 +486,23 @@ mod tests {
         assert_eq!(rl.five_hour_used_pct, Some(21.0));
         assert_eq!(rl.weekly_resets_at, Some(1793001600));
         assert!(
-            matches!(&events[5], TurnFinished { is_error: false, result_text: Some(t), .. } if t == "done")
+            matches!(&events[6], TurnFinished { is_error: false, error_kind: None, result_text: Some(t), .. } if t == "done")
         );
     }
 
     #[test]
-    fn error_result_and_rejected_limit() {
+    fn error_result_and_rate_limit_statuses() {
         let mut p = ClaudeParser::default();
-        let ev = p.parse_line(
-            r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","rateLimitType":"five_hour"}}"#,
-        );
+        let rl = |status: &str| {
+            format!(
+                r#"{{"type":"rate_limit_event","rate_limit_info":{{"status":"{status}","rateLimitType":"five_hour"}}}}"#
+            )
+        };
+        assert!(p.parse_line(&rl("allowed")).is_empty());
+        assert!(p.parse_line(&rl("allowed_warning")).is_empty());
+        assert!(p.parse_line(&rl("something_new")).is_empty());
         assert!(matches!(
-            &ev[..],
+            &p.parse_line(&rl("rejected"))[..],
             [HarnessEvent::Error {
                 kind: ErrorKind::Quota,
                 ..
@@ -516,10 +513,32 @@ mod tests {
         );
         assert!(matches!(
             ev.last(),
-            Some(HarnessEvent::Error {
-                kind: ErrorKind::Auth,
+            Some(HarnessEvent::TurnFinished {
+                is_error: true,
+                error_kind: Some(ErrorKind::Auth),
                 ..
             })
         ));
+        assert_eq!(ev.len(), 2, "no duplicate Error event");
+        assert!(
+            p.parse_line("There's an issue: usage limit reached")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn control_response_resolves_ack() {
+        let acks = Acks::default();
+        let mut p = ClaudeParser::new(acks.clone());
+        let mut ok = acks.register("a");
+        let mut bad = acks.register("b");
+        p.parse_line(
+            r#"{"type":"control_response","response":{"subtype":"success","request_id":"a"}}"#,
+        );
+        p.parse_line(
+            r#"{"type":"control_response","response":{"subtype":"error","request_id":"b"}}"#,
+        );
+        assert_eq!(ok.try_recv(), Ok(true));
+        assert_eq!(bad.try_recv(), Ok(false));
     }
 }
