@@ -179,6 +179,38 @@ pub struct WorkflowRunRow {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
+/// Filter for [`Store::query_events`]. Events come in `(ts, id)` order, or the reverse.
+#[derive(Debug, Clone, Default)]
+pub struct EventQuery {
+    pub session_id: Option<String>,
+    pub run_id: Option<String>,
+    pub event_type: Option<so_core::EventType>,
+    /// Exclusive cursor: the `(ts, id)` of the last event already seen.
+    pub after: Option<(DateTime<Utc>, String)>,
+    pub newest_first: bool,
+    pub limit: usize,
+}
+
+/// Run counts and cost of one session.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SessionStats {
+    pub runs: i64,
+    pub escalated: i64,
+    pub failed: i64,
+    pub cost: f64,
+}
+
+/// Ledger totals of one UTC day and account.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DailyLedger {
+    /// `YYYY-MM-DD` (UTC).
+    pub day: String,
+    pub account: String,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    pub cost: f64,
+}
+
 /// One `agent()` step of a workflow run.
 #[derive(Debug, Clone, PartialEq)]
 pub struct WorkflowStepRow {

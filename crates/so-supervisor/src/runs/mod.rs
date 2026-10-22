@@ -13,6 +13,7 @@ mod lifecycle;
 mod pump;
 mod queue;
 mod reconcile;
+mod resume;
 mod review;
 mod spawn;
 mod view;
@@ -32,7 +33,7 @@ use so_store::{RunRow, Store, StoreError};
 use tokio::sync::{Notify, watch};
 
 pub use events::{Delivered, Subscription};
-pub use view::{WaitMode, WaitOutcome, display_argv};
+pub use view::{WaitMode, WaitOutcome, display_argv, mask_argv};
 
 use crate::dispatch::internal;
 use crate::notify::{Notifications, Sink, sinks_from_config};
@@ -78,6 +79,8 @@ pub(crate) struct RunRt {
     /// Blocking calls in progress (`ask_parent`, `wait_agent` on children). While there is
     /// one the run is `waiting` and is not stall-checked.
     pub waits: u32,
+    /// How many of those are `ask_parent` calls.
+    pub asks: u32,
 }
 
 struct Inner {
@@ -98,6 +101,11 @@ struct Inner {
     finished: watch::Sender<u64>,
     /// Bumped when a message is stored, so blocked `ask_parent` calls look again.
     msg_tick: watch::Sender<u64>,
+    /// Held while a run enters the review gate (state change, event, message), so a resume
+    /// of that run waits and sees them in order.
+    gate: tokio::sync::Mutex<()>,
+    /// Serialises recreating worktrees, so two resumes of one run do not both add it.
+    recreate: tokio::sync::Mutex<()>,
     /// Runs whose process died, to be resumed by the resumer task.
     resume_tx: tokio::sync::mpsc::UnboundedSender<reconcile::ResumeRequest>,
     notifications: Notifications,
@@ -105,6 +113,8 @@ struct Inner {
     go_live_open: watch::Sender<bool>,
     launch_timeout_ms: AtomicU64,
     launch_delay_ms: AtomicU64,
+    /// How long a question may wait before `question_waiting_10m` fires.
+    question_notify_ms: AtomicU64,
 }
 
 impl Drop for Inner {
@@ -152,12 +162,15 @@ impl RunManager {
             finished: watch::channel(0).0,
             msg_tick: watch::channel(0).0,
             resume_tx,
+            gate: tokio::sync::Mutex::new(()),
+            recreate: tokio::sync::Mutex::new(()),
             notifications,
             go_live_open: watch::channel(true).0,
             launch_timeout_ms: AtomicU64::new(
                 u64::try_from(LAUNCH_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
             ),
             launch_delay_ms: AtomicU64::new(0),
+            question_notify_ms: AtomicU64::new(600_000),
         });
         queue::spawn_drainer(&inner, drain_wake);
         reconcile::spawn_resumer(&inner, resume_rx);
@@ -179,11 +192,21 @@ impl RunManager {
     }
 
     /// Sends a notification about `key` (rate limited, filtered by `notifications.on`).
-    pub(crate) async fn notify(&self, event: &str, key: &str, name: &str, reason: &str) {
-        self.inner
-            .notifications
-            .notify(event, key, name, reason)
-            .await;
+    /// Delivery runs on its own task: a slow webhook never holds up a run.
+    pub(crate) fn notify(&self, event: &str, key: &str, name: &str, reason: &str) {
+        let inner = self.inner.clone();
+        let (event, key, name, reason) = (
+            event.to_string(),
+            key.to_string(),
+            name.to_string(),
+            reason.to_string(),
+        );
+        tokio::spawn(async move {
+            inner
+                .notifications
+                .notify(&event, &key, &name, &reason)
+                .await;
+        });
     }
 
     pub(crate) fn config(&self) -> &Config {
@@ -224,6 +247,17 @@ impl RunManager {
     pub fn set_launch_delay(&self, d: Duration) {
         let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
         self.inner.launch_delay_ms.store(ms, Ordering::SeqCst);
+    }
+
+    /// Test hook: how long a question may wait before it raises `question_waiting_10m`.
+    #[doc(hidden)]
+    pub fn set_question_notify_after(&self, d: Duration) {
+        let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        self.inner.question_notify_ms.store(ms, Ordering::SeqCst);
+    }
+
+    pub(crate) fn question_notify_after(&self) -> Duration {
+        Duration::from_millis(self.inner.question_notify_ms.load(Ordering::SeqCst))
     }
 
     pub(crate) fn launch_timeout(&self) -> Duration {
@@ -353,7 +387,7 @@ pub(crate) mod testutil {
             account: Some("claude-t".into()),
             model: None,
             effort: None,
-            cwd: None,
+            cwd: Some("/tmp".into()),
             worktree_path: None,
             branch: None,
             native_session_id: None,

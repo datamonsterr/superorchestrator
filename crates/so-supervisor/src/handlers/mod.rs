@@ -3,6 +3,8 @@
 mod harnesses;
 pub mod route;
 
+pub use harnesses::harnesses_view;
+
 use std::sync::Arc;
 
 use crate::server::SupervisorState;

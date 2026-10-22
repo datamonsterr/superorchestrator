@@ -279,9 +279,10 @@ A run with `review: true`:
 3. Waits for the parent. `accept_run` marks it `succeeded`. `reject_run(feedback)` sends the feedback on the same native session and returns the run to `running`.
 
 Notes on the implementation:
-- `cmd:<shell>` runs with `sh -c` in the run's worktree (or cwd) with a 10 minute limit. The command comes from the `checks` the spawning caller supplied, which is operator configuration; it is never built from task text or run output.
+- `cmd:<shell>` runs with `sh -c` in the run's worktree (or cwd) with a 10 minute limit, in its own process group (killed whole on timeout or cancel), with at most 64 KiB of output kept. The command is chosen by the orchestrator in the `checks` of its `spawn_agent` call; it is never built from task text or run output. It runs with the daemon's privileges, outside the harness sandbox, so treat `checks` like any command you would run yourself.
 - `ci` and `pr_threads` use `gh` against the pull request of the run's branch. `ci` is green when every check is SUCCESS, SKIPPED or NEUTRAL.
-- At `pending_review` the harness process is stopped and its slot is freed; the native session stays so `reject_run` (or `send_message`) can resume it. The worktree is kept; `accept_run` applies the normal cleanup rule (removed only when untouched).
+- At `pending_review` the harness process is stopped and its slot is freed; the native session stays so `reject_run` (or `send_message`, which counts as a rejection) can resume it. A resume claims a slot like a new start; with none free the run goes back to `queued` and resumes when one frees. A worktree run resumes in its worktree. If the directory is gone it is recreated from the run's branch; if the branch went with an untouched worktree, it is recreated at the run's base commit. A run that still cannot be resumed keeps its state and the caller gets the error.
+- `accept_run` removes the run's worktree and branch when the branch is merged into the repository's `HEAD` or contained in a remote branch, and the tree is clean (7.3). Otherwise the worktree stays until `worktrees prune`.
 - Failed checks are sent to the child once. If they fail again the run still goes to `pending_review`, and the parent gets a `result` message that lists the failed checks.
 
 ### 7.6 Stall handling
@@ -623,6 +624,7 @@ The default `min_confidence` and `min_margin` values are placeholders until `rou
 | `attempts` | id, run_id, account, started_at, ended_at, outcome |
 | `events` | id, session_id, run_id, ts, type, data_json (indexed by session_id, ts) |
 | `messages` | as in section 9 |
+| `run_meta` | run_id, checks_json (review checks), fork_from (native session a fork resumes), resume_prompt (set while a finished run waits in `queued` to be resumed). No foreign key: written before the run row. Deleted by `worktrees prune`. |
 | `headroom` | account, pool, five_hour_remaining_pct, five_hour_resets_at, weekly_remaining_pct, weekly_resets_at, status, source, observed_at |
 | `ledger` | account, pool, run_id, ts, input_tokens, output_tokens, cost |
 | `flags` | account, pool, until, reason |

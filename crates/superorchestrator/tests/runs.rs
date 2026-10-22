@@ -88,6 +88,16 @@ async fn cli(e: &Env, args: &[&str]) -> (String, bool) {
     cmd.args(args);
     tokio::task::spawn_blocking(move || {
         let out = cmd.output().unwrap();
+        if !out.status.success() {
+            // Without this a failed call only shows up as a bare `assert!(ok)`.
+            eprintln!(
+                "cli {:?} failed ({}):\nstdout: {}\nstderr: {}",
+                cmd.get_args().collect::<Vec<_>>(),
+                out.status,
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
         (
             String::from_utf8_lossy(&out.stdout).into_owned(),
             out.status.success(),

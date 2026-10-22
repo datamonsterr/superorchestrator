@@ -1,11 +1,14 @@
 //! `fork_agent`: a new run that continues a copy of a finished run's native session.
 
 use chrono::Utc;
-use so_core::proto::{ForkParams, INVALID_PARAMS, INVALID_REQUEST, SpawnResult, UNAVAILABLE};
+use so_core::proto::{
+    DEPTH_LIMIT, ForkParams, INVALID_PARAMS, INVALID_REQUEST, SpawnResult, UNAVAILABLE,
+};
 use so_core::{Isolation, RunState, new_id};
 use so_harness::{AnyDriver, Driver};
 use so_store::RunRow;
 
+use super::instructions::MAX_DEPTH;
 use super::{R, RunManager, rpc};
 use crate::dispatch::ConnCtx;
 
@@ -21,11 +24,24 @@ impl RunManager {
         if ctx.session_id.as_deref() != Some(src.session_id.as_str()) {
             return Err(rpc(INVALID_PARAMS, "that run belongs to another session"));
         }
+        // The fork takes the source's place under its parent, so only that parent may
+        // fork it, and the depth limit still applies (`max_children` is enforced when the
+        // run is inserted).
+        if ctx.run_id != src.parent_run_id {
+            return Err(rpc(
+                INVALID_PARAMS,
+                "only the run's parent (or the orchestrator, for a top-level run) can fork it",
+            ));
+        }
+        if u8::try_from(src.depth).unwrap_or(u8::MAX) > MAX_DEPTH {
+            return Err(rpc(DEPTH_LIMIT, "the run is deeper than the depth limit"));
+        }
         let driver = AnyDriver::for_harness(src.harness, self.inner.driver_cfg)
             .map_err(|e| rpc(UNAVAILABLE, e.to_string()))?;
         if !driver.supports_fork() {
+            // The request asks for something the harness cannot do: not an outage.
             return Err(rpc(
-                UNAVAILABLE,
+                INVALID_PARAMS,
                 format!("{} cannot fork a session", driver.harness()),
             ));
         }

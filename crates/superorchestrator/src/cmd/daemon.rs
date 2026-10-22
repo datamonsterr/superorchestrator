@@ -70,10 +70,16 @@ pub fn run(ctx: &Ctx, foreground: bool) -> Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    rt.block_on(so_supervisor::run_daemon(
+    // The web UI lives in the supervisor process: `install` adds the `ui_start` method and
+    // starts the server at once when `[ui] enabled = true`.
+    rt.block_on(so_supervisor::run_daemon_with(
         ctx.paths.clone(),
         config,
         foreground,
+        |state| {
+            so_supervisor::default_handlers(state);
+            so_web::install(state);
+        },
     ))?;
     Ok(())
 }

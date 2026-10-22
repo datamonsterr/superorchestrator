@@ -1,10 +1,9 @@
 //! `models refresh|list`.
 
 use anyhow::Result;
-use so_core::AccountFile;
 use so_router::Catalog;
-use so_router::catalog::{RefreshEnv, SourceStatus, refresh};
-use so_usage::TokioProbeRunner;
+use so_router::catalog::SourceStatus;
+use so_supervisor::services::models::refresh_and_save;
 
 use crate::cli::ModelsCmd;
 use crate::cmd::runs::runtime;
@@ -54,25 +53,11 @@ fn list(ctx: &Ctx) -> Result<()> {
 }
 
 async fn refresh_cmd(ctx: &Ctx) -> Result<()> {
-    let config = ctx.config()?;
-    let accounts = AccountFile::list(&ctx.paths)?;
     let host = ctx.host()?;
     let http = reqwest::Client::new();
-    let env = RefreshEnv {
-        paths: &ctx.paths,
-        host: &host,
-        accounts: &accounts,
-        runner: &TokioProbeRunner,
-        http: &http,
-        models_dev_url: None,
-        now: chrono::Utc::now(),
-    };
-    let before = Catalog::load(&ctx.paths)?;
-    let (catalog, report) = refresh(&env, before.clone(), &config.choices).await;
-    // Rewriting drops comments in models.toml, so only write when something changed.
-    if catalog != before || !ctx.paths.models_toml().is_file() {
-        catalog.save(&ctx.paths)?;
-    }
+    // Tests point this at a local server; users never need it.
+    let url = std::env::var("SUPERORCHESTRATOR_MODELS_DEV_URL").ok();
+    let (_, report, _) = refresh_and_save(&ctx.paths, &host, &http, url.as_deref()).await?;
     ctx.emit(&report, |w| {
         for s in &report.sources {
             let st = match s.status {

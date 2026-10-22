@@ -1,16 +1,17 @@
 //! The review gate (SPEC 7.5): checks when a `review: true` run finishes, then
 //! `accept_run` / `reject_run`.
 //!
-//! `cmd:` checks run the operator's own shell command (it comes from the `spawn_agent`
-//! caller's `checks`, never from task text or the run's output) with `sh -c` in the run's
-//! directory, under a 10 minute limit.
+//! `cmd:` checks run a shell command chosen by the orchestrator (the `checks` of its
+//! `spawn_agent` call; never task text or the run's output) with `sh -c` in the run's
+//! directory, under a 10 minute limit. They run with the daemon's privileges, outside the
+//! harness sandbox.
 
 use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use so_core::proto::{AckResult, INVALID_REQUEST, RejectParams, RunRef, UNAVAILABLE};
+use so_core::proto::{AckResult, INVALID_REQUEST, RejectParams, RunRef};
 use so_core::{EventType, MessageKind, RunState};
 use so_harness::RunControl;
 use so_store::{RunPatch, RunRow};
@@ -18,6 +19,8 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
 use super::lifecycle::{Outcome, excerpt};
+use super::resume::Resumed;
+use super::worktree;
 use super::{R, RunManager, SHUTDOWN_DEADLINE, lock, rpc};
 use crate::dispatch::ConnCtx;
 
@@ -59,36 +62,102 @@ struct Ran {
     stderr: String,
 }
 
-/// Runs `cmd` to completion with a time limit. The child is killed (with its process
-/// group's leader) when the limit passes or the future is dropped.
+/// Most output kept per stream; the rest is read and dropped so the child never blocks.
+const OUTPUT_CAP: usize = 64 * 1024;
+/// How long output may keep arriving after the child itself has exited.
+const PIPE_GRACE: Duration = Duration::from_millis(250);
+
+/// Kills the child's whole process group when dropped: on a time limit and on a cancelled
+/// check. After a clean exit it is disarmed when both pipes closed, so a background process
+/// that detached itself (output redirected away) is left running; one that still holds
+/// the pipes is killed.
+struct GroupGuard(Option<u32>);
+
+impl GroupGuard {
+    fn kill(&self) {
+        let pid = self.0.and_then(|p| i32::try_from(p).ok());
+        if let Some(pid) = pid.and_then(rustix::process::Pid::from_raw) {
+            let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+        }
+    }
+}
+
+impl Drop for GroupGuard {
+    fn drop(&mut self) {
+        self.kill();
+    }
+}
+
+async fn read_capped<R: tokio::io::AsyncRead + Unpin>(
+    mut r: R,
+    buf: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+) {
+    let mut chunk = [0u8; 8192];
+    loop {
+        match r.read(&mut chunk).await {
+            Ok(0) | Err(_) => return,
+            Ok(n) => {
+                let mut b = buf.lock().unwrap_or_else(|e| e.into_inner());
+                let room = OUTPUT_CAP.saturating_sub(b.len());
+                b.extend_from_slice(&chunk[..n.min(room)]);
+            }
+        }
+    }
+}
+
+/// Runs `cmd` in its own process group and waits for it, at most `limit`. Output is
+/// capped. A background process that holds the pipes open does not delay the result: the
+/// readers get a short grace after the child exits, then the group is killed. Dropping
+/// the future kills the group too.
 async fn run_capture(mut cmd: Command, limit: Duration) -> Result<Ran, String> {
+    use std::sync::{Arc, Mutex};
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .process_group(0)
         .kill_on_drop(true);
     let mut child = cmd.spawn().map_err(|e| format!("could not start: {e}"))?;
-    let mut out = child.stdout.take().ok_or("no stdout")?;
-    let mut err = child.stderr.take().ok_or("no stderr")?;
-    let work = async {
-        let (mut o, mut e) = (Vec::new(), Vec::new());
-        let (_, _, status) = tokio::join!(
-            out.read_to_end(&mut o),
-            err.read_to_end(&mut e),
-            child.wait()
-        );
-        (o, e, status)
-    };
-    match tokio::time::timeout(limit, work).await {
-        Ok((o, e, status)) => Ok(Ran {
-            code: status.map_err(|e| e.to_string())?.code(),
-            stdout: String::from_utf8_lossy(&o).into_owned(),
-            stderr: String::from_utf8_lossy(&e).into_owned(),
-        }),
+    let guard = GroupGuard(child.id());
+    let out = child.stdout.take().ok_or("no stdout")?;
+    let err = child.stderr.take().ok_or("no stderr")?;
+    let (out_buf, err_buf) = (
+        Arc::new(Mutex::new(Vec::new())),
+        Arc::new(Mutex::new(Vec::new())),
+    );
+    let mut out_task = tokio::spawn(read_capped(out, out_buf.clone()));
+    let mut err_task = tokio::spawn(read_capped(err, err_buf.clone()));
+    let status = match tokio::time::timeout(limit, child.wait()).await {
+        Ok(status) => status.map_err(|e| e.to_string()),
         Err(_) => {
-            let _ = child.start_kill();
-            Err(format!("timed out after {}s", limit.as_secs()))
+            guard.kill();
+            let _ = child.wait().await;
+            out_task.abort();
+            err_task.abort();
+            return Err(format!("timed out after {}s", limit.as_secs()));
         }
+    };
+    let _ = tokio::time::timeout(PIPE_GRACE, async {
+        let _ = (&mut out_task).await;
+        let _ = (&mut err_task).await;
+    })
+    .await;
+    // Both pipes closed: nothing is left holding them, so there is no group to clean up.
+    let pipes_closed = out_task.is_finished() && err_task.is_finished();
+    out_task.abort();
+    err_task.abort();
+    let mut guard = guard;
+    if pipes_closed {
+        guard.0 = None;
     }
+    drop(guard);
+    let text = |b: &Mutex<Vec<u8>>| {
+        String::from_utf8_lossy(&b.lock().unwrap_or_else(|e| e.into_inner())).into_owned()
+    };
+    Ok(Ran {
+        code: status?.code(),
+        stdout: text(&out_buf),
+        stderr: text(&err_buf),
+    })
 }
 
 fn tail(text: &str) -> String {
@@ -182,6 +251,9 @@ pub(crate) fn threads_verdict(json: &str) -> Result<(), String> {
     if pr.is_null() {
         return Err("gh api returned no pull request".into());
     }
+    if pr["reviewThreads"]["pageInfo"]["hasNextPage"] == json!(true) {
+        return Err("more than 100 review threads; cannot verify them all".into());
+    }
     let unresolved = pr["reviewThreads"]["nodes"].as_array().map_or(0, |n| {
         n.iter().filter(|t| t["isResolved"] != json!(true)).count()
     });
@@ -199,7 +271,7 @@ pub(crate) fn threads_verdict(json: &str) -> Result<(), String> {
     }
 }
 
-const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewDecision reviewThreads(first:100){nodes{isResolved}}}}}";
+const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewDecision reviewThreads(first:100){pageInfo{hasNextPage} nodes{isResolved}}}}}";
 
 async fn check_ci(branch: Option<&str>, cwd: &Path) -> CheckOutcome {
     let Some(branch) = branch else {
@@ -305,9 +377,20 @@ impl RunManager {
             .worktree_path
             .as_ref()
             .or(row.cwd.as_ref())
-            .map(std::path::PathBuf::from)
-            .unwrap_or_default();
-        let outcomes = run_checks(&checks, &cwd, row.branch.as_deref()).await;
+            .map(std::path::PathBuf::from);
+        let outcomes = match cwd {
+            Some(cwd) => {
+                // A cancel stops the checks (dropping them kills their processes).
+                tokio::select! {
+                    o = run_checks(&checks, &cwd, row.branch.as_deref()) => o,
+                    () = self.cancelled(run_id) => return Gate::Entered,
+                }
+            }
+            None => checks
+                .iter()
+                .map(|c| CheckOutcome::fail(c, "the run has no working directory to check"))
+                .collect(),
+        };
         for o in &outcomes {
             self.emit(
                 &row.session_id,
@@ -346,6 +429,13 @@ impl RunManager {
             .await
     }
 
+    /// Resolves once a cancel of the run was requested.
+    async fn cancelled(&self, run_id: &str) {
+        while !self.is_cancelling(run_id) {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// `running -> pending_review`. The harness process is stopped; its native session
     /// stays for `reject_run` to resume. The parent gets a `result` message.
     async fn enter_review(
@@ -355,21 +445,74 @@ impl RunManager {
         result_json: Option<String>,
         failed: &[CheckOutcome],
     ) -> Gate {
+        // Take the process out of service first, while the run is still `running`. With no
+        // live handle a message that arrives now stays unread and is handed to the next
+        // process; once the state reads `pending_review` a reject may resume the run, and
+        // a teardown still in flight would clear the new process's handle and attempt.
+        if let Some(rt) = lock(&self.inner.runs).get_mut(run_id) {
+            rt.live = None;
+        }
+        let _ = control.shutdown(SHUTDOWN_DEADLINE).await;
+        let attempt = {
+            let id = run_id.to_string();
+            self.db(move |s| {
+                let open = s
+                    .list_attempts(&id, 1000)?
+                    .into_iter()
+                    .rev()
+                    .find(|a| a.ended_at.is_none());
+                if let Some(a) = &open {
+                    s.finish_attempt(&a.id, "pending_review", chrono::Utc::now())?;
+                }
+                Ok(open.map(|a| a.id))
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+        // From the state change to the message nothing may resume the run: a reject
+        // waits here, so its events come after these.
+        let _gate = self.inner.gate.lock().await;
+        let id = run_id.to_string();
+        let loaded = self.db(move |s| s.get_run(&id)).await;
+        let Ok(Some(row)) = loaded else {
+            return Gate::Entered;
+        };
+        let id = run_id.to_string();
+        let moved = self
+            .db_raw(move |s| s.update_run_state(&id, RunState::Running, RunState::PendingReview))
+            .await;
+        match moved {
+            Ok(()) => {}
+            Err(
+                so_store::StoreError::StateConflict { .. }
+                | so_store::StoreError::InvalidTransition { .. },
+            ) => {
+                // Lost to a cancel (or a failure): the run did not reach the gate.
+                if let Some(aid) = attempt {
+                    let _ = self
+                        .db(move |s| s.finish_attempt(&aid, "cancelled", chrono::Utc::now()))
+                        .await;
+                }
+                return Gate::Entered;
+            }
+            Err(e) => {
+                let reason = format!("could not record the review state: {e}");
+                self.fail_run(run_id, so_core::ErrorKind::Other, &reason)
+                    .await;
+                return Gate::Entered;
+            }
+        }
+        // The state is committed: whatever else goes wrong, the run is at the gate and
+        // must be announced.
         let id = run_id.to_string();
         let patch = RunPatch {
             result_json: Some(result_json),
             ..RunPatch::default()
         };
-        let moved = self
-            .db(move |s| {
-                s.patch_run(&id, &patch)?;
-                s.update_run_state(&id, RunState::Running, RunState::PendingReview)?;
-                s.get_run(&id)
-            })
-            .await;
-        let Ok(Some(row)) = moved else {
-            return Gate::Entered;
-        };
+        if let Err(e) = self.db(move |s| s.patch_run(&id, &patch)).await {
+            tracing::error!(%run_id, error = %e.message, "could not store the result at the review gate");
+        }
         let names: Vec<&str> = failed.iter().map(|f| f.name.as_str()).collect();
         self.emit(
             &row.session_id,
@@ -378,6 +521,9 @@ impl RunManager {
             json!({"from": RunState::Running, "to": RunState::PendingReview, "failed_checks": names}),
         )
         .await;
+        self.inner.finished.send_modify(|n| *n += 1);
+        // A pending review holds no slot: let the queue use it.
+        self.request_drain();
         let body = if failed.is_empty() {
             format!("Run {run_id} is ready for review.")
         } else {
@@ -397,27 +543,6 @@ impl RunManager {
                 false,
             )
             .await;
-        let _ = control.shutdown(SHUTDOWN_DEADLINE).await;
-        let ended = {
-            let id = run_id.to_string();
-            self.db(move |s| {
-                if let Some(a) = s
-                    .list_attempts(&id, 1000)?
-                    .into_iter()
-                    .rev()
-                    .find(|a| a.ended_at.is_none())
-                {
-                    s.finish_attempt(&a.id, "pending_review", chrono::Utc::now())?;
-                }
-                Ok(())
-            })
-            .await
-        };
-        drop(ended);
-        if let Some(rt) = lock(&self.inner.runs).get_mut(run_id) {
-            rt.live = None;
-        }
-        self.inner.finished.send_modify(|n| *n += 1);
         Gate::Entered
     }
 
@@ -446,7 +571,7 @@ impl RunManager {
             &row.session_id,
             Some(&row.id),
             EventType::ReviewAccepted,
-            json!({}),
+            json!({"actor": ctx.actor()}),
         )
         .await;
         let outcome = Outcome {
@@ -460,6 +585,7 @@ impl RunManager {
         if !self.finish(&row.id, outcome).await {
             return Err(rpc(INVALID_REQUEST, "the run changed state; try again"));
         }
+        self.remove_accepted_worktree(&row.id).await;
         Ok(AckResult { ok: true })
     }
 
@@ -473,15 +599,6 @@ impl RunManager {
             ));
         }
         let row = self.pending_review_run(ctx, &p.run).await?;
-        let id = row.id.clone();
-        let moved = self
-            .db_raw(move |s| s.update_run_state(&id, RunState::PendingReview, RunState::Running))
-            .await
-            .is_ok();
-        if !moved {
-            return Err(rpc(INVALID_REQUEST, "the run changed state; try again"));
-        }
-        lock(&self.inner.runs).entry(row.id.clone()).or_default();
         let _ = self
             .store_message(
                 &row.session_id,
@@ -492,26 +609,59 @@ impl RunManager {
                 true,
             )
             .await;
-        self.emit(
-            &row.session_id,
-            Some(&row.id),
-            EventType::ReviewRejected,
-            json!({"feedback": excerpt(&p.feedback, 280)}),
-        )
-        .await;
-        self.emit(
-            &row.session_id,
-            Some(&row.id),
-            EventType::StateChanged,
-            json!({"from": RunState::PendingReview, "to": RunState::Running, "reason": "review rejected"}),
-        )
-        .await;
-        if let Err(reason) = self.resume_run(&row, &p.feedback).await {
-            self.fail_run(&row.id, so_core::ErrorKind::Other, &reason)
-                .await;
-            return Err(rpc(UNAVAILABLE, reason));
+        match self
+            .resume_finished(&row, &p.feedback, "review rejected", None)
+            .await?
+        {
+            Resumed::Skipped => Err(rpc(INVALID_REQUEST, "the run changed state; try again")),
+            Resumed::Started | Resumed::Queued => Ok(AckResult { ok: true }),
         }
-        Ok(AckResult { ok: true })
+    }
+
+    /// After an accepted review a kept worktree is removed once its branch is merged or
+    /// pushed and nothing is left uncommitted (SPEC 7.3).
+    async fn remove_accepted_worktree(&self, run_id: &str) {
+        let id = run_id.to_string();
+        let Ok(Some(row)) = self.db(move |s| s.get_run(&id)).await else {
+            return;
+        };
+        // A message may have resumed the run already; its worktree is in use again.
+        if !row.state.is_terminal() {
+            return;
+        }
+        let (Some(path), Some(branch), Some(base), Some(repo)) = (
+            row.worktree_path.clone(),
+            row.branch.clone(),
+            row.worktree_base.clone(),
+            row.worktree_repo.clone(),
+        ) else {
+            return;
+        };
+        let created = worktree::Created {
+            path: std::path::PathBuf::from(&path),
+            branch: branch.clone(),
+            base,
+            repo: std::path::PathBuf::from(repo),
+        };
+        let removed = self
+            .blocking(move || {
+                if !created.path.is_dir() || !worktree::merged_or_pushed(&created) {
+                    return false;
+                }
+                // `remove` without force refuses a tree with local changes.
+                worktree::remove(&created, false).is_ok()
+            })
+            .await
+            .unwrap_or(false);
+        if removed {
+            self.emit(
+                &row.session_id,
+                Some(run_id),
+                EventType::WorktreeRemoved,
+                json!({"path": path, "branch": branch, "reason": "merged or pushed"}),
+            )
+            .await;
+        }
     }
 }
 
@@ -543,12 +693,82 @@ mod tests {
         let e = threads_verdict(&t("CHANGES_REQUESTED", &[true, false])).unwrap_err();
         assert!(e.contains("1 unresolved") && e.contains("changes requested"));
         assert!(threads_verdict(r#"{"data":{"repository":{"pullRequest":null}}}"#).is_err());
+        let more = json!({"data": {"repository": {"pullRequest": {"reviewDecision": "",
+            "reviewThreads": {"pageInfo": {"hasNextPage": true}, "nodes": []}}}}});
+        assert!(
+            threads_verdict(&more.to_string())
+                .unwrap_err()
+                .contains("100")
+        );
     }
 
     #[test]
     fn pr_number_parsing() {
         assert_eq!(parse_pr_number(r#"{"number": 42}"#), Ok(42));
         assert!(parse_pr_number("{}").is_err());
+    }
+
+    #[tokio::test]
+    async fn a_background_process_holding_the_pipes_does_not_stall_a_check() {
+        let dir = std::env::temp_dir();
+        let started = std::time::Instant::now();
+        let c = check_cmd(
+            "cmd:bg",
+            "sleep 30 & echo ok",
+            &dir,
+            Duration::from_secs(20),
+        )
+        .await;
+        assert!(c.ok, "{c:?}");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_detached_background_process_survives_a_clean_exit() {
+        let dir = std::env::temp_dir();
+        let marker = dir.join(format!("so-detached-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        // Output redirected away: the pipes close with the shell, so there is nothing to
+        // clean up and the daemon-like helper keeps running.
+        let cmd = format!(
+            "(sleep 1; touch {}) >/dev/null 2>&1 </dev/null & echo ok",
+            marker.display()
+        );
+        let c = check_cmd("cmd:detached", &cmd, &dir, Duration::from_secs(20)).await;
+        assert!(c.ok, "{c:?}");
+        tokio::time::sleep(Duration::from_millis(1800)).await;
+        assert!(marker.exists(), "the detached process was killed");
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    #[tokio::test]
+    async fn a_timeout_kills_the_whole_process_group() {
+        let dir = std::env::temp_dir();
+        let marker = dir.join(format!("so-grandchild-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        let cmd = format!("(sleep 1; touch {}) & sleep 30", marker.display());
+        let t = check_cmd("cmd:slow", &cmd, &dir, Duration::from_millis(200)).await;
+        assert!(!t.ok && t.detail.contains("timed out"));
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert!(!marker.exists(), "the grandchild survived the timeout");
+    }
+
+    #[tokio::test]
+    async fn output_is_capped() {
+        let dir = std::env::temp_dir();
+        let c = check_cmd(
+            "cmd:loud",
+            "head -c 300000 /dev/zero | tr '\\0' x; exit 1",
+            &dir,
+            Duration::from_secs(20),
+        )
+        .await;
+        assert!(!c.ok);
+        assert!(c.detail.chars().count() < 1000, "{}", c.detail.len());
     }
 
     #[tokio::test]
@@ -560,5 +780,53 @@ mod tests {
         assert!(!f.ok && f.detail.contains("exited with 3") && f.detail.contains("boom"));
         let t = check_cmd("cmd:sleep", "sleep 5", &dir, Duration::from_millis(100)).await;
         assert!(!t.ok && t.detail.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn accepted_worktrees_are_only_removed_for_terminal_runs() {
+        use super::super::testutil::{insert_run, manager};
+        let (m, dir) = manager();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let st = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@e"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(st.success(), "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+        let info = worktree::repo_info(&repo).unwrap();
+        let created = worktree::create(
+            &info,
+            &dir.path().join("wt").to_string_lossy(),
+            "so/",
+            "x",
+            "0123456789abcdef",
+        )
+        .unwrap();
+        let row = insert_run(&m, RunState::Running);
+        let patch = RunPatch {
+            worktree_path: Some(Some(created.path.to_string_lossy().into_owned())),
+            branch: Some(Some(created.branch.clone())),
+            worktree_base: Some(Some(created.base.clone())),
+            worktree_repo: Some(Some(created.repo.to_string_lossy().into_owned())),
+            ..RunPatch::default()
+        };
+        m.store().patch_run(&row.id, &patch).unwrap();
+        // Resumed meanwhile (running): the worktree is in use and stays.
+        m.remove_accepted_worktree(&row.id).await;
+        assert!(created.path.is_dir());
+        // Terminal and merged (nothing was committed): removed.
+        let finish = so_store::FinishPatch::default();
+        m.store()
+            .finish_run(&row.id, RunState::Running, RunState::Succeeded, &finish)
+            .unwrap();
+        m.remove_accepted_worktree(&row.id).await;
+        assert!(!created.path.exists());
     }
 }

@@ -80,6 +80,7 @@ impl RunManager {
             .collect();
         Ok(RunView {
             run_id: row.id,
+            session_id: row.session_id,
             state: row.state,
             harness: Some(row.harness),
             account: row.account,
@@ -119,7 +120,10 @@ impl RunManager {
             &row.session_id,
             Some(&row.id),
             EventType::JoinCommandIssued,
-            json!({"argv": join.argv, "env": join.env.iter().map(|(k, _)| k).collect::<Vec<_>>()}),
+            json!({
+                "argv": mask_argv(&join.argv, &join.env),
+                "env": join.env.iter().map(|(k, _)| k).collect::<Vec<_>>(),
+            }),
         )
         .await;
         Ok(JoinResult {
@@ -188,14 +192,8 @@ impl RunManager {
                     None
                 };
                 let Some(want) = wanted else { continue };
-                let latest = s
-                    .list_events_by_run(id, 1_000_000)?
-                    .into_iter()
-                    .rev()
-                    .find(|e| {
-                        e.event_type == want && (want != EventType::StateChanged || is_update(e))
-                    });
-                out.extend(latest);
+                // Newest of its type; for the review gate that is the move into it.
+                out.extend(s.latest_event_of_type(id, want)?);
             }
             Ok(out)
         })
@@ -271,6 +269,10 @@ async fn push_event(ctx: &ConnCtx, ids: &[String], seq: u64, ev: Event, out: &mu
     if !ev.run_id.as_ref().is_some_and(|r| ids.contains(r)) {
         return;
     }
+    // A standing update may also arrive live (it was stored after we subscribed).
+    if out.updates.iter().any(|u| u.id == ev.id) {
+        return;
+    }
     let payload = super::events::Delivered {
         seq,
         event: ev.clone(),
@@ -280,6 +282,20 @@ async fn push_event(ctx: &ConnCtx, ids: &[String], seq: u64, ev: Event, out: &mu
     if is_update(&ev) {
         out.updates.push(ev);
     }
+}
+
+/// argv with the values of the command's environment and anything that looks like a key
+/// replaced by `***`. Used for the audit event and the web API.
+pub fn mask_argv(argv: &[String], env: &[(String, String)]) -> Vec<String> {
+    argv.iter()
+        .map(|a| {
+            let mut out = a.clone();
+            for (_, v) in env.iter().filter(|(_, v)| v.len() >= 4) {
+                out = out.replace(v.as_str(), "***");
+            }
+            so_core::redact::redact(&out).replace("[REDACTED]", "***")
+        })
+        .collect()
 }
 
 /// argv for display: arguments with spaces or shell characters are single-quoted.
@@ -302,6 +318,23 @@ pub fn display_argv(argv: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn argv_masking_hides_env_values_and_key_patterns() {
+        let argv = [
+            "acc",
+            "--token",
+            "hunter2-secret",
+            "sk-abcdef1234567890",
+            "plain",
+        ]
+        .map(String::from);
+        let env = [("API".to_string(), "hunter2-secret".to_string())];
+        assert_eq!(
+            mask_argv(&argv, &env),
+            ["acc", "--token", "***", "***", "plain"].map(String::from)
+        );
+    }
 
     #[test]
     fn argv_display_quotes_only_when_needed() {

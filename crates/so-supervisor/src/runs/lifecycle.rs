@@ -85,6 +85,15 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
+/// Messages meant as input to the run itself. The others (a child's progress, question or
+/// result) are for the run to read with `read_messages`.
+pub(crate) fn is_input(m: &so_store::MessageRow) -> bool {
+    matches!(
+        m.kind,
+        so_core::MessageKind::Message | so_core::MessageKind::Answer
+    )
+}
+
 /// At most `max` characters, ending in an ellipsis when cut.
 pub(crate) fn excerpt(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -209,19 +218,40 @@ impl RunManager {
         if !still_starting {
             return Ok(());
         }
-        let mut cwd = PathBuf::from(row.cwd.clone().ok_or("run has no working directory")?);
-        if row.isolation == Isolation::Worktree {
-            cwd = self.make_worktree(row, &cwd).await?;
-        }
-        let fork_from = {
+        // A finished run that found no free slot when it was sent a message waits in the
+        // queue with the text to resume with.
+        let resume_prompt = {
             let id = row.id.clone();
-            self.db(move |s| s.get_run_fork(&id))
+            self.db(move |s| s.take_resume_prompt(&id))
                 .await
                 .map_err(|e| e.message)?
         };
-        let mut prompt = row.prompt.clone().unwrap_or_default();
+        let cwd = if resume_prompt.is_some() {
+            self.resume_cwd(row).await?
+        } else {
+            let cwd = PathBuf::from(row.cwd.clone().ok_or("run has no working directory")?);
+            if row.isolation == Isolation::Worktree {
+                self.make_worktree(row, &cwd).await?
+            } else {
+                cwd
+            }
+        };
+        let fork_from = match &resume_prompt {
+            // Continue the run's own session, not a copy.
+            Some(_) => row.native_session_id.clone(),
+            None => {
+                let id = row.id.clone();
+                self.db(move |s| s.get_run_fork(&id))
+                    .await
+                    .map_err(|e| e.message)?
+            }
+        };
+        let mut prompt = resume_prompt
+            .clone()
+            .or_else(|| row.prompt.clone())
+            .unwrap_or_default();
         prompt.push_str(&self.start_messages(row).await);
-        let fork = fork_from.is_some();
+        let fork = fork_from.is_some() && resume_prompt.is_none();
         let spec = self
             .build_spec(row, &account, cwd, prompt, fork_from, fork)
             .await?;
@@ -236,7 +266,11 @@ impl RunManager {
         let (sid, id) = (row.session_id.clone(), row.id.clone());
         let msgs = self
             .db(move |s| {
-                let msgs = s.unread_messages(&sid, Some(&id), 100)?;
+                let msgs: Vec<_> = s
+                    .unread_messages(&sid, Some(&id), 100)?
+                    .into_iter()
+                    .filter(is_input)
+                    .collect();
                 let ids: Vec<String> = msgs.iter().map(|m| m.id.clone()).collect();
                 s.mark_messages_read(&ids, Utc::now())?;
                 Ok(msgs)
@@ -426,6 +460,10 @@ impl RunManager {
         )
         .await;
 
+        // Messages that arrived while the run had no process (during launch, or between a
+        // death and its resume) are handed over now.
+        self.flush_unread(row, &control).await;
+
         let validator = row
             .output_schema
             .as_deref()
@@ -441,6 +479,56 @@ impl RunManager {
             review: row.review,
         };
         tokio::spawn(self.clone().pump(pc, events, control));
+    }
+
+    async fn flush_unread(&self, row: &RunRow, control: &RunControl) {
+        let batch = self.claim_input(row).await;
+        self.hand_over(batch, |text| {
+            let control = control.clone();
+            async move { control.send(&text).await.map_err(|e| e.to_string()) }
+        })
+        .await;
+    }
+
+    /// Claims the run's unread input messages. The claim is atomic, so two flushes racing
+    /// over the same messages each get a different share and none is delivered twice.
+    pub(crate) async fn claim_input(&self, row: &RunRow) -> Vec<so_store::MessageRow> {
+        let (sid, id) = (row.session_id.clone(), row.id.clone());
+        // An answer to a blocked `ask_parent` goes to that call.
+        let asking = self.is_asking(&row.id);
+        self.db(move |s| {
+            let pending: Vec<_> = s
+                .unread_messages(&sid, Some(&id), 100)?
+                .into_iter()
+                .filter(is_input)
+                .filter(|m| !(m.kind == so_core::MessageKind::Answer && asking))
+                .collect();
+            let ids: Vec<String> = pending.iter().map(|m| m.id.clone()).collect();
+            let won = s.claim_messages(&ids, Utc::now())?;
+            Ok(pending
+                .into_iter()
+                .filter(|m| won.contains(&m.id))
+                .collect())
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// Sends claimed messages in order. At the first failure that message and the rest go
+    /// back to unread, for the next flush.
+    pub(crate) async fn hand_over<F, Fut>(&self, batch: Vec<so_store::MessageRow>, mut send: F)
+    where
+        F: FnMut(String) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        for (i, m) in batch.iter().enumerate() {
+            if let Err(e) = send(m.body.clone()).await {
+                tracing::warn!(error = %e, "could not hand over a message; keeping it unread");
+                let rest: Vec<String> = batch[i..].iter().map(|m| m.id.clone()).collect();
+                let _ = self.db(move |s| s.mark_messages_unread(&rest)).await;
+                return;
+            }
+        }
     }
 
     /// A launch whose run was finished meanwhile: stop the process, drop the entry and
@@ -494,8 +582,7 @@ impl RunManager {
                     &account_name,
                     &account_name,
                     "the account hit a limit and is in cooldown",
-                )
-                .await;
+                );
             }
             Err(e) => tracing::warn!(%run_id, error = %e.message, "could not flag the account"),
         }
@@ -646,11 +733,20 @@ impl RunManager {
                 }
             })
             .await;
+        // A resume that raced this wrap-up must not lose its process or worktree.
+        if !self.still_terminal(run_id).await {
+            return;
+        }
         if let Some(rt) = lock(&self.inner.runs).get_mut(run_id) {
             rt.live = None;
         }
         self.cleanup_worktree(run_id).await;
         self.maybe_end_session(&sid).await;
+    }
+
+    async fn still_terminal(&self, run_id: &str) -> bool {
+        let id = run_id.to_string();
+        matches!(self.db(move |s| s.get_run(&id)).await, Ok(Some(r)) if r.state.is_terminal())
     }
 
     async fn maybe_end_session(&self, session_id: &str) {
@@ -678,8 +774,7 @@ impl RunManager {
                     session_id,
                     "session",
                     "all of its runs have finished",
-                )
-                .await;
+                );
             }
             Ok(false) => {}
             Err(e) => tracing::warn!(%session_id, error = %e.message, "could not end session"),
@@ -825,6 +920,88 @@ mod tests {
         assert!(m.store().get_flag("claude-t", "default").unwrap().is_some());
         assert_eq!(m.live_count(), 0);
         assert!(!m.busy());
+    }
+
+    async fn queue_messages(m: &RunManager, row: &RunRow, bodies: &[&str]) {
+        for b in bodies {
+            m.store_message(
+                &row.session_id,
+                None,
+                Some(&row.id),
+                so_core::MessageKind::Message,
+                b,
+                false,
+            )
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_flushes_deliver_each_message_once() {
+        use super::super::testutil::{insert_run, manager};
+        let (m, _dir) = manager();
+        let row = insert_run(&m, RunState::Running);
+        let bodies: Vec<String> = (0..20).map(|i| format!("note {i}")).collect();
+        queue_messages(
+            &m,
+            &row,
+            &bodies.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+        .await;
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let (m, row, sent) = (m.clone(), row.clone(), sent.clone());
+            tasks.push(tokio::spawn(async move {
+                let batch = m.claim_input(&row).await;
+                m.hand_over(batch, |text| {
+                    let sent = sent.clone();
+                    async move {
+                        sent.lock().unwrap().push(text);
+                        Ok(())
+                    }
+                })
+                .await;
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        let mut got = sent.lock().unwrap().clone();
+        got.sort();
+        let mut want = bodies;
+        want.sort();
+        assert_eq!(got, want, "every message exactly once");
+    }
+
+    #[tokio::test]
+    async fn a_failed_send_leaves_the_message_unread_for_the_next_flush() {
+        use super::super::testutil::{insert_run, manager};
+        let (m, _dir) = manager();
+        let row = insert_run(&m, RunState::Running);
+        queue_messages(&m, &row, &["first", "second", "third"]).await;
+        let batch = m.claim_input(&row).await;
+        assert_eq!(batch.len(), 3);
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s2 = sent.clone();
+        m.hand_over(batch, move |text| {
+            let sent = s2.clone();
+            async move {
+                if text == "second" {
+                    return Err("pipe closed".to_string());
+                }
+                sent.lock().unwrap().push(text);
+                Ok(())
+            }
+        })
+        .await;
+        assert_eq!(*sent.lock().unwrap(), ["first"]);
+        // The failed one and the rest are unread again, in order.
+        let again = m.claim_input(&row).await;
+        let bodies: Vec<&str> = again.iter().map(|m| m.body.as_str()).collect();
+        assert_eq!(bodies, ["second", "third"]);
+        assert!(m.claim_input(&row).await.is_empty());
     }
 
     #[tokio::test]

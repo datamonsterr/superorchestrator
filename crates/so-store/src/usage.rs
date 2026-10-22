@@ -6,7 +6,7 @@ use so_core::Headroom;
 
 use crate::codec::*;
 use crate::error::Result;
-use crate::rows::{FlagRow, LedgerEntry, LedgerSums};
+use crate::rows::{DailyLedger, FlagRow, LedgerEntry, LedgerSums};
 use crate::store::Store;
 
 const H_COLS: &str = "account, pool, five_hour_remaining_pct, five_hour_resets_at, \
@@ -114,6 +114,26 @@ impl Store {
                 })
             },
         )?)
+    }
+
+    /// Ledger totals per UTC day and account since `since`, oldest day first.
+    pub fn ledger_daily(&self, since: DateTime<Utc>) -> Result<Vec<DailyLedger>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(
+            "SELECT substr(ts,1,10) AS day, account, COALESCE(SUM(input_tokens),0), \
+             COALESCE(SUM(output_tokens),0), COALESCE(SUM(cost),0.0) \
+             FROM ledger WHERE ts >= ?1 GROUP BY day, account ORDER BY day, account",
+        )?;
+        let rows = st.query_map([ts_to_sql(&since)], |r| {
+            Ok(DailyLedger {
+                day: r.get(0)?,
+                account: r.get(1)?,
+                input_tokens: r.get(2)?,
+                output_tokens: r.get(3)?,
+                cost: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Sets (or replaces) the cooldown flag of (account, pool).

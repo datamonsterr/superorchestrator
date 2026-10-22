@@ -359,8 +359,7 @@ impl RunManager {
             &pc.run_id,
             &name,
             "the run is stalled and needs attention",
-        )
-        .await;
+        );
     }
 
     /// A harness event after a stall: back to `running`.
@@ -419,7 +418,14 @@ impl RunManager {
         if !row.state.is_active() || row.native_session_id.is_none() {
             return Err("nothing to resume".into());
         }
-        if attempts.len() >= 2 {
+        // Only a process that died counts: attempts ended by a review or a message do not
+        // use up the one resume.
+        if attempts
+            .iter()
+            .filter(|a| a.outcome.as_deref() == Some("died"))
+            .count()
+            >= 1
+        {
             return Err("already resumed once".into());
         }
         // Close the dead attempt; the resume opens the next one.

@@ -7,9 +7,41 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 repository.workspace = true
+build = "build.rs"
 
 [lints]
 workspace = true
 
 [dependencies]
 so-core = { path = "../so-core" }
+so-store = { path = "../so-store" }
+so-supervisor = { path = "../so-supervisor" }
+so-accounts = { path = "../so-accounts" }
+so-harness = { path = "../so-harness" }
+so-agents = { path = "../so-agents" }
+so-router = { path = "../so-router" }
+so-workflow = { path = "../so-workflow" }
+axum = { workspace = true, features = ["macros"] }
+tokio.workspace = true
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-util = "0.3"
+serde.workspace = true
+serde_json.workspace = true
+schemars = { workspace = true, features = ["chrono04"] }
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+rust-embed = { workspace = true, features = ["interpolate-folder-path", "mime-guess"] }
+toml.workspace = true
+subtle = "2"
+sha2 = "0.10"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tempfile.workspace = true
+so-harness = { path = "../so-harness" }
+
+[[bin]]
+name = "gen-ts"
+path = "src/bin/gen_ts.rs"
