@@ -33,7 +33,9 @@ Start with `superorchestrator doctor`. It prints one line per check. A check is 
 
 **The wrapper command is not found.** Put `~/.local/bin` (or your `accounts.wrapper_dir`) on `PATH`.
 
-**The skill is out of date.** Superorchestrator regenerates it when accounts, choices or agents change, but only if it is installed and the file still has the `superorchestrator:managed` marker. Run `superorchestrator install` to write it. A skill file you edited by hand without the marker is left alone.
+**The skill is out of date.** Superorchestrator regenerates `use-superorchestrator-mcp` when accounts, choices or agents change, but only if it is installed and the file still has the `superorchestrator:managed` marker. It also writes `superorchestrator-cli` if that is missing. Run `superorchestrator install` to write them. A skill file you edited by hand without the marker is left alone.
+
+**`~/.claude/CLAUDE.md` has a block I did not write.** `install` adds a short delegation block between `<!-- superorchestrator:begin -->` and `<!-- superorchestrator:end -->`. Re-running `install` replaces it in place, `install --no-claude-md` skips it and `uninstall` removes only the block. Text outside the markers is never touched.
 
 **The UI does not load.** Run `superorchestrator ui` and read the URL. A token is asked for on non-loopback binds.
 
