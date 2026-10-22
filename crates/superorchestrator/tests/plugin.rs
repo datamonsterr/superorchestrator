@@ -29,17 +29,31 @@ fn mcp_config_starts_the_mcp_server() {
     );
 }
 
-/// The shipped skill is `render_plugin_skill()`. Set `UPDATE_PLUGIN_SKILL=1` to rewrite it.
+/// The shipped skills are `render_plugin_mcp_skill()` and `render_plugin_cli_skill()`. Set
+/// `UPDATE_PLUGIN_SKILL=1` to rewrite them.
 #[test]
-fn skill_is_the_generated_plugin_skill() {
-    let path = plugin_dir().join("skills/superorchestrator/SKILL.md");
-    let want = so_agents::skill::render_plugin_skill();
-    if std::env::var_os("UPDATE_PLUGIN_SKILL").is_some() {
-        std::fs::write(&path, &want).unwrap();
+fn skills_are_the_generated_plugin_skills() {
+    let skills = [
+        (
+            "use-superorchestrator-mcp",
+            so_agents::skill::render_plugin_mcp_skill(),
+        ),
+        (
+            "superorchestrator-cli",
+            so_agents::skill::render_plugin_cli_skill(),
+        ),
+    ];
+    for (name, want) in skills {
+        let path = plugin_dir().join(format!("skills/{name}/SKILL.md"));
+        if std::env::var_os("UPDATE_PLUGIN_SKILL").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &want).unwrap();
+        }
+        let have = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            have, want,
+            "plugin/skills/{name}/SKILL.md is stale; run with UPDATE_PLUGIN_SKILL=1"
+        );
     }
-    let have = std::fs::read_to_string(&path).unwrap();
-    assert_eq!(
-        have, want,
-        "plugin/skills/superorchestrator/SKILL.md is stale; run with UPDATE_PLUGIN_SKILL=1"
-    );
+    assert!(!plugin_dir().join("skills/superorchestrator").exists());
 }

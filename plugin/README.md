@@ -1,6 +1,6 @@
 # Superorchestrator plugin for Claude Code
 
-This plugin registers the `superorchestrator` MCP server and adds the `superorchestrator` skill.
+This plugin registers the `superorchestrator` MCP server and adds the `use-superorchestrator-mcp` and `superorchestrator-cli` skills.
 
 It needs the `superorchestrator` binary on `PATH`. Install it first (see the repository README).
 

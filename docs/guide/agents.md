@@ -49,7 +49,7 @@ System prompt body.
 | `agent edit <name>` | Opens the file in `$EDITOR`, then checks it |
 | `agent remove <name>` | Deletes it (not for `.claude/agents` imports) |
 
-The web UI has an Agents page for the same. The installed skill lists your agents and refreshes when they change.
+The web UI has an Agents page for the same. The installed `use-superorchestrator-mcp` skill lists your agents and refreshes when they change.
 
 ## How an agent reaches each harness
 

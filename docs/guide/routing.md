@@ -19,7 +19,7 @@ enabled = true
 
 `init` seeds a set of choices. Codex choices start enabled. A choice with no signed-in account is skipped at routing time, so adding a Codex account is enough to use them. Claude choices start disabled. Set `enabled = true` to let auto routing use them as a last resort. Only you change `enabled`; `init` never rewrites it after the first run.
 
-Edit choices with `superorchestrator config edit`, or on the Choices page of the web UI. The installed skill lists enabled choices and refreshes when they change.
+Edit choices with `superorchestrator config edit`, or on the Choices page of the web UI. The installed `use-superorchestrator-mcp` skill lists enabled choices and refreshes when they change.
 
 ## Previewing a route
 

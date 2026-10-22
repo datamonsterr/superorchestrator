@@ -13,6 +13,13 @@ First release. Pending the `v0.1.0` tag.
 
 ### Added
 
+- Two skills replace the single generated one: `use-superorchestrator-mcp` (delegation through
+  the MCP tools, with the accounts, choices and agents lists) and `superorchestrator-cli` (a
+  static guide to the command line). `install` writes both to `~/.claude/skills` and
+  `~/.agents/skills` and removes the old `superorchestrator` skill when it carries our marker.
+- `install` adds a short managed delegation block to `~/.claude/CLAUDE.md`, between
+  `<!-- superorchestrator:begin -->` and `<!-- superorchestrator:end -->`. Re-installing
+  replaces it in place, `--no-claude-md` skips it, `uninstall` removes only the block.
 - Routing decider: `inception/mercury-decide:free` is the default model, with
   `~typesafe/jev-latest` as an automatic fallback when the primary is unusable (transport
   error, timeout, 429, 5xx or a missing model; never for a rejected answer). Both take any
@@ -72,9 +79,9 @@ First release. Pending the `v0.1.0` tag.
   new `inspect` option of the `hello` handshake limits the connection to reads and run controls.
   A newer CLI talking to a supervisor started before this change falls back to the old
   handshake until that supervisor restarts.
-- The shipped skill lists accounts, choices and agents, and is regenerated whenever they change,
+- The shipped MCP skill lists accounts, choices and agents, and is regenerated whenever they change,
   from the CLI and from the web API. Only an installed skill with our marker is touched.
-- Claude Code plugin in `plugin/`: the `superorchestrator mcp` server and the skill.
+- Claude Code plugin in `plugin/`: the `superorchestrator mcp` server and the two skills.
 - `scripts/smoke.sh`: a manual smoke test on a real machine, with an isolated config dir and
   wrappers.
 - User documentation: README quickstart and guides under `docs/guide/`.
