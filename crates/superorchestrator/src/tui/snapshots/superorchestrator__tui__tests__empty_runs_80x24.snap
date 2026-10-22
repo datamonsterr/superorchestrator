@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 80, 24)"
+---
+ superorchestrator 0.1.0  ○ supervisor not running  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs     4 Setup
+
+
+
+
+
+
+
+
+                                   No runs yet
+
+           Runs appear here as soon as an orchestrator delegates work.
+       The supervisor is not running; it starts with the first delegation.
+
+
+
+
+
+
+
+
+ updated 3s ago
+ ↑↓ move  Enter open  j join  a accept  r reject  c cancel  ? help  q quit

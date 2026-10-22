@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 80, 24)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs !1     4 Setup
+    NAME               HARNESS   SIGNED IN  ENABLED  CAP  ACTIVE HEADROOM
+  ▸ codex-1            codex     ✓ yes      yes      2    1      codex: ok 82%
+    codex-2            codex     ✓ yes      yes      2    0      codex: coold…
+    opencode-1         opencode  ✗ no       yes      2    0
+    claude-1           claude    ? unknown  no       2    0
+      ╭ Add accounts ────────────────────────────────────────────────────╮
+      │                                                                  │
+      │ ▸ Harness   codex   opencode   agy   claude                      │
+      │                                                                  │
+      │   Count    1  (1-99, numbered from the lowest free number)       │
+      │                                                                  │
+      │ ←/→ harness   Tab next field   Enter add   Esc cancel            │
+      │                                                                  │
+      ╰──────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+
+ updated 3s ago
+ Esc close

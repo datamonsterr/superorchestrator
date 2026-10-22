@@ -29,6 +29,8 @@ serde.workspace = true
 chrono.workspace = true
 reqwest.workspace = true
 dialoguer.workspace = true
+ratatui.workspace = true
+unicode-width.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 tokio.workspace = true
 tracing.workspace = true
@@ -36,6 +38,7 @@ tracing-subscriber.workspace = true
 toml_edit = "0.25"
 
 [dev-dependencies]
+insta.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true

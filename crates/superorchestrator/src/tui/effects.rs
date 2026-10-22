@@ -1,0 +1,560 @@
+//! Work done off the draw loop. Each function calls the same library code the CLI
+//! commands use and reports through [`Update`]; none of it prints.
+
+use std::sync::mpsc::{Receiver, Sender};
+
+use anyhow::{Context, Result, anyhow};
+use chrono::{Duration, Utc};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
+use so_accounts::{HostEnv, manage};
+use so_core::proto::{
+    AckResult, JoinResult, METHOD_ACCEPT_RUN, METHOD_CANCEL_AGENT, METHOD_JOIN_RUN,
+    METHOD_REJECT_RUN, RejectParams, RunRef, RunView,
+};
+use so_core::{AccountFile, Harness, Paths};
+use so_store::Store;
+use so_supervisor::SupervisorClient;
+use so_supervisor::services::accounts::{FlagAction, apply_flag, flag_pools};
+
+use super::app::{Effect, Launch, SetupStep, StepState, Update};
+use super::data::{SupInfo, load_detail, load_snapshot};
+use crate::cmd::account::{login_json, write_login_hint};
+use crate::cmd::{install, runs, setup, status};
+use crate::ctx::Ctx;
+
+/// Shown when an action needs the supervisor and none answers.
+pub const NOT_RUNNING: &str =
+    "supervisor not running — start with any delegation or `superorchestrator daemon`";
+
+fn send(tx: &Sender<Update>, u: Update) {
+    // The receiver is gone when the UI is quitting; nothing to report to.
+    let _ = tx.send(u);
+}
+
+/// Reads: the snapshot and the open run's detail. Never blocks the draw loop.
+pub fn read_loop(ctx: Ctx, host: HostEnv, rx: Receiver<Effect>, tx: Sender<Update>) {
+    while let Ok(effect) = rx.recv() {
+        match effect {
+            Effect::Refresh => {
+                let sup = status::supervisor_status().map(|s| SupInfo {
+                    pid: s.pid,
+                    version: s.version,
+                    uptime_s: s.uptime_s,
+                });
+                let snap = load_snapshot(&ctx, &host, sup, Utc::now());
+                send(&tx, Update::Snapshot(Box::new(snap)));
+            }
+            Effect::Detail(id) => {
+                let d = load_detail(&ctx, &id).map(Box::new);
+                send(&tx, Update::Detail(d));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Actions, one at a time in the order they were asked.
+pub fn action_loop(ctx: Ctx, host: HostEnv, rx: Receiver<Effect>, tx: Sender<Update>) {
+    while let Ok(effect) = rx.recv() {
+        let done = match perform(&ctx, &host, effect, &tx) {
+            Ok(Some(text)) => Update::Done { ok: true, text },
+            Ok(None) => continue,
+            Err(e) => Update::Done {
+                ok: false,
+                text: format!("{e:#}"),
+            },
+        };
+        send(&tx, done);
+    }
+}
+
+/// `Ok(Some(text))` is a success message, `Ok(None)` means the effect already sent its own
+/// final update.
+fn perform(
+    ctx: &Ctx,
+    host: &HostEnv,
+    effect: Effect,
+    tx: &Sender<Update>,
+) -> Result<Option<String>> {
+    let skill_warnings = |text: String| -> String {
+        match ctx.refresh_skill_errors().first() {
+            Some(w) => format!("{text} (warning: {w})"),
+            None => text,
+        }
+    };
+    Ok(Some(match effect {
+        Effect::Refresh | Effect::Detail(_) => return Ok(None),
+        Effect::AddAccounts { harness, count } => {
+            let cfg = ctx.config()?;
+            let batch = manage::add_numbered(&ctx.paths, &cfg, host, harness, count);
+            let names: Vec<_> = batch.created.iter().map(|a| a.name.as_str()).collect();
+            if names.is_empty() {
+                return Err(batch
+                    .error
+                    .map_or_else(|| anyhow!("no account was created"), Into::into));
+            }
+            let text = skill_warnings(format!("added {}; press l to sign in", names.join(", ")));
+            if harness == Harness::Claude {
+                send(
+                    tx,
+                    Update::Hint {
+                        title: "Claude accounts".into(),
+                        lines: vec![setup::CLAUDE_NOTE.to_string()],
+                    },
+                );
+            }
+            if let Some(e) = batch.error {
+                return Err(anyhow!("{text}; then: {e}"));
+            }
+            text
+        }
+        Effect::Login(name) => {
+            let account = load_account(&ctx.paths, &name)?;
+            // Fails early when the harness binary is missing.
+            let plan = manage::login_command(&account, host, true)?;
+            if matches!(account.harness, Harness::Codex | Harness::Opencode) {
+                let (program, args) = plan.argv.split_first().context("empty login command")?;
+                send(
+                    tx,
+                    Update::Launch(Launch {
+                        title: format!("Sign in to {name}"),
+                        note: plan.note.clone(),
+                        program: program.clone(),
+                        args: args.to_vec(),
+                        env: plan.env.clone(),
+                        cwd: None,
+                    }),
+                );
+            } else {
+                // claude and agy sign in inside their wrapper, a session of their own.
+                let login = login_json(&account, host)?;
+                let mut buf = Vec::new();
+                write_login_hint(&mut buf, &login, false)?;
+                send(
+                    tx,
+                    Update::Hint {
+                        title: format!("Sign in to {name}"),
+                        lines: String::from_utf8_lossy(&buf)
+                            .lines()
+                            .map(str::to_string)
+                            .collect(),
+                    },
+                );
+            }
+            return Ok(None);
+        }
+        Effect::SetEnabled { name, enabled } => {
+            manage::set_enabled(&ctx.paths, host, &name, enabled)?;
+            skill_warnings(format!(
+                "{} {name}",
+                if enabled { "enabled" } else { "disabled" }
+            ))
+        }
+        Effect::Cooldown { name, hours } => {
+            let account = load_account(&ctx.paths, &name)?;
+            let pools = flag_pools(&account, None);
+            let store = Store::open(ctx.paths.state_db()).context("could not open state.db")?;
+            match hours {
+                None => {
+                    apply_flag(&store, &name, &pools, FlagAction::Clear, None)?;
+                    format!("cleared the cooldown on {name}")
+                }
+                Some(h) => {
+                    let until = Utc::now() + Duration::seconds((h * 3600.0) as i64);
+                    apply_flag(&store, &name, &pools, FlagAction::Until(until), None)?;
+                    format!("{name} in cooldown for {h} h")
+                }
+            }
+        }
+        Effect::Remove(name) => {
+            let cfg = ctx.config()?;
+            manage::remove(&ctx.paths, &cfg, host, &name, false)?;
+            skill_warnings(format!("removed account {name}"))
+        }
+        Effect::ScanImport => {
+            send(tx, Update::Candidates(setup::scan_candidates(ctx, host)?));
+            return Ok(None);
+        }
+        Effect::ImportAll(found) => {
+            let cfg = ctx.config()?;
+            let (names, failed) = import_all(ctx, &cfg, host, &found);
+            if !failed.is_empty() {
+                return Err(anyhow!(
+                    "imported {}; could not import {}",
+                    names.len(),
+                    failed.join("; ")
+                ));
+            }
+            skill_warnings(format!("imported {}", names.join(", ")))
+        }
+        Effect::Cancel(run) => {
+            let v: RunView = supervisor_call(METHOD_CANCEL_AGENT, RunRef { run: run.clone() })?;
+            format!("run {} is {}", short(&v.run_id), v.state)
+        }
+        Effect::Accept(run) => {
+            let _: AckResult = supervisor_call(METHOD_ACCEPT_RUN, RunRef { run: run.clone() })?;
+            format!("accepted run {}", short(&run))
+        }
+        Effect::Reject { run, feedback } => {
+            let _: AckResult = supervisor_call(
+                METHOD_REJECT_RUN,
+                RejectParams {
+                    run: run.clone(),
+                    feedback,
+                },
+            )?;
+            format!("sent feedback; run {} continues", short(&run))
+        }
+        Effect::Join(run) => {
+            let j: JoinResult = supervisor_call(METHOD_JOIN_RUN, RunRef { run: run.clone() })?;
+            let (program, args) = j.argv.split_first().context("empty join command")?;
+            send(
+                tx,
+                Update::Launch(Launch {
+                    title: format!("Joining run {}", short(&run)),
+                    note: None,
+                    program: program.clone(),
+                    args: args.to_vec(),
+                    env: j.env.clone(),
+                    cwd: Some(j.cwd.clone()),
+                }),
+            );
+            return Ok(None);
+        }
+        Effect::Setup(step) => {
+            let (state, _) = run_step(ctx, host, step, tx);
+            format!("{}: {}", step.label(), state_word(state))
+        }
+        Effect::SetupAll => {
+            for step in SetupStep::ALL {
+                let (state, _) = run_step(ctx, host, step, tx);
+                if state == StepState::Failed {
+                    return Err(anyhow!("{} failed; later steps were not run", step.label()));
+                }
+            }
+            "setup finished".to_string()
+        }
+    }))
+}
+
+fn state_word(s: StepState) -> &'static str {
+    match s {
+        StepState::Done => "done",
+        StepState::Warn => "done, needs attention",
+        StepState::Failed => "failed",
+        StepState::Pending | StepState::Running => "not finished",
+    }
+}
+
+fn short(id: &str) -> String {
+    id.chars().take(8).collect()
+}
+
+fn load_account(paths: &Paths, name: &str) -> Result<AccountFile> {
+    let file = paths.account_file(name);
+    if !file.exists() {
+        return Err(anyhow!("account `{name}` not found"));
+    }
+    Ok(AccountFile::load(&file)?)
+}
+
+fn import_all(
+    ctx: &Ctx,
+    cfg: &so_core::Config,
+    host: &HostEnv,
+    found: &[so_accounts::ImportCandidate],
+) -> (Vec<String>, Vec<String>) {
+    let (mut names, mut failed) = (Vec::new(), Vec::new());
+    for c in found {
+        let home = host.tildify(&c.home);
+        match manage::import(&ctx.paths, cfg, host, &c.name, c.harness, &home) {
+            Ok(a) => names.push(a.name),
+            Err(e) => failed.push(format!("{}: {e}", c.name)),
+        }
+    }
+    (names, failed)
+}
+
+/// Runs one blocking call against the supervisor; never starts it.
+fn supervisor_call<P: Serialize, R: DeserializeOwned>(method: &str, params: P) -> Result<R> {
+    let socket = Paths::socket_path()?;
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    runs::runtime()?.block_on(async {
+        let client = SupervisorClient::connect(&socket)
+            .await
+            .map_err(|_| anyhow!(NOT_RUNNING))?;
+        client
+            .hello_inspect("tui", &cwd, Some(std::process::id()))
+            .await
+            .map_err(|_| anyhow!(NOT_RUNNING))?;
+        client.call(method, params).await.map_err(runs::rpc)
+    })
+}
+
+// ------------------------------------------------------------------ setup steps
+
+fn run_step(
+    ctx: &Ctx,
+    host: &HostEnv,
+    step: SetupStep,
+    tx: &Sender<Update>,
+) -> (StepState, Vec<String>) {
+    send(
+        tx,
+        Update::Step {
+            step,
+            state: StepState::Running,
+            lines: Vec::new(),
+        },
+    );
+    let (state, lines) = match step_body(ctx, host, step) {
+        Ok(r) => r,
+        Err(e) => (StepState::Failed, vec![format!("{e:#}")]),
+    };
+    send(
+        tx,
+        Update::Step {
+            step,
+            state,
+            lines: lines.clone(),
+        },
+    );
+    (state, lines)
+}
+
+fn step_body(ctx: &Ctx, host: &HostEnv, step: SetupStep) -> Result<(StepState, Vec<String>)> {
+    Ok(match step {
+        SetupStep::Init => {
+            let created = setup::step_init(ctx)?;
+            let line = if created > 0 {
+                format!(
+                    "created {created} item(s) in {}",
+                    host.tildify(&ctx.paths.config_dir)
+                )
+            } else {
+                format!("{} already set up", host.tildify(&ctx.paths.config_dir))
+            };
+            (StepState::Done, vec![line])
+        }
+        SetupStep::Harnesses => {
+            let infos = setup::detect_harnesses(ctx, host, &[])?;
+            let lines = infos
+                .iter()
+                .map(|i| match &i.binary {
+                    Some(p) => format!(
+                        "{:<9} {} ({} account(s))",
+                        i.harness,
+                        p.display(),
+                        i.accounts.len()
+                    ),
+                    None => format!("{:<9} not installed", i.harness),
+                })
+                .collect();
+            let any = infos.iter().any(|i| i.binary.is_some());
+            (
+                if any {
+                    StepState::Done
+                } else {
+                    StepState::Failed
+                },
+                lines,
+            )
+        }
+        SetupStep::Import => {
+            let found = setup::scan_candidates(ctx, host)?;
+            if found.is_empty() {
+                return Ok((StepState::Done, vec!["no existing logins found".into()]));
+            }
+            let cfg = ctx.config()?;
+            let (names, failed) = import_all(ctx, &cfg, host, &found);
+            let mut lines: Vec<String> = names.iter().map(|n| format!("imported {n}")).collect();
+            lines.extend(failed.iter().map(|f| format!("could not import {f}")));
+            ctx.refresh_skill_errors();
+            (
+                if failed.is_empty() {
+                    StepState::Done
+                } else {
+                    StepState::Failed
+                },
+                lines,
+            )
+        }
+        SetupStep::AddAccounts => {
+            let cfg = ctx.config()?;
+            let infos = setup::detect_harnesses(ctx, host, &[])?;
+            let mut lines = Vec::new();
+            let mut failed = false;
+            for i in &infos {
+                let want = setup::default_count(i);
+                if want == 0 {
+                    continue;
+                }
+                let batch = manage::add_numbered(&ctx.paths, &cfg, host, i.harness, want);
+                lines.extend(batch.created.iter().map(|a| format!("added {}", a.name)));
+                if let Some(e) = batch.error {
+                    lines.push(format!("could not add every {} account: {e}", i.harness));
+                    failed = true;
+                }
+            }
+            if lines.is_empty() {
+                lines.push("nothing to add: every installed harness already has an account".into());
+            }
+            ctx.refresh_skill_errors();
+            (
+                if failed {
+                    StepState::Failed
+                } else {
+                    StepState::Done
+                },
+                lines,
+            )
+        }
+        SetupStep::SignIn => {
+            let pending = setup::signed_out(ctx, host)?;
+            if pending.is_empty() {
+                return Ok((StepState::Done, vec!["no account is signed out".into()]));
+            }
+            let mut lines = vec![format!(
+                "{} account(s) signed out. Accounts tab (2), select one, press l:",
+                pending.len()
+            )];
+            for a in &pending {
+                let login = login_json(a, host)?;
+                let via_cli = matches!(a.harness, Harness::Codex | Harness::Opencode);
+                let key = if via_cli { "cli" } else { "command" };
+                lines.push(format!(
+                    "{}: {}",
+                    a.name,
+                    login[key].as_str().unwrap_or_default()
+                ));
+            }
+            (StepState::Warn, lines)
+        }
+        SetupStep::Install => {
+            let v = install::install_quiet(ctx, false, true)?;
+            let lines = v
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|o| {
+                            let g = |k: &str| o[k].as_str().unwrap_or_default();
+                            format!("{:<9} {}", g("action"), g("target"))
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            (StepState::Done, lines)
+        }
+        SetupStep::Doctor => {
+            let d = setup::doctor_summary(ctx, host);
+            let mut lines = vec![format!(
+                "{} ok, {} warning(s), {} failure(s)",
+                d.ok, d.warn, d.fail
+            )];
+            lines.extend(d.lines);
+            let state = if d.fail > 0 {
+                StepState::Failed
+            } else if d.warn > 0 {
+                StepState::Warn
+            } else {
+                StepState::Done
+            };
+            (state, lines)
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+
+    fn fake_host(dir: &std::path::Path) -> HostEnv {
+        HostEnv {
+            home: dir.join("home"),
+            path_var: Some(dir.join("bin").display().to_string()),
+            platform: so_core::Platform::Linux,
+        }
+    }
+
+    fn ctx(dir: &std::path::Path) -> Ctx {
+        Ctx::new(Some(dir.join("cfg")), false, true).unwrap()
+    }
+
+    #[test]
+    fn init_step_creates_the_config_then_reports_it_present() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("home")).unwrap();
+        let (ctx, host) = (ctx(d.path()), fake_host(d.path()));
+        let (tx, rx) = channel();
+        let (s, lines) = run_step(&ctx, &host, SetupStep::Init, &tx);
+        assert_eq!(s, StepState::Done);
+        assert!(lines[0].starts_with("created"), "{lines:?}");
+        assert!(ctx.paths.config_toml().exists());
+        let (_, again) = run_step(&ctx, &host, SetupStep::Init, &tx);
+        assert!(again[0].ends_with("already set up"), "{again:?}");
+        // Each step reports running, then its result.
+        let states: Vec<_> = rx
+            .try_iter()
+            .map(|u| match u {
+                Update::Step { state, .. } => state,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            states,
+            vec![
+                StepState::Running,
+                StepState::Done,
+                StepState::Running,
+                StepState::Done
+            ]
+        );
+    }
+
+    #[test]
+    fn harness_step_fails_when_no_binary_is_on_path() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("bin")).unwrap();
+        let (ctx, host) = (ctx(d.path()), fake_host(d.path()));
+        let (tx, _rx) = channel();
+        let (s, lines) = run_step(&ctx, &host, SetupStep::Harnesses, &tx);
+        assert_eq!(s, StepState::Failed);
+        assert!(
+            lines.iter().all(|l| l.contains("not installed")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn actions_on_a_missing_account_report_an_error_not_a_panic() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("home")).unwrap();
+        let (ctx, host) = (ctx(d.path()), fake_host(d.path()));
+        let (tx, _rx) = channel();
+        let e = perform(&ctx, &host, Effect::Login("nope".into()), &tx).unwrap_err();
+        assert!(e.to_string().contains("not found"), "{e}");
+    }
+
+    #[test]
+    fn the_action_loop_turns_errors_into_a_done_update() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("home")).unwrap();
+        let (ctx, host) = (ctx(d.path()), fake_host(d.path()));
+        let (etx, erx) = channel();
+        let (utx, urx) = channel();
+        etx.send(Effect::Remove("ghost".into())).unwrap();
+        drop(etx);
+        action_loop(ctx, host, erx, utx);
+        match urx.recv().unwrap() {
+            Update::Done { ok, text } => {
+                assert!(!ok);
+                assert!(!text.is_empty());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}

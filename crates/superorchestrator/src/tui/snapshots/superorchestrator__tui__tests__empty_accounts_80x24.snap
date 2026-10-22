@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 80, 24)"
+---
+ superorchestrator 0.1.0  ○ supervisor not running  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs     4 Setup
+
+
+
+
+
+
+
+
+                                 No accounts yet
+
+     Press a to add accounts, or i to import logins already on this machine.
+                         Setup (4) does both in one go.
+
+
+
+
+
+
+
+
+ updated 3s ago
+ ↑↓ move  a add  l sign in  e enable  f flag  x remove  i scan  ? help  q quit

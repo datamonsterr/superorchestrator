@@ -1,0 +1,44 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(& mut a, w, h)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs !1     4 Setup
+  First-run steps. Safe to repeat; each does only what is missing.
+
+    ✓ init          create the config dir, config.toml, choices and catalog
+  ▸ ✓ harnesses     find the harness binaries on PATH
+    ○ import        import logins found on disk as accounts
+    ○ add accounts  add one account for each installed harness without one
+    ! sign in       list accounts that are signed out and how to sign in
+    ✗ install       register the MCP server, skills and CLAUDE.md block
+    ○ doctor        check binaries, config, database, socket and sign-ins
+
+  ╭ harnesses ───────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ codex     /usr/bin/codex (2 account(s))                                                                          │
+  │ claude    not installed                                                                                          │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  │                                                                                                                  │
+  ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ updated 3s ago
+ ↑↓ move  Enter run step  a run all  i install  d doctor  ? help  q quit

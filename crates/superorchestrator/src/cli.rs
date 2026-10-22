@@ -30,6 +30,8 @@ pub struct Cli {
 pub enum Command {
     /// Guided first-run setup: config, accounts, sign-in and install
     Setup(SetupArgs),
+    /// Open the terminal UI: overview, accounts, runs and setup
+    Tui,
     /// Create the config dir, seed config, choices and catalog
     Init,
     /// Show accounts, headroom and supervisor state

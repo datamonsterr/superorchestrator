@@ -9,6 +9,7 @@ mod output;
 mod redact;
 mod register;
 mod skill;
+mod tui;
 mod views;
 
 use std::process::ExitCode;
@@ -44,7 +45,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     let ctx = Ctx::new(config_dir, json, yes)?;
     let Some(command) = command else {
         if interactive() {
-            cmd::menu::run(&ctx)?;
+            tui::run(&ctx)?;
         } else {
             Cli::command().print_help()?;
             println!();
@@ -54,6 +55,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     let ok = |r: Result<()>| r.map(|()| ExitCode::SUCCESS);
     match command {
         Command::Setup(a) => cmd::setup::run(&ctx, a),
+        Command::Tui => ok(tui::run(&ctx)),
         Command::Init => ok(cmd::init::run(&ctx)),
         Command::Config(c) => cmd::config::run(&ctx, c),
         Command::Account(a) => cmd::account::run(&ctx, a),

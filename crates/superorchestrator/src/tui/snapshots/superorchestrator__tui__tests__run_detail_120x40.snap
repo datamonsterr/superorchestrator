@@ -1,0 +1,44 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(& mut a, w, h)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs !1     4 Setup
+ ╭ run 0190bbbb ──────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │ ! pending_review  started 6m ago                                                                                   │
+ │ runs on   codex / codex-2 / gpt-5                                                                                  │
+ │ worktree  /work/repo/.wt/0190bbbb                                                                                  │
+ │ branch    so/0190bbbb                                                                                              │
+ │                                                                                                                    │
+ │ Brief                                                                                                              │
+ │ Add retry with backoff to the HTTP client.                                                                         │
+ │ Keep the public API unchanged.                                                                                     │
+ │                                                                                                                    │
+ │ Route                                                                                                              │
+ │ jev / codex-fast / codex-2 / gpt-5                                                                                 │
+ │ small, well-scoped edit                                                                                            │
+ │                                                                                                                    │
+ │ Recent events                                                                                                      │
+ │ 12:00:01 run_started                                                                                               │
+ │ 12:03:10 progress tests green                                                                                      │
+ │                                                                                                                    │
+ │ Result                                                                                                             │
+ │ {"summary":"done"}                                                                                                 │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ │                                                                                                                    │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+ updated 3s ago
+ ↑↓ scroll  Esc back  j join  a accept  r reject  c cancel  ? help  q back

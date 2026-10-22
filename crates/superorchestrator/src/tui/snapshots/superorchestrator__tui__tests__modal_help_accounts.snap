@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 80, 24)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs !1     4 Setup
+  ╭ Help ────────────────────────────────────────────────────────────────────╮
+  │                                                                          │
+  │ Everywhere                                                               │
+  │ Tab  S-Tab  next / previous tab                                          │
+  │ 1 2 3 4     Overview, Accounts, Runs, Setup                              │
+  │ R  F5       refresh now (the screen refreshes every 2 s)                 │
+  │ ?           this help                                                    │
+  │ q  Esc      close a pane, or quit at the top level                       │
+  │ Ctrl-C      quit                                                         │
+  │                                                                          │
+  │ Accounts                                                                 │
+  │ ↑ ↓  PgUp   move the selection                                           │
+  │ a           add accounts (harness, count)                                │
+  │ l           sign in (codex, opencode); claude and agy show the command   │
+  │ e           enable or disable                                            │
+  │ f           flag a cooldown, or clear it                                 │
+  │ x           remove (type the name to confirm)                            │
+  │ i           scan for logins already on disk and import them              │
+  │                                                                          │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+ updated 3s ago
+ Esc close
