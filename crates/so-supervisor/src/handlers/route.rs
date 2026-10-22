@@ -5,7 +5,9 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use serde_json::{Value, json};
-use so_core::proto::{INVALID_PARAMS, METHOD_ROUTE, RouteParams, RpcError, UNAVAILABLE};
+use so_core::proto::{
+    DECIDER_UNREACHABLE, INVALID_PARAMS, METHOD_ROUTE, RouteParams, RpcError, UNAVAILABLE,
+};
 use so_core::{AccountFile, Config, Event, EventType, Paths, new_id};
 use so_router::{Catalog, RouteCtx, RouteOutcome, RouterError, Snapshot, route_with};
 use so_store::Store;
@@ -69,6 +71,7 @@ pub async fn route_decide(
             data: Some(json!({"reason": NO_ELIGIBLE})),
         },
         RouterError::Invalid(m) => RpcError::new(INVALID_PARAMS, m),
+        RouterError::DeciderUnreachable(m) => RpcError::new(DECIDER_UNREACHABLE, m),
         other => internal(other),
     })
 }
@@ -187,6 +190,8 @@ mod tests {
                 usage: Default::default(),
                 alternatives: vec![],
                 config_fingerprint: "f".into(),
+                decider_model: None,
+                decider_models: None,
                 ranked_accounts: vec![],
             },
             fallback_reason: fallback.map(String::from),

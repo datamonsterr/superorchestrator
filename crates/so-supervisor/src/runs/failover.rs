@@ -313,16 +313,32 @@ impl RunManager {
             .find(|a| a.ended_at.is_none())
             .map(|a| a.id.clone());
         let mut chosen = None;
+        // Set once the decider is found down: this recovery does not ask it again.
+        let outage = std::sync::atomic::AtomicBool::new(false);
         for _ in 0..MAX_ROUTE_TRIES {
             let routed = match self
-                .route_run(&prompt, &pins, &tried, row.choice_id.as_deref(), false)
+                .route_run(
+                    &prompt,
+                    &pins,
+                    &tried,
+                    row.choice_id.as_deref(),
+                    false,
+                    Some(&outage),
+                )
                 .await
             {
                 Ok(r) => r,
                 // Nothing has a free slot: wait in the queue for one, if any could take it.
                 Err(e) => {
                     let queued = self
-                        .route_run(&prompt, &pins, &tried, row.choice_id.as_deref(), true)
+                        .route_run(
+                            &prompt,
+                            &pins,
+                            &tried,
+                            row.choice_id.as_deref(),
+                            true,
+                            Some(&outage),
+                        )
                         .await
                         .map_err(|_| fail(&tried, e.message.clone()))?;
                     return self

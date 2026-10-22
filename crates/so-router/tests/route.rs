@@ -10,10 +10,13 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::routing::post;
 use serde_json::{Value, json};
+use so_core::config::OnUnreachable;
 use so_core::proto::{RouteParams, RouteSource};
 use so_core::{AccountFile, Choice, Config, Harness};
 use so_router::eval::{evaluate, parse_cases};
-use so_router::{Catalog, RouteCtx, RouteInputs, Snapshot, config_fingerprint, route_detailed};
+use so_router::{
+    Catalog, RouteCtx, RouteInputs, RouterError, Snapshot, config_fingerprint, route_detailed,
+};
 use so_store::Store;
 
 #[derive(Clone)]
@@ -22,6 +25,8 @@ struct Fake {
     /// Status and body per hit number (0-based); the last entry repeats.
     script: Arc<Vec<(u16, Value, usize)>>,
     seen: Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+    /// Milliseconds to wait before answering hit number n (missing means no wait).
+    delays: Arc<Vec<u64>>,
 }
 
 async fn handler(
@@ -36,6 +41,9 @@ async fn handler(
         .unwrap_or("")
         .to_string();
     f.seen.lock().unwrap().push((auth, body));
+    if let Some(ms) = f.delays.get(n) {
+        tokio::time::sleep(std::time::Duration::from_millis(*ms)).await;
+    }
     let (status, body, pad) = f.script[n.min(f.script.len() - 1)].clone();
     let mut text = body.to_string();
     text.push_str(&" ".repeat(pad));
@@ -50,7 +58,12 @@ async fn handler(
 }
 
 async fn serve(script: Vec<(u16, Value, usize)>) -> (String, Fake) {
+    serve_with_delays(script, vec![]).await
+}
+
+async fn serve_with_delays(script: Vec<(u16, Value, usize)>, delays: Vec<u64>) -> (String, Fake) {
     let fake = Fake {
+        delays: Arc::new(delays),
         hits: Arc::new(AtomicUsize::new(0)),
         script: Arc::new(script),
         seen: Arc::default(),
@@ -96,6 +109,8 @@ fn world(endpoint: &str, key: bool) -> World {
         ..Config::default()
     };
     config.router.jev.endpoint = endpoint.into();
+    // Tests opt in to the fallback model; the default one would add hits to every script.
+    config.router.jev.fallback_model = None;
     config.router.jev.key_env = "SO_ROUTER_TEST_KEY_UNSET".into();
     if key {
         let f = dir.path().join(".env");
@@ -168,7 +183,11 @@ async fn valid_answer_is_source_jev_and_request_has_the_spec_shape() {
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].0, "Bearer sk-test-secret");
     let b = &seen[0].1;
-    assert_eq!(b["model"], "~typesafe/jev-latest");
+    assert_eq!(b["model"], "inception/mercury-decide:free");
+    assert_eq!(
+        r.decider_model.as_deref(),
+        Some("inception/mercury-decide:free")
+    );
     assert_eq!(b["state"]["task_content"], "do the thing");
     assert_eq!(b["state"]["role"], "worker");
     assert!(b["state"]["context"].get("quota").is_some());
@@ -217,8 +236,10 @@ async fn gate_rejection_falls_back_and_keeps_confidence() {
 
 #[tokio::test]
 async fn auth_error_is_not_retried_but_server_error_is_retried_once() {
+    // A refused key is not retried; with `on_unreachable = heuristic` it degrades.
     let (url, fake) = serve(vec![(401, json!({"error": "no"}), 0)]).await;
-    let w = world(&url, true);
+    let mut w = world(&url, true);
+    w.config.router.jev.on_unreachable = OnUnreachable::Heuristic;
     let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
     assert_eq!(out.result.source, RouteSource::Heuristic);
     assert!(out.fallback_reason.unwrap().contains("401"));
@@ -239,7 +260,8 @@ async fn auth_error_is_not_retried_but_server_error_is_retried_once() {
     assert_eq!(fake.hits.load(Ordering::SeqCst), 2);
 
     let (url, fake) = serve(vec![(500, json!({}), 0)]).await;
-    let w = world(&url, true);
+    let mut w = world(&url, true);
+    w.config.router.jev.on_unreachable = OnUnreachable::Heuristic;
     let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
     assert_eq!(out.result.source, RouteSource::Heuristic);
     assert_eq!(fake.hits.load(Ordering::SeqCst), 2);
@@ -502,4 +524,288 @@ async fn ranked_accounts_and_exclude_accounts_drive_failover() {
             .account,
         "codex-b"
     );
+}
+
+fn good() -> Value {
+    answer("agy-fast", 0.9, json!({"agy-fast": 0.9, "codex-big": 0.1}))
+}
+
+fn models_seen(fake: &Fake) -> Vec<String> {
+    fake.seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, b)| b["model"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn with_fallback(w: &mut World) {
+    w.config.router.jev.fallback_model = Some("fallback/model".into());
+}
+
+#[tokio::test]
+async fn primary_answer_does_not_call_the_fallback() {
+    let (url, fake) = serve(vec![(200, good(), 0)]).await;
+    let mut w = world(&url, true);
+    with_fallback(&mut w);
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    assert_eq!(out.result.source, RouteSource::Jev);
+    assert_eq!(fake.hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        out.result.decider_model.as_deref(),
+        Some("inception/mercury-decide:free")
+    );
+}
+
+#[tokio::test]
+async fn unusable_primary_falls_back_to_the_fallback_model() {
+    // 5xx (retried once), 404 and 400 (missing model) all hand over to the fallback.
+    for (status, primary_hits) in [(500u16, 2usize), (404, 1), (400, 1)] {
+        let mut script = vec![(status, json!({}), 0); primary_hits];
+        script.push((200, good(), 0));
+        let (url, fake) = serve(script).await;
+        let mut w = world(&url, true);
+        with_fallback(&mut w);
+        let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+        assert_eq!(out.result.source, RouteSource::Jev, "{status}");
+        assert_eq!(out.result.decider_model.as_deref(), Some("fallback/model"));
+        let models = models_seen(&fake);
+        assert_eq!(models.len(), primary_hits + 1);
+        assert_eq!(models.last().unwrap(), "fallback/model");
+        assert!(models[..primary_hits].iter().all(|m| m != "fallback/model"));
+    }
+}
+
+#[tokio::test]
+async fn rate_limited_primary_falls_back() {
+    let (url, fake) = serve(vec![
+        (429, json!({}), 0),
+        (429, json!({}), 0),
+        (200, good(), 0),
+    ])
+    .await;
+    let mut w = world(&url, true);
+    with_fallback(&mut w);
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    assert_eq!(out.result.source, RouteSource::Jev);
+    assert_eq!(models_seen(&fake).last().unwrap(), "fallback/model");
+}
+
+#[tokio::test]
+async fn both_models_unusable_is_an_error_naming_both() {
+    let (url, fake) = serve(vec![(503, json!({}), 0)]).await;
+    let mut w = world(&url, true);
+    with_fallback(&mut w);
+    let e = route_detailed(&w.inputs(), &params("x")).await.unwrap_err();
+    let RouterError::DeciderUnreachable(m) = e else {
+        panic!("expected DeciderUnreachable, got {e:?}");
+    };
+    assert!(m.contains("inception/mercury-decide:free"), "{m}");
+    assert!(m.contains("fallback model `fallback/model`"), "{m}");
+    assert!(m.contains("HTTP 503"), "{m}");
+    assert!(m.contains("router.jev.model"), "{m}");
+    assert!(!m.contains("sk-test"), "{m}");
+    assert_eq!(fake.hits.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn on_unreachable_heuristic_degrades_and_records_why() {
+    let (url, _) = serve(vec![(503, json!({}), 0)]).await;
+    let mut w = world(&url, true);
+    with_fallback(&mut w);
+    w.config.router.jev.on_unreachable = OnUnreachable::Heuristic;
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    assert_eq!(out.result.source, RouteSource::Heuristic);
+    assert!(out.fallback_reason.unwrap().contains("decider unreachable"));
+}
+
+#[tokio::test]
+async fn refused_key_is_an_error_that_says_to_check_the_key() {
+    for status in [401u16, 403] {
+        let (url, fake) = serve(vec![(status, json!({}), 0)]).await;
+        let mut w = world(&url, true);
+        with_fallback(&mut w);
+        let e = route_detailed(&w.inputs(), &params("x")).await.unwrap_err();
+        let m = e.to_string();
+        assert!(m.contains(&status.to_string()), "{m}");
+        assert!(m.contains("SO_ROUTER_TEST_KEY_UNSET"), "{m}");
+        assert!(m.contains("key_file"), "{m}");
+        assert!(!m.contains("sk-test"), "{m}");
+        // The fallback would be refused too, so it is not asked.
+        assert_eq!(fake.hits.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn missing_model_is_an_error_that_names_the_id() {
+    let (url, _) = serve(vec![(400, json!({"error": "SECRET-BODY-TEXT"}), 0)]).await;
+    let mut w = world(&url, true);
+    w.config.router.jev.model = "acme/gone".into();
+    let e = route_detailed(&w.inputs(), &params("x")).await.unwrap_err();
+    let m = e.to_string();
+    assert!(m.contains("`acme/gone`") && m.contains("HTTP 400"), "{m}");
+    assert!(
+        !m.contains("SECRET-BODY-TEXT"),
+        "the response body is not echoed: {m}"
+    );
+}
+
+fn env_model(name: &str) -> Option<String> {
+    match name {
+        "SUPERORCHESTRATOR_ROUTER_MODEL" => Some("env/model".into()),
+        "SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL" => Some("none".into()),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn env_model_beats_config_and_is_reported() {
+    use so_core::config::ModelSource;
+    let (url, fake) = serve(vec![(200, good(), 0)]).await;
+    let mut w = world(&url, true);
+    w.config.router.jev.model = "acme/config-model".into();
+    let snap = Snapshot::collect(&w.store, &w.accounts, 15.0, chrono::Utc::now()).unwrap();
+    let key_env = w.config.router.jev.key_env.clone();
+    assert!(!key_env.is_empty());
+    let ctx = RouteCtx {
+        config: &w.config,
+        catalog: &w.catalog,
+        snapshot: &snap,
+        http: &w.http,
+        env: env_model,
+    };
+    let out = so_router::route_with(&ctx, &params("x")).await.unwrap();
+    assert_eq!(models_seen(&fake), vec!["env/model"]);
+    let m = out.result.decider_models.unwrap();
+    assert_eq!(
+        (m.primary.as_str(), m.primary_source),
+        ("env/model", ModelSource::Env)
+    );
+    assert_eq!(m.fallback, None);
+}
+
+#[tokio::test]
+async fn rejected_answer_never_reaches_the_fallback() {
+    let (url, fake) = serve(vec![(
+        200,
+        answer("agy-fast", 0.2, json!({"agy-fast": 0.6, "codex-big": 0.4})),
+        0,
+    )])
+    .await;
+    let mut w = world(&url, true);
+    with_fallback(&mut w);
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    assert_eq!(out.result.source, RouteSource::Heuristic);
+    assert_eq!(fake.hits.load(Ordering::SeqCst), 1);
+    // The rejected answer still names the model that gave it.
+    assert_eq!(
+        out.result.decider_model.as_deref(),
+        Some("inception/mercury-decide:free")
+    );
+}
+
+#[tokio::test]
+async fn response_model_id_is_recorded_when_given() {
+    let mut body = good();
+    body["model"] = json!("inception/mercury-decide-20260930");
+    let (url, _) = serve(vec![(200, body, 0)]).await;
+    let w = world(&url, true);
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    assert_eq!(
+        out.result.decider_model.as_deref(),
+        Some("inception/mercury-decide-20260930")
+    );
+}
+
+#[tokio::test]
+async fn eval_records_decider_model_and_probabilities() {
+    let (url, _) = serve(vec![(200, good(), 0)]).await;
+    let w = world(&url, true);
+    let snap = Snapshot::collect(&w.store, &w.accounts, 15.0, chrono::Utc::now()).unwrap();
+    let ctx = RouteCtx {
+        config: &w.config,
+        catalog: &w.catalog,
+        snapshot: &snap,
+        http: &w.http,
+        env: |_| None,
+    };
+    let cases =
+        parse_cases(r#"{"id":"a","task":"x","expected_choices":["agy-fast"],"reason":"r"}"#)
+            .unwrap();
+    let rep = evaluate(&ctx, &cases).await;
+    let c = &rep.cases[0];
+    assert_eq!(
+        c.decider_model.as_deref(),
+        Some("inception/mercury-decide:free")
+    );
+    assert_eq!(c.probabilities.len(), 2);
+    assert!(c.fallback_reason.is_none());
+}
+
+#[tokio::test]
+async fn effort_penalty_reorders_two_choices_of_the_same_tier() {
+    // Same harness, tier, cost and pool; the low-effort choice comes first in the config, so
+    // without the effort penalty the stable sort would pick it.
+    let mut w = world("http://127.0.0.1:1/x", false);
+    let mut low = choice("agy-low", Harness::Agy, "gemini-3.8-flash-low");
+    low.effort = Some("low".into());
+    let med = choice("agy-med", Harness::Agy, "gemini-3.8-flash-medium");
+    w.config.choices = vec![low, med];
+    let out = route_detailed(&w.inputs(), &params("Please look into the report"))
+        .await
+        .unwrap();
+    assert_eq!(out.result.choice_id, "agy-med");
+}
+
+#[tokio::test]
+async fn eval_counts_an_unreachable_decider_as_an_error_not_a_fallback() {
+    let (url, _) = serve(vec![(503, json!({}), 0)]).await;
+    let w = world(&url, true);
+    let snap = Snapshot::collect(&w.store, &w.accounts, 15.0, chrono::Utc::now()).unwrap();
+    let ctx = RouteCtx {
+        config: &w.config,
+        catalog: &w.catalog,
+        snapshot: &snap,
+        http: &w.http,
+        env: |_| None,
+    };
+    let cases = parse_cases(r#"{"id":"a","task":"x","expected_choices":["agy-fast"]}"#).unwrap();
+    let rep = evaluate(&ctx, &cases).await;
+    assert_eq!((rep.errors_count, rep.fallback_count), (1, 0));
+    assert_eq!(rep.cases[0].error.as_deref(), Some("decider_unreachable"));
+    assert_eq!(rep.sources["error"], 1);
+    assert_eq!(rep.decider_models.primary, "inception/mercury-decide:free");
+}
+
+#[tokio::test]
+async fn a_slow_primary_leaves_the_fallback_its_share_of_the_timeout() {
+    // The primary hangs well past the 1 s timeout; it may use 3/5 of it, so the fallback
+    // still answers within the one timeout.
+    let (url, fake) = serve_with_delays(vec![(200, good(), 0)], vec![5000]).await;
+    let mut w = world(&url, true);
+    with_fallback(&mut w);
+    w.config.router.jev.timeout = so_core::HumanDuration::from_secs(1);
+    let t = std::time::Instant::now();
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    let took = t.elapsed();
+    assert_eq!(out.result.source, RouteSource::Jev);
+    assert_eq!(out.result.decider_model.as_deref(), Some("fallback/model"));
+    assert!(took < std::time::Duration::from_secs(1), "took {took:?}");
+    assert_eq!(
+        models_seen(&fake),
+        vec![
+            "inception/mercury-decide:free".to_string(),
+            "fallback/model".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn connection_refused_tries_the_fallback_and_names_both_models() {
+    let mut w = world("http://127.0.0.1:1/decisions", true);
+    with_fallback(&mut w);
+    let e = route_detailed(&w.inputs(), &params("x")).await.unwrap_err();
+    let m = e.to_string();
+    assert!(m.contains("`inception/mercury-decide:free`"), "{m}");
+    assert!(m.contains("fallback model `fallback/model`"), "{m}");
 }

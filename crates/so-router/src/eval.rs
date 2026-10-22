@@ -24,6 +24,10 @@ pub struct Case {
     pub expected_choices: Vec<String>,
     #[serde(default)]
     pub available_choice_ids: Option<Vec<String>>,
+    /// Why a second expected choice is as correct as the first. Documentation only.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub reason: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
     pub context: Option<Value>,
@@ -75,7 +79,13 @@ pub struct CaseRecord {
     pub correct: bool,
     pub eligible: bool,
     pub source: String,
+    /// The decider model that answered (also when its answer was rejected).
+    pub decider_model: Option<String>,
     pub confidence: Option<f64>,
+    /// Jev's probabilities per eligible choice, also kept when the gate rejected the answer.
+    pub probabilities: BTreeMap<String, f64>,
+    /// Why the decider's answer was not used (no task text, no credentials).
+    pub fallback_reason: Option<String>,
     pub latency_ms: f64,
     pub cost: f64,
     /// A failure category, never the task text.
@@ -96,6 +106,8 @@ pub struct EvalReport {
     /// Cases where the decider was wanted but its answer was not used.
     pub fallback_count: usize,
     pub errors_count: usize,
+    /// The decider models in effect (env > config > default) and where each came from.
+    pub decider_models: so_core::config::JevModels,
     pub sources: BTreeMap<String, usize>,
     pub latency_ms: Latency,
     pub total_cost: f64,
@@ -156,13 +168,17 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
                 if o.fallback_reason.is_some() {
                     fallbacks += 1;
                 }
+                let fallback_reason = o.fallback_reason.clone();
                 total_cost += o.result.usage.cost;
                 let r = o.result;
                 CaseRecord {
                     correct: case.expected_choices.contains(&r.choice_id),
                     eligible: eligible.contains(&r.choice_id),
                     source: source_name(r.source).into(),
+                    decider_model: r.decider_model.clone(),
                     confidence: r.confidence,
+                    probabilities: r.probabilities.clone(),
+                    fallback_reason,
                     cost: r.usage.cost,
                     choice_id: Some(r.choice_id),
                     id: case.id.clone(),
@@ -180,12 +196,16 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
                     correct: false,
                     eligible: false,
                     source: "error".into(),
+                    decider_model: None,
                     confidence: None,
+                    probabilities: BTreeMap::new(),
+                    fallback_reason: None,
                     latency_ms,
                     cost: 0.0,
                     error: Some(match e {
                         crate::RouterError::NoEligible(_) => "no_eligible_choice".into(),
                         crate::RouterError::Invalid(_) => "invalid_request".into(),
+                        crate::RouterError::DeciderUnreachable(_) => "decider_unreachable".into(),
                         _ => "router_error".into(),
                     }),
                 }
@@ -202,6 +222,7 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
         eligible_compliance: records.iter().filter(|r| r.eligible).count() as f64 / n,
         fallback_count: fallbacks,
         errors_count: errors,
+        decider_models: ctx.config.router.jev.resolve_models(ctx.env),
         sources,
         latency_ms: Latency {
             p50: percentile(&latencies, 0.5),
@@ -221,6 +242,22 @@ mod tests {
         let c = bundled_cases();
         assert_eq!(c.len(), 15);
         assert!(c.iter().any(|c| c.id.starts_with("vietnamese")));
+    }
+
+    #[test]
+    fn holdout_cases_load_and_stay_separate_from_the_bundled_ones() {
+        let hold = parse_cases(include_str!("../evals/holdout.jsonl")).unwrap();
+        assert!(hold.len() >= 15);
+        assert!(hold.iter().any(|c| c.role == "conductor"));
+        assert!(hold.iter().any(|c| c.id.contains("injection")));
+        let bundled = bundled_cases();
+        assert!(hold.iter().all(|h| bundled.iter().all(|b| b.id != h.id)));
+        // A second expected choice always carries its reason.
+        assert!(
+            hold.iter()
+                .filter(|c| c.expected_choices.len() > 1)
+                .all(|c| c.reason.is_some())
+        );
     }
 
     #[test]

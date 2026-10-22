@@ -7,6 +7,7 @@ use std::str::FromStr;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use so_core::config::OnUnreachable;
 use so_core::proto::{RouteAlternative, RouteParams, RouteResult, RouteSource, RouteUsage};
 use so_core::{AccountFile, Choice, Config, Harness};
 use so_store::Store;
@@ -14,7 +15,9 @@ use so_store::Store;
 use crate::catalog::Catalog;
 use crate::eligible::{Candidate, Snapshot, apply_claude_rank, candidate, eligible};
 use crate::error::{Result, RouterError};
-use crate::heuristic::{Complexity, ScoreInputs, estimate_complexity, harness_priority, score};
+use crate::heuristic::{
+    Complexity, ScoreInputs, effort_gap, estimate_complexity, harness_priority, score,
+};
 use crate::jev::{EnvFn, JevFailure, JevRequest, decide, process_env, resolve_key};
 use crate::select::{headroom_of, rank_accounts, select_account};
 
@@ -221,6 +224,7 @@ fn heuristic_rank<'a>(
                 active_runs: account.active,
                 cost: cand.cost,
                 priority: harness_priority(&ctx.config.router.priority, cand.choice.harness),
+                effort_gap: effort_gap(complexity, cand.choice.effort.as_deref()),
             };
             Some(Ranked {
                 cand,
@@ -335,7 +339,8 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                   fail: Option<&JevFailure>,
                   jev: Option<(f64, BTreeMap<String, f64>, RouteUsage)>,
                   probs_rank: Option<Vec<(usize, f64)>>,
-                  fallback_reason: Option<String>|
+                  fallback_reason: Option<String>,
+                  decider_model: Option<String>|
      -> RouteOutcome {
         let cand = &cands[pick];
         let ranked_accounts: Vec<String> = rank_accounts(&cand.accounts, &cand.pool)
@@ -380,6 +385,8 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                 usage,
                 alternatives,
                 config_fingerprint: fingerprint.clone(),
+                decider_model,
+                decider_models: None,
                 ranked_accounts,
             },
             fallback_reason,
@@ -408,17 +415,28 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
             None,
             None,
             None,
+            None,
         ));
     }
 
     let heuristic = |reason: Option<String>, fail: Option<&JevFailure>, note: &str| {
+        let decider_model = fail.and_then(|f| f.model.clone());
         let pick = best_heuristic(&ranked);
         let why = format!(
             "heuristic: {note}; complexity {}, score {:.2}",
             complexity.as_str(),
             ranked.first().map_or(0.0, |r| r.score)
         );
-        finish(pick, RouteSource::Heuristic, why, fail, None, None, reason)
+        finish(
+            pick,
+            RouteSource::Heuristic,
+            why,
+            fail,
+            None,
+            None,
+            reason,
+            decider_model,
+        )
     };
 
     if cands.len() == 1 {
@@ -443,9 +461,11 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
         context: jev_context(ctx.snapshot),
         criteria: &criteria,
     };
+    let models = ctx.config.router.jev.resolve_models(ctx.env);
     match decide(
         ctx.http,
         &ctx.config.router.jev,
+        &models,
         &ctx.config.router.policy,
         &key,
         &request,
@@ -476,7 +496,7 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                 "Jev selected the configured choice (confidence {:.2}).",
                 d.validated.confidence
             );
-            Ok(finish(
+            let mut out = finish(
                 pick,
                 RouteSource::Jev,
                 why,
@@ -484,11 +504,19 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                 Some((d.validated.confidence, d.validated.probabilities, d.usage)),
                 Some(by_prob),
                 None,
-            ))
+                Some(d.model),
+            );
+            out.result.decider_models = Some(models);
+            Ok(out)
+        }
+        Err(f) if f.unreachable && ctx.config.router.jev.on_unreachable == OnUnreachable::Error => {
+            Err(RouterError::DeciderUnreachable(f.reason))
         }
         Err(f) => {
             let reason = f.reason.clone();
-            Ok(heuristic(Some(reason.clone()), Some(&f), &reason))
+            let mut out = heuristic(Some(reason.clone()), Some(&f), &reason);
+            out.result.decider_models = Some(models);
+            Ok(out)
         }
     }
 }

@@ -22,5 +22,9 @@ if [ "$need" = 0 ]; then
   exit 0
 fi
 
+# git exports these to hooks. Inherited, they make git (and the tests that shell out to it)
+# act on this repository instead of their own temp dirs.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_PREFIX
+
 cd "$(git rev-parse --show-toplevel)"
 exec scripts/check.sh

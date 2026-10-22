@@ -13,6 +13,22 @@ First release. Pending the `v0.1.0` tag.
 
 ### Added
 
+- Routing decider: `inception/mercury-decide:free` is the default model, with
+  `~typesafe/jev-latest` as an automatic fallback when the primary is unusable (transport
+  error, timeout, 429, 5xx or a missing model; never for a rejected answer). Both take any
+  OpenRouter id in `router.jev.model` and `router.jev.fallback_model`, or from
+  `SUPERORCHESTRATOR_ROUTER_MODEL` and `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL` (env beats
+  config beats default, `none` disables the fallback). `route --explain`, `doctor` and
+  `route eval` show the models and their source, and records name the model that answered.
+- A configured decider that cannot be reached now fails the call with an error that names the
+  models, the cause and the next step (`route` exits non-zero, MCP `isError`, `spawn_agent`
+  auto spawns nothing, `POST /route` 502, `route eval` counts an error).
+  `router.jev.on_unreachable = "heuristic"` keeps the old degrade. No key still routes by
+  heuristic. Recovery of an existing run (failover, queued reroute) never fails on a decider
+  outage: it routes with the heuristic and records why.
+- Held-out routing eval set (`crates/so-router/evals/holdout.jsonl`), kept separate from the
+  tuning set. `route eval --json` reports each case's probabilities, fallback reason and
+  answering model.
 - Cargo workspace with a React, Vite and TypeScript frontend in `web/`.
 - Core types, paths, config, account and protocol modules, and a SQLite store with versioned
   migrations.
@@ -70,6 +86,14 @@ First release. Pending the `v0.1.0` tag.
   supervisor (`pnpm -C web e2e:real`), shellcheck and actionlint.
 
 ### Fixed
+
+- Routing against live Jev. `router.policy` defaults are now `min_confidence = 0.45` and
+  `min_margin = 0.15`, and the seeded choice descriptions and routing instruction describe the
+  tiers in general terms. Live results (one run each, 2026-10-23): tuning set 87% on
+  mercury-decide and 87% on jev-latest; held-out set 88% on mercury-decide and 75% on
+  jev-latest; before the change the tuning set scored about 50% with most cases falling back to
+  the heuristic. The heuristic breaks ties inside a tier by effort (73% tuning set, 50%
+  held-out without a decider). Existing `config.toml` files keep their old choice descriptions.
 
 - Web UI: dashboard crash against the real server, black timeline state colours on an empty
   session, a CSP console error from zod, and a `1970-01-01` headroom `observed_at` (now `null`).

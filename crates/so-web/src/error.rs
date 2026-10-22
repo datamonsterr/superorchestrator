@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use so_accounts::AccountsError;
 use so_core::CoreError;
 use so_core::proto::{
-    CAP_EXCEEDED, DEPTH_LIMIT, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
-    NOT_FOUND, PARSE_ERROR, RpcError, TIMEOUT, UNAVAILABLE,
+    CAP_EXCEEDED, DECIDER_UNREACHABLE, DEPTH_LIMIT, INTERNAL_ERROR, INVALID_PARAMS,
+    INVALID_REQUEST, METHOD_NOT_FOUND, NOT_FOUND, PARSE_ERROR, RpcError, TIMEOUT, UNAVAILABLE,
 };
 use so_store::StoreError;
 
@@ -88,6 +88,7 @@ impl ApiError {
             INVALID_PARAMS => StatusCode::UNPROCESSABLE_ENTITY,
             UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
             TIMEOUT => StatusCode::GATEWAY_TIMEOUT,
+            DECIDER_UNREACHABLE => StatusCode::BAD_GATEWAY,
             INVALID_REQUEST | PARSE_ERROR => StatusCode::BAD_REQUEST,
             METHOD_NOT_FOUND => StatusCode::NOT_IMPLEMENTED,
             INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
@@ -245,6 +246,16 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unreachable_decider_is_a_502_with_its_message() {
+        let e = ApiError::rpc(
+            so_core::proto::DECIDER_UNREACHABLE,
+            "decider unreachable: x",
+        );
+        assert_eq!(e.0.status, StatusCode::BAD_GATEWAY);
+        assert_eq!(e.0.message, "decider unreachable: x");
+    }
 
     #[test]
     fn filesystem_errors_do_not_carry_paths() {

@@ -96,6 +96,12 @@ async fn route(ctx: &Ctx, task: String, role: Option<String>, explain: bool) -> 
                 "usage:    {} in, {} out, cost {}",
                 r.usage.input_tokens, r.usage.output_tokens, r.usage.cost
             )?;
+            if let Some(m) = &r.decider_models {
+                writeln!(w, "decider:  {}", m.describe())?;
+            }
+            if let Some(m) = &r.decider_model {
+                writeln!(w, "answered: {m}")?;
+            }
             writeln!(w, "config:   {}", r.config_fingerprint)?;
         }
         Ok(())
@@ -193,6 +199,11 @@ fn human_report(w: &mut dyn Write, r: &EvalReport) -> std::io::Result<()> {
     )?;
     writeln!(w, "fallbacks:           {}", r.fallback_count)?;
     writeln!(w, "errors:              {}", r.errors_count)?;
+    writeln!(
+        w,
+        "decider:             {} (this shell's environment)",
+        r.decider_models.describe()
+    )?;
     let sources: Vec<String> = r.sources.iter().map(|(k, v)| format!("{k}={v}")).collect();
     writeln!(w, "sources:             {}", sources.join(" "))?;
     writeln!(

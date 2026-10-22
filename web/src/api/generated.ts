@@ -258,11 +258,25 @@ export interface ImportCandidate {
 
 export interface Jev {
   endpoint?: string;
+  /** Tried only when the primary model cannot be reached; `none` or empty disables it. */
+  fallback_model?: string | null;
   key_env?: string;
   /** Optional dotenv file holding the key. */
   key_file?: string | null;
+  /** Decider model, any OpenRouter model id. */
   model?: string;
+  /** What `route` does when a configured decider cannot be reached (after the fallback). */
+  on_unreachable?: OnUnreachable;
   timeout?: HumanDuration;
+}
+
+/** The decider models in effect, with where each came from (env > config > default). */
+export interface JevModels {
+  /** `None` when there is no fallback. */
+  fallback?: string | null;
+  fallback_source: ModelSource;
+  primary: string;
+  primary_source: ModelSource;
 }
 
 /** Result of `POST /runs/:id/join`: the command to run, with secrets masked. */
@@ -307,11 +321,17 @@ export interface ModelRow {
   tier: string;
 }
 
+/** Where an effective decider model came from. */
+export type ModelSource = "env" | "config" | "default";
+
 export interface Notifications {
   desktop?: boolean;
   discord_webhook_env?: string;
   on?: string[];
 }
+
+/** Behaviour when the decider is configured but cannot be reached. */
+export type OnUnreachable = "error" | "heuristic";
 
 export interface PatchAccountRequest {
   cap?: number | null;
@@ -377,6 +397,10 @@ export interface RouteResult {
   choice_id: string;
   confidence?: number | null;
   config_fingerprint?: string;
+  /** The decider model that produced the answer (the response's model id when it gave one). Also set when its answer was rejected; absent for pinned and key-less routing. */
+  decider_model?: string | null;
+  /** The decider models in effect for this call and where each came from. Absent when no decider was configured (no key) and for pinned calls. */
+  decider_models?: JevModels | null;
   effort?: string | null;
   harness: Harness;
   model: string;

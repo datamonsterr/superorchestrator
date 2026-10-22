@@ -33,8 +33,8 @@ superorchestrator route "Rename the foo module to bar" --explain
 
 1. **Eligible choices.** A choice is eligible when it is enabled, matches the role, and has an account that is signed in, not flagged, not exhausted and below its cap.
 2. **Decider.** If a Jev key is set (below), the router asks the decider to pick among the eligible choices.
-3. **Validation.** The answer is rejected unless it is a valid pick from the eligible set, with probabilities that sum to 1 and a confidence and margin above `router.policy.min_confidence` (0.6) and `router.policy.min_margin` (0.1).
-4. **Heuristic.** With no key, or when the decider fails or is rejected, a scorer picks: fit to the task, headroom, load, cost and harness priority. The weights are `router.weights`. The default priority is `agy`, `opencode`, `codex`, `claude`.
+3. **Validation.** The answer is rejected unless it is a valid pick from the eligible set, with probabilities that sum to 1 and a confidence and margin above `router.policy.min_confidence` (0.45) and `router.policy.min_margin` (0.15).
+4. **Heuristic.** With no key, or when the decider's answer is rejected by validation or the gate, a scorer picks: fit to the task, headroom, load, cost and harness priority. The weights are `router.weights`. The default priority is `agy`, `opencode`, `codex`, `claude`.
 5. **Account.** Among the chosen choice's accounts: most headroom first, then fewest active runs, then `priority`, then least recently used.
 
 Task text is data. It cannot change which choices are eligible.
@@ -59,7 +59,27 @@ superorchestrator config set router.jev.key_file '~/.config/jev/.env'
 
 The file holds a line such as `OPENROUTER_API_KEY=sk-or-...`. To use another variable name, set `router.jev.key_env`. The environment wins over the file. The supervisor needs the variable in its own environment, so set it before the supervisor starts, or use the file. The web UI shows where the key comes from, never its value.
 
-Other keys: `router.jev.endpoint`, `router.jev.model` (default `~typesafe/jev-latest`) and `router.jev.timeout` (default `20s`).
+Other keys: `router.jev.endpoint` and `router.jev.timeout` (default `20s`, for the primary and the fallback together; with a fallback the primary gets 3/5 of it).
+
+### The decider model
+
+The default decider is `inception/mercury-decide:free`, a free OpenRouter model. Free tiers carry risks: they can be rate limited, they can be withdrawn, and the id resolves to a dated snapshot (for example `mercury-decide-20260930`) that changes over time. For that reason `router.jev.fallback_model` (default `~typesafe/jev-latest`) is tried automatically when the primary model cannot be reached: a transport error, a timeout, HTTP 429 or 5xx, or HTTP 400/404 for a missing model. A 429, 5xx or refused connection is retried once first; a timeout is not retried, because it uses up the time left for that model. A rejected answer is never sent to the fallback, and neither is a refused key. Other 4xx responses, invalid bodies and a disallowed endpoint go to the heuristic.
+
+Both settings take any OpenRouter model id. Precedence is environment, then `config.toml`, then the default; an empty value counts as unset.
+
+```sh
+# one run of the shell
+export SUPERORCHESTRATOR_ROUTER_MODEL='~typesafe/jev-latest'
+export SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL=none      # no fallback
+# or persistently
+superorchestrator config set router.jev.model '~typesafe/jev-latest'
+```
+
+`route --explain`, `doctor` and `route eval` show the models in effect and where each came from (`env`, `config` or `default`). The environment is read by the supervisor, so set it before the supervisor starts.
+
+### When the decider cannot be reached
+
+If a key is set but no model can be reached (after the fallback), `route` fails instead of quietly routing by heuristic. The error names the models, the HTTP status or cause, and the next step (check the key, the model id or the network, or choose another model). `route` exits non-zero, the MCP `route` tool returns an error, `spawn_agent` with `harness: auto` spawns nothing, `POST /api/v1/route` returns 502, and `route eval` counts an error. This applies to explicit requests only. A failover, or the re-routing of a queued run, never fails a run because the decider is down: it routes with the heuristic, records `decider unreachable: <models>` as the decision's fallback reason, logs a warning, and asks the decider only once for that recovery. To degrade to the heuristic instead, set `router.jev.on_unreachable = "heuristic"`. With no key at all, routing always uses the heuristic and records why.
 
 ## Failover
 
@@ -83,7 +103,7 @@ superorchestrator route eval --require-live --min-accuracy 0.8
 - `--require-live` fails when there is no Jev key, and when any case fell back from Jev.
 - `--min-accuracy X` (0 to 1) fails when accuracy is lower.
 
-The command exits non-zero when a check fails. Tune `router.policy.min_confidence` and `router.policy.min_margin` from live results.
+The command exits non-zero when a check fails. Tune `router.policy.min_confidence` and `router.policy.min_margin` from live results. The decider reads only the choice descriptions and the routing instruction, so write descriptions that separate the tiers. Choices already in your `config.toml` keep the descriptions they were seeded with; copy newer seeded descriptions by hand if you want them.
 
 ## Defaults
 
