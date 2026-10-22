@@ -22,3 +22,5 @@ Minor review findings deferred to M9 hardening. Each line names the file and the
 - `crates/so-supervisor/src/runs/comm.rs` `unclaim`: log a failed put-back instead of ignoring it, since it can leave a message marked read.
 - `crates/so-supervisor/tests/comm.rs`: the cancel-during-gate test never exercises `relabel_attempt`. Add a unit test, and give the reject-after-gate timing check a margin.
 - `crates/so-supervisor/src/runs/resume.rs`: the gate is held across `wait_wrapped_up` (up to 15 s) and the worktree recreate. Narrow the hold if contention shows.
+- `web/src/components/common/ScrollTable.tsx`: the sticky first column's `bg-background` hides row hover and selected backgrounds. Give the ScrollArea viewport `tabIndex={0}` and an aria-label so the keyboard can scroll it sideways.
+- `web/src/api/msw/handlers.ts`: the `/accounts/import` mock does not record the harness, so imported claude accounts get a device-code login in mock mode.
