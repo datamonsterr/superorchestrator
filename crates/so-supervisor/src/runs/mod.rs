@@ -33,7 +33,7 @@ use so_store::{RunRow, Store, StoreError};
 use tokio::sync::{Notify, watch};
 
 pub use events::{Delivered, Subscription};
-pub use view::{WaitMode, WaitOutcome, display_argv};
+pub use view::{WaitMode, WaitOutcome, display_argv, mask_argv};
 
 use crate::dispatch::internal;
 use crate::notify::{Notifications, Sink, sinks_from_config};

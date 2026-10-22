@@ -100,6 +100,34 @@ fn problem_name(file: &Path) -> String {
         .unwrap_or_default()
 }
 
+impl AgentDef {
+    /// The raw text of the agent file (at most `MAX_AGENT_FILE`).
+    pub fn read_source(&self) -> Result<String> {
+        read_source_of(&self.file)
+    }
+}
+
+/// The raw text of an agent file, whether or not it parses.
+pub fn read_source_of(file: &Path) -> Result<String> {
+    let (text, cut) = crate::parse::read_capped(file, crate::parse::MAX_AGENT_FILE)
+        .map_err(|e| AgentError::io(file, e))?;
+    if cut {
+        return Err(AgentError::Parse {
+            path: file.to_path_buf(),
+            msg: format!("larger than {} KiB", crate::parse::MAX_AGENT_FILE / 1024),
+        });
+    }
+    Ok(text)
+}
+
+/// Deletes an agent's folder (or its flat file). The caller checks `source.read_only()`.
+pub fn remove_files(def: &AgentDef) -> Result<()> {
+    match &def.dir {
+        Some(dir) => std::fs::remove_dir_all(dir).map_err(|e| AgentError::io(dir, e)),
+        None => std::fs::remove_file(&def.file).map_err(|e| AgentError::io(&def.file, e)),
+    }
+}
+
 /// Finds the agent a spawn asked for. Entry point for the supervisor.
 pub fn resolve_for_spawn(cwd: &Path, paths: &Paths, name: &str) -> Result<AgentDef> {
     let d = discover(cwd, paths);

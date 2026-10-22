@@ -228,7 +228,7 @@ impl RunManager {
             &row.session_id,
             Some(&row.id),
             EventType::MessageSent,
-            json!({"to": row.id, "from": ctx.run_id, "kind": kind}),
+            json!({"to": row.id, "from": ctx.run_id, "kind": kind, "actor": ctx.actor()}),
         )
         .await;
         if kind == MessageKind::Answer {
@@ -279,6 +279,15 @@ impl RunManager {
                 Ok(())
             }
         }
+    }
+
+    /// Messages sent to or from a run, oldest first (not marked read).
+    pub async fn list_messages(&self, run_id: &str) -> R<Vec<MessageView>> {
+        let id = run_id.to_string();
+        let rows = self
+            .db(move |s| s.list_messages_by_run(&id, MESSAGES_LIMIT))
+            .await?;
+        Ok(rows.into_iter().map(message_view).collect())
     }
 
     // ----------------------------------------------------------- read_messages

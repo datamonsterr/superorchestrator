@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use so_accounts::{HostEnv, SignIn, sign_in_state};
-use so_core::proto::{AccountView, HarnessesView, METHOD_LIST_HARNESSES, SignInState};
+use so_core::proto::{AccountFlag, AccountView, HarnessesView, METHOD_LIST_HARNESSES, SignInState};
 use so_core::{AccountFile, Harness, Headroom, HeadroomSource, HeadroomStatus};
 
 use crate::dispatch::internal;
@@ -22,7 +22,7 @@ pub(super) fn register_harnesses(state: &Arc<SupervisorState>) {
             let state = state.clone();
             async move {
                 // Sign-in checks, directory reads and sqlite calls all block.
-                let view = tokio::task::spawn_blocking(move || build_harnesses_view(&state))
+                let view = tokio::task::spawn_blocking(move || harnesses_view(&state))
                     .await
                     .map_err(internal)?
                     .map_err(internal)?;
@@ -42,7 +42,7 @@ fn sign_in_state_of(s: SignIn) -> SignInState {
 /// Builds the view from the account files on disk (read fresh on each call), the store
 /// and the supervisor's config. A broken account yields an entry with `error` set; only
 /// failures that affect every account fail the call.
-fn build_harnesses_view(state: &SupervisorState) -> Result<HarnessesView, String> {
+pub fn harnesses_view(state: &SupervisorState) -> Result<HarnessesView, String> {
     let host = state
         .host
         .as_ref()
@@ -55,6 +55,11 @@ fn build_harnesses_view(state: &SupervisorState) -> Result<HarnessesView, String
     for h in &headroom {
         index.insert((h.account.as_str(), h.pool.as_str()), h);
     }
+
+    let flags = state
+        .store
+        .active_flags(Utc::now(), HEADROOM_LIMIT)
+        .map_err(|e| e.to_string())?;
 
     let dir = state.paths.accounts_dir();
     let mut files: Vec<_> = match std::fs::read_dir(&dir) {
@@ -70,8 +75,8 @@ fn build_harnesses_view(state: &SupervisorState) -> Result<HarnessesView, String
     let mut accounts = Vec::with_capacity(files.len());
     for path in files {
         match AccountFile::load(&path) {
-            Ok(account) => accounts.push(account_view(state, host, &index, &account)),
-            Err(e) => accounts.push(broken_account(&path, &e.to_string())),
+            Ok(account) => accounts.push(account_view(state, host, &index, &flags, &account)),
+            Err(e) => accounts.push(broken_account(&path, first_line(&e.to_string()))),
         }
     }
     accounts.sort_by(|a, b| a.name.cmp(&b.name));
@@ -85,6 +90,7 @@ fn account_view(
     state: &SupervisorState,
     host: &HostEnv,
     index: &HashMap<(&str, &str), &Headroom>,
+    flags: &[so_store::FlagRow],
     account: &AccountFile,
 ) -> AccountView {
     let mut errors = Vec::new();
@@ -130,7 +136,25 @@ fn account_view(
         active_runs: u32::try_from(runs + sessions).unwrap_or(u32::MAX),
         headroom: rows,
         error: (!errors.is_empty()).then(|| errors.join("; ")),
+        priority: Some(account.priority),
+        pools: Some(account.pools.clone()),
+        flags: Some(
+            flags
+                .iter()
+                .filter(|f| f.account == account.name)
+                .map(|f| AccountFlag {
+                    pool: Some(f.pool.clone()),
+                    until: f.until,
+                    reason: Some(f.reason.clone()).filter(|r| !r.is_empty()),
+                })
+                .collect(),
+        ),
     }
+}
+
+/// First line only: parse errors quote the offending file contents on later lines.
+fn first_line(s: &str) -> &str {
+    s.lines().next().unwrap_or_default()
 }
 
 /// Entry for an account file that could not be loaded. The harness is unknown, so the
@@ -148,6 +172,9 @@ fn broken_account(path: &std::path::Path, error: &str) -> AccountView {
         active_runs: 0,
         headroom: Vec::new(),
         error: Some(error.to_string()),
+        priority: None,
+        pools: None,
+        flags: None,
     }
 }
 

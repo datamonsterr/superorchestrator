@@ -254,11 +254,6 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
             bail!("nothing removed");
         }
     }
-    match &a.dir {
-        Some(dir) => std::fs::remove_dir_all(dir)
-            .with_context(|| format!("could not remove {}", dir.display()))?,
-        None => std::fs::remove_file(&a.file)
-            .with_context(|| format!("could not remove {}", a.file.display()))?,
-    }
+    so_agents::remove_files(&a)?;
     ctx.emit_ok(json!({ "name": name }), &format!("removed {name}"))
 }

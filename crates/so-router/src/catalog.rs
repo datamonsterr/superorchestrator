@@ -29,12 +29,32 @@ pub enum Tier {
     Fast,
 }
 
+impl Tier {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Tier::High => "high",
+            Tier::Mid => "mid",
+            Tier::Fast => "fast",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Cost {
     Free,
     Included,
     Paid,
+}
+
+impl Cost {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Cost::Free => "free",
+            Cost::Included => "included",
+            Cost::Paid => "paid",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -222,9 +242,19 @@ fn write_file(path: &Path, text: &str) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(io)?;
     }
-    let tmp = path.with_extension("tmp");
+    // A unique temp name, so two writers never share one.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.tmp.{}.{n}", std::process::id()));
     std::fs::write(&tmp, text).map_err(io)?;
-    std::fs::rename(&tmp, path).map_err(io)
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        io(e)
+    })
 }
 
 // ---------------------------------------------------------------- collector parsers

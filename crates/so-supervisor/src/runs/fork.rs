@@ -39,8 +39,9 @@ impl RunManager {
         let driver = AnyDriver::for_harness(src.harness, self.inner.driver_cfg)
             .map_err(|e| rpc(UNAVAILABLE, e.to_string()))?;
         if !driver.supports_fork() {
+            // The request asks for something the harness cannot do: not an outage.
             return Err(rpc(
-                UNAVAILABLE,
+                INVALID_PARAMS,
                 format!("{} cannot fork a session", driver.harness()),
             ));
         }

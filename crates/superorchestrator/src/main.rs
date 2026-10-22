@@ -77,6 +77,7 @@ fn dispatch(cli: Cli, path: &str) -> Result<ExitCode> {
         Command::Uninstall(a) => ok(cmd::install::uninstall(&ctx, a.dry_run)),
         Command::Mcp(a) => ok(cmd::mcp::run(&ctx, &a.client)),
         Command::Doctor => cmd::doctor::run(&ctx),
+        Command::Ui(a) => ok(cmd::ui::run(&ctx, a)),
         Command::Runs(c) => cmd::runs::run(&ctx, c),
         Command::Join(a) => cmd::runs::join(&ctx, &a.run, a.exec),
         Command::Worktrees(c) => cmd::worktrees::run(&ctx, c),
