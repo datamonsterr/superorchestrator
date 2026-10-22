@@ -90,6 +90,44 @@ help snapshot test; `cargo test -p superorchestrator`.
 
 Out of scope: web UI changes.
 
+## T3b: terminal UI rebuild (implementer-sonnet, after T3)
+
+The interactive menu (`crates/superorchestrator/src/cmd/menu.rs`, dialoguer `Select`) becomes a
+full-screen terminal UI built with ratatui and crossterm. Follow the `tui-design` skill
+(`.otherskill/bank/frontend/ui-ux/tui-design--*/SKILL.md`, `frameworks/ratatui-rust.md`,
+`patterns/dashboard.md`, `references/review-checklist.md`).
+
+- Entry: `superorchestrator` with no subcommand on a TTY, and `superorchestrator tui`. Without a
+  TTY the bare command prints help, as today.
+- Layout: a header (version, supervisor state, config dir), tabs, a body and a footer with the
+  keys for the current view. `?` opens a help overlay. `q` or `Esc` at top level quits. `Tab` /
+  `Shift-Tab` and `1`-`4` switch tabs.
+- Tabs:
+  1. Overview: setup checklist (config, harnesses found, accounts, signed in, installed into
+     Claude Code, router key) with the fix for each missing item, plus account and run counts.
+  2. Accounts: table (name, harness, signed in, enabled, cap, active, headroom). Keys: `a` add
+     (form: harness, count), `l` sign in (suspends the TUI and runs `account login`, or shows the
+     wrapper hint for claude/agy), `e` enable/disable, `f` flag cooldown, `x` remove (type-the-name
+     confirmation), `i` import scan.
+  3. Runs: table of recent runs (id, state, harness/account, age, title), auto-refresh every 2 s
+     from the store. `Enter` opens a detail pane (brief, route decision, recent events, result).
+     `c` cancel with confirmation, `j` join (suspends the TUI and runs the join command),
+     `a`/`r` accept or reject a run in `pending_review` (reject asks for feedback text).
+  4. Setup: runs the T3 setup steps one by one with live status, and `install` / `doctor`.
+- Behavior: works at 80x24 and on resize; honors `NO_COLOR`; restores the terminal on panic
+  and on every exit path; no blocking I/O on the draw loop (background refresh through a
+  channel); destructive actions always confirm.
+- Code: state and key handling as pure functions (`App::on_key`) separate from drawing. Reuse
+  the library functions the CLI commands use; no duplicated business logic.
+- Remove the dialoguer menu. Keep dialoguer for prompts in plain CLI commands.
+
+Acceptance: unit tests for key handling and state transitions; `ratatui::backend::TestBackend`
+render tests for each tab at 80x24 and 120x40 (snapshot strings); a test that the bare command
+without a TTY prints help; `cargo test -p superorchestrator`; clippy clean. Check current
+ratatui and crossterm docs before coding.
+
+Out of scope: the web UI, new supervisor RPCs (use existing ones; if one is missing, report it).
+
 ## T4: docs (implementer-haiku after T2 and T3)
 
 - README: lead with use cases (spread work across several subscriptions; Claude Code as the
