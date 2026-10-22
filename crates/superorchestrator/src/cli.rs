@@ -211,9 +211,17 @@ pub enum RouteSub {
 
 #[derive(Subcommand, Debug)]
 pub enum RunsCmd {
-    List,
+    /// List active runs (all runs with --all)
+    List {
+        /// Include finished runs
+        #[arg(long)]
+        all: bool,
+    },
+    /// Show one run: state, recent events, result, usage and join command
     Show { run: String },
+    /// Follow a run's events until it finishes
     Watch { run: String },
+    /// Cancel a run and its subtree
     Cancel { run: String },
 }
 
@@ -227,7 +235,9 @@ pub struct JoinArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum WorktreesCmd {
+    /// List run worktrees
     List,
+    /// Remove the worktrees and branches of finished runs
     Prune,
 }
 

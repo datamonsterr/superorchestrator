@@ -76,6 +76,9 @@ fn dispatch(cli: Cli, path: &str) -> Result<ExitCode> {
         Command::Uninstall(a) => ok(cmd::install::uninstall(&ctx, a.dry_run)),
         Command::Mcp(a) => ok(cmd::mcp::run(&ctx, &a.client)),
         Command::Doctor => cmd::doctor::run(&ctx),
+        Command::Runs(c) => cmd::runs::run(&ctx, c),
+        Command::Join(a) => cmd::runs::join(&ctx, &a.run, a.exec),
+        Command::Worktrees(c) => cmd::worktrees::run(&ctx, c),
         // Commands without an arm yet; later tasks add only their own arm above.
         _ => Err(CliError::not_implemented(path).into()),
     }

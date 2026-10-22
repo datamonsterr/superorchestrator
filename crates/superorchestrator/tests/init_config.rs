@@ -139,7 +139,6 @@ fn config_edit_validates_after_editor() {
 fn unimplemented_commands_exit_4_and_name_the_command() {
     let e = Env::new();
     for args in [
-        vec!["runs", "list"],
         vec!["route", "do a thing"],
         vec!["route", "eval"],
         vec!["migrate", "--apply"],
@@ -164,11 +163,11 @@ fn unimplemented_message_names_the_full_path() {
             "`route eval` is not implemented yet",
         ));
     e.cmd()
-        .args(["runs", "list"])
+        .args(["workflow", "list"])
         .assert()
         .code(4)
         .stderr(predicate::str::contains(
-            "`runs list` is not implemented yet",
+            "`workflow list` is not implemented yet",
         ));
 }
 
