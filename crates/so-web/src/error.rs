@@ -114,6 +114,13 @@ impl ApiError {
         Self::from_rpc(RpcError::new(code, message))
     }
 
+    /// A 409 for an action the run's current state does not allow.
+    pub fn state_conflict(message: impl Into<String>) -> Self {
+        let mut e = Self::rpc(so_core::proto::INVALID_REQUEST, message);
+        e.0.status = StatusCode::CONFLICT;
+        e
+    }
+
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::rpc(NOT_FOUND, message)
     }
@@ -170,6 +177,20 @@ impl From<CoreError> for ApiError {
             | CoreError::UnknownValue { .. }
             | CoreError::UnknownHarness(_) => Self::invalid(e.to_string()),
             other => Self::internal(other),
+        }
+    }
+}
+
+impl From<so_agents::AgentError> for ApiError {
+    fn from(e: so_agents::AgentError) -> Self {
+        use so_agents::AgentError as E;
+        match e {
+            E::NotFound(_) => Self::not_found(e.to_string()),
+            // Parse errors quote the file on later lines; only the first goes out.
+            E::Parse { .. } | E::InvalidName(_) => {
+                Self::invalid(e.to_string().lines().next().unwrap_or_default())
+            }
+            other @ E::Io { .. } => Self::internal(other),
         }
     }
 }

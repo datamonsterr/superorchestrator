@@ -1,6 +1,8 @@
 //! The `/api/v1` routes.
 
 pub mod accounts;
+pub mod agents;
+pub mod models;
 pub mod runs;
 pub mod sessions;
 pub mod system;
@@ -30,22 +32,9 @@ pub fn redact_run(v: &mut RunViewPublic) {
     }
 }
 
-/// Endpoints of design 2.1 whose backend does not exist yet: `(method, path)`.
+/// Endpoints of design 2.1 whose backend does not exist yet: `(method, path)`. The
+/// supervisor has no `run_workflow` handler yet.
 pub const NOT_IMPLEMENTED: &[(&str, &str)] = &[
-    ("POST", "/api/v1/route"),
-    ("GET", "/api/v1/models"),
-    ("POST", "/api/v1/models/refresh"),
-    ("GET", "/api/v1/runs/{id}/messages"),
-    ("POST", "/api/v1/runs/{id}/messages"),
-    ("POST", "/api/v1/runs/{id}/accept"),
-    ("POST", "/api/v1/runs/{id}/reject"),
-    ("POST", "/api/v1/runs/{id}/fork"),
-    ("GET", "/api/v1/agents"),
-    ("POST", "/api/v1/agents"),
-    ("GET", "/api/v1/agents/{name}"),
-    ("PUT", "/api/v1/agents/{name}"),
-    ("DELETE", "/api/v1/agents/{name}"),
-    ("GET", "/api/v1/workflows"),
     ("GET", "/api/v1/workflows/runs"),
     ("GET", "/api/v1/workflows/runs/{id}"),
     ("POST", "/api/v1/workflows/{name}/run"),
@@ -73,6 +62,22 @@ pub fn routes() -> Router<AppState> {
         .route("/api/v1/runs/{id}/route", get(runs::route))
         .route("/api/v1/runs/{id}/cancel", post(runs::cancel))
         .route("/api/v1/runs/{id}/join", post(runs::join))
+        .route(
+            "/api/v1/runs/{id}/messages",
+            get(runs::messages).post(runs::send_message),
+        )
+        .route("/api/v1/runs/{id}/accept", post(runs::accept))
+        .route("/api/v1/runs/{id}/reject", post(runs::reject))
+        .route("/api/v1/runs/{id}/fork", post(runs::fork))
+        .route("/api/v1/route", post(models::route))
+        .route("/api/v1/models", get(models::list))
+        .route("/api/v1/models/refresh", post(models::refresh))
+        .route("/api/v1/agents", get(agents::list).post(agents::create))
+        .route(
+            "/api/v1/agents/{name}",
+            get(agents::get).put(agents::update).delete(agents::remove),
+        )
+        .route("/api/v1/workflows", get(models::workflows))
         .route("/api/v1/routing/records", get(system::routing_records))
         .route("/api/v1/accounts", get(accounts::list).post(accounts::add))
         .route("/api/v1/accounts/import", post(accounts::import))

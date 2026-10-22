@@ -8,7 +8,7 @@ pub mod materialise;
 pub mod parse;
 pub mod starter;
 
-pub use discover::{Discovery, discover, resolve_for_spawn};
+pub use discover::{Discovery, discover, remove_files, resolve_for_spawn};
 pub use error::{AgentError, Result};
 pub use materialise::{Materialised, McpExtra, gaps, materialise};
 pub use parse::{

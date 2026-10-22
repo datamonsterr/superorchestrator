@@ -45,9 +45,32 @@ export interface AddAccountRequest {
   name: string;
 }
 
+export interface AgentDetail {
+  description: string;
+  name: string;
+  /** `user`, `superorchestrator` or `claude`. */
+  origin: string;
+  path: string;
+  /** Imported from `.claude/agents`: cannot be edited or removed here. */
+  read_only: boolean;
+  /** The raw `AGENT.md`. */
+  source: string;
+}
+
 export interface AgentView {
   description?: string;
+  /** The harness the agent asks for (`auto` or a harness name). */
+  harness?: string | null;
   name: string;
+  path?: string | null;
+  /** Where the agent was found: `user`, `superorchestrator` or `claude` (read-only). */
+  source?: string | null;
+}
+
+export interface AgentWriteResult {
+  ok: boolean;
+  /** What the agent's harness cannot honour. */
+  warnings: string[];
 }
 
 export interface AgentsView {
@@ -122,6 +145,11 @@ export interface ConfigView {
   ui_token: SecretSource;
 }
 
+export interface CreateAgentRequest {
+  name: string;
+  source: string;
+}
+
 export interface DailyUsage {
   /** Cost per account. */
   by_account: Record<string, number>;
@@ -175,6 +203,11 @@ export interface FlagRequest {
   reason?: string | null;
   /** Cooldown end, RFC 3339. */
   until?: string | null;
+}
+
+export interface ForkBody {
+  /** First prompt of the fork; defaults to a request to continue. */
+  prompt?: string | null;
 }
 
 /** A coding-agent CLI family. */
@@ -253,6 +286,23 @@ export interface MessageView {
   to_run?: string | null;
 }
 
+export interface ModelCatalog {
+  models: ModelRow[];
+  /** When `models.toml` was last written. */
+  refreshed_at?: string | null;
+  /** The refresh report (sources, added models, unused models); only after a refresh. */
+  report?: unknown;
+}
+
+export interface ModelRow {
+  cost: string;
+  efforts: string[];
+  harness: Harness;
+  id: string;
+  pool?: string | null;
+  tier: string;
+}
+
 export interface Notifications {
   desktop?: boolean;
   discord_webhook_env?: string;
@@ -278,6 +328,10 @@ export interface PruneRequest {
 export interface PruneResult {
   /** Ids of the runs whose worktrees were (or, with `dry_run`, would be) removed. */
   removed: string[];
+}
+
+export interface RejectBody {
+  feedback: string;
 }
 
 export interface RouteAlternative {
@@ -382,6 +436,11 @@ export interface SecretSource {
   source: SecretOrigin;
 }
 
+export interface SendMessageBody {
+  kind?: MessageKind | null;
+  text: string;
+}
+
 export interface SendMessageParams {
   kind?: MessageKind | null;
   run: string;
@@ -434,6 +493,17 @@ export interface SignInStatus {
   mode: SignInMode;
   signed_in: SignInState;
   state: SignInProgress;
+}
+
+export interface SpawnResult {
+  /** Why the run failed, when `wait` was set and it did. */
+  error_kind?: ErrorKind | null;
+  /** Final result, present when `wait` was set and the run finished. */
+  result?: unknown;
+  run_id: string;
+  state: RunState;
+  /** Non-fatal notes for the caller, e.g. a dirty tree or a missing git repository. */
+  warnings?: string[];
 }
 
 export type Status = "ok" | "warn" | "fail";
@@ -503,6 +573,10 @@ export interface Ui {
   token?: string | null;
 }
 
+export interface UpdateAgentRequest {
+  source: string;
+}
+
 export interface Usage {
   default_cooldown?: HumanDuration;
   low_pct?: number;
@@ -519,6 +593,13 @@ export interface Weights {
   cost?: number;
   headroom?: number;
   load?: number;
+}
+
+export interface WorkflowSummary {
+  name: string;
+  path: string;
+  /** `project` or `config`. */
+  source: string;
 }
 
 export interface WorktreeView {

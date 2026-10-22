@@ -295,6 +295,15 @@ impl RunManager {
         Ok(())
     }
 
+    /// Messages sent to or from a run, oldest first (not marked read).
+    pub async fn list_messages(&self, run_id: &str) -> R<Vec<MessageView>> {
+        let id = run_id.to_string();
+        let rows = self
+            .db(move |s| s.list_messages_by_run(&id, MESSAGES_LIMIT))
+            .await?;
+        Ok(rows.into_iter().map(message_view).collect())
+    }
+
     // ----------------------------------------------------------- read_messages
 
     /// `read_messages`: the caller's unread messages (a run's, or the orchestrator's in its

@@ -545,6 +545,14 @@ pub struct AgentView {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// Where the agent was found: `user`, `superorchestrator` or `claude` (read-only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The harness the agent asks for (`auto` or a harness name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

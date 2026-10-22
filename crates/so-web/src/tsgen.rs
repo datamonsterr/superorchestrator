@@ -59,6 +59,16 @@ fn roots(g: &mut SchemaGenerator) {
     add::<TokenRequest>(g);
     add::<ApiErrorBody>(g);
     add::<StreamHello>(g);
+    add::<SendMessageBody>(g);
+    add::<RejectBody>(g);
+    add::<ForkBody>(g);
+    add::<so_core::proto::SpawnResult>(g);
+    add::<ModelCatalog>(g);
+    add::<AgentDetail>(g);
+    add::<CreateAgentRequest>(g);
+    add::<UpdateAgentRequest>(g);
+    add::<AgentWriteResult>(g);
+    add::<WorkflowSummary>(g);
 }
 
 fn literal(v: &Value) -> String {

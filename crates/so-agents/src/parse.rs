@@ -215,7 +215,7 @@ pub const MAX_AGENT_FILE: u64 = 512 * 1024;
 pub const MAX_MEMORY_FILE: u64 = 256 * 1024;
 
 /// Reads at most `max` bytes. Returns the (lossy UTF-8) text and whether it was cut.
-pub(crate) fn read_capped(path: &Path, max: u64) -> std::io::Result<(String, bool)> {
+pub fn read_capped(path: &Path, max: u64) -> std::io::Result<(String, bool)> {
     use std::io::Read;
     let mut buf = Vec::new();
     std::fs::File::open(path)?

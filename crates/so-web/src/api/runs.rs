@@ -6,19 +6,24 @@ use axum::Json;
 use axum::extract::{Path, State};
 use serde::Deserialize;
 use serde_json::Value;
-use so_core::proto::{AckResult, RouteResult};
+use so_core::proto::{
+    AckResult, ForkParams, INVALID_REQUEST, MessageView, RejectParams, RouteResult, RpcError,
+    RunRef, SendMessageParams, SpawnResult, UNAVAILABLE,
+};
 use so_core::redact::redact;
 use so_core::{Event, EventType};
 use so_harness::TranscriptWriter;
 use so_store::EventQuery;
+use so_supervisor::ConnCtx;
 
 use super::redact_run;
 use crate::error::{ApiError, ApiResult};
-use crate::extract::ApiQuery;
+use crate::extract::{ApiJson, ApiQuery, OptionalJson};
 use crate::page::clamp_limit;
 use crate::state::AppState;
 use crate::types::{
-    JoinView, Page, RunViewPublic, TranscriptLine, TranscriptPage, TranscriptRole, TranscriptTool,
+    ForkBody, JoinView, Page, RejectBody, RunViewPublic, SendMessageBody, TranscriptLine,
+    TranscriptPage, TranscriptRole, TranscriptTool,
 };
 
 async fn public_view(st: &AppState, id: &str) -> ApiResult<RunViewPublic> {
@@ -250,6 +255,113 @@ pub async fn transcript(
         }))
     })
     .await
+}
+
+/// Actions on a run happen in the run's session, as the person at the UI.
+fn acting(row: &so_store::RunRow) -> ConnCtx {
+    ConnCtx::acting_in(&row.session_id)
+}
+
+/// A run in the wrong state is a 409; a harness that cannot fork is a 422 naming it.
+fn action_error(e: RpcError) -> ApiError {
+    if e.code == INVALID_REQUEST {
+        ApiError::state_conflict(e.message)
+    } else if e.code == UNAVAILABLE && e.message.contains("cannot fork") {
+        ApiError::invalid(e.message)
+    } else {
+        e.into()
+    }
+}
+
+fn redact_message(mut m: MessageView) -> MessageView {
+    m.body = redact(&m.body);
+    m
+}
+
+pub async fn messages(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Vec<MessageView>>> {
+    let row = st.sup.runs.resolve_run(&id).await?;
+    let list = st.sup.runs.list_messages(&row.id).await?;
+    Ok(Json(list.into_iter().map(redact_message).collect()))
+}
+
+pub async fn send_message(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<SendMessageBody>,
+) -> ApiResult<Json<AckResult>> {
+    let row = st.sup.runs.resolve_run(&id).await?;
+    let p = SendMessageParams {
+        run: row.id.clone(),
+        text: b.text,
+        kind: b.kind,
+    };
+    let ack = st
+        .sup
+        .runs
+        .send_message(&acting(&row), p)
+        .await
+        .map_err(action_error)?;
+    Ok(Json(ack))
+}
+
+pub async fn accept(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<AckResult>> {
+    let row = st.sup.runs.resolve_run(&id).await?;
+    let r = RunRef {
+        run: row.id.clone(),
+    };
+    Ok(Json(
+        st.sup
+            .runs
+            .accept_run(&acting(&row), r)
+            .await
+            .map_err(action_error)?,
+    ))
+}
+
+pub async fn reject(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    ApiJson(b): ApiJson<RejectBody>,
+) -> ApiResult<Json<AckResult>> {
+    let row = st.sup.runs.resolve_run(&id).await?;
+    let p = RejectParams {
+        run: row.id.clone(),
+        feedback: b.feedback,
+    };
+    Ok(Json(
+        st.sup
+            .runs
+            .reject_run(&acting(&row), p)
+            .await
+            .map_err(action_error)?,
+    ))
+}
+
+pub async fn fork(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    OptionalJson(b): OptionalJson<ForkBody>,
+) -> ApiResult<(axum::http::StatusCode, Json<SpawnResult>)> {
+    let row = st.sup.runs.resolve_run(&id).await?;
+    let p = ForkParams {
+        run: row.id.clone(),
+        prompt: b
+            .prompt
+            .unwrap_or_else(|| "Continue from here.".to_string()),
+    };
+    let out = st
+        .sup
+        .runs
+        .fork_run(&acting(&row), p)
+        .await
+        .map_err(action_error)?;
+    Ok((axum::http::StatusCode::ACCEPTED, Json(out)))
 }
 
 #[cfg(test)]

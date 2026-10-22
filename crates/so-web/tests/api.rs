@@ -78,6 +78,10 @@ fn event(session: &str, run: Option<&str>, t: EventType, data: Value, age_s: i64
 }
 
 async fn fx_with(token: Option<&str>) -> Fx {
+    fx_cfg(token, Config::default()).await
+}
+
+async fn fx_cfg(token: Option<&str>, config: Config) -> Fx {
     let dir = tempfile::Builder::new()
         .prefix("sow-")
         .tempdir_in("/tmp")
@@ -92,13 +96,9 @@ async fn fx_with(token: Option<&str>) -> Fx {
         path_var: Some(home.join("bin").to_string_lossy().into_owned()),
         platform: Platform::Linux,
     };
-    let opts = SupervisorOptions::new(
-        paths.clone(),
-        Config::default(),
-        dir.path().join("run/s.sock"),
-    )
-    .with_host(host)
-    .with_setup(default_handlers);
+    let opts = SupervisorOptions::new(paths.clone(), config, dir.path().join("run/s.sock"))
+        .with_host(host)
+        .with_setup(default_handlers);
     let handle = Supervisor::start(opts).await.unwrap();
     let state = handle.state().clone();
 
@@ -1351,4 +1351,316 @@ async fn stale_cookies_are_cleared_and_never_lock_anyone_out() {
     let (s, h, _) = send(&f.app, request("GET", "/api/v1/status", None)).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     assert!(h.get(header::SET_COOKIE).is_none());
+}
+
+// ------------------------------------------- messages, review, fork, route, agents
+
+#[tokio::test]
+async fn messages_are_listed_sent_and_redacted() {
+    let f = fx().await;
+    let uri = format!("/api/v1/runs/{}/messages", f.run);
+    let (s, v) = get(&f.app, &uri).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v, json!([]));
+    let (s, v) = post(
+        &f.app,
+        &uri,
+        Some(json!({"text": format!("use {SECRET} please")})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v, json!({"ok": true}));
+    let (_, v) = get(&f.app, &uri).await;
+    assert_eq!(v.as_array().unwrap().len(), 1);
+    assert_eq!(v[0]["body"], "use [REDACTED] please");
+    assert_eq!(v[0]["kind"], "message");
+    let (_, r) = get(&f.app, &format!("/api/v1/runs/{}", f.run)).await;
+    assert_eq!(r["messages"][0]["body"], "use [REDACTED] please");
+    let (s, _) = post(&f.app, &uri, Some(json!({"text": "  "}))).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _) = post(&f.app, &uri, Some(json!({"text": "x", "kind": "bogus"}))).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _) = post(
+        &f.app,
+        "/api/v1/runs/zzzz/messages",
+        Some(json!({"text": "x"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    let cancelled = run_row(&f.session, RunState::Cancelled);
+    f.handle.state().store.insert_run(&cancelled).unwrap();
+    let (s, _) = post(
+        &f.app,
+        &format!("/api/v1/runs/{}/messages", cancelled.id),
+        Some(json!({"text": "x"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn accept_and_reject_follow_the_review_gate() {
+    let f = fx().await;
+    let (s, v) = post(&f.app, &format!("/api/v1/runs/{}/accept", f.run), None).await;
+    assert_eq!(
+        s,
+        StatusCode::CONFLICT,
+        "a running run is not at the gate: {v}"
+    );
+    let (s, _) = post(
+        &f.app,
+        &format!("/api/v1/runs/{}/reject", f.run),
+        Some(json!({"feedback": "no"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let (s, _) = post(
+        &f.app,
+        &format!("/api/v1/runs/{}/reject", f.run),
+        Some(json!({"feedback": " "})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, _) = post(&f.app, "/api/v1/runs/zzzz/accept", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+
+    let review = run_row(&f.session, RunState::PendingReview);
+    f.handle.state().store.insert_run(&review).unwrap();
+    let (s, v) = post(&f.app, &format!("/api/v1/runs/{}/accept", review.id), None).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, r) = get(&f.app, &format!("/api/v1/runs/{}", review.id)).await;
+    assert_eq!(r["state"], "succeeded");
+    let (_, ev) = get(
+        &f.app,
+        &format!("/api/v1/runs/{}/events?type=review_accepted", review.id),
+    )
+    .await;
+    assert_eq!(ev["items"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn fork_maps_state_and_harness_errors() {
+    let f = fx().await;
+    let (s, v) = post(
+        &f.app,
+        &format!("/api/v1/runs/{}/fork", f.run),
+        Some(json!({"prompt": "again"})),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::CONFLICT,
+        "only a finished run can be forked: {v}"
+    );
+    let mut agy = run_row(&f.session, RunState::Succeeded);
+    agy.harness = Harness::Agy;
+    f.handle.state().store.insert_run(&agy).unwrap();
+    let (s, v) = post(&f.app, &format!("/api/v1/runs/{}/fork", agy.id), None).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(
+        v["error"]["message"].as_str().unwrap().contains("agy"),
+        "{v}"
+    );
+    let (s, _) = post(&f.app, "/api/v1/runs/zzzz/fork", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn route_previews_without_recording_anything() {
+    let cfg = Config {
+        choices: vec![so_core::Choice {
+            id: "codex-high".into(),
+            harness: Harness::Codex,
+            model: "gpt-5.5".into(),
+            effort: Some("high".into()),
+            roles: vec!["worker".into()],
+            description: "hard tasks".into(),
+            enabled: true,
+        }],
+        ..Config::default()
+    };
+    let f = fx_cfg(None, cfg).await;
+    let (s, v) = post(
+        &f.app,
+        "/api/v1/accounts",
+        Some(json!({"harness": "codex", "name": "codex-acc1"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let home = f.path("home/.codex-acc1");
+    std::fs::write(home.join("auth.json"), "{}").unwrap();
+    let before = f
+        .handle
+        .state()
+        .store
+        .query_events(&so_store::EventQuery {
+            limit: 1000,
+            ..Default::default()
+        })
+        .unwrap()
+        .len();
+    let (s, v) = post(
+        &f.app,
+        "/api/v1/route",
+        Some(json!({"prompt": "refactor the parser"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["choice_id"], "codex-high");
+    assert_eq!(v["account"], "codex-acc1");
+    let after = f
+        .handle
+        .state()
+        .store
+        .query_events(&so_store::EventQuery {
+            limit: 1000,
+            ..Default::default()
+        })
+        .unwrap()
+        .len();
+    assert_eq!(before, after, "a preview records no event");
+    let (s, _) = post(&f.app, "/api/v1/route", Some(json!({"nope": 1}))).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let (s, v) = post(
+        &f.app,
+        "/api/v1/route",
+        Some(json!({"prompt": "x", "role": "no-such-role"})),
+    )
+    .await;
+    assert!(
+        s == StatusCode::SERVICE_UNAVAILABLE || s == StatusCode::UNPROCESSABLE_ENTITY,
+        "{s} {v}"
+    );
+}
+
+#[tokio::test]
+async fn model_catalog_lists_models() {
+    let f = fx().await;
+    let (s, v) = get(&f.app, "/api/v1/models").await;
+    assert_eq!(s, StatusCode::OK);
+    let models = v["models"].as_array().unwrap();
+    assert!(!models.is_empty());
+    assert!(models[0]["harness"].is_string() && models[0]["id"].is_string());
+    assert!(models[0]["tier"].is_string() && models[0]["cost"].is_string());
+}
+
+const AGENT: &str =
+    "---\nname: reviewer\ndescription: Reviews diffs\nharness: claude\n---\nBe careful.\n";
+
+#[tokio::test]
+async fn agents_crud() {
+    let f = fx().await;
+    let (s, v) = get(&f.app, "/api/v1/agents").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["agents"], json!([]));
+    let (s, v) = post(
+        &f.app,
+        "/api/v1/agents",
+        Some(json!({"name": "reviewer", "source": AGENT})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["ok"], true);
+    assert!(v["warnings"].is_array());
+    let (s, _) = post(
+        &f.app,
+        "/api/v1/agents",
+        Some(json!({"name": "reviewer", "source": AGENT})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    let (_, v) = get(&f.app, "/api/v1/agents").await;
+    assert_eq!(v["agents"][0]["name"], "reviewer");
+    assert_eq!(v["agents"][0]["description"], "Reviews diffs");
+    assert_eq!(v["agents"][0]["source"], "user");
+    assert_eq!(v["agents"][0]["harness"], "claude");
+    let (s, v) = get(&f.app, "/api/v1/agents/reviewer").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["source"], AGENT);
+    assert_eq!(v["read_only"], false);
+
+    let edited = AGENT.replace("Be careful.", "Be very careful.");
+    let (s, v) = send_json(
+        &f.app,
+        "PUT",
+        "/api/v1/agents/reviewer",
+        json!({"source": edited}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, v) = get(&f.app, "/api/v1/agents/reviewer").await;
+    assert!(v["source"].as_str().unwrap().contains("very careful"));
+
+    let bad = "---\nname: reviewer\ndescription: [unclosed hunter2-secret\n---\nbody\n";
+    let (s, v) = send_json(
+        &f.app,
+        "PUT",
+        "/api/v1/agents/reviewer",
+        json!({"source": bad}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(!v.to_string().contains("hunter2"), "{v}");
+    assert!(!v["error"]["message"].as_str().unwrap().contains('\n'));
+    let (s, _) = send_json(
+        &f.app,
+        "PUT",
+        "/api/v1/agents/reviewer",
+        json!({"source": AGENT.replace("reviewer", "other")}),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "frontmatter name must match"
+    );
+    let (_, v) = get(&f.app, "/api/v1/agents/reviewer").await;
+    assert!(
+        v["source"].as_str().unwrap().contains("very careful"),
+        "failed edits change nothing"
+    );
+
+    for uri in ["/api/v1/agents/..%2Fcfg", "/api/v1/agents/.hidden"] {
+        assert_eq!(
+            get(&f.app, uri).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{uri}"
+        );
+        assert_eq!(
+            send_json_empty(&f.app, "DELETE", uri).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    let (s, _) = post(
+        &f.app,
+        "/api/v1/agents",
+        Some(json!({"name": "../evil", "source": AGENT})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        get(&f.app, "/api/v1/agents/missing").await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let (s, v) = send_json_empty(&f.app, "DELETE", "/api/v1/agents/reviewer").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        get(&f.app, "/api/v1/agents/reviewer").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert!(!f.path("cfg/agents/reviewer").exists());
+}
+
+#[tokio::test]
+async fn saved_workflows_are_listed() {
+    let f = fx().await;
+    assert_eq!(get(&f.app, "/api/v1/workflows").await.1, json!([]));
+    std::fs::create_dir_all(f.path("cfg/workflows")).unwrap();
+    std::fs::write(f.path("cfg/workflows/demo.js"), "export default () => 1").unwrap();
+    let (s, v) = get(&f.app, "/api/v1/workflows").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v[0]["name"], "demo");
+    assert_eq!(v[0]["source"], "config");
 }

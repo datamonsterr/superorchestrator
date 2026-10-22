@@ -429,3 +429,85 @@ pub struct StreamHello {
     pub server_time: DateTime<Utc>,
     pub boot_id: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SendMessageBody {
+    pub text: String,
+    #[serde(default)]
+    pub kind: Option<so_core::MessageKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RejectBody {
+    pub feedback: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ForkBody {
+    /// First prompt of the fork; defaults to a request to continue.
+    #[serde(default)]
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelRow {
+    pub harness: Harness,
+    pub id: String,
+    pub tier: String,
+    pub cost: String,
+    pub pool: Option<String>,
+    pub efforts: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelCatalog {
+    /// When `models.toml` was last written.
+    pub refreshed_at: Option<DateTime<Utc>>,
+    pub models: Vec<ModelRow>,
+    /// The refresh report (sources, added models, unused models); only after a refresh.
+    pub report: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentDetail {
+    pub name: String,
+    pub description: String,
+    pub path: String,
+    /// The raw `AGENT.md`.
+    pub source: String,
+    /// `user`, `superorchestrator` or `claude`.
+    pub origin: String,
+    /// Imported from `.claude/agents`: cannot be edited or removed here.
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CreateAgentRequest {
+    pub name: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateAgentRequest {
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentWriteResult {
+    pub ok: bool,
+    /// What the agent's harness cannot honour.
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowSummary {
+    pub name: String,
+    pub path: String,
+    /// `project` or `config`.
+    pub source: String,
+}

@@ -68,6 +68,8 @@ pub struct ConnCtx {
     pub depth: u8,
     pub notifier: Notifier,
     closed: watch::Receiver<bool>,
+    /// Keeps the `closed` channel open for contexts that have no connection.
+    _keep: Option<Arc<watch::Sender<bool>>>,
 }
 
 impl ConnCtx {
@@ -78,6 +80,23 @@ impl ConnCtx {
             depth: 0,
             notifier,
             closed,
+            _keep: None,
+        }
+    }
+
+    /// A context for a person acting through the web UI: it belongs to `session_id` and
+    /// is the session's orchestrator (no run). It has no connection, so nothing is
+    /// notified and `closed()` never resolves.
+    pub fn acting_in(session_id: &str) -> Self {
+        let (tx, _rx) = mpsc::channel(1);
+        let (closed_tx, closed) = watch::channel(false);
+        Self {
+            session_id: Some(session_id.to_string()),
+            run_id: None,
+            depth: 0,
+            notifier: Notifier::new(tx),
+            closed,
+            _keep: Some(Arc::new(closed_tx)),
         }
     }
 

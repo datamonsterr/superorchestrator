@@ -100,6 +100,14 @@ fn problem_name(file: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// Deletes an agent's folder (or its flat file). The caller checks `source.read_only()`.
+pub fn remove_files(def: &AgentDef) -> Result<()> {
+    match &def.dir {
+        Some(dir) => std::fs::remove_dir_all(dir).map_err(|e| AgentError::io(dir, e)),
+        None => std::fs::remove_file(&def.file).map_err(|e| AgentError::io(&def.file, e)),
+    }
+}
+
 /// Finds the agent a spawn asked for. Entry point for the supervisor.
 pub fn resolve_for_spawn(cwd: &Path, paths: &Paths, name: &str) -> Result<AgentDef> {
     let d = discover(cwd, paths);

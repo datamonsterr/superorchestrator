@@ -18,6 +18,9 @@ so-store = { path = "../so-store" }
 so-supervisor = { path = "../so-supervisor" }
 so-accounts = { path = "../so-accounts" }
 so-harness = { path = "../so-harness" }
+so-agents = { path = "../so-agents" }
+so-router = { path = "../so-router" }
+so-workflow = { path = "../so-workflow" }
 axum = { workspace = true, features = ["macros"] }
 tokio.workspace = true
 tokio-stream = { version = "0.1", features = ["sync"] }
