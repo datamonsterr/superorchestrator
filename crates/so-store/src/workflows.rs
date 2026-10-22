@@ -5,7 +5,7 @@ use rusqlite::{Row, params};
 
 use crate::codec::*;
 use crate::error::{Result, StoreError};
-use crate::rows::{WorkflowCacheRow, WorkflowRunRow};
+use crate::rows::{WorkflowCacheRow, WorkflowRunRow, WorkflowStepRow};
 use crate::store::Store;
 
 const COLS: &str = "id, name, session_id, state, args_json, started_at, finished_at";
@@ -118,6 +118,77 @@ impl Store {
     }
 }
 
+const STEP_COLS: &str = "workflow_run_id, step_index, phase, prompt_hash, run_id, state, \
+                         started_at, finished_at";
+
+fn map_step(r: &Row<'_>) -> rusqlite::Result<WorkflowStepRow> {
+    Ok(WorkflowStepRow {
+        workflow_run_id: r.get(0)?,
+        step_index: r.get(1)?,
+        phase: r.get(2)?,
+        prompt_hash: r.get(3)?,
+        run_id: r.get(4)?,
+        state: r.get(5)?,
+        started_at: get_ts(r, 6)?,
+        finished_at: get_opt_ts(r, 7)?,
+    })
+}
+
+impl Store {
+    pub fn insert_workflow_step(&self, s: &WorkflowStepRow) -> Result<()> {
+        self.conn().execute(
+            &format!("INSERT INTO workflow_steps ({STEP_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)"),
+            params![
+                s.workflow_run_id,
+                s.step_index,
+                s.phase,
+                s.prompt_hash,
+                s.run_id,
+                s.state,
+                ts_to_sql(&s.started_at),
+                opt_ts_to_sql(&s.finished_at)
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Sets the state; `Some` run id / finish time overwrite, `None` keeps the old value.
+    pub fn update_workflow_step(
+        &self,
+        workflow_run_id: &str,
+        step_index: i64,
+        state: &str,
+        run_id: Option<&str>,
+        finished_at: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        let fin = opt_ts_to_sql(&finished_at);
+        let n = self.conn().execute(
+            "UPDATE workflow_steps SET state = ?3, run_id = COALESCE(?4, run_id), \
+             finished_at = COALESCE(?5, finished_at) \
+             WHERE workflow_run_id = ?1 AND step_index = ?2",
+            params![workflow_run_id, step_index, state, run_id, fin],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound {
+                entity: "workflow step",
+                id: format!("{workflow_run_id}#{step_index}"),
+            });
+        }
+        Ok(())
+    }
+
+    /// Ordered by step index.
+    pub fn list_workflow_steps(&self, workflow_run_id: &str) -> Result<Vec<WorkflowStepRow>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
+            "SELECT {STEP_COLS} FROM workflow_steps WHERE workflow_run_id = ?1 \
+             ORDER BY step_index"
+        ))?;
+        let rows = st.query_map([workflow_run_id], map_step)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +236,47 @@ mod tests {
         assert_eq!(s.list_workflow_runs(5).unwrap().len(), 1);
         assert!(matches!(
             s.update_workflow_run_state("nope", "x", None),
+            Err(StoreError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn workflow_steps() {
+        let s = Store::open_in_memory().unwrap();
+        let w = WorkflowRunRow {
+            id: new_id(),
+            name: "wf".into(),
+            session_id: None,
+            state: "running".into(),
+            args_json: "null".into(),
+            started_at: crate::codec::now(),
+            finished_at: None,
+        };
+        s.insert_workflow_run(&w).unwrap();
+        let mk = |i: i64| WorkflowStepRow {
+            workflow_run_id: w.id.clone(),
+            step_index: i,
+            phase: (i == 0).then(|| "plan".to_string()),
+            prompt_hash: format!("h{i}"),
+            run_id: None,
+            state: "running".into(),
+            started_at: crate::codec::now(),
+            finished_at: None,
+        };
+        s.insert_workflow_step(&mk(1)).unwrap();
+        s.insert_workflow_step(&mk(0)).unwrap();
+        s.update_workflow_step(&w.id, 0, "succeeded", Some("r1"), Some(crate::codec::now()))
+            .unwrap();
+        let steps = s.list_workflow_steps(&w.id).unwrap();
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].step_index, 0);
+        assert_eq!(steps[0].state, "succeeded");
+        assert_eq!(steps[0].run_id.as_deref(), Some("r1"));
+        assert_eq!(steps[0].phase.as_deref(), Some("plan"));
+        assert!(steps[0].finished_at.is_some());
+        assert_eq!(steps[1].state, "running");
+        assert!(matches!(
+            s.update_workflow_step(&w.id, 9, "x", None, None),
             Err(StoreError::NotFound { .. })
         ));
     }
