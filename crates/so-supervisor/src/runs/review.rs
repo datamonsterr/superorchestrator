@@ -623,10 +623,19 @@ impl RunManager {
         let mut merged = None;
         let mut note = None;
         if p.merge {
-            merged = self.merge_run_branch(&row).await?;
-            note = Some(match merged {
-                Some(worktree::Merged::FastForward) => "merged by fast-forward".to_string(),
-                Some(worktree::Merged::MergeCommit) => "merged with a merge commit".to_string(),
+            let done = self.merge_run_branch(&row).await?;
+            merged = done.as_ref().map(|(m, _)| *m);
+            note = Some(match &done {
+                Some((m, committed)) => {
+                    let how = match m {
+                        worktree::Merged::FastForward => "merged by fast-forward",
+                        worktree::Merged::MergeCommit => "merged with a merge commit",
+                    };
+                    match committed {
+                        Some(sha) => format!("committed uncommitted work as {sha}; {how}"),
+                        None => how.to_string(),
+                    }
+                }
                 None => "merge was requested but the run has no worktree branch (isolation none, or its untouched worktree was removed); nothing to merge".to_string(),
             });
         }
@@ -679,7 +688,10 @@ impl RunManager {
 
     /// Merges the run's branch into its base checkout, one merge per repository at a time.
     /// `Ok(None)` when the run has no branch to merge; an error means nothing changed.
-    async fn merge_run_branch(&self, row: &RunRow) -> R<Option<worktree::Merged>> {
+    async fn merge_run_branch(
+        &self,
+        row: &RunRow,
+    ) -> R<Option<(worktree::Merged, Option<String>)>> {
         let (Some(branch), Some(repo), Some(base)) = (
             row.branch.clone(),
             row.worktree_repo.clone(),
@@ -696,11 +708,9 @@ impl RunManager {
             Some(Value::Null) => worktree::BaseBranch::Detached,
             _ => worktree::BaseBranch::Unknown,
         };
-        let message = format!(
-            "merge: {} ({})",
-            commit_title(row.name.as_deref(), row.prompt.as_deref()),
-            worktree::short_id(&row.id)
-        );
+        let title = commit_title(row.name.as_deref(), row.prompt.as_deref());
+        let message = format!("merge: {title} ({})", worktree::short_id(&row.id));
+        let work_message = format!("{title} ({})", worktree::short_id(&row.id));
         let wt = row.worktree_path.clone().map(std::path::PathBuf::from);
         let repo = std::path::PathBuf::from(repo);
         let key = std::fs::canonicalize(&repo).unwrap_or_else(|_| repo.clone());
@@ -715,15 +725,13 @@ impl RunManager {
             return Ok(None);
         }
         self.blocking(move || {
-            if let Some(wt) = wt.filter(|w| w.is_dir())
-                && let Some(dirty) = worktree::uncommitted(&wt)
-            {
-                return Err(format!(
-                    "the run's worktree {} has uncommitted changes (untracked files count): {dirty}; they would not be merged. Reject the run with feedback to commit them, then accept again",
-                    wt.display()
-                ));
-            }
-            worktree::merge_branch(&repo, &branch, &base_branch, &base, &message).map(Some)
+            // Work the run left uncommitted is its output: commit it, then merge.
+            let committed = match wt.filter(|w| w.is_dir()) {
+                Some(wt) => worktree::commit_all(&wt, &work_message)?,
+                None => None,
+            };
+            worktree::merge_branch(&repo, &branch, &base_branch, &base, &message)
+                .map(|m| Some((m, committed)))
         })
         .await?
         .map_err(|e| rpc(INVALID_REQUEST, e))

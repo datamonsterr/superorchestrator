@@ -23,8 +23,10 @@ A merge is refused, and the run stays at `pending_review`, when:
 
 - the base checkout is on another branch than the run started from;
 - the base checkout has changes to tracked files (untracked files are fine);
-- the run's worktree has uncommitted changes (they would not be merged);
+- a hook of the repository (such as `pre-commit`) refuses the commit of the run's uncommitted work (see below);
 - the merge conflicts. It is aborted, the base checkout is left as it was, and the error names the branch and the files.
+
+Uncommitted work: when the run left changes in its worktree (tracked or untracked, `.gitignore` respected), `accept_run` with `merge: true` first commits them there with `git add -A`, as `<run title> (<short id>)`, then merges. It uses the repository's git identity, or `superorchestrator` when none is set. The note says `committed uncommitted work as <sha>`. The repository's hooks run for this commit; if one fails, the error shows its output, nothing is merged and the run stays at `pending_review`.
 
 Notes on the merge:
 
