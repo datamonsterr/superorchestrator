@@ -80,6 +80,9 @@ pub struct LaunchSpec {
     pub max_turns: Option<u32>,
     /// Native session id to resume instead of starting a new session.
     pub resume: Option<String>,
+    /// With `resume`: continue a copy of that session under a new native id instead of
+    /// the session itself (only where [`AnyDriver::supports_fork`]).
+    pub fork: bool,
 }
 
 // Redacting: no prompt text, no env values (account vars or MCP env).
@@ -110,6 +113,7 @@ impl fmt::Debug for LaunchSpec {
             .field("has_output_schema", &self.output_schema.is_some())
             .field("max_turns", &self.max_turns)
             .field("resume", &self.resume)
+            .field("fork", &self.fork)
             .finish()
     }
 }
@@ -358,6 +362,12 @@ pub enum AnyDriver {
 }
 
 impl AnyDriver {
+    /// Whether `LaunchSpec::fork` works: claude (`--resume <id> --fork-session`), codex
+    /// (`thread/fork`) and opencode (`POST /session/{id}/fork`). Agy has no fork.
+    pub fn supports_fork(&self) -> bool {
+        !matches!(self, AnyDriver::Agy(_))
+    }
+
     /// Driver for a harness (all four have one; the `Result` is kept for
     /// future harnesses, see [`DriverError::Unsupported`]).
     pub fn for_harness(h: Harness, config: DriverConfig) -> Result<Self, DriverError> {
@@ -513,6 +523,7 @@ mod tests {
             output_schema: None,
             max_turns: None,
             resume: None,
+            fork: false,
         };
         let dbg = format!("{spec:?}");
         for leaked in ["launch-secret", "mcp-secret", "very private", "--token=abc"] {

@@ -135,6 +135,7 @@ impl Rig {
             output_schema: None,
             max_turns: Some(8),
             resume: None,
+            fork: false,
         }
     }
 }

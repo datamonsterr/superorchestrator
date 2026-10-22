@@ -108,6 +108,7 @@ impl Rig {
             output_schema: None,
             max_turns: Some(8),
             resume: None,
+            fork: false,
         }
     }
 }
@@ -402,6 +403,27 @@ async fn resume_uses_resume_flag_and_schema() {
     assert!(!argv.contains(&"--session-id"));
     let j = argv.iter().position(|a| *a == "--json-schema").unwrap();
     assert_eq!(argv[j + 1], r#"{"type":"object"}"#);
+}
+
+#[tokio::test]
+async fn fork_adds_fork_session_to_resume() {
+    let rig = Rig::new();
+    let mut spec = rig.spec("");
+    spec.resume = Some("11111111-2222-7333-8444-555555555555".into());
+    spec.fork = true;
+    let mut h = driver().launch(spec).await.unwrap();
+    // The new session id arrives with the init message, not from the launch.
+    assert_eq!(h.native_session_id, None);
+    h.control.shutdown(Duration::from_secs(5)).await.unwrap();
+    until(&mut h, is_exit).await;
+    let argv = rig.log()[0]["argv"].clone();
+    let argv: Vec<&str> = argv
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a.as_str().unwrap())
+        .collect();
+    assert!(argv.contains(&"--resume") && argv.contains(&"--fork-session"));
 }
 
 #[tokio::test]

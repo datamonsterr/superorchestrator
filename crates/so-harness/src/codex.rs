@@ -302,7 +302,9 @@ async fn start(
         method: "initialized",
     });
 
-    let method = if spec.resume.is_some() {
+    let method = if spec.resume.is_some() && spec.fork {
+        "thread/fork"
+    } else if spec.resume.is_some() {
         "thread/resume"
     } else {
         "thread/start"
@@ -1465,6 +1467,7 @@ mod tests {
             output_schema: None,
             max_turns: None,
             resume: None,
+            fork: false,
         }
     }
 

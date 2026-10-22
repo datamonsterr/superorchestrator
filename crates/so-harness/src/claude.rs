@@ -58,6 +58,9 @@ pub fn build_args(spec: &LaunchSpec, session_id: &str) -> Vec<String> {
         "--session-id".into()
     });
     a.push(session_id.into());
+    if spec.resume.is_some() && spec.fork {
+        a.push("--fork-session".into());
+    }
     a.push("--mcp-config".into());
     a.push(spec.run_dir.join("mcp.json").display().to_string());
     a.push("--append-system-prompt-file".into());
@@ -137,10 +140,11 @@ impl Driver for ClaudeDriver {
         Ok(RunHandle {
             events: sup.events,
             control: RunControl::Claude(control),
-            native_session_id: Some(session_id.clone()),
+            // A fork reports its new session id in the init message.
+            native_session_id: (!spec.fork).then(|| session_id.clone()),
             join: JoinInfo {
                 account_name: spec.account.name.clone(),
-                native_session_id: session_id,
+                native_session_id: if spec.fork { String::new() } else { session_id },
                 endpoint: None,
                 cwd: spec.cwd.clone(),
             },

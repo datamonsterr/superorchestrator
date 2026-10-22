@@ -159,6 +159,7 @@ impl RunManager {
             output_schema,
             max_turns: row.max_turns,
             resume,
+            fork: false,
         })
     }
 

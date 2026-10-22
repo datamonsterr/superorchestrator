@@ -277,6 +277,7 @@ impl Rig {
             output_schema: None,
             max_turns: None,
             resume: None,
+            fork: false,
         }
     }
 

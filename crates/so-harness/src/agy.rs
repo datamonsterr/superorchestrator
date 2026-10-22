@@ -222,6 +222,9 @@ impl Driver for AgyDriver {
     }
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
+        if spec.fork {
+            return Err(DriverError::Other("agy cannot fork a session".into()));
+        }
         let account = account_gemini_dir(&spec)?;
         let prep = spec.clone();
         tokio::task::spawn_blocking(move || prepare_gemini_dir(&prep, &account))
