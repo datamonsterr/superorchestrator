@@ -13,3 +13,7 @@ workspace = true
 
 [dependencies]
 so-core = { path = "../so-core" }
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
