@@ -90,6 +90,15 @@ pub struct RunPatch {
     pub finished_at: Option<Option<DateTime<Utc>>>,
 }
 
+/// Result of `Store::claim_resume`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeClaim {
+    /// The run moved to `to`: `running` with a slot, `queued` without.
+    Moved { from: RunState, to: RunState },
+    /// The run was not finished or at the review gate.
+    Conflict(RunState),
+}
+
 /// Fields written together with the final state change in `finish_run`.
 #[derive(Debug, Clone, Default)]
 pub struct FinishPatch {

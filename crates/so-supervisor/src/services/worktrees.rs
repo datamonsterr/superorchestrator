@@ -65,5 +65,7 @@ pub fn prune_one(store: &Store, run: &RunRow, c: &Created) -> Result<(), String>
             data: json!({"path": c.path, "branch": c.branch, "pruned": true}),
         })
         .map_err(|e| e.to_string())?;
+    // Nothing left to resume in: drop the run's checks and resume intent too.
+    let _ = store.delete_run_meta(&run.id);
     Ok(())
 }

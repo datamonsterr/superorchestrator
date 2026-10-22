@@ -9,7 +9,7 @@ use so_core::{RunState, new_id};
 
 use crate::codec::*;
 use crate::error::{Result, StoreError};
-use crate::rows::{AttemptRow, FinishPatch, InsertRun, RunPatch, RunRow};
+use crate::rows::{AttemptRow, FinishPatch, InsertRun, ResumeClaim, RunPatch, RunRow};
 use crate::store::Store;
 
 const COLS: &str = "id, session_id, parent_run_id, depth, name, agent, choice_id, harness, \
@@ -159,28 +159,103 @@ impl Store {
         cas_state(&self.conn(), id, from, to)
     }
 
-    /// Brings a `succeeded` or `failed` run back to `running` (a message resumed its native
-    /// session) and clears its result. Returns `false` when the run is in another state.
-    pub fn reopen_run(&self, id: &str) -> Result<bool> {
+    /// Claims a slot for resuming a `succeeded`, `failed` or `pending_review` run (a message
+    /// or a rejection continues its native session). With room under the caps the run goes
+    /// back to `running`; without, to `queued` with `prompt` kept as its resume intent, so
+    /// the queue resumes it when a slot frees. Its result and error are cleared and its
+    /// session is reopened. `pending_review` holds no slot, so it counts as free.
+    #[allow(clippy::too_many_arguments)] // one atomic claim, like `try_claim_slot`
+    pub fn claim_resume(
+        &self,
+        run_id: &str,
+        account: &str,
+        account_cap: i64,
+        global_cap: i64,
+        prompt: &str,
+    ) -> Result<ResumeClaim> {
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let n = tx.execute(
-            "UPDATE runs SET state = 'running', finished_at = NULL, error_kind = NULL, \
-             result_json = NULL WHERE id = ?1 AND state IN ('succeeded', 'failed')",
-            [id],
+        let from = current_state(&tx, run_id)?;
+        if !matches!(
+            from,
+            RunState::Succeeded | RunState::Failed | RunState::PendingReview
+        ) {
+            return Ok(ResumeClaim::Conflict(from));
+        }
+        let slot = &*SLOT_HOLDING;
+        let account_runs: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE account = ?1 AND id != ?2 AND {slot}"),
+            params![account, run_id],
+            |r| r.get(0),
         )?;
-        if n == 1 {
-            let sid: String =
-                tx.query_row("SELECT session_id FROM runs WHERE id = ?1", [id], |r| {
-                    r.get(0)
-                })?;
+        let interactive = crate::sessions::count_interactive(&tx, account)?;
+        let total: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE id != ?1 AND {slot}"),
+            [run_id],
+            |r| r.get(0),
+        )?;
+        let room = account_runs + interactive < account_cap && total < global_cap;
+        let to = if room {
+            RunState::Running
+        } else {
+            RunState::Queued
+        };
+        tx.execute(
+            "UPDATE runs SET state = ?2, finished_at = NULL, error_kind = NULL, \
+             result_json = NULL WHERE id = ?1",
+            params![run_id, enum_to_sql(&to)],
+        )?;
+        if !room {
             tx.execute(
-                "UPDATE sessions SET status = 'active', ended_at = NULL WHERE id = ?1",
-                [sid],
+                "INSERT INTO run_meta (run_id, resume_prompt) VALUES (?1, ?2) \
+                 ON CONFLICT(run_id) DO UPDATE SET resume_prompt = excluded.resume_prompt",
+                params![run_id, prompt],
+            )?;
+        }
+        let sid: String =
+            tx.query_row("SELECT session_id FROM runs WHERE id = ?1", [run_id], |r| {
+                r.get(0)
+            })?;
+        tx.execute(
+            "UPDATE sessions SET status = 'active', ended_at = NULL WHERE id = ?1",
+            [sid],
+        )?;
+        tx.commit()?;
+        Ok(ResumeClaim::Moved { from, to })
+    }
+
+    /// Returns and clears the resume intent of a queued run.
+    pub fn take_resume_prompt(&self, run_id: &str) -> Result<Option<String>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let prompt: Option<Option<String>> = tx
+            .query_row(
+                "SELECT resume_prompt FROM run_meta WHERE run_id = ?1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?;
+        let prompt = prompt.flatten();
+        if prompt.is_some() {
+            tx.execute(
+                "UPDATE run_meta SET resume_prompt = NULL WHERE run_id = ?1",
+                [run_id],
             )?;
         }
         tx.commit()?;
-        Ok(n == 1)
+        Ok(prompt)
+    }
+
+    /// Drops the extras of a run (checks, fork source, resume intent); used when its
+    /// worktree is pruned.
+    pub fn delete_run_meta(&self, run_id: &str) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM run_meta WHERE run_id = ?1", [run_id])?;
+        Ok(())
     }
 
     /// Stores the review checks of a run (`ci`, `pr_threads`, `cmd:<shell>`).
@@ -932,7 +1007,10 @@ pub(crate) mod tests {
         let (s, sid) = setup();
         let r = run(&sid, None);
         s.insert_run(&r).unwrap();
-        assert!(!s.reopen_run(&r.id).unwrap());
+        assert!(matches!(
+            s.claim_resume(&r.id, "a", 2, 16, "go").unwrap(),
+            ResumeClaim::Conflict(RunState::Queued)
+        ));
         s.set_run_checks(&r.id, &["ci".into(), "cmd:true".into()])
             .unwrap();
         assert_eq!(s.get_run_checks(&r.id).unwrap(), ["ci", "cmd:true"]);
@@ -948,10 +1026,52 @@ pub(crate) mod tests {
         };
         s.finish_run(&r.id, RunState::Queued, RunState::Failed, &patch)
             .unwrap();
-        assert!(s.reopen_run(&r.id).unwrap());
+        // A failed run resumes into a free slot.
+        assert_eq!(
+            s.claim_resume(&r.id, "acc", 1, 16, "hello").unwrap(),
+            ResumeClaim::Moved {
+                from: RunState::Failed,
+                to: RunState::Running
+            }
+        );
         let got = s.get_run(&r.id).unwrap().unwrap();
         assert_eq!(got.state, RunState::Running);
         assert!(got.finished_at.is_none() && got.result_json.is_none());
+        assert_eq!(s.take_resume_prompt(&r.id).unwrap(), None);
+        s.delete_run_meta(&r.id).unwrap();
+        assert!(s.get_run_checks(&r.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn claim_resume_queues_when_the_account_is_full() {
+        let (s, sid) = setup();
+        let mut busy = run(&sid, Some("acc"));
+        busy.state = RunState::Running;
+        s.insert_run(&busy).unwrap();
+        let mut done = run(&sid, Some("acc"));
+        done.state = RunState::Succeeded;
+        s.insert_run(&done).unwrap();
+        assert_eq!(
+            s.claim_resume(&done.id, "acc", 1, 16, "do more").unwrap(),
+            ResumeClaim::Moved {
+                from: RunState::Succeeded,
+                to: RunState::Queued
+            }
+        );
+        assert_eq!(
+            s.get_run(&done.id).unwrap().unwrap().state,
+            RunState::Queued
+        );
+        assert_eq!(
+            s.take_resume_prompt(&done.id).unwrap().as_deref(),
+            Some("do more")
+        );
+        assert_eq!(s.take_resume_prompt(&done.id).unwrap(), None);
+        // Not finished: no claim.
+        assert_eq!(
+            s.claim_resume(&busy.id, "acc", 1, 16, "x").unwrap(),
+            ResumeClaim::Conflict(RunState::Running)
+        );
     }
 
     #[test]

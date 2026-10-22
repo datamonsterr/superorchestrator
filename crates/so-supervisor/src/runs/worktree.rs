@@ -153,6 +153,58 @@ pub fn remove_if_unchanged(c: &Created) -> Result<(), Kept> {
     remove(c, false).map_err(Kept::Failed)
 }
 
+/// Puts a run's worktree back at `path`. The branch is reused when it exists. A worktree
+/// that was removed as untouched took its branch with it; then the branch is created again
+/// at `base`, the commit the run started from. Fails with a clear message when neither is
+/// available.
+pub fn recreate(repo: &Path, path: &Path, branch: &str, base: Option<&str>) -> Result<(), String> {
+    let _ = git(repo, &["worktree", "prune"]);
+    let reference = format!("refs/heads/{branch}");
+    let exists = git(repo, &["rev-parse", "--verify", "--quiet", &reference]).is_ok();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    let path_arg = path.to_string_lossy().into_owned();
+    if exists {
+        git(repo, &["worktree", "add", "--", &path_arg, branch])?;
+        return Ok(());
+    }
+    let Some(base) = base else {
+        return Err(format!(
+            "branch {branch} no longer exists and the run's base commit is unknown, so its worktree cannot be recreated"
+        ));
+    };
+    git(
+        repo,
+        &["worktree", "add", "-b", branch, "--", &path_arg, base],
+    )
+    .map_err(|e| {
+        format!("branch {branch} no longer exists and could not be recreated at {base}: {e}")
+    })?;
+    Ok(())
+}
+
+/// True when the branch's tip is contained in `base` (merged) or in any remote branch
+/// (pushed).
+pub fn merged_or_pushed(c: &Created) -> bool {
+    let tip = match git(&c.repo, &["rev-parse", &format!("refs/heads/{}", c.branch)]) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    // Merged into the repository's current HEAD (what the worktree was cut from).
+    let merged = Command::new("git")
+        .arg("-C")
+        .arg(&c.repo)
+        .args(["merge-base", "--is-ancestor", &tip, "HEAD"])
+        .status()
+        .is_ok_and(|s| s.success());
+    if merged {
+        return true;
+    }
+    git(&c.repo, &["branch", "-r", "--contains", &tip]).is_ok_and(|out| !out.is_empty())
+}
+
 /// Removes the worktree and deletes its branch. `force` also drops local changes.
 pub fn remove(c: &Created, force: bool) -> Result<(), String> {
     let path_arg = c.path.to_string_lossy().into_owned();

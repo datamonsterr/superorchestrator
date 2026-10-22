@@ -1,7 +1,5 @@
 //! Taking over runs left active by a previous supervisor (SPEC 3.1, 7.6).
 
-use std::path::PathBuf;
-
 use so_core::{ErrorKind, RunState};
 use so_harness::AnyDriver;
 use so_store::{RunRow, Store};
@@ -84,22 +82,12 @@ impl RunManager {
 
     /// Resumes the run's native session with `prompt` as the next user message and makes
     /// the new process the run's live one. The run must already be in an active state.
-    /// Runs in their worktree, or in the original directory when the worktree was
-    /// cleaned up.
+    /// See [`RunManager::resume_cwd`] for where it works.
     pub(crate) async fn resume_run(&self, row: &RunRow, prompt: &str) -> Result<(), String> {
         let native = row.native_session_id.clone().ok_or("no native session")?;
         let name = row.account.clone().ok_or("run has no account")?;
         let account = self.load_account(&name).await.map_err(|e| e.message)?;
-        let candidates: Vec<PathBuf> = [row.worktree_path.as_ref(), row.cwd.as_ref()]
-            .into_iter()
-            .flatten()
-            .map(PathBuf::from)
-            .collect();
-        let cwd = self
-            .blocking(move || candidates.into_iter().find(|d| d.is_dir()))
-            .await
-            .map_err(|e| e.message)?
-            .ok_or("the run's working directory is gone")?;
+        let cwd = self.resume_cwd(row).await?;
         let spec = self
             .build_spec(row, &account, cwd, prompt.to_string(), Some(native), false)
             .await?;

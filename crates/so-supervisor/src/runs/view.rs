@@ -192,14 +192,8 @@ impl RunManager {
                     None
                 };
                 let Some(want) = wanted else { continue };
-                let latest = s
-                    .list_events_by_run(id, 1_000_000)?
-                    .into_iter()
-                    .rev()
-                    .find(|e| {
-                        e.event_type == want && (want != EventType::StateChanged || is_update(e))
-                    });
-                out.extend(latest);
+                // Newest of its type; for the review gate that is the move into it.
+                out.extend(s.latest_event_of_type(id, want)?);
             }
             Ok(out)
         })
@@ -273,6 +267,10 @@ fn is_update(ev: &Event) -> bool {
 
 async fn push_event(ctx: &ConnCtx, ids: &[String], seq: u64, ev: Event, out: &mut WaitOutcome) {
     if !ev.run_id.as_ref().is_some_and(|r| ids.contains(r)) {
+        return;
+    }
+    // A standing update may also arrive live (it was stored after we subscribed).
+    if out.updates.iter().any(|u| u.id == ev.id) {
         return;
     }
     let payload = super::events::Delivered {

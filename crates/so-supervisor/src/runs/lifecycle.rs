@@ -85,6 +85,15 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
+/// Messages meant as input to the run itself. The others (a child's progress, question or
+/// result) are for the run to read with `read_messages`.
+pub(crate) fn is_input(m: &so_store::MessageRow) -> bool {
+    matches!(
+        m.kind,
+        so_core::MessageKind::Message | so_core::MessageKind::Answer
+    )
+}
+
 /// At most `max` characters, ending in an ellipsis when cut.
 pub(crate) fn excerpt(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -209,19 +218,40 @@ impl RunManager {
         if !still_starting {
             return Ok(());
         }
-        let mut cwd = PathBuf::from(row.cwd.clone().ok_or("run has no working directory")?);
-        if row.isolation == Isolation::Worktree {
-            cwd = self.make_worktree(row, &cwd).await?;
-        }
-        let fork_from = {
+        // A finished run that found no free slot when it was sent a message waits in the
+        // queue with the text to resume with.
+        let resume_prompt = {
             let id = row.id.clone();
-            self.db(move |s| s.get_run_fork(&id))
+            self.db(move |s| s.take_resume_prompt(&id))
                 .await
                 .map_err(|e| e.message)?
         };
-        let mut prompt = row.prompt.clone().unwrap_or_default();
+        let cwd = if resume_prompt.is_some() {
+            self.resume_cwd(row).await?
+        } else {
+            let cwd = PathBuf::from(row.cwd.clone().ok_or("run has no working directory")?);
+            if row.isolation == Isolation::Worktree {
+                self.make_worktree(row, &cwd).await?
+            } else {
+                cwd
+            }
+        };
+        let fork_from = match &resume_prompt {
+            // Continue the run's own session, not a copy.
+            Some(_) => row.native_session_id.clone(),
+            None => {
+                let id = row.id.clone();
+                self.db(move |s| s.get_run_fork(&id))
+                    .await
+                    .map_err(|e| e.message)?
+            }
+        };
+        let mut prompt = resume_prompt
+            .clone()
+            .or_else(|| row.prompt.clone())
+            .unwrap_or_default();
         prompt.push_str(&self.start_messages(row).await);
-        let fork = fork_from.is_some();
+        let fork = fork_from.is_some() && resume_prompt.is_none();
         let spec = self
             .build_spec(row, &account, cwd, prompt, fork_from, fork)
             .await?;
@@ -236,7 +266,11 @@ impl RunManager {
         let (sid, id) = (row.session_id.clone(), row.id.clone());
         let msgs = self
             .db(move |s| {
-                let msgs = s.unread_messages(&sid, Some(&id), 100)?;
+                let msgs: Vec<_> = s
+                    .unread_messages(&sid, Some(&id), 100)?
+                    .into_iter()
+                    .filter(is_input)
+                    .collect();
                 let ids: Vec<String> = msgs.iter().map(|m| m.id.clone()).collect();
                 s.mark_messages_read(&ids, Utc::now())?;
                 Ok(msgs)
@@ -426,6 +460,10 @@ impl RunManager {
         )
         .await;
 
+        // Messages that arrived while the run had no process (during launch, or between a
+        // death and its resume) are handed over now.
+        self.flush_unread(row, &control).await;
+
         let validator = row
             .output_schema
             .as_deref()
@@ -441,6 +479,34 @@ impl RunManager {
             review: row.review,
         };
         tokio::spawn(self.clone().pump(pc, events, control));
+    }
+
+    async fn flush_unread(&self, row: &RunRow, control: &RunControl) {
+        let (sid, id) = (row.session_id.clone(), row.id.clone());
+        let asking = self.is_asking(&row.id);
+        let pending = self
+            .db(move |s| s.unread_messages(&sid, Some(&id), 100))
+            .await
+            .unwrap_or_default();
+        // An answer to a blocked `ask_parent` goes to that call.
+        let batch: Vec<_> = pending
+            .iter()
+            .filter(|m| is_input(m))
+            .filter(|m| !(m.kind == so_core::MessageKind::Answer && asking))
+            .collect();
+        if batch.is_empty() {
+            return;
+        }
+        // Marked read before sending, so a concurrent delivery cannot send them twice.
+        let ids: Vec<String> = batch.iter().map(|m| m.id.clone()).collect();
+        let _ = self
+            .db(move |s| s.mark_messages_read(&ids, Utc::now()))
+            .await;
+        for m in batch {
+            if let Err(e) = control.send(&m.body).await {
+                tracing::warn!(run_id = %row.id, error = %e, "could not hand over a message");
+            }
+        }
     }
 
     /// A launch whose run was finished meanwhile: stop the process, drop the entry and
@@ -494,8 +560,7 @@ impl RunManager {
                     &account_name,
                     &account_name,
                     "the account hit a limit and is in cooldown",
-                )
-                .await;
+                );
             }
             Err(e) => tracing::warn!(%run_id, error = %e.message, "could not flag the account"),
         }
@@ -646,11 +711,20 @@ impl RunManager {
                 }
             })
             .await;
+        // A resume that raced this wrap-up must not lose its process or worktree.
+        if !self.still_terminal(run_id).await {
+            return;
+        }
         if let Some(rt) = lock(&self.inner.runs).get_mut(run_id) {
             rt.live = None;
         }
         self.cleanup_worktree(run_id).await;
         self.maybe_end_session(&sid).await;
+    }
+
+    async fn still_terminal(&self, run_id: &str) -> bool {
+        let id = run_id.to_string();
+        matches!(self.db(move |s| s.get_run(&id)).await, Ok(Some(r)) if r.state.is_terminal())
     }
 
     async fn maybe_end_session(&self, session_id: &str) {
@@ -678,8 +752,7 @@ impl RunManager {
                     session_id,
                     "session",
                     "all of its runs have finished",
-                )
-                .await;
+                );
             }
             Ok(false) => {}
             Err(e) => tracing::warn!(%session_id, error = %e.message, "could not end session"),

@@ -1,7 +1,5 @@
 //! Messages between the orchestrator and runs, progress, questions and waiting (SPEC 9).
 
-use std::time::Duration;
-
 use chrono::Utc;
 use serde_json::json;
 use so_core::proto::{
@@ -15,8 +13,6 @@ use super::lifecycle::excerpt;
 use super::{R, RunManager, lock, rpc};
 use crate::dispatch::ConnCtx;
 
-/// A question that stays unanswered this long raises `question_waiting_10m`.
-const QUESTION_NOTIFY_AFTER: Duration = Duration::from_secs(600);
 const MESSAGES_LIMIT: usize = 1000;
 
 /// Marks a run `waiting` while a blocking call is in progress; ending it (or dropping the
@@ -24,13 +20,14 @@ const MESSAGES_LIMIT: usize = 1000;
 pub(crate) struct WaitGuard {
     mgr: RunManager,
     run_id: String,
+    ask: bool,
     armed: bool,
 }
 
 impl WaitGuard {
     pub(crate) async fn end(mut self) {
         self.armed = false;
-        self.mgr.end_wait(&self.run_id).await;
+        self.mgr.end_wait(&self.run_id, self.ask).await;
     }
 }
 
@@ -40,8 +37,8 @@ impl Drop for WaitGuard {
             return;
         }
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
-            let (mgr, id) = (self.mgr.clone(), self.run_id.clone());
-            rt.spawn(async move { mgr.end_wait(&id).await });
+            let (mgr, id, ask) = (self.mgr.clone(), self.run_id.clone(), self.ask);
+            rt.spawn(async move { mgr.end_wait(&id, ask).await });
         }
     }
 }
@@ -92,15 +89,36 @@ impl RunManager {
             .is_some_and(|rt| rt.waits > 0)
     }
 
+    /// True while the run is blocked in `ask_parent`, the only call an answer unblocks.
+    pub(crate) fn is_asking(&self, run_id: &str) -> bool {
+        lock(&self.inner.runs)
+            .get(run_id)
+            .is_some_and(|rt| rt.asks > 0)
+    }
+
     /// Starts a blocking call of `run_id`: the run is `waiting` until the guard ends.
-    pub(crate) async fn begin_wait(&self, run_id: &str) -> WaitGuard {
+    /// `ask` marks an `ask_parent`. A run the manager does not track (already wrapped up)
+    /// gets an inert guard and no registry entry.
+    pub(crate) async fn begin_wait(&self, run_id: &str, ask: bool) -> WaitGuard {
         let first = {
             let mut runs = lock(&self.inner.runs);
-            let rt = runs.entry(run_id.to_string()).or_default();
-            rt.waits += 1;
-            rt.waits == 1
+            runs.get_mut(run_id).map(|rt| {
+                rt.waits += 1;
+                if ask {
+                    rt.asks += 1;
+                }
+                rt.waits == 1
+            })
         };
-        if first {
+        // Armed before any await: if this future is dropped from here on, the guard
+        // undoes the count.
+        let guard = WaitGuard {
+            mgr: self.clone(),
+            run_id: run_id.to_string(),
+            ask,
+            armed: first.is_some(),
+        };
+        if first == Some(true) {
             self.move_state(
                 run_id,
                 RunState::Running,
@@ -109,19 +127,18 @@ impl RunManager {
             )
             .await;
         }
-        WaitGuard {
-            mgr: self.clone(),
-            run_id: run_id.to_string(),
-            armed: true,
-        }
+        guard
     }
 
-    async fn end_wait(&self, run_id: &str) {
+    async fn end_wait(&self, run_id: &str, ask: bool) {
         let last = {
             let mut runs = lock(&self.inner.runs);
             match runs.get_mut(run_id) {
                 Some(rt) => {
                     rt.waits = rt.waits.saturating_sub(1);
+                    if ask {
+                        rt.asks = rt.asks.saturating_sub(1);
+                    }
                     rt.waits == 0
                 }
                 None => false,
@@ -231,7 +248,7 @@ impl RunManager {
                     s.mark_messages_read(&ids, Utc::now())
                 })
                 .await;
-            if self.is_waiting(&row.id) {
+            if self.is_asking(&row.id) {
                 // `ask_parent` returns it to the child.
                 return Ok(AckResult { ok: true });
             }
@@ -244,14 +261,15 @@ impl RunManager {
         match row.state {
             RunState::Queued | RunState::Starting => Ok(()),
             RunState::Succeeded | RunState::Failed | RunState::PendingReview => {
-                self.resume_for_message(row, &msg.body).await?;
-                self.mark_read(vec![msg.id.clone()]).await;
+                self.resume_finished(row, &msg.body, "message", Some(msg.id.clone()))
+                    .await?;
                 Ok(())
             }
             _ => {
                 let control = lock(&self.inner.runs)
                     .get(&row.id)
                     .and_then(|rt| rt.live.as_ref().map(|l| l.control.clone()));
+                // Without a live process the message stays unread; `go_live` hands it over.
                 if let Some(control) = control {
                     control.send(&msg.body).await.map_err(|e| {
                         rpc(UNAVAILABLE, format!("could not deliver the message: {e}"))
@@ -261,38 +279,6 @@ impl RunManager {
                 Ok(())
             }
         }
-    }
-
-    /// Brings a finished run (or one at the review gate) back to `running` and resumes
-    /// its native session with `text`.
-    async fn resume_for_message(&self, row: &RunRow, text: &str) -> R<()> {
-        let id = row.id.clone();
-        let from = row.state;
-        let moved = if from == RunState::PendingReview {
-            self.db_raw(move |s| s.update_run_state(&id, from, RunState::Running))
-                .await
-                .is_ok()
-        } else {
-            self.db(move |s| s.reopen_run(&id)).await?
-        };
-        if !moved {
-            // Someone else already resumed it; the message waits unread.
-            return Ok(());
-        }
-        lock(&self.inner.runs).entry(row.id.clone()).or_default();
-        self.emit(
-            &row.session_id,
-            Some(&row.id),
-            EventType::StateChanged,
-            json!({"from": from, "to": RunState::Running, "reason": "message"}),
-        )
-        .await;
-        if let Err(reason) = self.resume_run(row, text).await {
-            self.fail_run(&row.id, so_core::ErrorKind::Other, &reason)
-                .await;
-            return Err(rpc(UNAVAILABLE, reason));
-        }
-        Ok(())
     }
 
     /// Messages sent to or from a run, oldest first (not marked read).
@@ -372,7 +358,7 @@ impl RunManager {
         // An answer to an earlier question that timed out must not answer this one.
         self.discard_stale_answers(&row).await;
 
-        let guard = self.begin_wait(&row.id).await;
+        let guard = self.begin_wait(&row.id, true).await;
         let body = match &p.options {
             Some(o) if !o.is_empty() => format!("{}\nOptions: {}", p.question, o.join(" | ")),
             _ => p.question.clone(),
@@ -404,7 +390,7 @@ impl RunManager {
 
         let started = tokio::time::Instant::now();
         let deadline = started + timeout;
-        let notify_at = started + QUESTION_NOTIFY_AFTER;
+        let notify_at = started + self.question_notify_after();
         let mut notified = false;
         let name = row.name.clone().unwrap_or_else(|| row.id.clone());
         let outcome = loop {
@@ -424,8 +410,7 @@ impl RunManager {
                     &row.id,
                     &name,
                     "a question has waited 10 minutes for an answer",
-                )
-                .await;
+                );
             }
             let wake = if notified {
                 deadline
@@ -490,5 +475,52 @@ impl RunManager {
             Ok(first.map(|m| m.body))
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use so_core::RunState;
+
+    use super::super::testutil::{insert_run, manager};
+    use super::*;
+
+    #[tokio::test]
+    async fn waiting_on_an_untracked_run_neither_creates_an_entry_nor_moves_it() {
+        let (m, _dir) = manager();
+        let row = insert_run(&m, RunState::Succeeded);
+        lock(&m.inner.runs).remove(&row.id);
+        let guard = m.begin_wait(&row.id, true).await;
+        assert!(!m.is_waiting(&row.id) && !lock(&m.inner.runs).contains_key(&row.id));
+        guard.end().await;
+        assert!(!lock(&m.inner.runs).contains_key(&row.id));
+        assert_eq!(
+            m.store().get_run(&row.id).unwrap().unwrap().state,
+            RunState::Succeeded
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dropped_wait_guard_puts_the_run_back_to_running() {
+        let (m, _dir) = manager();
+        let row = insert_run(&m, RunState::Running);
+        let guard = m.begin_wait(&row.id, true).await;
+        assert!(m.is_asking(&row.id));
+        assert_eq!(
+            m.store().get_run(&row.id).unwrap().unwrap().state,
+            RunState::Waiting
+        );
+        drop(guard);
+        for _ in 0..100 {
+            if m.store().get_run(&row.id).unwrap().unwrap().state == RunState::Running {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            m.store().get_run(&row.id).unwrap().unwrap().state,
+            RunState::Running
+        );
+        assert!(!m.is_waiting(&row.id));
     }
 }

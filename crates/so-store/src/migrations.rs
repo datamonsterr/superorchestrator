@@ -101,8 +101,14 @@ CREATE TABLE run_meta (
 UPDATE schema_versions SET version = 2 WHERE table_name = 'runs';
 ";
 
+const V3: &str = "
+-- A finished run that was sent a message but found no free slot goes back to `queued`
+-- with the text it is to be resumed with.
+ALTER TABLE run_meta ADD COLUMN resume_prompt TEXT;
+";
+
 /// Ordered migrations; entry `i` brings the database to version `i + 1`.
-const MIGRATIONS: &[&str] = &[V1, V2];
+const MIGRATIONS: &[&str] = &[V1, V2, V3];
 
 /// Latest schema version known to this build.
 pub fn latest_version() -> i64 {

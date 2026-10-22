@@ -24,6 +24,8 @@ fork_agent branches a finished run, list_agents lists custom agents, and run_wor
 scripted workflows. Subagents also get report_progress and ask_parent. Tool failures are returned as errors you can read.";
 
 const PROGRESS_QUEUE: usize = 64;
+/// Most times one `wait_agent` call asks the person before it returns what it has.
+const MAX_ELICIT_ROUNDS: usize = 20;
 
 struct Inner {
     client: SupervisorClient,
@@ -86,8 +88,9 @@ impl McpBridge {
     ) -> Result<Value, ClientError> {
         let started = std::time::Instant::now();
         let timeout_ms = args.get("timeout_ms").and_then(Value::as_u64);
-        loop {
-            let result = self.forward(spec, args.clone(), ctx).await?;
+        let mut result = Value::Null;
+        for _ in 0..MAX_ELICIT_ROUNDS {
+            result = self.forward(spec, args.clone(), ctx).await?;
             let questions = questions_in(&result);
             if questions.is_empty()
                 || !ctx
@@ -131,6 +134,8 @@ impl McpBridge {
                 args["timeout_ms"] = json!(left);
             }
         }
+        // A person who keeps answering does not hold the call forever.
+        Ok(result)
     }
 
     /// Forwards one call. Cancelling the MCP request drops the call but does not cancel the
