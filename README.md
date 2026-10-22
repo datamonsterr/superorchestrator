@@ -53,6 +53,10 @@ Check progress any time with `superorchestrator status` and `superorchestrator r
 
 You can use the [Claude Code plugin](plugin/README.md) instead of step 4.
 
+## Terminal UI
+
+Run `superorchestrator` in a terminal, or `superorchestrator tui`, for a full-screen view of your setup, accounts and runs. It can add and sign in accounts, accept or reject reviewed runs and run the first-run steps. See the [terminal UI guide](docs/guide/tui.md).
+
 ## Web UI
 
 `superorchestrator ui` starts the supervisor if needed and opens the UI at `http://127.0.0.1:7878`. It shows the dashboard, sessions with a timeline of every run, accounts, choices, agents, workflows and settings. See the [web UI guide](docs/guide/web-ui.md).
@@ -63,6 +67,7 @@ You can use the [Claude Code plugin](plugin/README.md) instead of step 4.
 - [Routing and choices](docs/guide/routing.md)
 - [Custom agents](docs/guide/agents.md)
 - [Workflows](docs/guide/workflows.md)
+- [The terminal UI](docs/guide/tui.md)
 - [The web UI](docs/guide/web-ui.md)
 - [Notifications](docs/guide/notifications.md)
 - [Migrating from the old tooling](docs/guide/migrate.md)

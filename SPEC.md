@@ -38,7 +38,7 @@ Terms used here are defined in [CONTEXT.md](CONTEXT.md). Architectural decisions
 | HTTP (UI and API) | `axum`, server-sent events for live updates |
 | Frontend | React + Vite + TypeScript, built at release time and embedded with `rust-embed` |
 | Workflows | QuickJS through `rquickjs` |
-| CLI | `clap`, plus an interactive menu (`dialoguer` or equivalent) |
+| CLI | `clap`; `dialoguer` for prompts in plain commands; `ratatui` with `crossterm` for the terminal UI |
 | HTTP client | `reqwest` (OpenRouter, models.dev) |
 | Process isolation | agy accounts select their state with `--gemini_dir`; supervised agy runs use `bwrap` (Linux, optional) only for `--die-with-parent --new-session` |
 | Distribution | GitHub `datamonsterr/superorchestrator`. Release binaries built by cargo-dist for linux x86_64/aarch64 and macOS aarch64/x86_64. An `install.sh` curl installer, with `cargo install` as a fallback. |
@@ -90,7 +90,7 @@ Before coding against `rmcp`, `axum`, `rquickjs` or any harness protocol, check 
 | `so-supervisor` | Run lifecycle, caps, stall watcher, notifications, socket API |
 | `so-mcp` | rmcp server, tool definitions, tasks and progress |
 | `so-web` | axum API, SSE, embedded frontend |
-| `superorchestrator` | Binary: clap CLI and interactive menu |
+| `superorchestrator` | Binary: clap CLI and terminal UI |
 | `web/` | React frontend source |
 
 ## 4. Harness drivers
@@ -523,10 +523,11 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
 
 ## 15. CLI
 
-`superorchestrator` with no arguments opens an interactive menu: init, accounts, agents, status, open web UI, install into Claude Code, migrate. Every menu item is also a subcommand:
+`superorchestrator` with no arguments on a terminal opens the terminal UI (`tui`, below); without a terminal it prints the help. Every action in it is also a subcommand:
 
 ```
-setup [--codex N] [--claude N] [--opencode N] [--agy N] [--no-login] [--no-install]
+tui                       full-screen terminal UI: overview, accounts, runs, setup
+setup [--codex N] [--claude N] [--opencode N] [--agy N] [--no-login] [--no-install] [--no-claude-md]
                           first-run guide: init, detect harnesses, offer account import --scan,
                           add N accounts per harness, sign in, install, doctor summary
 init                      create config dir, seed config, choices, catalog, starter agents
@@ -551,7 +552,9 @@ mcp
 migrate [--apply]
 ```
 
-`setup` is the first command a new user runs and is idempotent. It runs `init` (silent when nothing is created), prints the installed harnesses, offers the `account import --scan` results, asks for each installed harness how many accounts to add (default 0, or 1 when the harness has no account or importable login; claude defaults to 0 because its accounts are kept for the orchestrator and its choices are disabled, 8.2), signs in to the new accounts on a terminal (otherwise prints the commands), runs `install`, and prints a short `doctor` summary. `--yes` takes the defaults, `--codex N --claude N --opencode N --agy N` set the counts, `--no-login` and `--no-install` skip those steps. Accounts that are still signed out, new or from an earlier run, are offered a sign-in on a terminal and get their `account login` command printed otherwise. A run that adds nothing prints which accounts are already set up. A harness whose count was asked for but whose binary is not on `PATH` fails the run (exit 1) after the other steps. Ctrl-C at a prompt exits 130. `setup --yes --json` prints one summary object (`ok`, `created`, `imported`, `installed`, `signed_in_needed`, `doctor`). Without a terminal and without `--yes` it prints the plan and exits 0. Counts that are not asked are never added twice, so a second run changes nothing. On macOS only one agy account is added (ADR-0005).
+`tui` (also the bare command on a terminal) is a ratatui UI with four tabs: Overview (setup checklist with the fix for each missing item, account and run counts), Accounts (add, sign in, enable or disable, flag a cooldown, remove with a typed-name confirmation, import scan), Runs (recent runs from the store refreshed every 2 s, a detail pane, cancel, join, accept and reject) and Setup (the `setup` steps one at a time with live status, plus `install` and `doctor`). `?` opens help, `Tab` and `1` to `4` switch tabs, `q` or `Esc` quits from the top level. It calls the same library functions as the commands above and adds no business logic. Sign-in and join hand the terminal to the child process and restore it afterwards. Cancel, join, accept and reject use the supervisor socket and never start it; when it is not running they report that. It honors `NO_COLOR`, needs at least 60x16, redraws on resize and restores the terminal on every exit path. Without a terminal `tui` exits 2.
+
+`setup` is the first command a new user runs and is idempotent. It runs `init` (silent when nothing is created), prints the installed harnesses, offers the `account import --scan` results, asks for each installed harness how many accounts to add (default 0, or 1 when the harness has no account or importable login; claude defaults to 0 because its accounts are kept for the orchestrator and its choices are disabled, 8.2), signs in to the new accounts on a terminal (otherwise prints the commands), runs `install`, and prints a short `doctor` summary. `--yes` takes the defaults, `--codex N --claude N --opencode N --agy N` set the counts, `--no-login` and `--no-install` skip those steps, and `--no-claude-md` is passed to `install`. Accounts that are still signed out, new or from an earlier run, are offered a sign-in on a terminal and get their `account login` command printed otherwise. A run that adds nothing prints which accounts are already set up. A harness whose count was asked for but whose binary is not on `PATH` fails the run (exit 1) after the other steps. Ctrl-C at a prompt exits 130. `setup --yes --json` prints one summary object (`ok`, `created`, `imported`, `installed`, `signed_in_needed`, `doctor`). Without a terminal and without `--yes` it prints the plan and exits 0. Counts that are not asked are never added twice, so a second run changes nothing. On macOS only one agy account is added (ADR-0005).
 
 `account add <harness>` without `--name` names the account `<harness>-<n>` with the lowest free `n` from 1; a name is skipped when the account exists or when it would shadow a command on `PATH`. `--count K` creates K accounts; `--name` with `--count` above 1 is a usage error (exit 2). `--login` signs in to each new account in turn on a terminal, and prints the commands otherwise. With `--json` the result lists every created account under `accounts`.
 
