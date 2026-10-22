@@ -24,6 +24,10 @@ pub struct Case {
     pub expected_choices: Vec<String>,
     #[serde(default)]
     pub available_choice_ids: Option<Vec<String>>,
+    /// Why a second expected choice is as correct as the first. Documentation only.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub reason: Option<String>,
     #[serde(default)]
     #[allow(dead_code)]
     pub context: Option<Value>,
@@ -76,6 +80,10 @@ pub struct CaseRecord {
     pub eligible: bool,
     pub source: String,
     pub confidence: Option<f64>,
+    /// Jev's probabilities per eligible choice, also kept when the gate rejected the answer.
+    pub probabilities: BTreeMap<String, f64>,
+    /// Why the decider's answer was not used (no task text, no credentials).
+    pub fallback_reason: Option<String>,
     pub latency_ms: f64,
     pub cost: f64,
     /// A failure category, never the task text.
@@ -156,6 +164,7 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
                 if o.fallback_reason.is_some() {
                     fallbacks += 1;
                 }
+                let fallback_reason = o.fallback_reason.clone();
                 total_cost += o.result.usage.cost;
                 let r = o.result;
                 CaseRecord {
@@ -163,6 +172,8 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
                     eligible: eligible.contains(&r.choice_id),
                     source: source_name(r.source).into(),
                     confidence: r.confidence,
+                    probabilities: r.probabilities.clone(),
+                    fallback_reason,
                     cost: r.usage.cost,
                     choice_id: Some(r.choice_id),
                     id: case.id.clone(),
@@ -181,6 +192,8 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
                     eligible: false,
                     source: "error".into(),
                     confidence: None,
+                    probabilities: BTreeMap::new(),
+                    fallback_reason: None,
                     latency_ms,
                     cost: 0.0,
                     error: Some(match e {
