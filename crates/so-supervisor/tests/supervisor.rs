@@ -456,12 +456,12 @@ async fn connect_or_spawn_starts_server() {
 
 #[tokio::test]
 async fn socket_dir_owned_by_other_user_is_refused() {
-    // /proc is owned by root.
+    // / is owned by root.
     let env = Env::new();
     let opts = SupervisorOptions::new(
         env.paths.clone(),
         Config::default(),
-        PathBuf::from("/proc/so-test.sock"),
+        PathBuf::from("/so-test.sock"),
     );
     if rustix::process::geteuid().is_root() {
         return;
