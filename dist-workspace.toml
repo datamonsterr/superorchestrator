@@ -2,7 +2,7 @@
 members = ["cargo:."]
 
 # Config for 'dist' (cargo-dist). Regenerate .github/workflows/release.yml with `dist generate`
-# after editing this file. Releases are cut by pushing a `v*` tag; see docs/release.md.
+# after editing this file. Releases are cut by pushing a `vX.Y.Z` tag (dist matches `**[0-9]+.[0-9]+.[0-9]+*`; release-check requires exactly v + the Cargo version); see docs/release.md.
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.32.0"
@@ -21,3 +21,9 @@ pr-run-mode = "skip"
 github-build-setup = "../dist/build-setup.yml"
 # Publish artifacts as a GitHub Release
 hosting = "github"
+# Custom jobs (reusable workflows in .github/workflows, see docs/release.md):
+# - plan-jobs run before any build: CI must pass and the tag must match Cargo.toml and CHANGELOG.
+# - global-artifacts-jobs run after every archive is built and before `host` creates the GitHub
+#   Release (host requires them to succeed): they install and smoke-test the archives.
+plan-jobs = ["./ci", "./release-check"]
+global-artifacts-jobs = ["./release-smoke"]

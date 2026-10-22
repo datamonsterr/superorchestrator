@@ -33,7 +33,7 @@ First release. Pending the `v0.1.0` tag.
   Claude Code and other harnesses.
 - Run messaging, `ask_parent`, a review gate, stall handling, resume after death, fork and
   notifications.
-- Release pipeline: cargo-dist builds for Linux and macOS on x86_64 and aarch64 on `v*` tags,
+- Release pipeline: cargo-dist builds for Linux and macOS on x86_64 and aarch64 on version tags,
   and an `install.sh` installer that verifies sha256 checksums.
 - CI: lint, tests on Linux and macOS, Arch Linux tests, web checks and bundle size budget,
   coverage report, end-to-end smoke with fake harnesses, shellcheck and actionlint.
