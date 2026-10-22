@@ -217,7 +217,7 @@ async fn quota_error_fails_over_to_the_next_account() {
     assert_eq!(env.launches("claude-a").len(), 1);
     assert_eq!(env.launches("claude-b").len(), 1);
     // The new account was told what happened, after the original task.
-    let said = env.stdin_lines("claude-b");
+    let said = env.wait_stdin_lines("claude-b", 1).await;
     assert!(
         said[0].contains(PROMPT) && said[0].contains("ran out of quota"),
         "{said:?}"
@@ -315,7 +315,7 @@ async fn failover_with_every_target_full_waits_in_the_queue_and_starts_on_the_fr
             .unwrap()
             .is_none()
     );
-    let said = env.stdin_lines("claude-b");
+    let said = env.wait_stdin_lines("claude-b", 1).await;
     assert!(
         said.iter().any(|l| l.contains("ran out of quota")),
         "{said:?}"
@@ -425,7 +425,7 @@ async fn a_resumed_run_fails_over_with_the_resume_prompt() {
     let v = view(&c, &r.run_id).await;
     assert_eq!(v.account.as_deref(), Some("claude-b"), "{:?}", types(&v));
     assert_eq!(v.result, Some(json!("second")));
-    let said = env.stdin_lines("claude-b");
+    let said = env.wait_stdin_lines("claude-b", 1).await;
     assert!(
         said[0].contains("again please") && !said[0].contains(PROMPT),
         "{said:?}"
