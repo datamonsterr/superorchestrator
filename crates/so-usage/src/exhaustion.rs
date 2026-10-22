@@ -6,10 +6,12 @@ use chrono::{DateTime, Duration, Utc};
 use so_core::{Headroom, HeadroomSource, HeadroomStatus};
 use so_store::{FlagRow, Store};
 
+use crate::availability::availability;
 use crate::error::Result;
 
-/// Flags (account, pool) until `reset` (when in the future) or `now + default_cooldown`, and
-/// records headroom status `Exhausted`. Returns the flag's expiry.
+/// Flags (account, pool) until `reset` (when in the future) or `now + default_cooldown`.
+/// The flag is the source of truth; the stored status is set to `Exhausted` for display only
+/// and `observed_at` is left alone so probe staleness is unaffected. Returns the expiry.
 pub fn mark_exhausted(
     store: &Store,
     account: &str,
@@ -36,39 +38,23 @@ pub fn mark_exhausted(
         weekly_resets_at: None,
         status: HeadroomStatus::Unknown,
         source: HeadroomSource::Ledger,
-        observed_at: now,
+        // Epoch: a record made here carries no observation, so it is always stale.
+        observed_at: DateTime::UNIX_EPOCH,
     });
     h.status = HeadroomStatus::Exhausted;
-    h.observed_at = now;
     store.upsert_headroom(&h)?;
     Ok(until)
 }
 
-/// True when no flag is active and the recorded exhaustion (if any) has passed its reset.
+/// True when no flag is active and the effective headroom is not exhausted.
 pub fn is_available(store: &Store, account: &str, pool: &str, now: DateTime<Utc>) -> Result<bool> {
-    if store
-        .get_flag(account, pool)?
-        .is_some_and(|f| f.until > now)
-    {
-        return Ok(false);
-    }
-    let Some(h) = store.get_headroom(account, pool)? else {
-        return Ok(true);
-    };
-    if h.status != HeadroomStatus::Exhausted {
-        return Ok(true);
-    }
-    // Exhausted without an active flag: blocked only by a depleted window that has not reset.
-    let blocked = |pct: Option<f64>, reset: Option<DateTime<Utc>>| {
-        pct.is_some_and(|p| p <= 0.0) && reset.is_none_or(|r| r > now)
-    };
-    Ok(!(blocked(h.five_hour_remaining_pct, h.five_hour_resets_at)
-        || blocked(h.weekly_remaining_pct, h.weekly_resets_at)))
+    Ok(availability(store, account, pool, now)?.available)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::availability::Availability;
 
     const COOL: StdDuration = StdDuration::from_secs(5 * 3600);
 
@@ -81,18 +67,55 @@ mod tests {
         assert_eq!(until, now + Duration::hours(5));
         assert!(!is_available(&s, "a", "default", now).unwrap());
         assert!(!is_available(&s, "a", "default", now + Duration::hours(4)).unwrap());
-        assert!(
-            is_available(
-                &s,
-                "a",
-                "default",
-                now + Duration::hours(5) + Duration::seconds(1)
-            )
-            .unwrap()
-        );
+        let later = now + Duration::hours(5) + Duration::seconds(1);
+        assert!(is_available(&s, "a", "default", later).unwrap());
+        let a = availability(&s, "a", "default", later).unwrap();
+        assert_eq!(a.status, HeadroomStatus::Unknown);
+    }
+
+    #[test]
+    fn does_not_bump_observed_at_or_persist_exhaustion() {
+        let s = Store::open_in_memory().unwrap();
+        let now = Utc::now();
+        let seen = now - Duration::minutes(2);
+        let mut h = Headroom {
+            account: "a".into(),
+            pool: "p".into(),
+            five_hour_remaining_pct: Some(60.0),
+            five_hour_resets_at: Some(now + Duration::hours(1)),
+            weekly_remaining_pct: Some(40.0),
+            weekly_resets_at: Some(now + Duration::days(2)),
+            status: HeadroomStatus::Ok,
+            source: HeadroomSource::Probe,
+            observed_at: seen,
+        };
+        h.observed_at = DateTime::from_timestamp(seen.timestamp(), 0).unwrap();
+        s.upsert_headroom(&h).unwrap();
+        mark_exhausted(&s, "a", "p", None, COOL, "quota", now).unwrap();
         assert_eq!(
-            s.get_headroom("a", "default").unwrap().unwrap().status,
-            HeadroomStatus::Exhausted
+            s.get_headroom("a", "p").unwrap().unwrap().observed_at,
+            h.observed_at
+        );
+        let a = availability(&s, "a", "p", now).unwrap();
+        assert_eq!(
+            a,
+            Availability {
+                available: false,
+                status: HeadroomStatus::Exhausted,
+                score: Some(40.0),
+                reason: Some("quota".into())
+            }
+        );
+        // Expired flag, healthy windows: available again though the stored status says Exhausted.
+        let later = now + Duration::hours(6);
+        let a = availability(&s, "a", "p", later).unwrap();
+        assert!(a.available);
+        assert_ne!(a.status, HeadroomStatus::Exhausted);
+        // A fresh record made by mark_exhausted is stale for TTL purposes.
+        mark_exhausted(&s, "n", "p", None, COOL, "q", now).unwrap();
+        assert_eq!(
+            s.get_headroom("n", "p").unwrap().unwrap().observed_at,
+            DateTime::UNIX_EPOCH
         );
     }
 
@@ -113,10 +136,10 @@ mod tests {
     }
 
     #[test]
-    fn probed_zero_window_blocks_until_reset() {
+    fn probed_zero_window_blocks_until_reset_and_low_stays_available() {
         let s = Store::open_in_memory().unwrap();
         let now = Utc::now();
-        s.upsert_headroom(&Headroom {
+        let mut h = Headroom {
             account: "a".into(),
             pool: "p".into(),
             five_hour_remaining_pct: None,
@@ -126,9 +149,17 @@ mod tests {
             status: HeadroomStatus::Exhausted,
             source: HeadroomSource::Probe,
             observed_at: now,
-        })
-        .unwrap();
+        };
+        s.upsert_headroom(&h).unwrap();
         assert!(!is_available(&s, "a", "p", now).unwrap());
         assert!(is_available(&s, "a", "p", now + Duration::hours(4)).unwrap());
+        h.weekly_remaining_pct = Some(5.0);
+        h.status = HeadroomStatus::Low;
+        s.upsert_headroom(&h).unwrap();
+        let a = availability(&s, "a", "p", now).unwrap();
+        assert_eq!(
+            (a.available, a.status, a.score),
+            (true, HeadroomStatus::Low, Some(5.0))
+        );
     }
 }

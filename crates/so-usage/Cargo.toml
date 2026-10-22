@@ -20,6 +20,7 @@ thiserror.workspace = true
 chrono.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+rustix = { version = "1", default-features = false, features = ["process"] }
 
 [dev-dependencies]
 tempfile.workspace = true

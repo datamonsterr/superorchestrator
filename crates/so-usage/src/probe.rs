@@ -2,6 +2,9 @@
 //! `agy --print /usage`. Process execution sits behind [`ProbeRunner`] so tests inject output.
 //! Nothing read from auth files is stored, and agy stdout (which may carry sign-in URLs) is
 //! never logged.
+//!
+//! `Store` methods block on SQLite, so every store access here runs through [`blocking`]
+//! (`spawn_blocking`).
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -12,13 +15,13 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use so_accounts::{HostEnv, LaunchMode, build_launch, resolve_binary};
-use so_core::{AccountFile, Config, Harness, Headroom, HeadroomSource, HeadroomStatus};
-use so_store::Store;
+use so_core::{AccountFile, Config, Harness, Headroom, HeadroomSource};
+use so_store::{FlagRow, Store};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
 use crate::error::{Result, UsageError};
-use crate::headroom::merge_into_record;
+use crate::headroom::{effective_with, merge_into_record, merge_partial};
 use crate::ledger::ledger_headroom;
 use crate::parse::{WindowReading, parse_agy_usage, parse_codex_rate_limits};
 
@@ -27,6 +30,21 @@ pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 const CODEX_TIMEOUT: Duration = Duration::from_secs(15);
 const AGY_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_PARALLEL: usize = 4;
+const MAX_STDOUT: u64 = 1 << 20;
+const NOT_ELIGIBLE: &str = "not_eligible";
+const NOT_ELIGIBLE_HOLD: chrono::Duration = chrono::Duration::hours(1);
+
+/// Runs `f` with the store on the blocking pool.
+pub async fn blocking<T, F>(store: &Store, f: F) -> Result<T>
+where
+    T: Send + 'static,
+    F: FnOnce(&Store) -> Result<T> + Send + 'static,
+{
+    let store = store.clone();
+    tokio::task::spawn_blocking(move || f(&store))
+        .await
+        .map_err(|e| UsageError::Probe(format!("store task failed: {e}")))?
+}
 
 /// When a run of a probe command is finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,21 +67,43 @@ pub struct ProbeRequest {
     pub timeout: Duration,
 }
 
-pub trait ProbeRunner: Send + Sync {
-    fn run<'a>(&'a self, req: ProbeRequest) -> BoxFuture<'a, Result<String>>;
+/// Captured output (at most 1 MiB) and whether the process ended successfully (always true
+/// for a JSON-RPC probe that got its response).
+#[derive(Debug, Clone)]
+pub struct ProbeOutput {
+    pub stdout: String,
+    pub success: bool,
 }
 
-/// Real runner on `tokio::process`; the child is killed on drop.
+impl ProbeOutput {
+    pub fn ok(stdout: impl Into<String>) -> Self {
+        Self {
+            stdout: stdout.into(),
+            success: true,
+        }
+    }
+}
+
+pub trait ProbeRunner: Send + Sync {
+    fn run<'a>(&'a self, req: ProbeRequest) -> BoxFuture<'a, Result<ProbeOutput>>;
+}
+
+/// Real runner on `tokio::process`. The child leads its own process group, which is killed on
+/// timeout; the child is also killed on drop.
 pub struct TokioProbeRunner;
 
 impl ProbeRunner for TokioProbeRunner {
-    fn run<'a>(&'a self, req: ProbeRequest) -> BoxFuture<'a, Result<String>> {
-        Box::pin(async move {
-            let secs = req.timeout.as_secs();
-            tokio::time::timeout(req.timeout, run_process(&req))
-                .await
-                .map_err(|_| UsageError::Timeout(secs))?
-        })
+    fn run<'a>(&'a self, req: ProbeRequest) -> BoxFuture<'a, Result<ProbeOutput>> {
+        Box::pin(run_process(req))
+    }
+}
+
+fn kill_group(pid: Option<u32>) {
+    if let Some(pid) = pid
+        .and_then(|p| i32::try_from(p).ok())
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
     }
 }
 
@@ -72,16 +112,37 @@ fn rpc_id(line: &str) -> Option<Value> {
     v.get("id").filter(|i| !i.is_null()).cloned()
 }
 
-async fn run_process(req: &ProbeRequest) -> Result<String> {
+async fn run_process(req: ProbeRequest) -> Result<ProbeOutput> {
     let mut child = Command::new(&req.program)
         .args(&req.args)
         .envs(req.env.iter().map(|(k, v)| (k, v)))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
+        .process_group(0)
         .kill_on_drop(true)
         .spawn()
         .map_err(|e| UsageError::Probe(format!("spawn {}: {}", req.program.display(), e.kind())))?;
+    let pid = child.id();
+    let secs = req.timeout.as_secs();
+    let io = drive(&mut child, &req);
+    match tokio::time::timeout(req.timeout, io).await {
+        Ok(r) => {
+            if req.wait_for == ResponseMatcher::JsonRpcResponses || r.is_err() {
+                kill_group(pid);
+                let _ = child.wait().await;
+            }
+            r
+        }
+        Err(_) => {
+            kill_group(pid);
+            let _ = child.wait().await;
+            Err(UsageError::Timeout(secs))
+        }
+    }
+}
+
+async fn drive(child: &mut tokio::process::Child, req: &ProbeRequest) -> Result<ProbeOutput> {
     let mut stdin = child
         .stdin
         .take()
@@ -90,20 +151,31 @@ async fn run_process(req: &ProbeRequest) -> Result<String> {
         .stdout
         .take()
         .ok_or_else(|| UsageError::Probe("no stdout".into()))?;
+    let capped = stdout.take(MAX_STDOUT);
     match req.wait_for {
         ResponseMatcher::Eof => {
             for l in &req.stdin_lines {
                 stdin.write_all(format!("{l}\n").as_bytes()).await?;
             }
             drop(stdin);
-            let mut out = String::new();
-            let mut r = stdout;
-            r.read_to_string(&mut out).await?;
-            let _ = child.wait().await;
-            Ok(out)
+            let mut buf = Vec::new();
+            let mut r = capped;
+            r.read_to_end(&mut buf).await?;
+            let truncated = buf.len() as u64 >= MAX_STDOUT;
+            let success = if truncated {
+                // Runaway output: stop it rather than wait for it.
+                let _ = child.start_kill();
+                false
+            } else {
+                child.wait().await?.success()
+            };
+            Ok(ProbeOutput {
+                stdout: String::from_utf8_lossy(&buf).into_owned(),
+                success,
+            })
         }
         ResponseMatcher::JsonRpcResponses => {
-            let mut lines = BufReader::new(stdout).lines();
+            let mut lines = BufReader::new(capped).lines();
             let mut last = None;
             for l in &req.stdin_lines {
                 stdin.write_all(format!("{l}\n").as_bytes()).await?;
@@ -122,8 +194,8 @@ async fn run_process(req: &ProbeRequest) -> Result<String> {
                     }
                 }
             }
-            let _ = child.kill().await;
-            last.ok_or_else(|| UsageError::Probe("no request sent".into()))
+            last.map(ProbeOutput::ok)
+                .ok_or_else(|| UsageError::Probe("no request sent".into()))
         }
     }
 }
@@ -147,12 +219,17 @@ impl UsageService {
         }
     }
 
+    fn low_pct(&self) -> f64 {
+        f64::from(self.config.usage.low_pct)
+    }
+
     pub async fn refresh(&self, account: &AccountFile, force: bool) -> Result<Vec<Headroom>> {
         self.refresh_at(account, force, Utc::now()).await
     }
 
     /// Like [`refresh`](Self::refresh) with an injected clock. Skips the probe when every pool
-    /// of the account was observed within `usage.probe_ttl`, unless `force`.
+    /// of the account was observed within `usage.probe_ttl`, unless `force`. A recent
+    /// not-eligible result is returned as an error without probing again.
     pub async fn refresh_at(
         &self,
         account: &AccountFile,
@@ -161,57 +238,101 @@ impl UsageService {
     ) -> Result<Vec<Headroom>> {
         let ttl = chrono::Duration::from_std(self.config.usage.probe_ttl.as_duration())
             .unwrap_or_else(|_| chrono::Duration::minutes(5));
-        let existing: Vec<Option<Headroom>> = account
-            .pools
-            .iter()
-            .map(|p| self.store.get_headroom(&account.name, p))
-            .collect::<std::result::Result<_, _>>()?;
-        let fresh = !existing.is_empty()
-            && existing
-                .iter()
-                .all(|h| h.as_ref().is_some_and(|h| now - h.observed_at < ttl));
+        let low = self.low_pct();
         let probes = matches!(account.harness, Harness::Codex | Harness::Agy);
-        if !force && fresh && probes {
-            return Ok(existing.into_iter().flatten().collect());
+        let acct = account.clone();
+        let (existing, flags) = blocking(&self.store, move |s| {
+            let mut ex = Vec::new();
+            let mut fl = Vec::new();
+            for p in &acct.pools {
+                ex.push(s.get_headroom(&acct.name, p)?);
+                fl.push(s.get_flag(&acct.name, p)?.filter(|f| f.until > now));
+            }
+            Ok((ex, fl))
+        })
+        .await?;
+        if probes && !force {
+            let recent_ineligible = flags
+                .iter()
+                .flatten()
+                .any(|f| f.reason == NOT_ELIGIBLE && now < f.until - NOT_ELIGIBLE_HOLD + ttl);
+            if recent_ineligible {
+                return Err(UsageError::NotEligible);
+            }
+            let fresh = !existing.is_empty()
+                && existing
+                    .iter()
+                    .all(|h| h.as_ref().is_some_and(|h| now - h.observed_at < ttl));
+            if fresh {
+                return Ok(existing
+                    .iter()
+                    .flatten()
+                    .zip(&flags)
+                    .map(|(h, f)| effective_with(h, low, f.is_some(), now))
+                    .collect());
+            }
         }
         match account.harness {
             Harness::Codex => {
                 let readings = self.probe_codex(account).await?;
-                self.store_readings(account, &readings, HeadroomSource::Probe, now)
+                self.store_readings(account, readings, HeadroomSource::Probe, now, false)
+                    .await
             }
             Harness::Agy => match self.probe_agy(account).await {
-                Ok(readings) => self.store_readings(account, &readings, HeadroomSource::Probe, now),
+                Ok(readings) => {
+                    self.store_readings(account, readings, HeadroomSource::Probe, now, false)
+                        .await
+                }
                 Err(UsageError::NotEligible) => {
-                    self.store_readings(account, &[], HeadroomSource::Probe, now)?;
+                    // Hold the pools back from routing; keep any old record as it was.
+                    let acct = account.clone();
+                    blocking(&self.store, move |s| {
+                        for p in &acct.pools {
+                            s.set_flag(&FlagRow {
+                                account: acct.name.clone(),
+                                pool: p.clone(),
+                                until: now + NOT_ELIGIBLE_HOLD,
+                                reason: NOT_ELIGIBLE.into(),
+                            })?;
+                        }
+                        Ok(())
+                    })
+                    .await?;
                     Err(UsageError::NotEligible)
                 }
                 Err(e) => Err(e),
             },
             Harness::Opencode | Harness::Claude => {
-                let mut out = Vec::new();
-                for (pool, prior) in account.pools.iter().zip(existing) {
-                    // A passive or probed record is better than ledger guesses.
-                    if let Some(h) = prior.filter(|h| h.source != HeadroomSource::Ledger) {
-                        out.push(h);
-                        continue;
+                let acct = account.clone();
+                blocking(&self.store, move |s| {
+                    let mut out = Vec::new();
+                    for ((pool, prior), flag) in acct.pools.iter().zip(existing).zip(flags) {
+                        // A passive or probed record is better than ledger guesses.
+                        if let Some(h) = prior.filter(|h| h.source != HeadroomSource::Ledger) {
+                            out.push(effective_with(&h, low, flag.is_some(), now));
+                            continue;
+                        }
+                        let h = ledger_headroom(s, &acct.name, pool, now)?;
+                        s.upsert_headroom(&h)?;
+                        out.push(effective_with(&h, low, flag.is_some(), now));
                     }
-                    let h = ledger_headroom(&self.store, &account.name, pool, now)?;
-                    self.store.upsert_headroom(&h)?;
-                    out.push(h);
-                }
-                Ok(out)
+                    Ok(out)
+                })
+                .await
             }
         }
     }
 
     /// Records passive readings (codex `account/rateLimits/updated`, claude `rate_limit_event`).
-    pub fn ingest_event(
+    /// Windows in `readings` replace the stored ones; the other window is kept.
+    pub async fn ingest_event(
         &self,
         account: &AccountFile,
-        readings: &[WindowReading],
+        readings: Vec<WindowReading>,
         now: DateTime<Utc>,
     ) -> Result<Vec<Headroom>> {
-        self.store_readings(account, readings, HeadroomSource::Event, now)
+        self.store_readings(account, readings, HeadroomSource::Event, now, true)
+            .await
     }
 
     /// Refreshes all accounts, at most 4 at a time. Results are in input order.
@@ -246,28 +367,51 @@ impl UsageService {
             .collect()
     }
 
-    fn store_readings(
+    /// `partial`: merge per window into the stored record and only touch pools that have
+    /// readings. Otherwise replace the record of every pool of the account.
+    async fn store_readings(
         &self,
         account: &AccountFile,
-        readings: &[WindowReading],
+        readings: Vec<WindowReading>,
         source: HeadroomSource,
         now: DateTime<Utc>,
+        partial: bool,
     ) -> Result<Vec<Headroom>> {
-        let low = f64::from(self.config.usage.low_pct);
-        let mut out = Vec::new();
-        for pool in &account.pools {
-            let mut h = merge_into_record(&account.name, pool, readings, low, source, now);
-            if self
-                .store
-                .get_flag(&account.name, pool)?
-                .is_some_and(|f| f.until > now)
-            {
-                h.status = HeadroomStatus::Exhausted;
+        let low = self.low_pct();
+        let acct = account.clone();
+        blocking(&self.store, move |s| {
+            let mut out = Vec::new();
+            for pool in &acct.pools {
+                if partial && !readings.iter().any(|r| &r.pool == pool) {
+                    continue;
+                }
+                let flag = s.get_flag(&acct.name, pool)?.filter(|f| f.until > now);
+                let mut h = if partial {
+                    let prior = s.get_headroom(&acct.name, pool)?;
+                    merge_partial(
+                        prior.as_ref(),
+                        &acct.name,
+                        pool,
+                        &readings,
+                        low,
+                        source,
+                        now,
+                    )
+                } else {
+                    merge_into_record(&acct.name, pool, &readings, low, source, now)
+                };
+                if flag.as_ref().is_some_and(|f| f.reason == NOT_ELIGIBLE) {
+                    // A successful probe proves the account works again.
+                    s.clear_flag(&acct.name, pool)?;
+                } else if flag.is_some() {
+                    h.status = so_core::HeadroomStatus::Exhausted;
+                }
+                s.upsert_headroom(&h)?;
+                out.push(h);
             }
-            self.store.upsert_headroom(&h)?;
-            out.push(h);
-        }
-        Ok(out)
+            Ok(out)
+        })
+        .await
     }
 
     async fn probe_codex(&self, account: &AccountFile) -> Result<Vec<WindowReading>> {
@@ -283,13 +427,19 @@ impl UsageService {
             wait_for: ResponseMatcher::JsonRpcResponses,
             timeout: CODEX_TIMEOUT,
         };
-        let resp = self.runner.run(req).await?;
-        let v: Value = serde_json::from_str(resp.trim())
+        let out = self.runner.run(req).await?;
+        let v: Value = serde_json::from_str(out.stdout.trim())
             .map_err(|_| UsageError::Parse("codex response is not JSON".into()))?;
         if v.get("error").is_some() {
             return Err(UsageError::Probe("codex returned a JSON-RPC error".into()));
         }
-        Ok(parse_codex_rate_limits(&v))
+        let readings = parse_codex_rate_limits(&v);
+        if readings.is_empty() {
+            return Err(UsageError::Parse(
+                "codex response has no rate-limit windows".into(),
+            ));
+        }
+        Ok(readings)
     }
 
     /// agy needs no bwrap for `/usage` (ADR-0005): `--gemini_dir` selects the account.
@@ -309,7 +459,18 @@ impl UsageService {
             timeout: AGY_TIMEOUT,
         };
         let out = self.runner.run(req).await?;
-        parse_agy_usage(&out)
+        let readings = parse_agy_usage(&out.stdout)?;
+        if readings.is_empty() {
+            // Never echo the output: it can contain sign-in URLs.
+            return Err(if !out.success {
+                UsageError::Probe("agy exited with an error and printed no usage".into())
+            } else if out.stdout.trim().is_empty() {
+                UsageError::Probe("agy printed nothing".into())
+            } else {
+                UsageError::Parse("agy output has no usage rows".into())
+            });
+        }
+        Ok(readings)
     }
 }
 
@@ -329,16 +490,18 @@ mod tests {
     use super::*;
     use crate::parse::Window;
     use chrono::Duration as CDur;
+    use so_core::HeadroomStatus;
+    use so_store::FlagRow;
     use std::sync::Mutex;
 
-    const FX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../so-harness/tests/fixtures");
+    const FX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
     struct Fake {
-        reply: Mutex<Result<String>>,
+        reply: Mutex<Result<ProbeOutput>>,
         calls: Mutex<Vec<ProbeRequest>>,
     }
     impl Fake {
-        fn new(reply: Result<String>) -> Arc<Self> {
+        fn new(reply: Result<ProbeOutput>) -> Arc<Self> {
             Arc::new(Self {
                 reply: Mutex::new(reply),
                 calls: Mutex::new(vec![]),
@@ -349,10 +512,10 @@ mod tests {
         }
     }
     impl ProbeRunner for Fake {
-        fn run<'a>(&'a self, req: ProbeRequest) -> BoxFuture<'a, Result<String>> {
+        fn run<'a>(&'a self, req: ProbeRequest) -> BoxFuture<'a, Result<ProbeOutput>> {
             self.calls.lock().unwrap().push(req);
             let r = match &*self.reply.lock().unwrap() {
-                Ok(s) => Ok(s.clone()),
+                Ok(o) => Ok(o.clone()),
                 Err(UsageError::NotEligible) => Err(UsageError::NotEligible),
                 Err(e) => Err(UsageError::Probe(e.to_string())),
             };
@@ -388,12 +551,12 @@ mod tests {
         (d, svc, acct)
     }
 
-    fn codex_reply() -> Result<String> {
+    fn codex_reply() -> Result<ProbeOutput> {
         let v: Value = serde_json::from_str(
             &std::fs::read_to_string(format!("{FX}/codex/rate-limits-read.response.json")).unwrap(),
         )
         .unwrap();
-        Ok(v.to_string())
+        Ok(ProbeOutput::ok(v.to_string()))
     }
 
     #[tokio::test]
@@ -475,7 +638,7 @@ mod tests {
     #[tokio::test]
     async fn agy_probe_per_pool_and_not_eligible() {
         let ok = std::fs::read_to_string(format!("{FX}/agy/usage-exhausted.txt")).unwrap();
-        let fake = Fake::new(Ok(ok));
+        let fake = Fake::new(Ok(ProbeOutput::ok(ok)));
         let (d, svc, acct) = setup(fake.clone(), Harness::Agy, "agy");
         let h = svc.refresh_at(&acct, false, Utc::now()).await.unwrap();
         let call = fake.calls.lock().unwrap()[0].clone();
@@ -499,22 +662,132 @@ mod tests {
         );
 
         let fake = Fake::new(Err(UsageError::NotEligible));
-        let (_d, svc, acct) = setup(fake, Harness::Agy, "agy");
-        let r = svc.refresh_at(&acct, false, Utc::now()).await;
+        let (_d, svc, acct) = setup(fake.clone(), Harness::Agy, "agy");
+        let now = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
+        let r = svc.refresh_at(&acct, false, now).await;
         assert!(matches!(r, Err(UsageError::NotEligible)));
-        let h = svc
+        // No Unknown record cached as fresh; the pools are flagged so the router skips them.
+        assert!(
+            svc.store
+                .get_headroom("agy-acc", "gemini")
+                .unwrap()
+                .is_none()
+        );
+        for pool in ["gemini", "claude"] {
+            let f = svc.store.get_flag("agy-acc", pool).unwrap().unwrap();
+            assert_eq!(
+                (f.reason.as_str(), f.until),
+                ("not_eligible", now + CDur::hours(1))
+            );
+            assert!(!crate::is_available(&svc.store, "agy-acc", pool, now).unwrap());
+        }
+        // Within TTL: error again without probing; after TTL: probes again; force always probes.
+        let r = svc.refresh_at(&acct, false, now + CDur::minutes(2)).await;
+        assert!(matches!(r, Err(UsageError::NotEligible)));
+        assert_eq!(fake.n(), 1);
+        let _ = svc.refresh_at(&acct, false, now + CDur::minutes(6)).await;
+        assert_eq!(fake.n(), 2);
+        let _ = svc.refresh_at(&acct, true, now + CDur::minutes(7)).await;
+        assert_eq!(fake.n(), 3);
+    }
+
+    #[tokio::test]
+    async fn successful_probe_clears_not_eligible_flag() {
+        let ok = std::fs::read_to_string(format!("{FX}/agy/usage-ok.txt")).unwrap();
+        let (_d, svc, acct) = setup(Fake::new(Ok(ProbeOutput::ok(ok))), Harness::Agy, "agy");
+        let now = Utc::now();
+        for p in ["gemini", "claude"] {
+            svc.store
+                .set_flag(&FlagRow {
+                    account: "agy-acc".into(),
+                    pool: p.into(),
+                    until: now + CDur::minutes(30),
+                    reason: "not_eligible".into(),
+                })
+                .unwrap();
+        }
+        let h = svc.refresh_at(&acct, true, now).await.unwrap();
+        assert_eq!(h[0].status, HeadroomStatus::Ok);
+        assert!(svc.store.get_flag("agy-acc", "gemini").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn bad_probe_output_never_overwrites_good_record() {
+        let ok = std::fs::read_to_string(format!("{FX}/agy/usage-ok.txt")).unwrap();
+        let fake = Fake::new(Ok(ProbeOutput::ok(ok)));
+        let (_d, svc, acct) = setup(fake.clone(), Harness::Agy, "agy");
+        let now = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
+        let good = svc.refresh_at(&acct, true, now).await.unwrap();
+        let later = now + CDur::minutes(10);
+        let cases = [
+            (
+                ProbeOutput {
+                    stdout: "boom\n".into(),
+                    success: false,
+                },
+                "Probe",
+            ),
+            (
+                ProbeOutput {
+                    stdout: String::new(),
+                    success: false,
+                },
+                "Probe",
+            ),
+            (ProbeOutput::ok("hello without rows\n"), "Parse"),
+        ];
+        for (out, kind) in cases {
+            *fake.reply.lock().unwrap() = Ok(out);
+            let e = svc.refresh_at(&acct, true, later).await.unwrap_err();
+            assert!(
+                matches!(
+                    (&e, kind),
+                    (UsageError::Probe(_), "Probe") | (UsageError::Parse(_), "Parse")
+                ),
+                "{e:?}"
+            );
+            assert!(!e.to_string().contains("boom") && !e.to_string().contains("hello"));
+        }
+        let kept = svc
             .store
             .get_headroom("agy-acc", "gemini")
             .unwrap()
             .unwrap();
-        assert_eq!(h.status, HeadroomStatus::Unknown);
+        assert_eq!(kept, good[0]);
+        // Codex with a response that has no windows is a parse error too.
+        let fake = Fake::new(Ok(ProbeOutput::ok(r#"{"id":2,"result":{}}"#)));
+        let (_d, svc, acct) = setup(fake, Harness::Codex, "codex");
+        assert!(matches!(
+            svc.refresh_at(&acct, true, now).await,
+            Err(UsageError::Parse(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn event_merges_per_window() {
+        let (_d, svc, acct) = setup(Fake::new(codex_reply()), Harness::Codex, "codex");
+        let now = Utc::now();
+        svc.refresh_at(&acct, true, now).await.unwrap();
+        let ev = vec![WindowReading {
+            pool: "default".into(),
+            window: Window::FiveHour,
+            remaining_pct: Some(5.0),
+            resets_at: None,
+        }];
+        let h = svc.ingest_event(&acct, ev, now).await.unwrap();
+        assert_eq!(h[0].five_hour_remaining_pct, Some(5.0));
+        assert_eq!(h[0].weekly_remaining_pct, Some(30.0));
+        assert_eq!(
+            (h[0].status, h[0].source),
+            (HeadroomStatus::Low, HeadroomSource::Event)
+        );
     }
 
     #[tokio::test]
     async fn agy_output_with_eligibility_text_is_not_eligible() {
-        let fake = Fake::new(Ok(
-            "error: Eligibility check failed: nope\nhttps://secret\n".into(),
-        ));
+        let fake = Fake::new(Ok(ProbeOutput::ok(
+            "error: Eligibility check failed: nope\nhttps://secret\n",
+        )));
         let (_d, svc, acct) = setup(fake, Harness::Agy, "agy");
         assert!(matches!(
             svc.refresh_at(&acct, false, Utc::now()).await,
@@ -524,7 +797,7 @@ mod tests {
 
     #[tokio::test]
     async fn claude_uses_ledger_and_keeps_event_records() {
-        let fake = Fake::new(Ok(String::new()));
+        let fake = Fake::new(Ok(ProbeOutput::ok(String::new())));
         let (_d, svc, acct) = setup(fake.clone(), Harness::Claude, "claude");
         let now = Utc::now();
         let h = svc.refresh_at(&acct, false, now).await.unwrap();
@@ -539,7 +812,7 @@ mod tests {
             remaining_pct: Some(5.0),
             resets_at: None,
         }];
-        let h = svc.ingest_event(&acct, &ev, now).unwrap();
+        let h = svc.ingest_event(&acct, ev, now).await.unwrap();
         assert_eq!(
             (h[0].source, h[0].status),
             (HeadroomSource::Event, HeadroomStatus::Low)
@@ -578,7 +851,7 @@ mod tests {
             timeout: Duration::from_secs(5),
         };
         let out = TokioProbeRunner.run(req).await.unwrap();
-        assert!(out.contains("\"ok\":true"));
+        assert!(out.stdout.contains("\"ok\":true"));
         let req = ProbeRequest {
             program: "sh".into(),
             args: vec!["-c".into(), "echo hi".into()],
@@ -587,7 +860,7 @@ mod tests {
             wait_for: ResponseMatcher::Eof,
             timeout: Duration::from_secs(5),
         };
-        assert_eq!(TokioProbeRunner.run(req).await.unwrap().trim(), "hi");
+        assert_eq!(TokioProbeRunner.run(req).await.unwrap().stdout.trim(), "hi");
         let req = ProbeRequest {
             program: "sleep".into(),
             args: vec!["5".into()],
@@ -600,28 +873,76 @@ mod tests {
             TokioProbeRunner.run(req).await,
             Err(UsageError::Timeout(_))
         ));
+        // Nonzero exit is reported, and output is capped at 1 MiB.
+        let req = ProbeRequest {
+            program: "sh".into(),
+            args: vec!["-c".into(), "echo err; exit 3".into()],
+            env: vec![],
+            stdin_lines: vec![],
+            wait_for: ResponseMatcher::Eof,
+            timeout: Duration::from_secs(5),
+        };
+        let out = TokioProbeRunner.run(req).await.unwrap();
+        assert!(!out.success);
+        let req = ProbeRequest {
+            program: "sh".into(),
+            args: vec!["-c".into(), "yes | head -c 5000000".into()],
+            env: vec![],
+            stdin_lines: vec![],
+            wait_for: ResponseMatcher::Eof,
+            timeout: Duration::from_secs(5),
+        };
+        assert_eq!(
+            TokioProbeRunner.run(req).await.unwrap().stdout.len(),
+            1 << 20
+        );
     }
 
-    /// Manual: runs the real probes for every enabled codex/agy login on this machine.
+    #[tokio::test]
+    async fn timeout_kills_the_process_group() {
+        let d = tempfile::tempdir().unwrap();
+        let pidfile = d.path().join("pid");
+        // A grandchild that would outlive a plain child kill.
+        let script = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
+        let req = ProbeRequest {
+            program: "sh".into(),
+            args: vec!["-c".into(), script],
+            env: vec![],
+            stdin_lines: vec![],
+            wait_for: ResponseMatcher::Eof,
+            timeout: Duration::from_millis(500),
+        };
+        assert!(matches!(
+            TokioProbeRunner.run(req).await,
+            Err(UsageError::Timeout(_))
+        ));
+        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(!std::path::Path::new(&format!("/proc/{}", pid.trim())).exists());
+    }
+
+    /// Manual: probes the real logins named by `SO_PROBE_CODEX_HOME` / `SO_PROBE_AGY_HOME`
+    /// (credential homes; each is skipped when unset). Prints percentages and reset times.
     #[tokio::test]
     #[ignore = "uses the real codex/agy binaries and logins"]
     async fn real_probe_manual() {
-        let host = HostEnv::detect().unwrap();
         let svc = UsageService::new(
             Store::open_in_memory().unwrap(),
             Config::default(),
-            host.clone(),
+            HostEnv::detect().unwrap(),
             Arc::new(TokioProbeRunner),
         );
-        let codex = AccountFile::new("codex-probe", Harness::Codex, "~/.codex", "codex").unwrap();
-        let agy = AccountFile::new(
-            "agy-probe",
-            Harness::Agy,
-            "~/.agent-farm/profiles/agy_worker_5",
-            "agy",
-        )
-        .unwrap();
-        for a in [codex, agy] {
+        let mut accounts = Vec::new();
+        if let Ok(h) = std::env::var("SO_PROBE_CODEX_HOME") {
+            accounts.push(AccountFile::new("codex-probe", Harness::Codex, &h, "codex").unwrap());
+        }
+        if let Ok(h) = std::env::var("SO_PROBE_AGY_HOME") {
+            accounts.push(AccountFile::new("agy-probe", Harness::Agy, &h, "agy").unwrap());
+        }
+        if accounts.is_empty() {
+            println!("skipped: set SO_PROBE_CODEX_HOME and/or SO_PROBE_AGY_HOME");
+        }
+        for a in accounts {
             match svc.refresh(&a, true).await {
                 Ok(hs) => {
                     for h in hs {

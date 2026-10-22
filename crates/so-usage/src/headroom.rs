@@ -59,6 +59,105 @@ pub fn merge_into_record(
     }
 }
 
+/// Default `usage.low_pct`, used where no config is at hand.
+pub const DEFAULT_LOW_PCT: f64 = 15.0;
+
+/// Partial update (passive events): windows present in `readings` replace the stored ones,
+/// the other window is kept. Status is derived from the merged windows.
+pub fn merge_partial(
+    existing: Option<&Headroom>,
+    account: &str,
+    pool: &str,
+    readings: &[WindowReading],
+    low_pct: f64,
+    source: HeadroomSource,
+    now: DateTime<Utc>,
+) -> Headroom {
+    let mut h = existing.cloned().unwrap_or(Headroom {
+        account: account.into(),
+        pool: pool.into(),
+        five_hour_remaining_pct: None,
+        five_hour_resets_at: None,
+        weekly_remaining_pct: None,
+        weekly_resets_at: None,
+        status: HeadroomStatus::Unknown,
+        source,
+        observed_at: now,
+    });
+    for r in readings.iter().filter(|r| r.pool == pool) {
+        match r.window {
+            Window::FiveHour => {
+                h.five_hour_remaining_pct = r.remaining_pct;
+                h.five_hour_resets_at = r.resets_at;
+            }
+            Window::Weekly => {
+                h.weekly_remaining_pct = r.remaining_pct;
+                h.weekly_resets_at = r.resets_at;
+            }
+        }
+    }
+    h.source = source;
+    h.observed_at = now;
+    h.status = effective_with(&h, low_pct, false, now).status;
+    h
+}
+
+/// The record as it reads at `now`: a window whose reset time has passed counts as fully reset
+/// (100%, no reset time), and the status is derived from the windows, not trusted from storage.
+/// A stored `Exhausted` with no window data (set by `mark_exhausted`) reads as unknown; flags
+/// decide that case (see `availability`).
+pub fn effective(h: &Headroom, now: DateTime<Utc>) -> Headroom {
+    effective_with(h, DEFAULT_LOW_PCT, false, now)
+}
+
+/// [`effective`] with an explicit `low_pct` and flag state (`flagged` forces `Exhausted`).
+pub fn effective_with(h: &Headroom, low_pct: f64, flagged: bool, now: DateTime<Utc>) -> Headroom {
+    let mut e = h.clone();
+    let reset = |pct: &mut Option<f64>, at: &mut Option<DateTime<Utc>>| {
+        if at.is_some_and(|a| a <= now) {
+            if pct.is_some() {
+                *pct = Some(100.0);
+            }
+            *at = None;
+        }
+    };
+    reset(&mut e.five_hour_remaining_pct, &mut e.five_hour_resets_at);
+    reset(&mut e.weekly_remaining_pct, &mut e.weekly_resets_at);
+    let readings: Vec<WindowReading> = [
+        (
+            Window::FiveHour,
+            e.five_hour_remaining_pct,
+            e.five_hour_resets_at,
+        ),
+        (Window::Weekly, e.weekly_remaining_pct, e.weekly_resets_at),
+    ]
+    .into_iter()
+    .map(|(window, remaining_pct, resets_at)| WindowReading {
+        pool: e.pool.clone(),
+        window,
+        remaining_pct,
+        resets_at,
+    })
+    .collect();
+    e.status = if flagged || readings.iter().any(|r| r.remaining_pct.is_some()) {
+        compute_status(&readings, low_pct, flagged, None, now)
+    } else if h.status == HeadroomStatus::Exhausted {
+        HeadroomStatus::Unknown
+    } else {
+        h.status
+    };
+    e
+}
+
+/// Smallest known remaining percentage of the record at `now`, for ranking.
+pub fn headroom_score(h: &Headroom, now: DateTime<Utc>) -> Option<f64> {
+    let e = effective(h, now);
+    [e.five_hour_remaining_pct, e.weekly_remaining_pct]
+        .into_iter()
+        .flatten()
+        .min_by(f64::total_cmp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -123,6 +222,57 @@ mod tests {
             compute_status(&all_dis, 15.0, false, None, now),
             HeadroomStatus::Unknown
         );
+    }
+
+    fn rec(five: Option<f64>, week: Option<f64>) -> Headroom {
+        Headroom {
+            account: "a".into(),
+            pool: "p".into(),
+            five_hour_remaining_pct: five,
+            five_hour_resets_at: None,
+            weekly_remaining_pct: week,
+            weekly_resets_at: None,
+            status: HeadroomStatus::Ok,
+            source: HeadroomSource::Probe,
+            observed_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn partial_merge_keeps_other_window() {
+        let now = Utc::now();
+        let old = rec(Some(80.0), Some(50.0));
+        let ev = [WindowReading {
+            pool: "p".into(),
+            window: Window::FiveHour,
+            remaining_pct: Some(10.0),
+            resets_at: None,
+        }];
+        let h = merge_partial(Some(&old), "a", "p", &ev, 15.0, HeadroomSource::Event, now);
+        assert_eq!(h.five_hour_remaining_pct, Some(10.0));
+        assert_eq!(h.weekly_remaining_pct, Some(50.0));
+        assert_eq!(
+            (h.status, h.source),
+            (HeadroomStatus::Low, HeadroomSource::Event)
+        );
+    }
+
+    #[test]
+    fn past_reset_reads_as_full() {
+        let now = Utc::now();
+        let mut h = rec(Some(0.0), Some(50.0));
+        h.five_hour_resets_at = Some(now - Duration::minutes(1));
+        h.status = HeadroomStatus::Exhausted;
+        let e = effective(&h, now);
+        assert_eq!(
+            (e.five_hour_remaining_pct, e.five_hour_resets_at),
+            (Some(100.0), None)
+        );
+        assert_eq!(e.status, HeadroomStatus::Ok);
+        h.five_hour_resets_at = Some(now + Duration::minutes(1));
+        assert_eq!(effective(&h, now).status, HeadroomStatus::Exhausted);
+        assert_eq!(headroom_score(&h, now), Some(0.0));
+        assert_eq!(headroom_score(&rec(None, None), now), None);
     }
 
     #[test]

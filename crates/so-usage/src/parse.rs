@@ -20,8 +20,17 @@ pub struct WindowReading {
     pub resets_at: Option<DateTime<Utc>>,
 }
 
+/// Epoch seconds, or milliseconds (auto-detected). Rejects negative values and years after 2100.
 fn epoch(v: &Value) -> Option<DateTime<Utc>> {
-    DateTime::from_timestamp(v.as_f64()? as i64, 0)
+    const MAX_SECS: i64 = 4_102_444_800; // 2100-01-01
+    let mut n = v.as_f64()? as i64;
+    if n > MAX_SECS {
+        n /= 1000;
+    }
+    if !(0..=MAX_SECS).contains(&n) {
+        return None;
+    }
+    DateTime::from_timestamp(n, 0)
 }
 
 fn clamp_pct(p: f64) -> f64 {
@@ -74,7 +83,10 @@ pub fn parse_codex_rate_limits(v: &Value) -> Vec<WindowReading> {
 
 /// Parses `agy --print /usage` TSV output.
 pub fn parse_agy_usage(text: &str) -> Result<Vec<WindowReading>> {
-    if text.contains("Eligibility check failed") {
+    if text.lines().any(|l| {
+        l.trim_start()
+            .starts_with("error: Eligibility check failed")
+    }) {
         return Err(UsageError::NotEligible);
     }
     let mut out = Vec::new();
@@ -137,7 +149,14 @@ pub fn parse_claude_rate_limit_event(v: &Value) -> Vec<WindowReading> {
             remaining_pct: w
                 .get("utilization")
                 .and_then(Value::as_f64)
-                .map(|u| clamp_pct((1.0 - u) * 100.0)),
+                // A fraction in 0-1; anything above 1 is already a percentage.
+                .map(|u| {
+                    clamp_pct(if u > 1.0 {
+                        100.0 - u
+                    } else {
+                        (1.0 - u) * 100.0
+                    })
+                }),
             resets_at: w.get("resetsAt").and_then(epoch),
         })
     })
@@ -149,7 +168,7 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const FX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../so-harness/tests/fixtures");
+    const FX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
 
     fn fx(p: &str) -> String {
         std::fs::read_to_string(format!("{FX}/{p}")).unwrap()
@@ -218,6 +237,8 @@ mod tests {
             "error: Eligibility check failed: Your current account is not eligible\nhttps://x\n",
         );
         assert!(matches!(e, Err(UsageError::NotEligible)));
+        // Only a line that starts with the error counts.
+        assert!(parse_agy_usage("note: Eligibility check failed earlier\n").is_ok());
     }
 
     #[test]
@@ -237,5 +258,27 @@ mod tests {
         assert!((r[1].remaining_pct.unwrap() - 97.0).abs() < 1e-6);
         assert_eq!(r[0].resets_at.unwrap().timestamp(), 1792669200);
         assert!(parse_claude_rate_limit_event(&json!({"type": "result"})).is_empty());
+        let pct =
+            json!({"rate_limit_info": {"unifiedWindows": {"five_hour": {"utilization": 25}}}});
+        assert_eq!(
+            parse_claude_rate_limit_event(&pct)[0].remaining_pct,
+            Some(75.0)
+        );
+    }
+
+    #[test]
+    fn epoch_validation() {
+        let at = |v: Value| {
+            parse_codex_rate_limits(&json!({"primary": {"usedPercent": 1,
+                "windowDurationMins": 300, "resetsAt": v}}))[0]
+                .resets_at
+        };
+        assert_eq!(at(json!(1792665377)).unwrap().timestamp(), 1792665377);
+        assert_eq!(
+            at(json!(1792665377000_i64)).unwrap().timestamp(),
+            1792665377
+        );
+        assert_eq!(at(json!(-5)), None);
+        assert_eq!(at(json!(99_999_999_999_999_i64 * 1000)), None);
     }
 }

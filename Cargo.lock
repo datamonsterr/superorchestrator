@@ -1169,6 +1169,7 @@ name = "so-usage"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "rustix",
  "serde_json",
  "so-accounts",
  "so-core",
