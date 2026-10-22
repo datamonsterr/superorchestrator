@@ -663,3 +663,57 @@ fn arguments_must_match_exactly_to_count_as_registered() {
     cmd(&e).arg("install").assert().success();
     assert!(!log_lines(&log).is_empty());
 }
+
+#[test]
+fn ambiguous_markers_are_reported_and_the_file_kept() {
+    let e = Env::new();
+    e.init();
+    let text = format!("```\n{BEGIN}\n```\n\n{BEGIN}\nx\n{END}\n");
+    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
+    std::fs::write(claude_md(&e), &text).unwrap();
+    let out = cmd(&e).arg("install").assert().failure();
+    assert!(
+        stdout(&out).contains("found 2 superorchestrator blocks"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(read(&claude_md(&e)), text);
+    cmd(&e).arg("uninstall").assert().failure();
+    assert_eq!(read(&claude_md(&e)), text);
+}
+
+#[test]
+fn uninstall_empties_a_symlinked_claude_md_instead_of_unlinking_it() {
+    let e = Env::new();
+    e.init();
+    let real = e.home.join("dotfiles/CLAUDE.md");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::write(&real, "").unwrap();
+    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&real, claude_md(&e)).unwrap();
+    cmd(&e).arg("install").assert().success();
+    assert!(read(&real).contains(BEGIN));
+    cmd(&e).arg("uninstall").assert().success();
+    assert!(claude_md(&e).is_symlink());
+    assert!(real.is_file());
+    assert_eq!(read(&real), "");
+}
+
+#[test]
+fn a_crlf_claude_md_keeps_its_line_endings_and_reinstall_changes_nothing() {
+    let e = Env::new();
+    e.init();
+    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
+    std::fs::write(claude_md(&e), "# Mine\r\n- keep\r\n").unwrap();
+    cmd(&e).arg("install").assert().success();
+    let md = read(&claude_md(&e));
+    assert_eq!(
+        md.matches("\r\n").count(),
+        md.matches('\n').count(),
+        "{md:?}"
+    );
+    cmd(&e).arg("install").assert().success();
+    assert_eq!(read(&claude_md(&e)), md);
+    cmd(&e).arg("uninstall").assert().success();
+    assert_eq!(read(&claude_md(&e)), "# Mine\r\n- keep\r\n");
+}

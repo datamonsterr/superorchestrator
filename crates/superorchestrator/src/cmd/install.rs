@@ -1,11 +1,9 @@
 //! `install` and `uninstall`: register the MCP server with every harness and ship the
 //! skills and the `CLAUDE.md` pointer (SPEC 19.1).
 
-use std::io::Write as _;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
@@ -16,7 +14,7 @@ use so_core::{AccountFile, Harness, Paths};
 
 use crate::ctx::Ctx;
 use crate::register::{self, JsonKind, NAME};
-use crate::skill::{MARKER, render_cli_skill, render_skill};
+use crate::skill::{render_cli_skill, render_skill};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct Outcome {
@@ -185,37 +183,47 @@ fn block_text() -> String {
 }
 
 /// Byte range of the managed block: from the start of the begin line to just after the end
-/// line (and its newline). `Err` when the begin line has no end line after it.
+/// line (and its newline). Exactly one begin and one end line, in that order, or none at
+/// all; anything else is an error and the file is left alone.
 fn block_range(text: &str) -> Result<Option<(usize, usize)>> {
-    let mut begin = None;
+    let (mut begins, mut ends) = (Vec::new(), Vec::new());
     let mut pos = 0;
     for line in text.split_inclusive('\n') {
-        let t = line.trim_end();
-        match begin {
-            None if t == BLOCK_BEGIN => begin = Some(pos),
-            Some(b) if t == BLOCK_END => return Ok(Some((b, pos + line.len()))),
+        match line.trim_end() {
+            BLOCK_BEGIN => begins.push(pos),
+            BLOCK_END => ends.push(pos + line.len()),
             _ => {}
         }
         pos += line.len();
     }
-    match begin {
-        Some(_) => Err(anyhow!(
-            "found {BLOCK_BEGIN} without {BLOCK_END}; fix the file by hand"
+    match (begins.as_slice(), ends.as_slice()) {
+        ([], []) => Ok(None),
+        ([b], [e]) if b < e => Ok(Some((*b, *e))),
+        (b, e) if b.len() > 1 || e.len() > 1 => Err(anyhow!(
+            "found {} superorchestrator blocks in CLAUDE.md; fix it by hand",
+            b.len().max(e.len())
         )),
-        None => Ok(None),
+        _ => Err(anyhow!(
+            "the superorchestrator block markers in CLAUDE.md are unbalanced or out of order; fix it by hand"
+        )),
     }
 }
 
-/// `text` with the managed block added (after a blank line) or replaced in place.
+/// The line ending of `text`: CRLF when it contains one, else LF.
+fn eol_of(text: &str) -> &'static str {
+    if text.contains("\r\n") { "\r\n" } else { "\n" }
+}
+
+/// `text` with the managed block added (after a blank line) or replaced in place, in the
+/// file's own line ending.
 fn with_block(text: &str) -> Result<String> {
-    let block = block_text();
+    let eol = eol_of(text);
+    let block = block_text().replace('\n', eol);
     Ok(match block_range(text)? {
         Some((b, e)) => format!("{}{block}{}", &text[..b], &text[e..]),
         None if text.is_empty() => block,
-        None => {
-            let sep = if text.ends_with('\n') { "\n" } else { "\n\n" };
-            format!("{text}{sep}{block}")
-        }
+        None if text.ends_with('\n') => format!("{text}{eol}{block}"),
+        None => format!("{text}{eol}{eol}{block}"),
     })
 }
 
@@ -225,11 +233,13 @@ fn without_block(text: &str) -> Result<Option<String>> {
     let Some((b, e)) = block_range(text)? else {
         return Ok(None);
     };
+    let eol = eol_of(text);
     let before = &text[..b];
-    let before = before
-        .strip_suffix('\n')
-        .filter(|_| before.ends_with("\n\n"))
-        .unwrap_or(before);
+    let before = if before.ends_with(&format!("{eol}{eol}")) {
+        &before[..before.len() - eol.len()]
+    } else {
+        before
+    };
     Ok(Some(format!("{before}{}", &text[e..])))
 }
 
@@ -262,7 +272,8 @@ fn edit_claude_md(w: &Writer, host: &HostEnv, add: bool) -> Result<Outcome> {
     let Some(new) = without_block(&old).with_context(|| format!("{}", path.display()))? else {
         return unchanged();
     };
-    if new.is_empty() {
+    let is_link = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
+    if new.is_empty() && !is_link {
         w.remove_file(&path)?;
     } else {
         w.write(&path, &new)?;
@@ -270,51 +281,16 @@ fn edit_claude_md(w: &Writer, host: &HostEnv, add: bool) -> Result<Outcome> {
     Ok(Outcome::new(LABEL, "remove", Some(&path), None))
 }
 
-static COUNTER: AtomicU64 = AtomicU64::new(0);
-
 /// Private directories (0700), created recursively.
 pub(crate) fn create_private_dirs(dir: &Path) -> Result<()> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
+    so_core::fsutil::create_private_dirs(dir)
         .with_context(|| format!("could not create {}", dir.display()))
 }
 
-/// Writes `bytes` over `path` atomically: a temp file next to the target (`create_new`),
-/// the original's mode (0600 for a new file), fsync, then rename. A symlink is followed so
-/// the link itself survives.
+/// Writes `bytes` over `path` atomically (see [`so_core::fsutil::write_file_atomic`]).
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
-    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let dir = target.parent().unwrap_or_else(|| Path::new("."));
-    create_private_dirs(dir)?;
-    let mode = std::fs::metadata(&target).map_or(0o600, |m| m.mode() & 0o7777);
-    let name = target
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp = dir.join(format!(".{name}.tmp.{}.{n}", std::process::id()));
-    let result = (|| -> std::io::Result<()> {
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(mode)
-            .open(&tmp)?;
-        // The umask may have cut the mode at creation.
-        f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(mode))?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        std::fs::rename(&tmp, &target)
-    })();
-    if let Err(e) = result {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(anyhow!(e).context(format!("could not write {}", path.display())));
-    }
-    if let Ok(d) = std::fs::File::open(dir) {
-        let _ = d.sync_all();
-    }
-    Ok(())
+    so_core::fsutil::write_file_atomic(path, bytes)
+        .with_context(|| format!("could not write {}", path.display()))
 }
 
 /// Backup directory name: sortable timestamp, zero-padded millis, pid.
@@ -478,7 +454,7 @@ fn edit_skill(w: &Writer, path: &Path, content: Option<&str>) -> Result<Outcome>
         Err(e) => return Err(anyhow!(e).context(format!("could not read {}", path.display()))),
     };
     if let Some(old) = &existing
-        && !old.contains(MARKER)
+        && !so_agents::skill::is_managed(old)
     {
         return Ok(Outcome::new(
             "skill",
@@ -775,6 +751,35 @@ mod tests {
         let t = format!("x\n{BLOCK_BEGIN}\nstuff\n");
         assert!(with_block(&t).is_err());
         assert!(without_block(&t).is_err());
+    }
+
+    #[test]
+    fn exactly_one_ordered_pair_is_required() {
+        // A quoted marker (here inside a fence) next to the real block.
+        let fenced = format!("```\n{BLOCK_BEGIN}\n```\n\n{}", block_text());
+        let e = with_block(&fenced).unwrap_err().to_string();
+        assert!(e.contains("found 2 superorchestrator blocks"), "{e}");
+        assert!(without_block(&fenced).is_err());
+        let two = format!("{}\n{}", block_text(), block_text());
+        assert!(with_block(&two).is_err() && without_block(&two).is_err());
+        let backwards = format!("{BLOCK_END}\nmid\n{BLOCK_BEGIN}\n");
+        assert!(with_block(&backwards).is_err() && without_block(&backwards).is_err());
+        let lonely_end = format!("a\n{BLOCK_END}\n");
+        assert!(with_block(&lonely_end).is_err());
+    }
+
+    #[test]
+    fn crlf_files_get_a_crlf_block_that_round_trips() {
+        let base = "# Mine\r\n\r\n- one\r\n";
+        let added = with_block(base).unwrap();
+        assert_eq!(added.matches("\r\n").count(), added.matches('\n').count());
+        assert!(added.starts_with(&format!("{base}\r\n{BLOCK_BEGIN}\r\n")));
+        assert_eq!(with_block(&added).unwrap(), added, "idempotent");
+        assert_eq!(without_block(&added).unwrap().unwrap(), base);
+        // A stale LF block inside a CRLF file is replaced with a CRLF one.
+        let stale = format!("a\r\n{BLOCK_BEGIN}\nold\n{BLOCK_END}\nb\r\n");
+        let fixed = with_block(&stale).unwrap();
+        assert_eq!(fixed.matches("\r\n").count(), fixed.matches('\n').count());
     }
 
     #[test]
