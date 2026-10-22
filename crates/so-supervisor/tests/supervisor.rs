@@ -43,6 +43,7 @@ impl Env {
     fn opts(&self, idle: Duration) -> SupervisorOptions {
         SupervisorOptions::new(self.paths.clone(), Config::default(), self.sock.clone())
             .with_idle_exit(idle)
+            .with_lock_wait(Duration::ZERO)
     }
 
     async fn start(&self) -> SupervisorHandle {
@@ -614,4 +615,89 @@ async fn existing_group_readable_socket_dir_is_refused() {
         Err(SupervisorError::InsecureSocketDir(_)) => {}
         other => panic!("expected InsecureSocketDir, got {:?}", other.err()),
     }
+}
+
+#[tokio::test]
+async fn saturated_connection_replies_unavailable_and_keeps_reading() {
+    let env = Env::new();
+    let h = Supervisor::start(
+        env.opts(Duration::from_secs(600))
+            .with_max_inflight(1)
+            .with_setup(|st| {
+                st.router.register("slow", |_c, _p| async move {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    Ok(Value::Null)
+                });
+            }),
+    )
+    .await
+    .unwrap();
+    let stream = UnixStream::connect(&env.sock).await.unwrap();
+    let (rd, mut wr) = stream.into_split();
+    wr.write_all(
+        b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"hello\",\"params\":{\"client\":\"t\",\"cwd\":\"/\"}}\n\
+          {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"slow\"}\n\
+          {\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"slow\"}\n",
+    )
+    .await
+    .unwrap();
+    let mut lines = BufReader::new(rd).lines();
+    let _hello = lines.next_line().await.unwrap().unwrap();
+    let v: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(v["id"], 3);
+    assert_eq!(v["error"]["code"], so_core::proto::UNAVAILABLE);
+    // EOF is still noticed while a handler is stuck: the session ends on shutdown.
+    wr.shutdown().await.unwrap();
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn respawn_right_after_idle_exit_succeeds() {
+    let env = Env::new();
+    let first = Supervisor::start(env.opts(Duration::from_millis(300)))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    let spawn_opts = || {
+        SupervisorOptions::new(env.paths.clone(), Config::default(), env.sock.clone())
+            .with_idle_exit(Duration::from_secs(60))
+    };
+    let mut handles = Vec::new();
+    let (c, r) = SupervisorClient::connect_or_spawn_hello(
+        &env.sock,
+        || {
+            let opts = spawn_opts();
+            handles.push(tokio::spawn(async move {
+                if let Ok(h) = Supervisor::start(opts).await {
+                    h.wait().await;
+                }
+            }));
+            Ok(())
+        },
+        "t",
+        "/w",
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.depth, 0);
+    drop(c);
+    first.wait().await;
+}
+
+#[tokio::test]
+async fn oversized_request_is_rejected_by_client() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = connect(&h).await;
+    hello(&c).await;
+    let big = "a".repeat(so_supervisor::MAX_LINE_BYTES);
+    let e = c
+        .call::<_, Value>("echo", json!({"x": big}))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, ClientError::RequestTooLarge));
+    assert_eq!(c.pending_calls(), 0);
+    h.shutdown().await;
 }

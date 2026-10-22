@@ -37,6 +37,8 @@ pub enum ClientError {
     Timeout(Duration),
     #[error("call did not complete within {0:?}")]
     CallTimeout(Duration),
+    #[error("request exceeds {MAX_LINE_BYTES} bytes")]
+    RequestTooLarge,
 }
 
 #[derive(Default)]
@@ -80,11 +82,13 @@ pub struct SupervisorClient {
     next_id: AtomicU64,
     notifications: Mutex<Option<mpsc::UnboundedReceiver<Notification>>>,
     reader: tokio::task::JoinHandle<()>,
+    writer: tokio::task::JoinHandle<()>,
 }
 
 impl Drop for SupervisorClient {
     fn drop(&mut self) {
         self.reader.abort();
+        self.writer.abort();
     }
 }
 
@@ -112,7 +116,7 @@ impl SupervisorClient {
         let pending: Shared = Arc::default();
         let (ntx, nrx) = mpsc::unbounded_channel();
         let (tx, rx) = mpsc::channel::<String>(256);
-        tokio::spawn(writer_task(wr, rx, pending.clone()));
+        let writer = tokio::spawn(writer_task(wr, rx, pending.clone()));
         let p = pending.clone();
         let reader = tokio::spawn(async move {
             let mut rd = BufReader::new(rd);
@@ -150,6 +154,7 @@ impl SupervisorClient {
             next_id: AtomicU64::new(1),
             notifications: Mutex::new(Some(nrx)),
             reader,
+            writer,
         })
     }
 
@@ -236,6 +241,9 @@ impl SupervisorClient {
         let req = Request::new(id, method, params)?;
         let mut line = serde_json::to_string(&req)?;
         line.push('\n');
+        if line.len() > MAX_LINE_BYTES {
+            return Err(ClientError::RequestTooLarge);
+        }
         let (otx, orx) = oneshot::channel();
         {
             let mut p = lock(&self.pending);

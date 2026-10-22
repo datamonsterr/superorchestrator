@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 use so_core::proto::{
     INTERNAL_ERROR, INVALID_REQUEST, METHOD_HELLO, PARSE_ERROR, Request, Response, RpcError,
+    UNAVAILABLE,
 };
 use so_core::{Config, Paths};
 use so_store::Store;
@@ -49,6 +50,11 @@ pub struct SupervisorOptions {
     pub idle_exit: Duration,
     /// Install SIGTERM/SIGINT handlers that shut the supervisor down gracefully.
     pub handle_signals: bool,
+    /// Longest wait for the single-instance lock when a previous supervisor is still
+    /// shutting down; after that `AlreadyRunning` is returned.
+    pub lock_wait: Duration,
+    /// Requests one connection may have in flight before further ones get UNAVAILABLE.
+    pub max_inflight: usize,
     /// Runs after the state exists and before reconcile and bind: register methods, the
     /// activity probe and the reconcile hook here.
     pub setup: Option<Setup>,
@@ -63,8 +69,20 @@ impl SupervisorOptions {
             socket_path,
             idle_exit,
             handle_signals: false,
+            lock_wait: LOCK_WAIT,
+            max_inflight: MAX_INFLIGHT,
             setup: None,
         }
+    }
+
+    pub fn with_lock_wait(mut self, d: Duration) -> Self {
+        self.lock_wait = d;
+        self
+    }
+
+    pub fn with_max_inflight(mut self, n: usize) -> Self {
+        self.max_inflight = n.max(1);
+        self
     }
 
     pub fn with_idle_exit(mut self, d: Duration) -> Self {
@@ -89,6 +107,7 @@ pub struct SupervisorState {
     pub config: Config,
     pub paths: Paths,
     pub router: Router,
+    max_inflight: usize,
     pub(crate) started: Instant,
     clients: AtomicUsize,
     /// Bumped on every connect so a short-lived client resets the idle clock.
@@ -179,10 +198,12 @@ impl Supervisor {
             socket_path,
             idle_exit,
             handle_signals,
+            lock_wait,
+            max_inflight,
             setup,
         } = opts;
 
-        let lock = SupervisorLock::acquire(&paths.config_dir)?;
+        let lock = acquire_lock(&paths.config_dir, lock_wait).await?;
         let store = {
             let db = paths.state_db();
             tokio::task::spawn_blocking(move || Store::open(db))
@@ -195,6 +216,7 @@ impl Supervisor {
             config,
             paths,
             router: Router::default(),
+            max_inflight,
             started: Instant::now(),
             clients: AtomicUsize::new(0),
             epoch: AtomicU64::new(0),
@@ -242,6 +264,19 @@ impl Supervisor {
     }
 }
 
+/// Takes the lock, retrying while a previous supervisor is still shutting down.
+async fn acquire_lock(config_dir: &Path, wait: Duration) -> Result<SupervisorLock> {
+    let deadline = Instant::now() + wait;
+    loop {
+        match SupervisorLock::acquire(config_dir) {
+            Err(SupervisorError::AlreadyRunning { .. }) if Instant::now() < deadline => {
+                tokio::time::sleep(LOCK_STEP).await;
+            }
+            r => return r,
+        }
+    }
+}
+
 fn euid() -> u32 {
     rustix::process::geteuid().as_raw()
 }
@@ -275,11 +310,7 @@ fn bind_socket(socket_path: &Path) -> Result<UnixListener> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    let name = socket_path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let tmp = dir.join(format!(".s{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     let listener = UnixListener::bind(&tmp)?;
     let finish = || -> std::io::Result<()> {
@@ -369,23 +400,34 @@ async fn accept_loop(
                 }
             },
         }
-        while conns.try_join_next().is_some() {}
+        while let Some(r) = conns.try_join_next() {
+            log_join(r);
+        }
     }
     drop(listener);
     if let Err(e) = std::fs::remove_file(&socket_path) {
         tracing::warn!(error = %e, "could not remove socket file");
     }
+    // Release the lock before draining so a replacement daemon can start right away; the
+    // connections left only end their sessions in the shared store.
+    drop(lock);
     // Connections watch the same shutdown flag; give them time to end their sessions.
-    let drain = async { while conns.join_next().await.is_some() {} };
+    let drain = async {
+        while let Some(r) = conns.join_next().await {
+            log_join(r);
+        }
+    };
     if tokio::time::timeout(CONN_GRACE, drain).await.is_err() {
         tracing::warn!("connections did not close in time");
         conns.abort_all();
     }
-    drop(lock);
     tracing::info!("supervisor stopped");
 }
 
 const MAX_INFLIGHT: usize = 64;
+const LOCK_WAIT: Duration = Duration::from_secs(3);
+const LOCK_STEP: Duration = Duration::from_millis(50);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITER_FLUSH: Duration = Duration::from_secs(1);
 const FALLBACK_ERROR: &str = r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"response serialization failed"}}"#;
 
@@ -434,6 +476,14 @@ impl Drop for ConnGuard {
     }
 }
 
+fn log_join(r: std::result::Result<(), tokio::task::JoinError>) {
+    if let Err(e) = r
+        && !e.is_cancelled()
+    {
+        tracing::error!(error = %e, "connection task failed");
+    }
+}
+
 fn error_line(id: Value, code: i64, message: &str) -> String {
     serde_json::to_string(&Response::err(id, RpcError::new(code, message)))
         .unwrap_or_else(|_| FALLBACK_ERROR.to_string())
@@ -457,7 +507,8 @@ async fn writer_task(
     closed: Arc<watch::Sender<bool>>,
 ) {
     while let Some(line) = rx.recv().await {
-        if wr.write_all(line.as_bytes()).await.is_err() {
+        let written = tokio::time::timeout(WRITE_TIMEOUT, wr.write_all(line.as_bytes())).await;
+        if !matches!(written, Ok(Ok(()))) {
             closed.send_replace(true);
             return;
         }
@@ -507,7 +558,7 @@ async fn serve_connection(
     let mut write_failed = closed_rx;
     let mut reader = BufReader::new(rd);
     let mut inflight = JoinSet::new();
-    let permits = Arc::new(Semaphore::new(MAX_INFLIGHT));
+    let permits = Arc::new(Semaphore::new(state.max_inflight));
 
     let end = 'conn: loop {
         while inflight.try_join_next().is_some() {}
@@ -560,12 +611,14 @@ async fn serve_connection(
             }
             reply!(response_line(&resp));
         } else {
-            let permit = tokio::select! {
-                _ = wait_shutdown(&mut shutdown) => break End::Abort,
-                p = permits.clone().acquire_owned() => p,
-            };
-            let Ok(permit) = permit else {
-                break End::Abort;
+            // Never wait for a permit: the loop must keep reading to see EOF.
+            let Ok(permit) = permits.clone().try_acquire_owned() else {
+                reply!(error_line(
+                    req.id,
+                    UNAVAILABLE,
+                    "too many requests in flight"
+                ));
+                continue;
             };
             inflight.spawn(run_handler(state.clone(), ctx.clone(), req, permit));
         }
