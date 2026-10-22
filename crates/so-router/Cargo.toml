@@ -23,7 +23,7 @@ chrono.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
 
 [dev-dependencies]
 axum.workspace = true
