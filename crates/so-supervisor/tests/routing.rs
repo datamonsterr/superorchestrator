@@ -520,3 +520,96 @@ async fn failover_is_bounded() {
     assert_eq!(env.store().list_attempts(&r.run_id, 10).unwrap().len(), 4);
     h.shutdown().await;
 }
+
+/// An agy that prints its eligibility failure and exits during startup, before `init`.
+fn agy_ineligible_script() -> String {
+    script(&[
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"stderr": "Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue."}),
+        json!({"exit": 1}),
+    ])
+}
+
+fn agy_ok_script() -> String {
+    script(&[
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"stdout": {"event": "init", "conversation_id": "c1", "init": {}}}),
+        json!({"stdout": {"event": "result", "result": {
+            "conversation_id": "c1", "status": "SUCCESS", "response": "done\n",
+            "usage": {"input_tokens": 1, "output_tokens": 1}}}}),
+    ])
+}
+
+fn agy_env() -> Env {
+    let mut env = Env::new();
+    env.config.choices = vec![Choice {
+        harness: Harness::Agy,
+        ..choice("agy-fast", "gemini-3.8-flash-low")
+    }];
+    env.config.router.jev.key_env = "SO_ROUTING_TEST_NO_SUCH_KEY".into();
+    env
+}
+
+#[tokio::test]
+async fn a_startup_exit_with_an_auth_error_flags_the_account_and_fails_over() {
+    let env = agy_env();
+    env.agy_account("agy-acc2", 2, &agy_ineligible_script());
+    env.agy_account("agy-acc3", 2, &agy_ok_script());
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let v = view(&c, &r.run_id).await;
+    assert_eq!(v.account.as_deref(), Some("agy-acc3"));
+    let f = events(&v, "failover");
+    assert_eq!(f.len(), 1, "{:?}", types(&v));
+    assert_eq!(f[0].data["from"], "agy-acc2");
+    assert_eq!(f[0].data["to"], "agy-acc3");
+    assert_eq!(f[0].data["error_kind"], "auth");
+    let store = env.store();
+    assert!(store.get_flag("agy-acc2", "gemini").unwrap().is_some());
+    assert!(store.get_flag("agy-acc3", "gemini").unwrap().is_none());
+    assert_eq!(store.count_active_runs_by_account("agy-acc2").unwrap(), 0);
+    assert_eq!(store.count_active_runs_by_account("agy-acc3").unwrap(), 0);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_startup_exit_that_fails_everywhere_ends_with_the_classified_kind() {
+    let env = agy_env();
+    env.agy_account("agy-acc2", 2, &agy_ineligible_script());
+    env.agy_account("agy-acc3", 2, &agy_ineligible_script());
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Failed, "{r:?}");
+    assert_eq!(r.error_kind, Some(ErrorKind::Auth));
+    let store = env.store();
+    assert!(store.get_flag("agy-acc2", "gemini").unwrap().is_some());
+    assert_eq!(store.count_active_runs_by_account("agy-acc3").unwrap(), 0);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_exit_after_start_with_a_limit_on_stderr_fails_over() {
+    let env = routed_env();
+    let dying = script(&[
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"stdout": init_msg()}),
+        json!({"stderr": "Claude AI usage limit reached"}),
+        json!({"exit": 1}),
+    ]);
+    env.account("claude-a", 2, &dying);
+    env.account("claude-b", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let v = view(&c, &r.run_id).await;
+    assert_eq!(v.account.as_deref(), Some("claude-b"));
+    assert_eq!(events(&v, "failover")[0].data["error_kind"], "quota");
+    h.shutdown().await;
+}

@@ -8,7 +8,7 @@ use chrono::Utc;
 use jsonschema::Validator;
 use serde_json::{Value, json};
 use so_core::{AccountFile, ErrorKind, EventType, Harness};
-use so_harness::{Channel, HarnessEvent, RunControl};
+use so_harness::{AnyDriver, Channel, Driver, HarnessEvent, RunControl};
 use so_store::{LedgerEntry, RunPatch};
 use so_usage::{TokioProbeRunner, UsageService, parse_claude_rate_limit_event};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -27,6 +27,9 @@ const MAX_NUDGES: u32 = 3;
 const NUDGE_TEXT: &str = "Status? Continue, or call ask_parent if blocked.";
 const RESUME_AFTER_DEATH: &str =
     "Your process stopped unexpectedly. Continue the task from where you were.";
+
+/// Stderr lines kept to classify an exit.
+const STDERR_TAIL_LINES: usize = 20;
 
 pub(crate) struct PumpCtx {
     pub run_id: String,
@@ -56,6 +59,8 @@ struct State {
     offset: Option<u64>,
     /// An error event seen outside a turn, used if the harness then exits.
     pending_error: Option<(ErrorKind, String)>,
+    /// The latest stderr lines: a harness that dies without a result often says why there.
+    stderr_tail: std::collections::VecDeque<String>,
     stage: Stage,
     nudges: u32,
     /// When the harness last said the window it ran out of resets.
@@ -208,6 +213,12 @@ impl RunManager {
                 offset,
             } => {
                 st.offset = offset;
+                if channel == Channel::Stderr {
+                    if st.stderr_tail.len() >= STDERR_TAIL_LINES {
+                        st.stderr_tail.pop_front();
+                    }
+                    st.stderr_tail.push_back(line.chars().take(500).collect());
+                }
                 if channel == Channel::Stdout
                     && pc.harness == Harness::Claude
                     && line.contains("rate_limit_event")
@@ -261,7 +272,10 @@ impl RunManager {
             pool: Some(pc.pool.clone()),
             reset: st.reset,
         };
-        if self.begin_failover(pc, control, kind, text, &limit).await {
+        if self
+            .begin_failover(&pc.run_id, Some(control), kind, text, &limit)
+            .await
+        {
             return;
         }
         let mut o = Outcome::failed(kind, text, Some(control.clone()));
@@ -397,6 +411,20 @@ impl RunManager {
         }
         st.done = true;
         let mut limit_out = None;
+        // No error event, but the stderr output may classify as a limit or an auth error.
+        if st.pending_error.is_none() && !st.stderr_tail.is_empty() {
+            let text = st
+                .stderr_tail
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join("; ");
+            let kind = AnyDriver::for_harness(pc.harness, self.inner.driver_cfg)
+                .map_or(ErrorKind::Other, |d| d.classify_error(&text));
+            if kind != ErrorKind::Other {
+                st.pending_error = Some((kind, text));
+            }
+        }
         let text = match st.pending_error.take() {
             // A quota, auth or similar error: resuming would only repeat it, but another
             // account may take the run over.
@@ -405,7 +433,10 @@ impl RunManager {
                     pool: Some(pc.pool.clone()),
                     reset: st.reset,
                 };
-                if self.begin_failover(pc, control, kind, &text, &limit).await {
+                if self
+                    .begin_failover(&pc.run_id, Some(control), kind, &text, &limit)
+                    .await
+                {
                     return;
                 }
                 limit_out = Some(limit);

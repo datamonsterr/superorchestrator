@@ -10,7 +10,9 @@ use std::time::Duration;
 use chrono::Utc;
 use serde_json::{Value, json};
 use so_core::{AccountFile, ErrorKind, EventType, Isolation, RunState};
-use so_harness::{AnyDriver, Driver, LaunchSpec, McpServerSpec, RunControl, RunHandle};
+use so_harness::{
+    AnyDriver, Driver, DriverError, LaunchSpec, McpServerSpec, RunControl, RunHandle,
+};
 use so_store::{FinishPatch, RunPatch, RunRow, StoreError};
 
 use super::instructions::{MAX_DEPTH, child_instructions};
@@ -31,6 +33,28 @@ enum Step {
 pub(crate) struct Limit {
     pub pool: Option<String>,
     pub reset: Option<chrono::DateTime<Utc>>,
+}
+
+/// A harness that did not come up, with the kind its output classifies as.
+#[derive(Debug)]
+pub(crate) struct LaunchFail {
+    pub kind: ErrorKind,
+    pub message: String,
+}
+
+impl LaunchFail {
+    pub(crate) fn other(message: String) -> Self {
+        Self {
+            kind: ErrorKind::Other,
+            message,
+        }
+    }
+}
+
+impl From<LaunchFail> for String {
+    fn from(f: LaunchFail) -> String {
+        f.message
+    }
 }
 
 /// How a run ends.
@@ -186,9 +210,9 @@ impl RunManager {
         &self,
         row: &RunRow,
         spec: LaunchSpec,
-    ) -> Result<RunHandle, String> {
+    ) -> Result<RunHandle, LaunchFail> {
         let driver = AnyDriver::for_harness(row.harness, self.inner.driver_cfg)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| LaunchFail::other(e.to_string()))?;
         let limit = self.launch_timeout();
         let delay = self.launch_delay();
         let launch = async {
@@ -199,9 +223,42 @@ impl RunManager {
         };
         match tokio::time::timeout(limit, launch).await {
             Ok(Ok(h)) => Ok(h),
-            Ok(Err(e)) => Err(format!("could not launch {}: {e}", row.harness)),
-            Err(_) => Err(format!("{} did not start within {:?}", row.harness, limit)),
+            Ok(Err(e)) => {
+                // A harness that exits during startup says why in its output; a limit or
+                // an auth error there must still move the run to another account.
+                let kind = match &e {
+                    DriverError::Other(text) => driver.classify_error(text),
+                    _ => ErrorKind::Other,
+                };
+                Err(LaunchFail {
+                    kind,
+                    message: format!("could not launch {}: {e}", row.harness),
+                })
+            }
+            Err(_) => Err(LaunchFail::other(format!(
+                "{} did not start within {:?}",
+                row.harness, limit
+            ))),
         }
+    }
+
+    /// The harness did not come up. A limit or auth error moves a routed run to another
+    /// account (SPEC 8.5); anything else, or a run without that option, fails with the
+    /// classified kind.
+    async fn launch_failed(&self, row: &RunRow, account: &AccountFile, fail: LaunchFail) {
+        let limit = Limit {
+            pool: account.pools.first().cloned(),
+            reset: None,
+        };
+        if self
+            .begin_failover(&row.id, None, fail.kind, &fail.message, &limit)
+            .await
+        {
+            return;
+        }
+        let mut o = Outcome::failed(fail.kind, &fail.message, None);
+        o.limit = Some(limit);
+        self.finish(&row.id, o).await;
     }
 
     pub(crate) async fn start_run(&self, row: RunRow) {
@@ -285,7 +342,13 @@ impl RunManager {
         let spec = self
             .build_spec(row, &account, cwd, prompt, fork_from, fork)
             .await?;
-        let handle = self.launch_harness(row, spec).await?;
+        let handle = match self.launch_harness(row, spec).await {
+            Ok(h) => h,
+            Err(fail) => {
+                self.launch_failed(row, &account, fail).await;
+                return Ok(());
+            }
+        };
         // Announced once the harness is up; the row is as the queue left it. A move made
         // while the run waited replaces the decision a pending failover carries.
         let moved = {

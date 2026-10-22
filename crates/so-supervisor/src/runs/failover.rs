@@ -22,8 +22,7 @@ use so_harness::RunControl;
 use so_store::{Reassign, RunRow};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::lifecycle::{Limit, Outcome, excerpt};
-use super::pump::PumpCtx;
+use super::lifecycle::{LaunchFail, Limit, Outcome, excerpt};
 use super::routing::RoutePins;
 use super::{Inner, RunManager, SHUTDOWN_DEADLINE, lock};
 
@@ -43,7 +42,8 @@ pub(super) struct FailoverRequest {
     run_id: String,
     kind: ErrorKind,
     reason: String,
-    control: RunControl,
+    /// The live process to stop; none when the harness never came up.
+    control: Option<RunControl>,
     limit: Limit,
 }
 
@@ -116,16 +116,16 @@ impl RunManager {
     /// failovers).
     pub(crate) async fn begin_failover(
         &self,
-        pc: &PumpCtx,
-        control: &RunControl,
+        run_id: &str,
+        control: Option<&RunControl>,
         kind: ErrorKind,
         reason: &str,
         limit: &Limit,
     ) -> bool {
-        if !failover_kind(kind) || self.is_cancelling(&pc.run_id) {
+        if !failover_kind(kind) || self.is_cancelling(run_id) {
             return false;
         }
-        let id = pc.run_id.clone();
+        let id = run_id.to_string();
         let Ok((pins, attempts)) = self
             .db(move |s| Ok((s.get_run_route(&id)?, s.list_attempts(&id, 1000)?)))
             .await
@@ -145,10 +145,10 @@ impl RunManager {
         self.inner
             .failover_tx
             .send(FailoverRequest {
-                run_id: pc.run_id.clone(),
+                run_id: run_id.to_string(),
                 kind,
                 reason: reason.to_string(),
-                control: control.clone(),
+                control: control.cloned(),
                 limit: limit.clone(),
             })
             .is_ok()
@@ -157,12 +157,24 @@ impl RunManager {
     async fn failover(&self, req: FailoverRequest) {
         let run_id = req.run_id.clone();
         let (kind, why) = match self.move_to_next_account(&req).await {
-            Ok(Moved::Started(next)) => match self.start_on(&req, *next).await {
-                Ok(()) => return,
-                // The run is on the new account but its harness did not come up: that is
-                // not a limit, so it does not claim to be one.
-                Err(why) => (ErrorKind::Other, why),
-            },
+            Ok(Moved::Started(next)) => {
+                let pool = next.account.pools.first().cloned();
+                match self.start_on(&req, *next).await {
+                    Ok(()) => return,
+                    // The new account's harness did not come up and said why: a limit or
+                    // auth error there moves the run on again (within MAX_FAILOVERS).
+                    Err(fail) => {
+                        let limit = Limit { pool, reset: None };
+                        if self
+                            .begin_failover(&run_id, None, fail.kind, &fail.message, &limit)
+                            .await
+                        {
+                            return;
+                        }
+                        (fail.kind, fail.message)
+                    }
+                }
+            }
             Ok(Moved::Queued) => {
                 self.request_drain();
                 return;
@@ -243,10 +255,14 @@ impl RunManager {
         // Only a run with a process of its own moves: anything else is already done with.
         let working = matches!(
             row.state,
-            RunState::Running | RunState::Waiting | RunState::Stalled | RunState::Escalated
+            RunState::Starting
+                | RunState::Running
+                | RunState::Waiting
+                | RunState::Stalled
+                | RunState::Escalated
         );
         if !working || self.is_cancelling(&id) {
-            let _ = req.control.shutdown(SHUTDOWN_DEADLINE).await;
+            self.stop_control(req).await;
             return Ok(Moved::Gone);
         }
         // The account that hit the limit is marked whatever happens next, and its process
@@ -259,7 +275,7 @@ impl RunManager {
         if let Some(rt) = lock(&self.inner.runs).get_mut(&id) {
             rt.live = None;
         }
-        let _ = req.control.shutdown(SHUTDOWN_DEADLINE).await;
+        self.stop_control(req).await;
 
         let mut tried: Vec<String> = attempts.iter().map(|a| a.account.clone()).collect();
         tried.push(from.clone());
@@ -350,6 +366,12 @@ impl RunManager {
         })))
     }
 
+    async fn stop_control(&self, req: &FailoverRequest) {
+        if let Some(c) = &req.control {
+            let _ = c.shutdown(SHUTDOWN_DEADLINE).await;
+        }
+    }
+
     async fn close_attempt(&self, attempt_id: Option<String>, outcome: &'static str) {
         if let Some(aid) = attempt_id {
             let _ = self
@@ -418,24 +440,27 @@ impl RunManager {
 
     /// Starts the run on its new account; the failover is announced once the launch
     /// succeeded, so a failover that never started leaves no trace.
-    async fn start_on(&self, req: &FailoverRequest, next: Next) -> Result<(), String> {
+    async fn start_on(&self, req: &FailoverRequest, next: Next) -> Result<(), LaunchFail> {
         let id = req.run_id.clone();
         let row = self
             .db(move |s| s.get_run(&id))
             .await
-            .map_err(|e| e.message)?
-            .ok_or("the run is gone")?;
-        let cwd = self.resume_cwd(&row).await?;
+            .map_err(|e| LaunchFail::other(e.message))?
+            .ok_or_else(|| LaunchFail::other("the run is gone".into()))?;
+        let cwd = self.resume_cwd(&row).await.map_err(LaunchFail::other)?;
         let mut prompt = self.turn_prompt(&row).await;
         prompt.push_str(FAILOVER_NOTE);
         let spec = self
             .build_spec(&row, &next.account, cwd, prompt, None, false)
-            .await?;
+            .await
+            .map_err(LaunchFail::other)?;
         let handle = self.launch_harness(&row, spec).await?;
         self.announce_failover(&row, &next.pending).await;
         // The old account has a free slot now.
         self.request_drain();
-        self.go_live(&row, &next.account, handle, true).await;
+        // A run that failed over while it was still starting has not gone live yet.
+        let resumed = row.state != RunState::Starting;
+        self.go_live(&row, &next.account, handle, resumed).await;
         Ok(())
     }
 

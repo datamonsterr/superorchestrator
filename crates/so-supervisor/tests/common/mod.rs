@@ -154,6 +154,16 @@ impl Env {
 
     /// A claude account whose binary replays `script`.
     pub fn account(&self, name: &str, cap: u32, script_text: &str) {
+        self.account_of(name, "claude", cap, script_text);
+    }
+
+    /// An agy account (with its `.gemini` dir) whose binary replays `script`.
+    pub fn agy_account(&self, name: &str, cap: u32, script_text: &str) {
+        std::fs::create_dir_all(self.home.join(format!(".{name}")).join(".gemini")).unwrap();
+        self.account_of(name, "agy", cap, script_text);
+    }
+
+    fn account_of(&self, name: &str, harness: &str, cap: u32, script_text: &str) {
         let script_path = self.dir.path().join(format!("{name}.jsonl"));
         std::fs::write(&script_path, script_text).unwrap();
         let wrapper = self.dir.path().join(format!("{name}.sh"));
@@ -172,7 +182,7 @@ impl Env {
         std::fs::write(
             self.paths.account_file(name),
             format!(
-                "name = \"{name}\"\nharness = \"claude\"\nhome = \"{}\"\nbinary = \"{}\"\ncap = {cap}\n",
+                "name = \"{name}\"\nharness = \"{harness}\"\nhome = \"{}\"\nbinary = \"{}\"\ncap = {cap}\n",
                 self.home.join(format!(".{name}")).display(),
                 wrapper.display()
             ),
