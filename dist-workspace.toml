@@ -1,0 +1,23 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist' (cargo-dist). Regenerate .github/workflows/release.yml with `dist generate`
+# after editing this file. Releases are cut by pushing a `v*` tag; see docs/release.md.
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# Release archives. install.sh (repository root) is the installer; dist's own installers are off.
+installers = []
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+# Archives: tar.xz with a .sha256 file next to each
+unix-archive = ".tar.xz"
+checksum = "sha256"
+# Pull requests do not run the release workflow at all
+pr-run-mode = "skip"
+# Build web/dist before cargo so the binary embeds the real UI (crates/so-web/build.rs)
+github-build-setup = "../dist/build-setup.yml"
+# Publish artifacts as a GitHub Release
+hosting = "github"
