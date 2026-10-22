@@ -157,7 +157,9 @@ impl Env {
         self.account_of(name, "claude", cap, script_text);
     }
 
-    /// An agy account (with its `.gemini` dir) whose binary replays `script`.
+    /// An agy account (with its `.gemini` dir) whose binary replays `script`. Linux only:
+    /// macOS allows one agy account (ADR-0005, SPEC 6.4).
+    #[cfg(target_os = "linux")]
     pub fn agy_account(&self, name: &str, cap: u32, script_text: &str) {
         std::fs::create_dir_all(self.home.join(format!(".{name}")).join(".gemini")).unwrap();
         self.account_of(name, "agy", cap, script_text);

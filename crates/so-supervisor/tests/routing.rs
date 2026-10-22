@@ -521,7 +521,11 @@ async fn failover_is_bounded() {
     h.shutdown().await;
 }
 
+// The agy tests below set up several agy accounts. macOS allows one enabled agy account
+// that uses the real ~/.gemini (ADR-0005, SPEC 6.4), so they run on Linux only.
+
 /// An agy that prints its eligibility failure and exits during startup, before `init`.
+#[cfg(target_os = "linux")]
 fn agy_ineligible_script() -> String {
     script(&[
         json!({"expect_stdin_contains": PROMPT}),
@@ -530,6 +534,7 @@ fn agy_ineligible_script() -> String {
     ])
 }
 
+#[cfg(target_os = "linux")]
 fn agy_ok_script() -> String {
     script(&[
         json!({"expect_stdin_contains": PROMPT}),
@@ -540,6 +545,7 @@ fn agy_ok_script() -> String {
     ])
 }
 
+#[cfg(target_os = "linux")]
 fn agy_env() -> Env {
     let mut env = Env::new();
     env.config.choices = vec![Choice {
@@ -550,6 +556,7 @@ fn agy_env() -> Env {
     env
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_startup_exit_with_an_auth_error_flags_the_account_and_fails_over() {
     let env = agy_env();
@@ -575,6 +582,7 @@ async fn a_startup_exit_with_an_auth_error_flags_the_account_and_fails_over() {
     h.shutdown().await;
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_startup_exit_that_fails_everywhere_ends_with_the_classified_kind() {
     let env = agy_env();
@@ -616,6 +624,7 @@ async fn an_exit_after_start_with_a_limit_on_stderr_fails_over() {
 
 /// Launch failures are attempts: a run that keeps failing at launch stops after
 /// `MAX_FAILOVERS` moves and never tries an account twice.
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn launch_failures_are_bounded_and_never_revisit_an_account() {
     let env = agy_env();
@@ -735,6 +744,7 @@ async fn stderr_of_a_clean_exit_is_not_a_limit() {
     h.shutdown().await;
 }
 
+#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn cancelling_during_a_failing_launch_leaves_no_open_attempt() {
     let env = agy_env();
