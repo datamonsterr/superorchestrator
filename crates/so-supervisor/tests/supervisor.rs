@@ -227,6 +227,35 @@ async fn inspect_hello_opens_no_session_and_refuses_spawns() {
             "{m}: {e:?}"
         );
     }
+    // Only an explicit allowlist of reads and controls is open to it.
+    for m in ["send_message", "accept_run", "reject_run", "fork_agent"] {
+        let e = c.call::<_, Value>(m, json!({})).await.unwrap_err();
+        assert!(
+            matches!(&e, ClientError::Rpc(r) if r.code == INVALID_REQUEST && r.message.contains("read-only")),
+            "{m}: {e:?}"
+        );
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn inspect_hello_with_a_run_id_still_gets_the_run_session() {
+    let env = Env::new();
+    let store = env.store();
+    let s = session_row();
+    store.insert_session(&s).unwrap();
+    let run = run_row(&s.id, RunState::Running, 0);
+    store.insert_run(&run).unwrap();
+    let h = env.start().await;
+    let c = connect(&h).await;
+    let r = c
+        .call::<_, HelloResult>(
+            "hello",
+            json!({"client": "x", "cwd": "/w", "run_id": run.id, "inspect": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.session_id, s.id);
     h.shutdown().await;
 }
 

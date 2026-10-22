@@ -55,8 +55,8 @@ export default async function globalSetup() {
   // 1. The UI first: the binary embeds web/dist at compile time.
   sh('pnpm', ['build'], webDir)
   // 2. The binaries (debug is enough): the CLI and the seeder, and the scripted stand-in for a harness.
-  sh('cargo', ['build', '-p', 'superorchestrator', '--features', 'test-support', '--bin', 'superorchestrator', '--bin', 'e2e-seed'], repo)
-  sh('cargo', ['build', '-p', 'so-harness', '--features', 'test-support', '--bin', 'fake-harness'], repo)
+  sh('cargo', ['build', '--locked', '-p', 'superorchestrator', '--features', 'test-support', '--bin', 'superorchestrator', '--bin', 'e2e-seed'], repo)
+  sh('cargo', ['build', '--locked', '-p', 'so-harness', '--features', 'test-support', '--bin', 'fake-harness'], repo)
   const meta = JSON.parse(execFileSync('cargo', ['metadata', '--format-version', '1', '--no-deps'], { cwd: repo, maxBuffer: 1 << 28 }).toString())
   const bin = path.join(meta.target_directory, 'debug')
 

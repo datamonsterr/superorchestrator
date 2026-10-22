@@ -1,3 +1,4 @@
+import '@/lib/zod-setup'
 import { z } from 'zod'
 
 export const HARNESSES = ['codex', 'agy', 'opencode', 'claude'] as const

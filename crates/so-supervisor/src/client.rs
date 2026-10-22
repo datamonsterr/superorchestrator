@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use so_core::proto::{
-    HelloParams, HelloResult, METHOD_HELLO, Notification, Request, Response, RpcError,
+    HelloParams, HelloResult, INVALID_PARAMS, METHOD_HELLO, Notification, Request, Response,
+    RpcError,
 };
 use tokio::io::{AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -337,17 +338,28 @@ impl SupervisorClient {
         cwd: &str,
         pid: Option<u32>,
     ) -> Result<HelloResult, ClientError> {
-        self.call(
-            METHOD_HELLO,
-            HelloParams {
-                client: client.to_string(),
-                cwd: cwd.to_string(),
-                run_id: None,
-                pid,
-                inspect: true,
-            },
-        )
-        .await
+        let r = self
+            .call(
+                METHOD_HELLO,
+                HelloParams {
+                    client: client.to_string(),
+                    cwd: cwd.to_string(),
+                    run_id: None,
+                    pid,
+                    inspect: true,
+                },
+            )
+            .await;
+        match r {
+            // A supervisor older than `inspect` rejects the unknown field (`deny_unknown_fields`):
+            // fall back to the plain hello, which opens a session as it always did.
+            Err(ClientError::Rpc(e))
+                if e.code == INVALID_PARAMS && e.message.contains("inspect") =>
+            {
+                self.hello(client, cwd, None, pid).await
+            }
+            other => other,
+        }
     }
 }
 

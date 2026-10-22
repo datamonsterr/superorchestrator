@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Inspection-only CLI commands (`status`, `runs show`, `join`, `route`, `ui`) no longer open an empty session in the Sessions list. A new `inspect` option of the `hello` handshake opens none and limits the connection to reads and run controls. A newer CLI talking to a supervisor started before this change falls back to the old handshake (one session per call) until that supervisor restarts.
+- Web UI: dashboard crash against the real server (API types now come from the generated Rust types), black timeline state colours on an empty session, a CSP console error from zod, and a `1970-01-01` headroom `observed_at` (now `null`).
+
+### Added
+
+- `pnpm -C web e2e:real`: browser tests against a real, seeded supervisor (CI job `browser-e2e-real`).
+
 ## [0.1.0] - Unreleased
 
 First release. Pending the `v0.1.0` tag.

@@ -22,6 +22,7 @@ use so_core::proto::{
 };
 use so_supervisor::{SupervisorClient, spawn_daemon_process};
 
+// Relative to this file (crates/superorchestrator/src/bin): the recorded claude turn the fake harness replays.
 const TRANSCRIPT: &str = include_str!("../../../so-harness/tests/fixtures/claude/transcript.jsonl");
 
 fn arg(name: &str) -> PathBuf {

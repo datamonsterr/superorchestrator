@@ -1,3 +1,4 @@
+import '@/lib/zod-setup'
 import { z } from 'zod'
 import type { ConfigPatch, ConfigView } from '@/api/types'
 

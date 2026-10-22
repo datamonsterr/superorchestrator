@@ -9,8 +9,10 @@ use serde::Serialize;
 use serde_json::Value;
 use so_core::SessionKind;
 use so_core::proto::{
-    HelloParams, HelloResult, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
-    METHOD_RUN_WORKFLOW, METHOD_SPAWN_AGENT, METHOD_STATUS, NOT_FOUND, Notification, Request,
+    HelloParams, HelloResult, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_CANCEL_AGENT,
+    METHOD_CANCEL_WORKFLOW, METHOD_GET_RUN, METHOD_JOIN_RUN, METHOD_LIST_AGENTS,
+    METHOD_LIST_HARNESSES, METHOD_NOT_FOUND, METHOD_READ_MESSAGES, METHOD_ROUTE, METHOD_STATUS,
+    METHOD_UI_START, METHOD_WAIT_AGENT, METHOD_WORKFLOW_STATUS, NOT_FOUND, Notification, Request,
     Response, RpcError, StatusResult,
 };
 use so_store::SessionRow;
@@ -206,6 +208,24 @@ pub(crate) async fn handle_hello(
     into_response(req.id, r)
 }
 
+/// What a connection that opened no session (`hello` with `inspect`) may call: reads, plus the
+/// controls the CLI offers on any run (`runs cancel`, `join`), `ui_start` and `status`.
+/// Everything else (spawning, messaging, review, fork) belongs to a session.
+const INSPECT_METHODS: &[&str] = &[
+    METHOD_STATUS,
+    METHOD_ROUTE,
+    METHOD_GET_RUN,
+    METHOD_WAIT_AGENT,
+    METHOD_READ_MESSAGES,
+    METHOD_LIST_HARNESSES,
+    METHOD_LIST_AGENTS,
+    METHOD_WORKFLOW_STATUS,
+    METHOD_CANCEL_AGENT,
+    METHOD_CANCEL_WORKFLOW,
+    METHOD_JOIN_RUN,
+    METHOD_UI_START,
+];
+
 /// Every other method, run on a clone of the context.
 pub(crate) async fn handle_other(
     state: &Arc<SupervisorState>,
@@ -215,15 +235,13 @@ pub(crate) async fn handle_other(
     // `hello` never gets here: the connection loop runs it through `handle_hello`.
     let r = if !ctx.greeted {
         Err(RpcError::new(INVALID_REQUEST, "hello required"))
-    } else if ctx.session_id.is_none()
-        && matches!(
-            req.method.as_str(),
-            METHOD_SPAWN_AGENT | METHOD_RUN_WORKFLOW
-        )
-    {
+    } else if ctx.session_id.is_none() && !INSPECT_METHODS.contains(&req.method.as_str()) {
         Err(RpcError::new(
             INVALID_REQUEST,
-            "this connection opened no session (inspect hello); it cannot spawn",
+            format!(
+                "this connection is read-only (inspect hello opened no session): {} needs one",
+                req.method
+            ),
         ))
     } else if req.method == METHOD_STATUS {
         status_result(state)
