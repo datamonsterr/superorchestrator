@@ -109,9 +109,7 @@ pub struct Env {
 }
 
 pub fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = so_supervisor::runs::worktree::git_command(dir)
         .args(args)
         .output()
         .unwrap();

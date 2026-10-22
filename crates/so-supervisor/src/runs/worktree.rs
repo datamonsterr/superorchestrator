@@ -25,10 +25,31 @@ pub struct Created {
     pub repo: PathBuf,
 }
 
+/// Repository-selecting variables git exports to hooks. If a git child inherits them, `-C dir`
+/// is overridden and git acts on the repository they name instead (a hook's own repo), so
+/// every git child started from here removes them.
+pub const INHERITED_GIT_ENV: &[&str] = &[
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_PREFIX",
+];
+
+/// A `git -C dir` command with [`INHERITED_GIT_ENV`] cleared. Callers add their own args.
+pub fn git_command(dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(dir);
+    for var in INHERITED_GIT_ENV {
+        cmd.env_remove(var);
+    }
+    cmd
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
+    let out = git_command(dir)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
@@ -200,9 +221,7 @@ pub fn merged_or_pushed(c: &Created) -> bool {
         Err(_) => return false,
     };
     // Merged into the repository's current HEAD (what the worktree was cut from).
-    let merged = Command::new("git")
-        .arg("-C")
-        .arg(&c.repo)
+    let merged = git_command(&c.repo)
         .args(["merge-base", "--is-ancestor", &tip, "HEAD"])
         .status()
         .is_ok_and(|s| s.success());
@@ -228,6 +247,22 @@ pub fn remove(c: &Created, force: bool) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn git_children_do_not_inherit_hook_repository_env() {
+        // The hook's GIT_DIR etc. must not reach git: a child that inherits them ignores `-C`.
+        // Env changes are recorded on the Command, so this checks the spawn without touching
+        // the process environment (which would race other tests).
+        let cmd = git_command(Path::new("/nonexistent/repo"));
+        let cleared: Vec<String> = cmd
+            .get_envs()
+            .filter(|(_, v)| v.is_none())
+            .map(|(k, _)| k.to_string_lossy().into_owned())
+            .collect();
+        for var in INHERITED_GIT_ENV {
+            assert!(cleared.iter().any(|k| k == var), "{var} not cleared");
+        }
+    }
 
     #[test]
     fn slug_rules() {

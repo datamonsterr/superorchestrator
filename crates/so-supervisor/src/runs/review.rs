@@ -847,9 +847,7 @@ mod tests {
         let repo = dir.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
         let git = |args: &[&str]| {
-            let st = std::process::Command::new("git")
-                .arg("-C")
-                .arg(&repo)
+            let st = worktree::git_command(&repo)
                 .args(["-c", "user.name=t", "-c", "user.email=t@e"])
                 .args(args)
                 .status()

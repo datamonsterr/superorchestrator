@@ -16,6 +16,10 @@ while IFS= read -r -d '' f; do
   esac
 done < <(git -c core.quotepath=off diff --cached --name-only -z --diff-filter=ACMR)
 
+# Cleared after the staged-file scan: the scan needs GIT_INDEX_FILE (set by git for partial
+# commits), but cargo and the tests must not inherit the hook's GIT_* repository variables.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_PREFIX
+
 if [ "$rust" = 1 ]; then
   ran=1
   if ! cargo fmt --all --check; then
