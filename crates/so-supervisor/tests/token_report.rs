@@ -223,14 +223,9 @@ async fn canonical_flow_report() {
         }
     }
     println!("{:<28}{:>8}{:>8}", "responses total", rpc, mcp);
+    // Budgets: at least 40% under the sizes measured before token tuning (9712 and 11997).
+    let list = r.rows[0].mcp;
+    assert!(list <= 9712 * 60 / 100, "tools/list is {list} bytes");
+    assert!(mcp <= 11997 * 60 / 100, "responses total {mcp} bytes");
     h.shutdown().await;
-}
-
-#[test]
-fn show_tools() {
-    if std::env::var("DUMP").is_ok() {
-        for spec in so_mcp::tool_specs(true) {
-            println!("{}", serde_json::to_string(&spec.tool()).unwrap());
-        }
-    }
 }

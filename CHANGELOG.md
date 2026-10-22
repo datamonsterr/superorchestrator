@@ -38,6 +38,17 @@ First release. Pending the `v0.1.0` tag.
 - The `run_workflow` tool description documents the script API (`agent` and its options,
   `parallel`, `pipeline`, `phase`, `log`, `args`) with an example, and the MCP skill tells
   orchestrators to review with `diff: true` and land with `merge: true`.
+- Fewer tokens for orchestrators: `tools/list` is 41% smaller (9,712 to 5,720 bytes for 14
+  tools: terse descriptions, schemas without defaults and format hints), and the replies of
+  the canonical flow are 74% smaller. Replies leave out null and empty keys, cut timestamps to
+  seconds and no longer repeat ids. `get_run` shows state, result, branch, worktree, usage and
+  the last key events (`verbose: true` returns the full record), `wait_agent` returns each
+  finished run's state and result, and `list_harnesses` is one short row per account and
+  choice with `eligible`/`why`, `free` and the free opencode models from the model catalog.
+  The CLI and the web UI keep the full supervisor replies. Both skills are terse: the MCP
+  skill starts with a five-step workflow (3,349 to 1,772 bytes) and the CLI skill went from
+  4,394 to 2,482 bytes. `docs/plans/2026-10-23-token-tuning.md` has the numbers and
+  `cargo test -p so-supervisor --test token_report -- --nocapture` reproduces them.
 - Two skills replace the single generated one: `use-superorchestrator-mcp` (delegation through
   the MCP tools, with the accounts, choices and agents lists) and `superorchestrator-cli` (a
   static guide to the command line). `install` writes both to `~/.claude/skills` and

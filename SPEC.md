@@ -485,17 +485,37 @@ Full transcripts are stored as files under `runs/<run_id>/transcript.jsonl`, in 
 | `route` | Preview a route decision (8.3). Runs nothing. |
 | `spawn_agent` | Start a run (7.2). Returns the run id, or the result when `wait: true`. |
 | `wait_agent` | Wait on runs, with a timeout. Streams progress notifications. |
-| `get_run` | State, recent events, final result, usage, worktree, join command; `diff: true` adds the run's changes (7.5) |
+| `get_run` | State, result, branch, worktree, usage and the last key events; `diff: true` adds the run's changes (7.5); `verbose: true` returns the full record |
 | `send_message` | Message a run. Resumes a finished run. |
 | `read_messages` | Unread messages for the caller |
 | `cancel_agent` | Cancel a run and its subtree |
 | `accept_run`, `reject_run` | Review gate (7.5); `accept_run` with `merge: true` lands the branch |
 | `fork_agent` | Fork a finished run (9) |
-| `list_harnesses` | Accounts, signed-in state, headroom, active runs, choices |
+| `list_harnesses` | One short row per account and per choice, and the free models (13.1) |
 | `list_agents` | Custom agents |
 | `run_workflow`, `workflow_status` | Workflows (11) |
 
 **Subagents only:** `report_progress`, `ask_parent`.
+
+### 13.1 Tool surface and reply shapes
+
+Every orchestrator session pays for `tools/list` and for each reply, so both are kept short (`docs/plans/2026-10-23-token-tuning.md` has the measured sizes, from `cargo test -p so-supervisor --test token_report -- --nocapture`). Input schemas carry no defaults, format hints or `additionalProperties`; parameter descriptions appear only where the name and type do not say enough. The supervisor still validates every call.
+
+The supervisor's replies stay complete, because the CLI and the web UI read them. The MCP bridge (`so-mcp`, `compact.rs`) projects what the orchestrator sees. In every projection a missing key means null, empty or false, timestamps are cut to seconds and ids are not repeated inside nested objects. The agent's own `result` is never altered.
+
+| Tool | MCP reply |
+|---|---|
+| `spawn_agent`, `fork_agent` | `{run_id, state, result?, warnings?, error_kind?}`. With `wait`, `result` is set once the run finished or reached the review gate (`state: pending_review`). |
+| `wait_agent` | `{finished: [{run_id, name?, state, result?, error_kind?, branch?}], updates: [...], timed_out?}`. The bridge reads each finished run, so no `get_run` is needed to act. An update is an event with its data flattened: `{run_id, type: "question", question, options?}` for a question, `{run_id, type: "progress", step?, status?}` for progress. |
+| `get_run` | `{run_id, name?, state, harness, account, model?, result?, error_kind?, branch?, worktree?, parent_run?, usage?, finished_at?, question?, events?, diff?}`. `events` are the last 5 of the significant ones (failover, stall, nudge, escalation, questions, check results, review decisions, run end, progress), each `{ts, type, data}` with long strings cut. `question` is set while the run waits. `diff` is `{base (10 characters), stat, patch, truncated?, error?}`; the branch is above. `verbose: true` returns the supervisor's full `RunView`. |
+| `route` | `{choice_id, harness, account, model, effort?, source, rationale, alternatives: [choice ids], ranked_accounts? (when more than one)}`. |
+| `accept_run` | `{merged, branch?, merge_command?, note?}`. A refused merge is an error. |
+| `list_harnesses` | `{accounts: [{name, harness, signed_in?, disabled?, load: "active/cap", headroom?, cooldown?, error?}], choices: [{id, harness, model, effort?, roles?, description?, free?, eligible?: false, why?}], free_models?: {opencode: [...]}}`. `headroom` is `status 5hN wkN` per pool (remaining percent; `pool:` prefix unless `default`), left out when unknown, as is `signed_in`. `cooldown` is the latest `until`. `roles` is left out when it is `["worker"]`. A choice is eligible when the router would take it; otherwise `eligible: false` and `why` is `disabled`, `no account`, `account disabled`, `at cap`, `cooldown` or `no headroom`. A choice is `free` when the catalog says `cost = "free"` or the model id ends in `-free` or `:free`. `free_models` lists the free catalog models of each harness that has an enabled account (opencode; `models refresh` updates the catalog, which is cached by file time). The supervisor builds this view when `list_harnesses` is called with `{"brief": true}`, which the bridge always does; without it the reply is the full `HarnessesView`. |
+| `read_messages` | `{messages: [{from_run, kind, body, created_at}]}`. |
+| `run_workflow` | `{id, state, result?, error?}`. |
+| `workflow_status` | `{id, name, state, result?, error?, started_at, finished_at?, steps: [{name, state, run_id?, phase?}]}`, steps in start order. |
+
+`spawn_agent` accepts `model` to pin a model, so an orchestrator can pick one of `free_models` for a simple task.
 
 Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tasks when the client declares the tasks extension. Progress goes to the task's status message, and `tasks/cancel` stops the wait without cancelling the runs. Otherwise the tools block, with progress notifications.
 
