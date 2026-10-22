@@ -24,7 +24,8 @@ First release. Pending the `v0.1.0` tag.
   models, the cause and the next step (`route` exits non-zero, MCP `isError`, `spawn_agent`
   auto spawns nothing, `POST /route` 502, `route eval` counts an error).
   `router.jev.on_unreachable = "heuristic"` keeps the old degrade. No key still routes by
-  heuristic.
+  heuristic. Recovery of an existing run (failover, queued reroute) never fails on a decider
+  outage: it routes with the heuristic and records why.
 - Held-out routing eval set (`crates/so-router/evals/holdout.jsonl`), kept separate from the
   tuning set. `route eval --json` reports each case's probabilities, fallback reason and
   answering model.

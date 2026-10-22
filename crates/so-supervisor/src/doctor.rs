@@ -110,7 +110,10 @@ fn check_decider(c: &mut Checks, cfg: Option<&Config>) {
         so_core::config::OnUnreachable::Error => "error",
         so_core::config::OnUnreachable::Heuristic => "heuristic",
     };
-    let detail = format!("{}; on_unreachable = {policy}", models.describe());
+    let detail = format!(
+        "{}; on_unreachable = {policy}; read from this shell's environment",
+        models.describe()
+    );
     if has_key {
         c.ok("router decider", detail);
     } else {

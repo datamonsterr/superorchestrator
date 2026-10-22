@@ -915,3 +915,179 @@ async fn auto_spawn_with_an_unreachable_decider_errors_and_inserts_no_run() {
     assert_eq!(r.state, RunState::Succeeded, "{r:?}");
     h.shutdown().await;
 }
+
+/// A decider on a loopback port: the first `ok_hits` requests get a valid answer that picks
+/// `claude-x`, every later one gets HTTP 404 (the model is gone). Returns the endpoint and
+/// the number of requests served so far.
+async fn flaky_decider(ok_hits: usize) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let hits = std::sync::Arc::new(AtomicUsize::new(0));
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/decisions", l.local_addr().unwrap());
+    let counter = hits.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut s, _)) = l.accept().await else {
+                return;
+            };
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            tokio::spawn(async move {
+                // Read the whole request: headers, then Content-Length bytes.
+                let mut buf = Vec::new();
+                let mut chunk = [0u8; 8192];
+                loop {
+                    let Ok(k) = s.read(&mut chunk).await else {
+                        return;
+                    };
+                    if k == 0 {
+                        return;
+                    }
+                    buf.extend_from_slice(&chunk[..k]);
+                    let text = String::from_utf8_lossy(&buf).to_string();
+                    if let Some(end) = text.find("\r\n\r\n") {
+                        let len = text[..end]
+                            .lines()
+                            .find_map(|l| {
+                                l.to_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if buf.len() >= end + 4 + len {
+                            break;
+                        }
+                    }
+                }
+                let (status, body) = if n < ok_hits {
+                    (
+                        "200 OK",
+                        json!({"answers": {"route": {"type": "choice", "choice": "claude-x",
+                            "confidence": 0.95,
+                            "probabilities": {"claude-x": 0.95, "claude-y": 0.05}}}})
+                        .to_string(),
+                    )
+                } else {
+                    ("404 Not Found", "{}".to_string())
+                };
+                let resp = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = s.write_all(resp.as_bytes()).await;
+            });
+        }
+    });
+    (url, hits)
+}
+
+fn outage_env(endpoint: &str, key_tag: &str) -> Env {
+    let mut env = Env::new();
+    env.config.choices = vec![
+        Choice {
+            harness: Harness::Agy,
+            ..choice("agy-fast", "gemini-3.8-flash-low")
+        },
+        choice("claude-x", "claude-sonnet-5-5"),
+        choice("claude-y", "claude-haiku-5-5"),
+    ];
+    let key = env.dir.path().join("jev.env");
+    std::fs::write(&key, format!("{key_tag}=sk-test-secret\n")).unwrap();
+    env.config.router.jev.key_env = key_tag.into();
+    env.config.router.jev.key_file = Some(key.to_string_lossy().into_owned());
+    env.config.router.jev.endpoint = endpoint.into();
+    env
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_failover_during_a_decider_outage_degrades_to_the_heuristic() {
+    use std::sync::atomic::Ordering;
+    let (url, hits) = flaky_decider(0).await;
+    let env = outage_env(&url, "SO_OUTAGE_FAILOVER_KEY");
+    // The agy account fails at startup; claude is a last resort and is only routed to once
+    // agy has been tried, which is when the decider (down) is asked to choose.
+    env.agy_account("agy-acc2", 2, &agy_ineligible_script());
+    env.account("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let v = view(&c, &r.run_id).await;
+    assert_eq!(v.account.as_deref(), Some("claude-a"));
+    assert_eq!(events(&v, "failover").len(), 1, "{:?}", types(&v));
+    // The move is recorded as a heuristic decision that names the outage.
+    let moved = events(&v, "route_decision");
+    let last: RouteResult = serde_json::from_value(moved.last().unwrap().data.clone()).unwrap();
+    assert_eq!(last.source, RouteSource::Heuristic);
+    let why = moved.last().unwrap().data["fallback_reason"]
+        .as_str()
+        .unwrap();
+    assert!(why.contains("decider unreachable"), "{why}");
+    // The decider was asked once for the move: the primary model, then the fallback.
+    let n = hits.load(Ordering::SeqCst);
+    assert!((1..=2).contains(&n), "decider hits: {n}");
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_queued_reroute_during_a_decider_outage_degrades_to_the_heuristic() {
+    use std::sync::atomic::Ordering;
+    // The decider answers the spawn (hit 1) and is down afterwards.
+    let (url, hits) = flaky_decider(1).await;
+    let mut env = outage_env(&url, "SO_OUTAGE_QUEUE_KEY");
+    env.config.choices.retain(|c| c.harness == Harness::Claude);
+    env.account("claude-a", 1, &idle_script());
+    env.account("claude-b", 1, &idle_script());
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let hold = |acct: &str| {
+        let mut p = env.spawn_params(acct);
+        p.isolation = Some(Isolation::None);
+        p
+    };
+    let r1 = spawn(&c, hold("claude-a")).await;
+    let r2 = spawn(&c, hold("claude-b")).await;
+    wait_state(&c, &r1.run_id, RunState::Running).await;
+    wait_state(&c, &r2.run_id, RunState::Running).await;
+
+    let mut p = auto_params(&env);
+    p.wait = false;
+    let q = spawn(&c, p).await;
+    assert_eq!(q.state, RunState::Queued);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    let first = view(&c, &q.run_id).await.account.unwrap();
+    let (stay, free) = if first == "claude-a" {
+        (r1.run_id.clone(), r2.run_id.clone())
+    } else {
+        (r2.run_id.clone(), r1.run_id.clone())
+    };
+    let other = if first == "claude-a" {
+        "claude-b"
+    } else {
+        "claude-a"
+    };
+
+    let _: RunView = c
+        .call(METHOD_CANCEL_AGENT, RunRef { run: free })
+        .await
+        .unwrap();
+    wait_state(&c, &q.run_id, RunState::Running).await;
+    let v = view(&c, &q.run_id).await;
+    assert_eq!(v.account.as_deref(), Some(other));
+    let ev = events(&v, "route_decision");
+    let why = ev.last().unwrap().data["fallback_reason"]
+        .as_str()
+        .unwrap_or("");
+    assert!(why.contains("decider unreachable"), "{why}");
+    let n = hits.load(Ordering::SeqCst);
+    assert!((2..=3).contains(&n), "decider hits: {n}");
+    for r in [q.run_id, stay] {
+        let _: RunView = c
+            .call(METHOD_CANCEL_AGENT, RunRef { run: r })
+            .await
+            .unwrap();
+    }
+    h.shutdown().await;
+}

@@ -297,7 +297,9 @@ async fn attempt(
         let code = status.as_u16();
         return match code {
             400 | 404 => Attempt::Permanent(
-                format!("Jev request failed (HTTP {code}; the model id may not exist)"),
+                format!(
+                    "Jev request failed (HTTP {code}: the model id may not exist or the request was refused)"
+                ),
                 Perm::Model,
             ),
             401 | 403 => Attempt::Permanent(
@@ -408,7 +410,7 @@ async fn decide_model(
     Err(Failed::Unusable(JevFailure::new(last)))
 }
 
-const NEXT_STEP: &str = "Check the OpenRouter key, the model id and the network, or choose another model with router.jev.model (or SUPERORCHESTRATOR_ROUTER_MODEL).";
+const NEXT_STEP: &str = "Check the model id (it may not exist), the OpenRouter key and the network, or choose another model with router.jev.model (or SUPERORCHESTRATOR_ROUTER_MODEL).";
 
 /// The error text for a decider that could not be reached. Names every model tried and the
 /// cause; never the key.
@@ -430,7 +432,8 @@ fn unreachable_reason(key_env: &str, tried: &[(&str, &str, bool)]) -> String {
     format!("decider unreachable: {}. {next}", parts.join("; "))
 }
 
-/// Asks the decider. A transient failure (5xx, 429, timeout, connection) is retried once.
+/// Asks the decider. A transient failure (5xx, 429, 408, a refused connection) is retried once
+/// while time remains; a timeout is not retried, as it uses up the time left for that model.
 /// When the primary model is unusable (transport error, timeout, 429, 5xx, or 400/404 for a
 /// missing model) the fallback model is tried; a rejection by validation or the gate is final
 /// and never reaches the fallback, and a refused key (401/403) does not either, since the

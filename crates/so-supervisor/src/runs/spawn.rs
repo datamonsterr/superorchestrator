@@ -237,7 +237,9 @@ impl RunManager {
                         .as_ref()
                         .is_some_and(|a| !a.tools.is_empty() || !a.disallowed_tools.is_empty()),
                 };
-                let routed = self.route_run(&prompt, &pins, &[], None, true).await?;
+                let routed = self
+                    .route_run(&prompt, &pins, &[], None, true, None)
+                    .await?;
                 let mut found = None;
                 let mut last = rpc(UNAVAILABLE, "no usable account");
                 for name in &routed.result.ranked_accounts {

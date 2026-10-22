@@ -199,7 +199,11 @@ fn human_report(w: &mut dyn Write, r: &EvalReport) -> std::io::Result<()> {
     )?;
     writeln!(w, "fallbacks:           {}", r.fallback_count)?;
     writeln!(w, "errors:              {}", r.errors_count)?;
-    writeln!(w, "decider:             {}", r.decider_models.describe())?;
+    writeln!(
+        w,
+        "decider:             {} (this shell's environment)",
+        r.decider_models.describe()
+    )?;
     let sources: Vec<String> = r.sources.iter().map(|(k, v)| format!("{k}={v}")).collect();
     writeln!(w, "sources:             {}", sources.join(" "))?;
     writeln!(

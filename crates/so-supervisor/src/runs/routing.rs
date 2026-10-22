@@ -4,13 +4,16 @@
 //! agent file, or `defaults`) did name is a pin: the router keeps to it, and a failover
 //! stays inside it. The pins are stored with the run so a failover can route again.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use so_core::config::OnUnreachable;
 use so_core::proto::{
     DECIDER_UNREACHABLE, RouteParams, RouteResult, RouteSource, RpcError, UNAVAILABLE,
 };
-use so_core::{AccountFile, Harness};
+use so_core::{AccountFile, Config, Harness};
 use so_router::{Catalog, RouteOutcome, Snapshot, route::MAX_PROMPT_CHARS};
 
 use super::{R, RunManager, lock, rpc};
@@ -50,10 +53,10 @@ pub(crate) struct Routed {
 const REROUTE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl RunManager {
-    fn route_env(&self, ignore_caps: bool) -> RouteEnv<'_> {
+    fn route_env<'a>(&'a self, config: &'a Config, ignore_caps: bool) -> RouteEnv<'a> {
         RouteEnv {
             store: &self.inner.store,
-            config: &self.inner.config,
+            config,
             paths: &self.inner.paths,
             http: &self.inner.http,
             ignore_caps,
@@ -66,8 +69,65 @@ impl RunManager {
     ///
     /// With `queue_over_cap`, a choice whose accounts are all at their cap is still routed
     /// to (the run waits in the queue); a failover cannot wait, so it does not set it.
+    ///
+    /// `recovery` is set for mid-run recovery (a failover or a queued reroute). Those must not
+    /// fail a run because the decider is down: an outage degrades to the heuristic, and the
+    /// flag remembers it so the decider is not asked again within the same recovery. An
+    /// explicit request (`recovery: None`) follows `router.jev.on_unreachable`.
     pub(crate) async fn route_run(
         &self,
+        prompt: &str,
+        pins: &RoutePins,
+        exclude_accounts: &[String],
+        only_choice: Option<&str>,
+        queue_over_cap: bool,
+        recovery: Option<&AtomicBool>,
+    ) -> R<Routed> {
+        let Some(outage) = recovery else {
+            return self
+                .route_run_with(
+                    &self.inner.config,
+                    prompt,
+                    pins,
+                    exclude_accounts,
+                    only_choice,
+                    queue_over_cap,
+                )
+                .await;
+        };
+        let mut config = self.inner.config.clone();
+        config.router.jev.on_unreachable = OnUnreachable::Heuristic;
+        if outage.load(Ordering::SeqCst) {
+            // Already known to be down in this recovery: no key means no decider call.
+            config.router.jev.key_env = "SUPERORCHESTRATOR_DECIDER_SKIPPED".into();
+            config.router.jev.key_file = None;
+        }
+        let routed = self
+            .route_run_with(
+                &config,
+                prompt,
+                pins,
+                exclude_accounts,
+                only_choice,
+                queue_over_cap,
+            )
+            .await?;
+        if let Some(why) = routed.decision["fallback_reason"]
+            .as_str()
+            .filter(|w| w.contains("decider unreachable"))
+            && !outage.swap(true, Ordering::SeqCst)
+        {
+            tracing::warn!(
+                reason = why,
+                "routing decider unreachable during recovery; used the heuristic"
+            );
+        }
+        Ok(routed)
+    }
+
+    async fn route_run_with(
+        &self,
+        config: &Config,
         prompt: &str,
         pins: &RoutePins,
         exclude_accounts: &[String],
@@ -99,11 +159,10 @@ impl RunManager {
             model: pins.model.clone(),
             effort: pins.effort.clone(),
         };
-        let env = self.route_env(false);
+        let env = self.route_env(config, false);
         let mut attempt = None;
         if let Some(cid) = only_choice {
-            params.exclude = self
-                .config()
+            params.exclude = config
                 .choices
                 .iter()
                 .filter(|c| c.id != cid)
@@ -119,7 +178,7 @@ impl RunManager {
             _ => route_decide(&env, &params).await,
         };
         if queue_over_cap && outcome.as_ref().is_err_and(|e| e.code == UNAVAILABLE) {
-            outcome = route_decide(&self.route_env(true), &params).await;
+            outcome = route_decide(&self.route_env(config, true), &params).await;
         }
         let outcome = match outcome {
             Err(e) if e.code == UNAVAILABLE && pins.harness.is_some() => {
@@ -265,7 +324,17 @@ impl RunManager {
             exclude.dedup();
         }
         let prompt = self.turn_prompt(run).await;
-        let Ok(routed) = self.route_run(&prompt, &pins, &exclude, None, false).await else {
+        let Ok(routed) = self
+            .route_run(
+                &prompt,
+                &pins,
+                &exclude,
+                None,
+                false,
+                Some(&AtomicBool::new(false)),
+            )
+            .await
+        else {
             return false;
         };
         for name in &routed.result.ranked_accounts {

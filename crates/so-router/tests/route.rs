@@ -25,6 +25,8 @@ struct Fake {
     /// Status and body per hit number (0-based); the last entry repeats.
     script: Arc<Vec<(u16, Value, usize)>>,
     seen: Arc<std::sync::Mutex<Vec<(String, Value)>>>,
+    /// Milliseconds to wait before answering hit number n (missing means no wait).
+    delays: Arc<Vec<u64>>,
 }
 
 async fn handler(
@@ -39,6 +41,9 @@ async fn handler(
         .unwrap_or("")
         .to_string();
     f.seen.lock().unwrap().push((auth, body));
+    if let Some(ms) = f.delays.get(n) {
+        tokio::time::sleep(std::time::Duration::from_millis(*ms)).await;
+    }
     let (status, body, pad) = f.script[n.min(f.script.len() - 1)].clone();
     let mut text = body.to_string();
     text.push_str(&" ".repeat(pad));
@@ -53,7 +58,12 @@ async fn handler(
 }
 
 async fn serve(script: Vec<(u16, Value, usize)>) -> (String, Fake) {
+    serve_with_delays(script, vec![]).await
+}
+
+async fn serve_with_delays(script: Vec<(u16, Value, usize)>, delays: Vec<u64>) -> (String, Fake) {
     let fake = Fake {
+        delays: Arc::new(delays),
         hits: Arc::new(AtomicUsize::new(0)),
         script: Arc::new(script),
         seen: Arc::default(),
@@ -628,12 +638,16 @@ async fn refused_key_is_an_error_that_says_to_check_the_key() {
 
 #[tokio::test]
 async fn missing_model_is_an_error_that_names_the_id() {
-    let (url, _) = serve(vec![(400, json!({"error": "no such model"}), 0)]).await;
+    let (url, _) = serve(vec![(400, json!({"error": "SECRET-BODY-TEXT"}), 0)]).await;
     let mut w = world(&url, true);
     w.config.router.jev.model = "acme/gone".into();
     let e = route_detailed(&w.inputs(), &params("x")).await.unwrap_err();
     let m = e.to_string();
     assert!(m.contains("`acme/gone`") && m.contains("HTTP 400"), "{m}");
+    assert!(
+        !m.contains("SECRET-BODY-TEXT"),
+        "the response body is not echoed: {m}"
+    );
 }
 
 fn env_model(name: &str) -> Option<String> {
@@ -761,4 +775,37 @@ async fn eval_counts_an_unreachable_decider_as_an_error_not_a_fallback() {
     assert_eq!(rep.cases[0].error.as_deref(), Some("decider_unreachable"));
     assert_eq!(rep.sources["error"], 1);
     assert_eq!(rep.decider_models.primary, "inception/mercury-decide:free");
+}
+
+#[tokio::test]
+async fn a_slow_primary_leaves_the_fallback_its_share_of_the_timeout() {
+    // The primary hangs well past the 1 s timeout; it may use 3/5 of it, so the fallback
+    // still answers within the one timeout.
+    let (url, fake) = serve_with_delays(vec![(200, good(), 0)], vec![5000]).await;
+    let mut w = world(&url, true);
+    with_fallback(&mut w);
+    w.config.router.jev.timeout = so_core::HumanDuration::from_secs(1);
+    let t = std::time::Instant::now();
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    let took = t.elapsed();
+    assert_eq!(out.result.source, RouteSource::Jev);
+    assert_eq!(out.result.decider_model.as_deref(), Some("fallback/model"));
+    assert!(took < std::time::Duration::from_secs(1), "took {took:?}");
+    assert_eq!(
+        models_seen(&fake),
+        vec![
+            "inception/mercury-decide:free".to_string(),
+            "fallback/model".to_string(),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn connection_refused_tries_the_fallback_and_names_both_models() {
+    let mut w = world("http://127.0.0.1:1/decisions", true);
+    with_fallback(&mut w);
+    let e = route_detailed(&w.inputs(), &params("x")).await.unwrap_err();
+    let m = e.to_string();
+    assert!(m.contains("`inception/mercury-decide:free`"), "{m}");
+    assert!(m.contains("fallback model `fallback/model`"), "{m}");
 }

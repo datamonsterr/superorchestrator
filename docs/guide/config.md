@@ -85,7 +85,7 @@ superorchestrator config edit
 | `min_confidence` | `0.45` | Lowest confidence to accept a decision |
 | `min_margin` | `0.15` | Lowest gap between the top two probabilities |
 
-The two defaults were tuned on 2026-10-23 against `jev-1.14-20261014`. The routing instruction and the seeded choice descriptions are what the decider reads; choices already in your `config.toml` keep their old descriptions. Re-run `route eval --require-live` after you change choice descriptions or the routing instruction.
+`doctor` and `route eval` report the models from the environment of the shell that runs them. A supervisor started elsewhere may have a different environment. The two defaults were tuned on 2026-10-23 against `jev-1.14-20261014`. The routing instruction and the seeded choice descriptions are what the decider reads; choices already in your `config.toml` keep their old descriptions. Re-run `route eval --require-live` after you change choice descriptions or the routing instruction.
 
 ### `[worktrees]`
 
