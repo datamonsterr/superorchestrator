@@ -526,7 +526,6 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
 `superorchestrator` with no arguments on a terminal opens the terminal UI (`tui`, below); without a terminal it prints the help. Every action in it is also a subcommand:
 
 ```
-tui                       full-screen terminal UI: overview, accounts, runs, setup
 setup [--codex N] [--claude N] [--opencode N] [--agy N] [--no-login] [--no-install] [--no-claude-md]
                           first-run guide: init, detect harnesses, offer account import --scan,
                           add N accounts per harness, sign in, install, doctor summary
@@ -542,6 +541,7 @@ route "<task>" [--role R] [--explain]
 route eval [...]
 runs list|show|watch|cancel
 join <run> [--exec]
+tui                       full-screen terminal UI: overview, accounts, runs, setup
 worktrees list|prune
 workflow run|list|status
 config get|set|edit
