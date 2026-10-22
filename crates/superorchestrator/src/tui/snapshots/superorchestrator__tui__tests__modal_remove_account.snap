@@ -4,11 +4,11 @@ expression: "shot(&mut a, 80, 24)"
 ---
  superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
    1 Overview     2 Accounts     3 Runs !1     4 Setup
-    NAME               HARNESS   SIGNED IN  ENABLED  CAP  ACTIVE HEADROOM
-  ▸ codex-1            codex     ✓ yes      yes      2    1      codex: ok 82%
-    codex-2            codex     ✓ yes      yes      2    0      codex: coold…
-    opencode-1         opencode  ✗ no       yes      2    0
-    claude-1           claude    ? unknown  no       2    0
+    NAME               HARNESS   SIGNED IN  ACTIVE HEADROOM
+  ▸ codex-1            codex     ✓ yes      1      codex: ok 82%
+    codex-2            codex     ✓ yes      0      codex: cooldown 3h
+    opencode-1         opencode  ✗ no       0
+    claude-1 (off)     claude    ? unknown  0
         ╭ Remove account ──────────────────────────────────────────────╮
         │                                                              │
         │ Removing codex-1 deletes its account file and wrapper.       │

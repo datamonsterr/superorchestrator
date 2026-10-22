@@ -41,4 +41,4 @@ expression: "shot(& mut a, w, h)"
   │                                                                                                                  │
   ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
  updated 3s ago
- ↑↓ move  Enter run step  a run all  i install  d doctor  ? help  q quit
+ j/k move  Enter run step  a run all  i install  d doctor  ? help  q quit

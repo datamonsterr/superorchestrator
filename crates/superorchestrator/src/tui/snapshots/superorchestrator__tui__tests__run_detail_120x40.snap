@@ -25,20 +25,20 @@ expression: "shot(& mut a, w, h)"
  │ Result                                                                                                             │
  │ {"summary":"done"}                                                                                                 │
  │                                                                                                                    │
+ │ Diff  so/0190bbbb (from abc1234d)                                                                                  │
+ │  src/http.rs | 12 ++++++++----                                                                                     │
+ │  1 file changed, 8 insertions(+), 4 deletions(-)                                                                   │
  │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
- │                                                                                                                    │
+ │ diff --git a/src/http.rs b/src/http.rs                                                                             │
+ │ --- a/src/http.rs                                                                                                  │
+ │ +++ b/src/http.rs                                                                                                  │
+ │ @@ -1,3 +1,3 @@                                                                                                    │
+ │  fn get() {                                                                                                        │
+ │ -    once();                                                                                                       │
+ │ +    retry(3);                                                                                                     │
+ │  }                                                                                                                 │
  │                                                                                                                    │
  │                                                                                                                    │
  ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
  updated 3s ago
- ↑↓ scroll  Esc back  j join  a accept  r reject  c cancel  ? help  q back
+ j/k scroll  Esc back  o join  a accept  r reject  c cancel  ? help  q back

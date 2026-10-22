@@ -24,18 +24,18 @@ expression: "shot(& mut a, w, h)"
   ! pending_review codex-2            6m   Add retry to the HTTP client
   ✓ succeeded      opencode-1         2h   Write the changelog entry for 0.1.0
   ✗ failed         codex-1            1d   Migrate the schema
-
-
-
-
-
-
-
-
-
-
-
-
+  ✓ succeeded      codex-1            1d   Fix the flaky timer test
+  ✓ succeeded      codex-1            1d   Bump the lockfile
+  - cancelled      codex-1            1d   Try the new parser
+  ✓ succeeded      codex-1            1d   Document the CLI flags
+  ✗ failed         codex-1            1d   Port the build script
+  ✓ succeeded      codex-1            1d   Rename the config keys
+  ✓ succeeded      codex-1            1d   Add a smoke test
+  ✓ succeeded      codex-1            1d   Tidy the imports
+  ✓ succeeded      codex-1            2d   Update the README
+  ✓ succeeded      codex-1            2d   Remove dead code
+  ✓ succeeded      codex-1            2d   Split the big module
+  ✓ succeeded      codex-1            2d   Speed up the tests
 
 
 

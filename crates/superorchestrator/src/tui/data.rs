@@ -42,6 +42,7 @@ pub struct RunItem {
     pub account: Option<String>,
     pub created_at: DateTime<Utc>,
     pub title: String,
+    pub has_worktree: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,6 +99,8 @@ pub struct RunDetail {
     pub route: Vec<String>,
     pub events: Vec<String>,
     pub result: Option<String>,
+    /// What the run changed; only fetched for runs waiting for review. `Err` says why not.
+    pub diff: Option<Result<so_core::proto::RunDiff, String>>,
 }
 
 /// Replaces control characters, so text from a run cannot move the cursor or recolour the
@@ -131,6 +134,7 @@ fn run_item(r: &RunRow) -> RunItem {
         account: r.account.clone(),
         created_at: r.created_at,
         title: title_of(r),
+        has_worktree: r.worktree_path.is_some(),
     }
 }
 
@@ -254,7 +258,11 @@ fn checklist(ctx: &Ctx, host: &HostEnv, accounts: &[AccountRow]) -> Vec<Check> {
     out
 }
 
-fn account_rows(ctx: &Ctx, host: &HostEnv) -> (Vec<AccountRow>, Option<String>) {
+fn account_rows(
+    ctx: &Ctx,
+    host: &HostEnv,
+    now: DateTime<Utc>,
+) -> (Vec<AccountRow>, Option<String>) {
     match collect_views_with(ctx, host) {
         Ok(views) => (
             views
@@ -264,7 +272,7 @@ fn account_rows(ctx: &Ctx, host: &HostEnv) -> (Vec<AccountRow>, Option<String>) 
                     headroom: v
                         .headroom
                         .iter()
-                        .map(|(p, t)| format!("{p}: {t}"))
+                        .map(|(p, t)| format!("{p}: {}", short_headroom(t, now)))
                         .collect::<Vec<_>>()
                         .join(", "),
                     name: v.account.name,
@@ -281,6 +289,23 @@ fn account_rows(ctx: &Ctx, host: &HostEnv) -> (Vec<AccountRow>, Option<String>) 
     }
 }
 
+/// "cooldown until 2026-10-23T15:00:00+00:00" becomes "cooldown 3h"; other text is kept.
+fn short_headroom(text: &str, now: DateTime<Utc>) -> String {
+    let Some(until) = text
+        .strip_prefix("cooldown until ")
+        .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+    else {
+        return text.to_string();
+    };
+    let secs = (until.with_timezone(&Utc) - now).num_seconds().max(0);
+    match secs {
+        0..=59 => "cooldown <1m".into(),
+        60..=3599 => format!("cooldown {}m", secs / 60),
+        3600..=86399 => format!("cooldown {}h", secs / 3600),
+        _ => format!("cooldown {}d", secs / 86400),
+    }
+}
+
 /// Reads everything the tabs show. Never writes. `sup` is the supervisor's status, asked
 /// for separately because it needs a socket round trip.
 pub fn load_snapshot(
@@ -289,7 +314,7 @@ pub fn load_snapshot(
     sup: Option<SupInfo>,
     now: DateTime<Utc>,
 ) -> Snapshot {
-    let (accounts, accounts_error) = account_rows(ctx, host);
+    let (accounts, accounts_error) = account_rows(ctx, host, now);
     let (rows, active) = open_existing_store(&ctx.paths)
         .and_then(|s| recent_runs(&s).ok())
         .unwrap_or_default();
@@ -343,6 +368,7 @@ pub fn load_detail(ctx: &Ctx, id: &str) -> Result<RunDetail, String> {
         route,
         events: events.iter().skip(skip).map(event_line).collect(),
         result: r.result_json.as_deref().map(clean_multiline),
+        diff: None,
     })
 }
 
@@ -396,6 +422,20 @@ mod tests {
     fn control_characters_never_reach_the_screen() {
         assert_eq!(clean("a\x1b[31mred\x07\n"), "a [31mred  ");
         assert_eq!(clean_multiline("a\x1b[0m\nb"), "a [0m\nb");
+    }
+
+    #[test]
+    fn cooldowns_are_shown_as_time_left() {
+        let now: DateTime<Utc> = "2026-10-23T12:00:00Z".parse().unwrap();
+        assert_eq!(
+            short_headroom("cooldown until 2026-10-23T15:00:00+00:00", now),
+            "cooldown 3h"
+        );
+        assert_eq!(
+            short_headroom("cooldown until 2026-10-23T12:20:00Z", now),
+            "cooldown 20m"
+        );
+        assert_eq!(short_headroom("ok 82%", now), "ok 82%");
     }
 
     #[test]

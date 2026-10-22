@@ -9,8 +9,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use so_accounts::{HostEnv, manage};
 use so_core::proto::{
-    AckResult, JoinResult, METHOD_ACCEPT_RUN, METHOD_CANCEL_AGENT, METHOD_JOIN_RUN,
-    METHOD_REJECT_RUN, RejectParams, RunRef, RunView,
+    AcceptParams, AcceptResult, AckResult, GetRunParams, JoinResult, METHOD_ACCEPT_RUN,
+    METHOD_CANCEL_AGENT, METHOD_GET_RUN, METHOD_JOIN_RUN, METHOD_REJECT_RUN, RejectParams, RunRef,
+    RunView,
 };
 use so_core::{AccountFile, Harness, Paths};
 use so_store::Store;
@@ -46,7 +47,13 @@ pub fn read_loop(ctx: Ctx, host: HostEnv, rx: Receiver<Effect>, tx: Sender<Updat
                 send(&tx, Update::Snapshot(Box::new(snap)));
             }
             Effect::Detail(id) => {
-                let d = load_detail(&ctx, &id).map(Box::new);
+                let d = load_detail(&ctx, &id).map(|mut d| {
+                    // The diff comes from the supervisor (it owns the worktree's git calls).
+                    if d.state == so_core::RunState::PendingReview && d.worktree.is_some() {
+                        d.diff = Some(fetch_diff(&id));
+                    }
+                    Box::new(d)
+                });
                 send(&tx, Update::Detail(d));
             }
             _ => {}
@@ -113,13 +120,24 @@ fn perform(
             let account = load_account(&ctx.paths, &name)?;
             // Fails early when the harness binary is missing.
             let plan = manage::login_command(&account, host, true)?;
-            if matches!(account.harness, Harness::Codex | Harness::Opencode) {
-                let (program, args) = plan.argv.split_first().context("empty login command")?;
+            let (program, args) = plan.argv.split_first().context("empty login command")?;
+            let via_cli = matches!(account.harness, Harness::Codex | Harness::Opencode);
+            // claude and agy sign in inside a session of their wrapper.
+            let wrapper_ok =
+                via_cli || so_accounts::resolve_binary(program, host.path_var.as_deref()).is_ok();
+            if wrapper_ok {
+                let note = match account.harness {
+                    Harness::Claude => {
+                        Some("type /login inside the session, then exit to come back".to_string())
+                    }
+                    Harness::Agy => Some("sign in, then exit to come back".to_string()),
+                    _ => plan.note.clone(),
+                };
                 send(
                     tx,
                     Update::Launch(Launch {
                         title: format!("Sign in to {name}"),
-                        note: plan.note.clone(),
+                        note,
                         program: program.clone(),
                         args: args.to_vec(),
                         env: plan.env.clone(),
@@ -127,18 +145,20 @@ fn perform(
                     }),
                 );
             } else {
-                // claude and agy sign in inside their wrapper, a session of their own.
+                // The wrapper is not on PATH: show the command instead.
                 let login = login_json(&account, host)?;
                 let mut buf = Vec::new();
                 write_login_hint(&mut buf, &login, false)?;
+                let mut lines: Vec<String> = String::from_utf8_lossy(&buf)
+                    .lines()
+                    .map(str::to_string)
+                    .collect();
+                lines.insert(0, format!("The wrapper `{program}` is not on PATH."));
                 send(
                     tx,
                     Update::Hint {
                         title: format!("Sign in to {name}"),
-                        lines: String::from_utf8_lossy(&buf)
-                            .lines()
-                            .map(str::to_string)
-                            .collect(),
+                        lines,
                     },
                 );
             }
@@ -192,9 +212,15 @@ fn perform(
             let v: RunView = supervisor_call(METHOD_CANCEL_AGENT, RunRef { run: run.clone() })?;
             format!("run {} is {}", short(&v.run_id), v.state)
         }
-        Effect::Accept(run) => {
-            let _: AckResult = supervisor_call(METHOD_ACCEPT_RUN, RunRef { run: run.clone() })?;
-            format!("accepted run {}", short(&run))
+        Effect::Accept { run, merge } => {
+            let r: AcceptResult = supervisor_call(
+                METHOD_ACCEPT_RUN,
+                AcceptParams {
+                    run: run.clone(),
+                    merge,
+                },
+            )?;
+            accept_text(&short(&run), &r)
         }
         Effect::Reject { run, feedback } => {
             let _: AckResult = supervisor_call(
@@ -236,6 +262,37 @@ fn perform(
             "setup finished".to_string()
         }
     }))
+}
+
+/// The toast for an accepted run.
+fn accept_text(run: &str, r: &AcceptResult) -> String {
+    if r.merged {
+        return format!("accepted run {run} and merged its branch");
+    }
+    match (&r.merge_command, &r.note) {
+        (Some(c), _) => format!("accepted run {run}; merge it with: {c}"),
+        (None, Some(n)) => format!("accepted run {run}; {n}"),
+        _ => format!("accepted run {run}"),
+    }
+}
+
+/// `get_run` with the diff, without starting the supervisor.
+fn fetch_diff(id: &str) -> Result<so_core::proto::RunDiff, String> {
+    let v: RunView = supervisor_call(
+        METHOD_GET_RUN,
+        GetRunParams {
+            run: id.to_string(),
+            diff: true,
+        },
+    )
+    .map_err(|e| format!("{e:#}"))?;
+    match v.diff {
+        Some(d) => match d.error.clone() {
+            Some(e) => Err(e),
+            None => Ok(d),
+        },
+        None => Err("the supervisor returned no diff".to_string()),
+    }
 }
 
 fn state_word(s: StepState) -> &'static str {
@@ -537,6 +594,79 @@ mod tests {
         let (tx, _rx) = channel();
         let e = perform(&ctx, &host, Effect::Login("nope".into()), &tx).unwrap_err();
         assert!(e.to_string().contains("not found"), "{e}");
+    }
+
+    #[test]
+    fn accept_text_names_the_merge_outcome() {
+        let r = AcceptResult {
+            ok: true,
+            merged: true,
+            branch: None,
+            merge_command: None,
+            note: None,
+        };
+        assert_eq!(
+            accept_text("ab", &r),
+            "accepted run ab and merged its branch"
+        );
+        let r = AcceptResult {
+            merged: false,
+            merge_command: Some("git merge so/x".into()),
+            ..r
+        };
+        assert_eq!(
+            accept_text("ab", &r),
+            "accepted run ab; merge it with: git merge so/x"
+        );
+    }
+
+    fn claude_account(d: &std::path::Path, name: &str) {
+        std::fs::create_dir_all(d.join("cfg/accounts")).unwrap();
+        std::fs::write(
+            d.join(format!("cfg/accounts/{name}.toml")),
+            format!(
+                "name = \"{name}\"\nharness = \"claude\"\nhome = \"{}\"\nbinary = \"{name}\"\n",
+                d.join("home/.claude-1").display()
+            ),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn claude_sign_in_runs_the_wrapper_when_it_exists() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("bin")).unwrap();
+        std::fs::create_dir_all(d.path().join("home")).unwrap();
+        let w = d.path().join("bin/claude-1");
+        std::fs::write(&w, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&w, std::fs::Permissions::from_mode(0o755)).unwrap();
+        claude_account(d.path(), "claude-1");
+        let (ctx, host) = (ctx(d.path()), fake_host(d.path()));
+        let (tx, rx) = channel();
+        perform(&ctx, &host, Effect::Login("claude-1".into()), &tx).unwrap();
+        match rx.recv().unwrap() {
+            Update::Launch(l) => {
+                assert_eq!(l.program, "claude-1");
+                assert!(l.note.unwrap().contains("/login"));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn claude_sign_in_shows_the_command_when_the_wrapper_is_missing() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("bin")).unwrap();
+        std::fs::create_dir_all(d.path().join("home")).unwrap();
+        claude_account(d.path(), "claude-1");
+        let (ctx, host) = (ctx(d.path()), fake_host(d.path()));
+        let (tx, rx) = channel();
+        perform(&ctx, &host, Effect::Login("claude-1".into()), &tx).unwrap();
+        match rx.recv().unwrap() {
+            Update::Hint { lines, .. } => assert!(lines[0].contains("not on PATH"), "{lines:?}"),
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

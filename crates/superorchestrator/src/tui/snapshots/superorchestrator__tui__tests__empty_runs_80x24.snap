@@ -25,4 +25,4 @@ expression: "shot(&mut a, 80, 24)"
 
 
  updated 3s ago
- ↑↓ move  Enter open  j join  a accept  r reject  c cancel  ? help  q quit
+ j/k move  Enter detail  o join  a accept  r reject  c cancel  ? help  q quit

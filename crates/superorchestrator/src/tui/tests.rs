@@ -7,6 +7,7 @@ use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::style::{Color, Modifier};
 use so_accounts::{ImportCandidate, SignIn};
+use so_core::proto::RunDiff;
 use so_core::{Harness, RunState};
 
 use super::app::*;
@@ -39,6 +40,7 @@ fn run(id: &str, state: RunState, who: &str, secs_ago: i64, title: &str) -> RunI
         account: Some(who.into()),
         created_at: now() - chrono::Duration::seconds(secs_ago),
         title: title.into(),
+        has_worktree: state == RunState::PendingReview,
     }
 }
 
@@ -47,7 +49,7 @@ fn snapshot() -> Snapshot {
     codex.headroom = "codex: ok 82%".into();
     codex.active = 1;
     let mut cool = account("codex-2", Harness::Codex, SignIn::SignedIn, true);
-    cool.headroom = "codex: cooldown until 2026-10-23T15:00:00+00:00".into();
+    cool.headroom = "codex: cooldown 3h".into();
     cool.cooling = true;
     Snapshot {
         at: now() - chrono::Duration::seconds(3),
@@ -92,6 +94,90 @@ fn snapshot() -> Snapshot {
                 "codex-1",
                 90_000,
                 "Migrate the schema",
+            ),
+            run(
+                "0190eeee-0001",
+                RunState::Succeeded,
+                "codex-1",
+                100000,
+                "Fix the flaky timer test",
+            ),
+            run(
+                "0190eeee-0002",
+                RunState::Succeeded,
+                "codex-1",
+                110000,
+                "Bump the lockfile",
+            ),
+            run(
+                "0190eeee-0003",
+                RunState::Cancelled,
+                "codex-1",
+                120000,
+                "Try the new parser",
+            ),
+            run(
+                "0190eeee-0004",
+                RunState::Succeeded,
+                "codex-1",
+                130000,
+                "Document the CLI flags",
+            ),
+            run(
+                "0190eeee-0005",
+                RunState::Failed,
+                "codex-1",
+                140000,
+                "Port the build script",
+            ),
+            run(
+                "0190eeee-0006",
+                RunState::Succeeded,
+                "codex-1",
+                150000,
+                "Rename the config keys",
+            ),
+            run(
+                "0190eeee-0007",
+                RunState::Succeeded,
+                "codex-1",
+                160000,
+                "Add a smoke test",
+            ),
+            run(
+                "0190eeee-0008",
+                RunState::Succeeded,
+                "codex-1",
+                170000,
+                "Tidy the imports",
+            ),
+            run(
+                "0190eeee-0009",
+                RunState::Succeeded,
+                "codex-1",
+                180000,
+                "Update the README",
+            ),
+            run(
+                "0190eeee-0010",
+                RunState::Succeeded,
+                "codex-1",
+                190000,
+                "Remove dead code",
+            ),
+            run(
+                "0190eeee-0011",
+                RunState::Succeeded,
+                "codex-1",
+                200000,
+                "Split the big module",
+            ),
+            run(
+                "0190eeee-0012",
+                RunState::Succeeded,
+                "codex-1",
+                210000,
+                "Speed up the tests",
             ),
         ],
         active_runs: 2,
@@ -157,6 +243,14 @@ fn detail() -> RunDetail {
             "12:03:10 progress tests green".into(),
         ],
         result: Some("{\"summary\":\"done\"}".into()),
+        diff: Some(Ok(RunDiff {
+            base: "abc1234def".into(),
+            branch: "so/0190bbbb".into(),
+            stat: " src/http.rs | 12 ++++++++----\n 1 file changed, 8 insertions(+), 4 deletions(-)".into(),
+            patch: "diff --git a/src/http.rs b/src/http.rs\n--- a/src/http.rs\n+++ b/src/http.rs\n@@ -1,3 +1,3 @@\n fn get() {\n-    once();\n+    retry(3);\n }".into(),
+            truncated: false,
+            error: None,
+        })),
     }
 }
 
@@ -543,10 +637,10 @@ fn only_runs_waiting_for_review_can_be_accepted_or_rejected() {
     a.on_key(key(KeyCode::Down));
     a.on_key(ch('a'));
     assert!(matches!(a.modal, Some(Modal::Confirm { .. })));
-    let Some(Effect::Accept(id)) = a.on_key(ch('y')) else {
+    let Some(Effect::Accept { run, merge }) = a.on_key(ch('y')) else {
         panic!()
     };
-    assert_eq!(id, "0190bbbb-2222");
+    assert_eq!((run.as_str(), merge), ("0190bbbb-2222", true));
 }
 
 #[test]
@@ -574,12 +668,12 @@ fn reject_asks_for_feedback_and_refuses_an_empty_one() {
 fn join_and_actions_inside_the_detail_pane_use_the_open_run() {
     let mut a = app();
     press(&mut a, &[ch('3'), key(KeyCode::Down), key(KeyCode::Enter)]);
-    assert!(matches!(a.on_key(ch('j')), Some(Effect::Join(id)) if id == "0190bbbb-2222"));
+    assert!(matches!(a.on_key(ch('o')), Some(Effect::Join(id)) if id == "0190bbbb-2222"));
     a.on_key(ch('a'));
     assert!(matches!(
         a.modal,
         Some(Modal::Confirm {
-            effect: Effect::Accept(_),
+            effect: Effect::Accept { .. },
             ..
         })
     ));
@@ -1131,4 +1225,103 @@ fn modals_replace_the_footer_hints() {
     let s = shot(&mut a, 80, 24);
     assert!(s.lines().last().unwrap().contains("Esc close"), "{s}");
     assert!(!s.lines().last().unwrap().contains("refresh"));
+}
+
+#[test]
+fn accept_offers_a_merge_only_for_runs_with_a_worktree() {
+    let mut a = app();
+    press(&mut a, &[ch('3'), key(KeyCode::Down), ch('a')]);
+    let Some(Modal::Confirm { prompt, .. }) = &a.modal else {
+        panic!()
+    };
+    assert!(
+        prompt.contains("Accept and merge") && prompt.contains("(y/n)"),
+        "{prompt}"
+    );
+    a.on_key(ch('n'));
+    assert!(a.busy.is_none());
+    // `A` accepts without merging.
+    a.on_key(ch('A'));
+    let Some(Effect::Accept { merge, .. }) = a.on_key(ch('y')) else {
+        panic!()
+    };
+    assert!(!merge);
+    // No worktree, nothing to merge.
+    a.busy = None;
+    a.snap.as_mut().unwrap().runs[1].has_worktree = false;
+    a.on_key(ch('a'));
+    let Some(Effect::Accept { merge, .. }) = a.on_key(ch('y')) else {
+        panic!()
+    };
+    assert!(!merge);
+}
+
+#[test]
+fn vim_keys_move_in_every_list() {
+    let mut a = app();
+    a.on_key(ch('2'));
+    press(&mut a, &[ch('j'), ch('j')]);
+    assert_eq!(a.accounts_sel, 2);
+    a.on_key(ch('k'));
+    assert_eq!(a.accounts_sel, 1);
+    a.on_key(ch('G'));
+    assert_eq!(a.accounts_sel, 3);
+    a.on_key(ch('g'));
+    assert_eq!(a.accounts_sel, 0);
+    a.on_key(ch('3'));
+    press(&mut a, &[ch('j'), ch('G')]);
+    assert_eq!(a.runs_sel, a.runs().len() - 1);
+    a.on_key(ch('g'));
+    assert_eq!(a.runs_sel, 0);
+    a.on_key(ch('4'));
+    press(&mut a, &[ch('j'), ch('j'), ch('k')]);
+    assert_eq!(a.setup_sel, 1);
+    a.on_key(ch('G'));
+    assert_eq!(a.setup_sel, SetupStep::ALL.len() - 1);
+}
+
+#[test]
+fn vim_keys_scroll_the_open_run() {
+    let mut a = app();
+    press(&mut a, &[ch('3'), key(KeyCode::Down), key(KeyCode::Enter)]);
+    press(&mut a, &[ch('j'), ch('j'), ch('k')]);
+    assert_eq!(a.detail.as_ref().unwrap().scroll, 1);
+    a.on_key(ch('G'));
+    assert_eq!(a.detail.as_ref().unwrap().scroll, u16::MAX);
+    a.on_key(ch('g'));
+    assert_eq!(a.detail.as_ref().unwrap().scroll, 0);
+    assert_eq!(a.runs_sel, 1, "the selection stays put");
+}
+
+#[test]
+fn j_no_longer_joins() {
+    let mut a = app();
+    a.on_key(ch('3'));
+    assert!(a.on_key(ch('j')).is_none());
+    assert!(matches!(a.on_key(ch('o')), Some(Effect::Join(_))));
+}
+
+#[test]
+fn the_detail_pane_shows_a_scrollable_diff() {
+    let mut a = app();
+    press(&mut a, &[ch('3'), key(KeyCode::Down), key(KeyCode::Enter)]);
+    a.on_update(Update::Detail(Ok(Box::new(detail()))));
+    a.on_key(ch('G'));
+    let s = shot(&mut a, 80, 24);
+    assert!(
+        s.contains("+    retry(3);") && s.contains("-    once();"),
+        "{s}"
+    );
+    assert!(s.contains("Diff"), "{s}");
+}
+
+#[test]
+fn a_missing_diff_says_why() {
+    let mut a = app();
+    press(&mut a, &[ch('3'), key(KeyCode::Down), key(KeyCode::Enter)]);
+    let mut d = detail();
+    d.diff = Some(Err("supervisor not running".into()));
+    a.on_update(Update::Detail(Ok(Box::new(d))));
+    a.on_key(ch('G'));
+    assert!(shot(&mut a, 80, 24).contains("supervisor not running"));
 }

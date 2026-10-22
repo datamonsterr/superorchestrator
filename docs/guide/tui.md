@@ -11,7 +11,7 @@ A header (version, supervisor state, config directory), the tabs, the body for t
 | Key | Action |
 | --- | --- |
 | `Tab` / `Shift-Tab`, `1` to `4` | Switch tab |
-| `Up` / `Down`, `PgUp` / `PgDn`, `Home` / `End` | Move the selection (or scroll an open run) |
+| `j` / `k` or `Down` / `Up`, `g` / `G` or `Home` / `End`, `PgUp` / `PgDn` | Move the selection, jump to the top or bottom (or scroll an open run). Same in every list. |
 | `R`, `F5` | Reload now |
 | `?` | Help for the current tab |
 | `q`, `Esc` | Close a pane, or quit from the top level |
@@ -26,22 +26,23 @@ A header (version, supervisor state, config directory), the tabs, the body for t
 | Key | Action |
 | --- | --- |
 | `a` | Add accounts: pick the harness with the arrow keys, type a count (1 to 99). Names follow the same rule as `account add --count`. |
-| `l` | Sign in. For codex and opencode the UI steps aside and runs the harness's login; press Enter afterwards to return. For claude and agy it shows the wrapper command to run in a session. |
+| `l` | Sign in. The UI steps aside and runs the login: for codex and opencode the harness's own login, for claude and agy a session of the account's wrapper (type `/login` in Claude, sign in inside agy, then exit). Press Enter afterwards to return. If the wrapper is not on `PATH` it shows the command instead. |
 | `e` | Enable or disable the account. |
 | `f` | Flag a cooldown (asks for hours), or clear one that is set. |
 | `x` | Remove. You must type the account name to confirm. |
 | `i` | Scan for logins already on this machine and import them. |
 
-**3 Runs.** Recent runs, newest first: id, state, account, age and title. `Enter` opens a run: brief, route decision, recent events and result, which scroll with the arrow keys.
+**3 Runs.** Recent runs, newest first: id, state, account, age and title. `Enter` opens a run: brief, route decision, recent events, result and, for a run waiting for review, its diff, all scrolling with `j` / `k`.
 
 | Key | Action |
 | --- | --- |
 | `c` | Cancel the run (asks first). |
-| `j` | Join the run's session: the UI steps aside and starts the harness, and you return when it exits. |
-| `a` | Accept a run that is waiting for review (asks first). |
+| `o` | Open the run's session (join): the UI steps aside and starts the harness, and you return when it exits. |
+| `a` | Accept a run that is waiting for review. A run with a worktree asks "accept and merge?" and merges its branch into the base checkout (refused, leaving the run at the gate, if the checkout is dirty, on another branch or the merge conflicts). |
+| `A` | Accept without merging. |
 | `r` | Reject it with feedback; the run resumes with your text. |
 
-The list is read from the store. Cancel, join, accept and reject go through the supervisor and never start it: when it is not running they say "supervisor not running — start with any delegation or `superorchestrator daemon`".
+The list is read from the store. The diff, cancel, join, accept and reject go through the supervisor and never start it: when it is not running they say "supervisor not running — start with any delegation or `superorchestrator daemon`".
 
 **4 Setup.** The first-run steps one by one with live status: `init`, `harnesses`, `import`, `add accounts`, `sign in`, `install` and `doctor`. `Enter` runs the selected step, `a` runs them all in order (it stops at the first failure), and `i` and `d` jump to `install` and `doctor`. Steps do only what is missing, so running them again is safe. `sign in` lists the accounts that are signed out and how to sign in; use the Accounts tab for that.
 

@@ -362,7 +362,7 @@ defaults to 0 because Claude limits are kept for the orchestrator), `--no-login`
 the plan. `--yes --json` prints one summary object.
 - `superorchestrator` with no command on a terminal (or `superorchestrator tui`) opens a \
 full-screen terminal UI: overview with a setup checklist, accounts (add, sign in, enable, \
-flag, remove, import), runs (details, cancel, join, accept, reject) and the setup steps. \
+flag, remove, import), runs (details and diff, cancel, open session, accept and merge, reject) and the setup steps. \
 Without a terminal it prints the help.
 - `superorchestrator init` creates the config dir and seeds `config.toml`, choices and the \
 model catalog.

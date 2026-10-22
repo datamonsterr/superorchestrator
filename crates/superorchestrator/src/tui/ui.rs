@@ -261,7 +261,7 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
         Tab::Overview => (vec![nav, ("R", "refresh")], "quit"),
         Tab::Accounts => (
             vec![
-                ("↑↓", "move"),
+                ("j/k", "move"),
                 ("a", "add"),
                 ("l", "sign in"),
                 ("e", "enable"),
@@ -273,9 +273,9 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
         ),
         Tab::Runs if app.detail.is_some() => (
             vec![
-                ("↑↓", "scroll"),
+                ("j/k", "scroll"),
                 ("Esc", "back"),
-                ("j", "join"),
+                ("o", "join"),
                 ("a", "accept"),
                 ("r", "reject"),
                 ("c", "cancel"),
@@ -284,9 +284,9 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
         ),
         Tab::Runs => (
             vec![
-                ("↑↓", "move"),
-                ("Enter", "open"),
-                ("j", "join"),
+                ("j/k", "move"),
+                ("Enter", "detail"),
+                ("o", "join"),
                 ("a", "accept"),
                 ("r", "reject"),
                 ("c", "cancel"),
@@ -295,7 +295,7 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
         ),
         Tab::Setup => (
             vec![
-                ("↑↓", "move"),
+                ("j/k", "move"),
                 ("Enter", "run step"),
                 ("a", "run all"),
                 ("i", "install"),
@@ -523,49 +523,76 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             ],
         );
     }
-    let widths = [
-        Constraint::Length(18),
-        Constraint::Length(9),
-        Constraint::Length(10),
-        Constraint::Length(8),
-        Constraint::Length(4),
-        Constraint::Length(6),
-        Constraint::Fill(1),
-    ];
+    // Below 90 columns ENABLED and CAP go, so the headroom text keeps its room; a disabled
+    // account is then marked "(off)" after its name.
+    let wide = area.width >= 90;
+    let widths: Vec<Constraint> = if wide {
+        vec![
+            Constraint::Length(18),
+            Constraint::Length(9),
+            Constraint::Length(10),
+            Constraint::Length(8),
+            Constraint::Length(4),
+            Constraint::Length(6),
+            Constraint::Fill(1),
+        ]
+    } else {
+        vec![
+            Constraint::Length(18),
+            Constraint::Length(9),
+            Constraint::Length(10),
+            Constraint::Length(6),
+            Constraint::Fill(1),
+        ]
+    };
     let inner = area.inner(Margin::new(1, 0));
-    let cols = Layout::horizontal(widths).spacing(1).split(Rect::new(
-        inner.x + 2,
-        inner.y,
-        inner.width.saturating_sub(2),
-        1,
-    ));
+    let cols = Layout::horizontal(widths.clone())
+        .spacing(1)
+        .split(Rect::new(
+            inner.x + 2,
+            inner.y,
+            inner.width.saturating_sub(2),
+            1,
+        ));
     let w = |i: usize| cols[i].width as usize;
+    let last = cols.len() - 1;
     let rows: Vec<Row> = s
         .accounts
         .iter()
         .map(|a| {
             let dim = if a.enabled { t.base() } else { t.muted() };
-            Row::new(vec![
-                Cell::new(truncate(&a.name, w(0), t.ellipsis())),
+            let name = if wide || a.enabled {
+                a.name.clone()
+            } else {
+                format!("{} (off)", a.name)
+            };
+            let mut cells = vec![
+                Cell::new(truncate(&name, w(0), t.ellipsis())),
                 Cell::new(a.harness.as_str()),
                 signed_cell(&t, a.signed_in),
-                Cell::new(if a.enabled { "yes" } else { "no" }),
-                Cell::new(a.cap.to_string()),
-                Cell::new(a.active.to_string()),
-                Cell::new(truncate(&a.headroom, w(6), t.ellipsis())),
-            ])
-            .style(dim)
+            ];
+            if wide {
+                cells.push(Cell::new(if a.enabled { "yes" } else { "no" }));
+                cells.push(Cell::new(a.cap.to_string()));
+            }
+            cells.push(Cell::new(a.active.to_string()));
+            cells.push(Cell::new(truncate(&a.headroom, w(last), t.ellipsis())));
+            Row::new(cells).style(dim)
         })
         .collect();
-    let header = Row::new([
-        "NAME",
-        "HARNESS",
-        "SIGNED IN",
-        "ENABLED",
-        "CAP",
-        "ACTIVE",
-        "HEADROOM",
-    ])
+    let header = Row::new(if wide {
+        vec![
+            "NAME",
+            "HARNESS",
+            "SIGNED IN",
+            "ENABLED",
+            "CAP",
+            "ACTIVE",
+            "HEADROOM",
+        ]
+    } else {
+        vec!["NAME", "HARNESS", "SIGNED IN", "ACTIVE", "HEADROOM"]
+    })
     .style(t.header());
     let table = Table::new(rows, widths)
         .header(header)
@@ -766,7 +793,52 @@ fn detail_lines(
         Some(res) => out.extend(res.lines().map(|l| Line::raw(l.to_string()))),
         None => out.push(Line::styled("(not finished)", t.muted())),
     }
+    match &r.diff {
+        None => {}
+        Some(Err(e)) => {
+            out.push(Line::raw(""));
+            out.push(heading("Diff"));
+            out.push(Line::styled(format!("{} {e}", t.bang()), t.warn()));
+        }
+        Some(Ok(d)) => {
+            out.push(Line::raw(""));
+            out.push(heading(&format!(
+                "Diff  {} (from {})",
+                d.branch,
+                short(&d.base)
+            )));
+            out.extend(clean_diff(&d.stat).map(Line::raw));
+            out.push(Line::raw(""));
+            for l in clean_diff(&d.patch) {
+                let style = match l.chars().next() {
+                    _ if l.starts_with("+++") || l.starts_with("---") || l.starts_with("diff ") => {
+                        t.bold()
+                    }
+                    Some('+') => t.ok(),
+                    Some('-') => t.bad(),
+                    Some('@') => t.accent(),
+                    _ => t.base(),
+                };
+                out.push(Line::styled(l, style));
+            }
+            if d.truncated {
+                out.push(Line::styled(
+                    format!("{} diff truncated", t.ellipsis()),
+                    t.muted(),
+                ));
+            }
+        }
+    }
     out
+}
+
+/// Diff text one line at a time, with tabs and control characters made harmless.
+fn clean_diff(s: &str) -> impl Iterator<Item = String> + '_ {
+    s.lines().map(|l| {
+        l.chars()
+            .map(|c| if c.is_control() { ' ' } else { c })
+            .collect()
+    })
 }
 
 fn draw_run_detail(f: &mut Frame, app: &mut App, area: Rect) {
@@ -898,11 +970,14 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
         Tab::Accounts => {
             out.push(Line::styled("Accounts", t.accent()));
             out.extend([
-                row("↑ ↓  PgUp", "move the selection"),
+                row(
+                    "j k  g G",
+                    "move; top or bottom (arrows, PgUp, Home work too)",
+                ),
                 row("a", "add accounts (harness, count)"),
                 row(
                     "l",
-                    "sign in (codex, opencode); claude and agy show the command",
+                    "sign in (claude and agy: in a session of their wrapper)",
                 ),
                 row("e", "enable or disable"),
                 row("f", "flag a cooldown, or clear it"),
@@ -913,11 +988,13 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
         Tab::Runs => {
             out.push(Line::styled("Runs", t.accent()));
             out.extend([
-                row("↑ ↓  PgUp", "move, or scroll an open run"),
+                row("j k  g G", "move, or scroll an open run"),
                 row("Enter", "open the run's details"),
                 row("c", "cancel (asks first)"),
-                row("j", "join the run's session"),
-                row("a  r", "accept or reject a run waiting for review"),
+                row("o", "open the run's session (join)"),
+                row("a", "accept and merge a run waiting for review"),
+                row("A", "accept without merging"),
+                row("r", "reject with feedback"),
             ]);
         }
         Tab::Setup => {

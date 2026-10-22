@@ -140,7 +140,10 @@ pub enum Effect {
     ScanImport,
     ImportAll(Vec<ImportCandidate>),
     Cancel(String),
-    Accept(String),
+    Accept {
+        run: String,
+        merge: bool,
+    },
     Reject {
         run: String,
         feedback: String,
@@ -163,7 +166,7 @@ impl Effect {
             Effect::ScanImport => "scanning for logins",
             Effect::ImportAll(_) => "importing",
             Effect::Cancel(_) => "cancelling run",
-            Effect::Accept(_) => "accepting run",
+            Effect::Accept { .. } => "accepting run",
             Effect::Reject { .. } => "rejecting run",
             Effect::Join(_) => "preparing join",
             Effect::Setup(_) | Effect::SetupAll => "running setup",
@@ -437,12 +440,12 @@ impl App {
     fn movement(code: KeyCode, sel: usize, len: usize) -> Option<usize> {
         let last = len.saturating_sub(1);
         Some(match code {
-            KeyCode::Down => (sel + 1).min(last),
-            KeyCode::Up => sel.saturating_sub(1),
+            KeyCode::Down | KeyCode::Char('j') => (sel + 1).min(last),
+            KeyCode::Up | KeyCode::Char('k') => sel.saturating_sub(1),
             KeyCode::PageDown => (sel + PAGE).min(last),
             KeyCode::PageUp => sel.saturating_sub(PAGE),
-            KeyCode::Home => 0,
-            KeyCode::End => last,
+            KeyCode::Home | KeyCode::Char('g') => 0,
+            KeyCode::End | KeyCode::Char('G') => last,
             _ => return None,
         })
     }
@@ -503,11 +506,13 @@ impl App {
         if let Some(d) = &mut self.detail {
             // The detail pane scrolls instead of moving the selection.
             match key.code {
-                KeyCode::Down => d.scroll = d.scroll.saturating_add(1),
-                KeyCode::Up => d.scroll = d.scroll.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => d.scroll = d.scroll.saturating_add(1),
+                KeyCode::Up | KeyCode::Char('k') => d.scroll = d.scroll.saturating_sub(1),
                 KeyCode::PageDown => d.scroll = d.scroll.saturating_add(PAGE as u16),
                 KeyCode::PageUp => d.scroll = d.scroll.saturating_sub(PAGE as u16),
-                KeyCode::Home => d.scroll = 0,
+                KeyCode::Home | KeyCode::Char('g') => d.scroll = 0,
+                // The draw step clamps this to the end of the content.
+                KeyCode::End | KeyCode::Char('G') => d.scroll = u16::MAX,
                 _ => {}
             }
         } else if let Some(s) = Self::movement(key.code, self.runs_sel, self.runs().len()) {
@@ -539,8 +544,8 @@ impl App {
                 });
                 None
             }
-            'j' => self.start(Effect::Join(run.0)),
-            'a' | 'r' if run.1 != RunState::PendingReview => {
+            'o' => self.start(Effect::Join(run.0)),
+            'a' | 'A' | 'r' if run.1 != RunState::PendingReview => {
                 self.say(
                     ToastKind::Err,
                     format!(
@@ -550,10 +555,17 @@ impl App {
                 );
                 None
             }
-            'a' => {
+            'a' | 'A' => {
+                // `a` merges when the run has a worktree to merge; `A` only accepts.
+                let merge = c == 'a' && run.2;
+                let prompt = if merge {
+                    format!("Accept and merge run {short}? (y/n)")
+                } else {
+                    format!("Accept run {short} without merging? (y/n)")
+                };
                 self.modal = Some(Modal::Confirm {
-                    prompt: format!("Accept run {short} and finish it?"),
-                    effect: Effect::Accept(run.0),
+                    prompt,
+                    effect: Effect::Accept { run: run.0, merge },
                 });
                 None
             }
@@ -571,23 +583,23 @@ impl App {
     }
 
     /// The open run, else the selected one, with its state.
-    fn run_in_focus(&self) -> Option<(String, RunState)> {
+    fn run_in_focus(&self) -> Option<(String, RunState, bool)> {
         let id = match &self.detail {
             Some(d) => d.id.as_str(),
             None => self.selected_run()?.id.as_str(),
         };
-        let state = self
+        let (state, worktree) = self
             .runs()
             .iter()
             .find(|r| r.id == id)
-            .map(|r| r.state)
+            .map(|r| (r.state, r.has_worktree))
             .or(match &self.detail {
                 Some(DetailView {
                     data: Some(Ok(d)), ..
-                }) => Some(d.state),
+                }) => Some((d.state, d.worktree.is_some())),
                 _ => None,
             })?;
-        Some((id.to_string(), state))
+        Some((id.to_string(), state, worktree))
     }
 
     fn setup_key(&mut self, key: KeyEvent) -> Option<Effect> {

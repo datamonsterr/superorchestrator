@@ -6,7 +6,7 @@ expression: "shot(& mut a, w, h)"
    1 Overview     2 Accounts     3 Runs !1     4 Setup
     NAME               HARNESS   SIGNED IN  ENABLED  CAP  ACTIVE HEADROOM
     codex-1            codex     ✓ yes      yes      2    1      codex: ok 82%
-  ▸ codex-2            codex     ✓ yes      yes      2    0      codex: cooldown until 2026-10-23T15:00:00+00:00
+  ▸ codex-2            codex     ✓ yes      yes      2    0      codex: cooldown 3h
     opencode-1         opencode  ✗ no       yes      2    0
     claude-1           claude    ? unknown  no       2    0
 
@@ -41,4 +41,4 @@ expression: "shot(& mut a, w, h)"
 
 
  updated 3s ago
- ↑↓ move  a add  l sign in  e enable  f flag  x remove  i scan  ? help  q quit
+ j/k move  a add  l sign in  e enable  f flag  x remove  i scan  ? help  q quit

@@ -15,9 +15,9 @@ expression: "shot(&mut a, 80, 24)"
   │ Ctrl-C      quit                                                         │
   │                                                                          │
   │ Accounts                                                                 │
-  │ ↑ ↓  PgUp   move the selection                                           │
+  │ j k  g G    move; top or bottom (arrows, PgUp, Home work too)            │
   │ a           add accounts (harness, count)                                │
-  │ l           sign in (codex, opencode); claude and agy show the command   │
+  │ l           sign in (claude and agy: in a session of their wrapper)      │
   │ e           enable or disable                                            │
   │ f           flag a cooldown, or clear it                                 │
   │ x           remove (type the name to confirm)                            │

@@ -25,4 +25,4 @@ expression: "shot(& mut a, w, h)"
  │ Result                                                                     │
  ╰──────────────────────────────────────────────────────────────────── ↓ more ╯
  updated 3s ago
- ↑↓ scroll  Esc back  j join  a accept  r reject  c cancel  ? help  q back
+ j/k scroll  Esc back  o join  a accept  r reject  c cancel  ? help  q back
