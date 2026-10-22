@@ -135,9 +135,16 @@ fn map_step(r: &Row<'_>) -> rusqlite::Result<WorkflowStepRow> {
 }
 
 impl Store {
+    /// Inserts the step, or replaces it when the run is being re-run.
     pub fn insert_workflow_step(&self, s: &WorkflowStepRow) -> Result<()> {
         self.conn().execute(
-            &format!("INSERT INTO workflow_steps ({STEP_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)"),
+            &format!(
+                "INSERT INTO workflow_steps ({STEP_COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) \
+                 ON CONFLICT (workflow_run_id, step_index) DO UPDATE SET \
+                 phase = excluded.phase, prompt_hash = excluded.prompt_hash, \
+                 run_id = excluded.run_id, state = excluded.state, \
+                 started_at = excluded.started_at, finished_at = excluded.finished_at"
+            ),
             params![
                 s.workflow_run_id,
                 s.step_index,

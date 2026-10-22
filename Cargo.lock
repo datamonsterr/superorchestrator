@@ -2469,6 +2469,7 @@ dependencies = [
  "sha2",
  "so-core",
  "so-store",
+ "so-workflow",
  "tempfile",
  "thiserror",
  "tokio",

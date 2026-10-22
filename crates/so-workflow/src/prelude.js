@@ -121,6 +121,14 @@
   const banned = (what) => () => {
     throw new Error(what + ' is disabled in workflow scripts; pass it in through args');
   };
+  const RealDate = g.Date;
+  function WfDate(...a) {
+    if (a.length === 0) banned('new Date() / Date() without arguments')();
+    return new.target ? new RealDate(...a) : RealDate(...a);
+  }
+  Object.setPrototypeOf(WfDate, RealDate);
+  WfDate.prototype = RealDate.prototype;
+  g.Date = WfDate;
   Date.now = banned('Date.now()');
   Math.random = banned('Math.random()');
 

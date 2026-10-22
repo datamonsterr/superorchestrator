@@ -136,6 +136,8 @@ impl WorkflowEngine {
             blocking(move || {
                 if store.get_workflow_run(&id)?.is_none() {
                     store.insert_workflow_run(&row)?;
+                } else {
+                    store.update_workflow_run_state(&id, "running", None)?;
                 }
                 Ok(())
             })

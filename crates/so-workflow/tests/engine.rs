@@ -1,130 +1,15 @@
 #![allow(clippy::unwrap_used)]
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::{Value, json};
 use so_store::Store;
-use so_workflow::{
-    BoxFut, CancelToken, HostError, RunOptions, StepEvent, StepOutcome, StepRequest,
-    WorkflowEngine, WorkflowError, WorkflowHost,
-};
+use so_workflow::testing::{FakeHost, done};
+use so_workflow::{CancelToken, HostError, RunOptions, StepOutcome, WorkflowEngine, WorkflowError};
 use tokio::time::Instant;
-
-type Handler = dyn Fn(&StepRequest, usize) -> Result<StepOutcome, HostError> + Send + Sync;
-
-#[derive(Debug, Clone)]
-struct Call {
-    prompt: String,
-    opts: Value,
-    start: Instant,
-    end: Instant,
-}
-
-struct FakeHost {
-    handler: Box<Handler>,
-    delay: Duration,
-    calls: Mutex<Vec<Call>>,
-    restarts: Mutex<Vec<u32>>,
-    events: Mutex<Vec<String>>,
-    statuses: Mutex<Vec<(usize, String)>>,
-    n: AtomicUsize,
-}
-
-impl FakeHost {
-    fn new(
-        handler: impl Fn(&StepRequest, usize) -> Result<StepOutcome, HostError> + Send + Sync + 'static,
-    ) -> Arc<Self> {
-        Self::with_delay(Duration::ZERO, handler)
-    }
-
-    fn with_delay(
-        delay: Duration,
-        handler: impl Fn(&StepRequest, usize) -> Result<StepOutcome, HostError> + Send + Sync + 'static,
-    ) -> Arc<Self> {
-        Arc::new(Self {
-            handler: Box::new(handler),
-            delay,
-            calls: Mutex::default(),
-            restarts: Mutex::default(),
-            events: Mutex::default(),
-            statuses: Mutex::default(),
-            n: AtomicUsize::new(0),
-        })
-    }
-
-    /// Answers every prompt with the string `"done:<prompt>"`.
-    fn echo() -> Arc<Self> {
-        Self::new(|r, _| Ok(done(json!(format!("done:{}", r.prompt)))))
-    }
-
-    fn calls(&self) -> Vec<Call> {
-        self.calls.lock().unwrap().clone()
-    }
-    fn events(&self) -> Vec<String> {
-        self.events.lock().unwrap().clone()
-    }
-}
-
-fn done(result: Value) -> StepOutcome {
-    StepOutcome::Done {
-        result,
-        run_id: Some("run-1".into()),
-    }
-}
-
-impl WorkflowHost for FakeHost {
-    fn spawn_and_wait<'a>(
-        &'a self,
-        req: &'a StepRequest,
-    ) -> BoxFut<'a, Result<StepOutcome, HostError>> {
-        Box::pin(async move {
-            let start = Instant::now();
-            let n = self.n.fetch_add(1, Ordering::SeqCst);
-            tokio::time::sleep(self.delay).await;
-            self.calls.lock().unwrap().push(Call {
-                prompt: req.prompt.clone(),
-                opts: req.opts.clone(),
-                start,
-                end: Instant::now(),
-            });
-            (self.handler)(req, n)
-        })
-    }
-
-    fn restart<'a>(
-        &'a self,
-        req: &'a StepRequest,
-        _stalled: Option<&'a str>,
-        attempt: u32,
-    ) -> BoxFut<'a, Result<StepOutcome, HostError>> {
-        Box::pin(async move {
-            self.restarts.lock().unwrap().push(attempt);
-            let n = self.n.fetch_add(1, Ordering::SeqCst);
-            (self.handler)(req, n)
-        })
-    }
-
-    fn log<'a>(&'a self, msg: &'a str) -> BoxFut<'a, ()> {
-        Box::pin(async move { self.events.lock().unwrap().push(format!("log:{msg}")) })
-    }
-    fn phase_started<'a>(&'a self, name: &'a str) -> BoxFut<'a, ()> {
-        Box::pin(async move { self.events.lock().unwrap().push(format!("start:{name}")) })
-    }
-    fn phase_finished<'a>(&'a self, name: &'a str) -> BoxFut<'a, ()> {
-        Box::pin(async move { self.events.lock().unwrap().push(format!("end:{name}")) })
-    }
-    fn step_status<'a>(&'a self, e: &'a StepEvent) -> BoxFut<'a, ()> {
-        Box::pin(async move {
-            self.statuses
-                .lock()
-                .unwrap()
-                .push((e.step_index, e.state.clone()))
-        })
-    }
-}
 
 fn engine() -> (WorkflowEngine, Store) {
     let store = Store::open_in_memory().unwrap();
@@ -302,7 +187,7 @@ async fn phase_and_log_events() {
             "log:after"
         ]
     );
-    let statuses = host.statuses.lock().unwrap().clone();
+    let statuses = host.statuses();
     assert_eq!(
         statuses,
         [(0, "running".to_string()), (0, "succeeded".to_string())]
@@ -496,7 +381,7 @@ async fn stalled_step_restarts_up_to_five_times() {
         .await
         .unwrap();
     assert_eq!(out, json!("finally"));
-    assert_eq!(*host.restarts.lock().unwrap(), [1, 2, 3, 4, 5]);
+    assert_eq!(host.restarts(), [1, 2, 3, 4, 5]);
     assert_eq!(host.calls()[0].opts, json!({"stall_ms": 1000}));
 
     let host = stalls(6);
@@ -507,7 +392,7 @@ async fn stalled_step_restarts_up_to_five_times() {
         err.to_string().contains("stalled on all 6 attempts"),
         "{err}"
     );
-    assert_eq!(host.restarts.lock().unwrap().len(), 5);
+    assert_eq!(host.restarts().len(), 5);
 }
 
 #[tokio::test]
@@ -597,4 +482,62 @@ async fn cancel_interrupts_host_wait() {
         .await
         .unwrap_err();
     assert!(matches!(e, WorkflowError::Cancelled), "{e}");
+}
+
+#[tokio::test]
+async fn rerun_with_same_run_id_resets_state_and_upserts_steps() {
+    let (eng, store) = engine();
+    let src = "await agent('a'); await agent('b');";
+    let mk = || RunOptions {
+        run_id: Some("same".into()),
+        cancel: CancelToken::new(),
+    };
+    let bad = FakeHost::new(|r, _| {
+        if r.prompt == "b" {
+            Err(HostError("no".into()))
+        } else {
+            Ok(done(json!(1)))
+        }
+    });
+    eng.run_with(mk(), src, "wf", Value::Null, bad)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        store.get_workflow_run("same").unwrap().unwrap().state,
+        "failed"
+    );
+    eng.run_with(mk(), src, "wf", Value::Null, FakeHost::echo())
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_workflow_run("same").unwrap().unwrap().state,
+        "succeeded"
+    );
+    let steps = store.list_workflow_steps("same").unwrap();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0].state, "cached");
+    assert_eq!(steps[1].state, "succeeded");
+}
+
+#[tokio::test]
+async fn date_without_args_throws_but_explicit_dates_work() {
+    let host = FakeHost::echo();
+    for expr in ["new Date()", "Date()"] {
+        let e = run(&host, &format!("return String({expr});"))
+            .await
+            .unwrap_err();
+        assert!(e.to_string().contains("disabled"), "{e}");
+    }
+    let out = run_args(
+        &host,
+        "return [new Date(0).toISOString(), Date.UTC(1970,0,2), new Date(args.t).getTime(), \
+         new Date(2020, 0, 1) instanceof Date, typeof Date(0)];",
+        json!({"t": 5}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        out,
+        json!(["1970-01-01T00:00:00.000Z", 86_400_000, 5, true, "string"])
+    );
 }

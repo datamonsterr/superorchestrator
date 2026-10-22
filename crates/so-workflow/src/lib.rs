@@ -7,6 +7,8 @@ mod host;
 mod saved;
 mod script;
 mod step;
+#[cfg(feature = "test-util")]
+pub mod testing;
 
 pub use engine::{CancelToken, EngineOptions, RunOptions, WorkflowEngine};
 pub use error::{Result, WorkflowError};

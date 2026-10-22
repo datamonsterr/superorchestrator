@@ -11,6 +11,10 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Exposes `testing::FakeHost` for other crates' tests.
+test-util = ["tokio/test-util"]
+
 [dependencies]
 so-core = { path = "../so-core" }
 so-store = { path = "../so-store" }
@@ -25,3 +29,4 @@ futures-util = "0.3"
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
+so-workflow = { path = ".", features = ["test-util"] }
