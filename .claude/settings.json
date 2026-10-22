@@ -10,6 +10,17 @@
           }
         ]
       }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$HOME/.local/share/otherskill/bin/otherskill\" 'find' '--agent' 'claude' '--config' \"$CLAUDE_PROJECT_DIR/.otherskill/config.json\" '--model' 'inception/mercury-decide:free'",
+            "timeout": 107
+          }
+        ]
+      }
     ]
   }
 }

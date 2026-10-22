@@ -1,0 +1,4 @@
+# Bogus model, `claude -p --model bogus-xyz hi` (exit 1, text output)
+Claude Code doesn't recognize the model "bogus-xyz", so it assumes a context window of 200k tokens. ...
+[claude-code:unrecognized_model] {"model":"bogus-xyz","query_source":"sdk"}
+There's an issue with the selected model (bogus-xyz). It may not exist or you may not have access to it. Run --model to pick a different model.

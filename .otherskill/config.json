@@ -1,15 +1,17 @@
 {
-  "bankPath": "/home/dat/.local/share/otherskill/bank",
+  "bankPath": "bank",
   "model": "inception/mercury-decide:free",
   "scope": "project",
-  "agent": "antigravity",
+  "agent": "claude",
   "agents": [
+    "claude",
     "antigravity",
     "opencode"
   ],
   "hookParams": {
     "model": "inception/mercury-decide:free"
   },
+  "portableHooks": true,
   "enabledCategories": [
     "frontend/ui-ux",
     "frontend/react",
@@ -19,7 +21,12 @@
     "devops",
     "testing",
     "security",
-    "management"
+    "management",
+    "business-analyst",
+    "product",
+    "docs",
+    "ai-data",
+    "protocols"
   ],
   "categories": [
     {
@@ -61,6 +68,26 @@
     {
       "id": "management",
       "description": "Find, create, install and maintain agent skills and project workflows"
+    },
+    {
+      "id": "business-analyst",
+      "description": "Business analysis: requirements elicitation, use case specifications, user stories and acceptance criteria (INVEST, Given-When-Then), process and scope analysis"
+    },
+    {
+      "id": "product",
+      "description": "Product management: product discovery, problem validation, opportunity framing, prioritization and product requirements"
+    },
+    {
+      "id": "docs",
+      "description": "Technical writing, diagrams, specs and documentation maintenance"
+    },
+    {
+      "id": "ai-data",
+      "description": "LLM, agent SDKs, vector search and data analysis"
+    },
+    {
+      "id": "protocols",
+      "description": "Model Context Protocol and agent-to-agent protocols"
     }
   ],
   "limits": {

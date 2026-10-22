@@ -1,0 +1,1579 @@
+//! Run and attempt queries.
+
+use std::sync::LazyLock;
+
+use chrono::{DateTime, Utc};
+use rusqlite::types::ToSql;
+use rusqlite::{Connection, Row, TransactionBehavior, params};
+use so_core::{RunState, new_id};
+
+use crate::codec::*;
+use crate::error::{Result, StoreError};
+use crate::rows::{AttemptRow, FinishPatch, InsertRun, Reassign, ResumeClaim, RunPatch, RunRow};
+use crate::store::Store;
+
+const COLS: &str = "id, session_id, parent_run_id, depth, name, agent, choice_id, harness, \
+    account, model, effort, cwd, worktree_path, branch, native_session_id, state, review, \
+    output_schema, result_json, error_kind, prompt, created_at, started_at, finished_at, \
+    isolation, max_turns, worktree_base, worktree_repo, timeout_ms";
+
+fn state_list(pred: impl Fn(RunState) -> bool) -> String {
+    RunState::ALL
+        .into_iter()
+        .filter(|s| pred(*s))
+        .map(|s| format!("'{}'", s.as_str()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Non-terminal states, including `queued`.
+static ACTIVE: LazyLock<String> =
+    LazyLock::new(|| format!("state IN ({})", state_list(|s| s.is_active())));
+
+/// States that hold a concurrency slot. `queued` waits for a slot and `pending_review` has
+/// no harness process, so both are excluded (SPEC 7.7).
+static SLOT_HOLDING: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "state IN ({})",
+        state_list(|s| s.is_active() && s != RunState::Queued && s != RunState::PendingReview)
+    )
+});
+
+fn map(r: &Row<'_>) -> rusqlite::Result<RunRow> {
+    Ok(RunRow {
+        id: r.get(0)?,
+        session_id: r.get(1)?,
+        parent_run_id: r.get(2)?,
+        depth: r.get(3)?,
+        name: r.get(4)?,
+        agent: r.get(5)?,
+        choice_id: r.get(6)?,
+        harness: get_enum(r, 7)?,
+        account: r.get(8)?,
+        model: r.get(9)?,
+        effort: r.get(10)?,
+        cwd: r.get(11)?,
+        worktree_path: r.get(12)?,
+        branch: r.get(13)?,
+        native_session_id: r.get(14)?,
+        state: get_enum(r, 15)?,
+        review: r.get(16)?,
+        output_schema: r.get(17)?,
+        result_json: r.get(18)?,
+        error_kind: get_opt_enum(r, 19)?,
+        prompt: r.get(20)?,
+        created_at: get_ts(r, 21)?,
+        started_at: get_opt_ts(r, 22)?,
+        finished_at: get_opt_ts(r, 23)?,
+        isolation: get_enum(r, 24)?,
+        max_turns: r
+            .get::<_, Option<i64>>(25)?
+            .and_then(|n| u32::try_from(n).ok()),
+        worktree_base: r.get(26)?,
+        worktree_repo: r.get(27)?,
+        timeout_ms: r
+            .get::<_, Option<i64>>(28)?
+            .and_then(|n| u64::try_from(n).ok()),
+    })
+}
+
+fn map_attempt(r: &Row<'_>) -> rusqlite::Result<AttemptRow> {
+    Ok(AttemptRow {
+        id: r.get(0)?,
+        run_id: r.get(1)?,
+        account: r.get(2)?,
+        pool: r.get(3)?,
+        started_at: get_ts(r, 4)?,
+        ended_at: get_opt_ts(r, 5)?,
+        outcome: r.get(6)?,
+    })
+}
+
+impl Store {
+    pub fn insert_run(&self, r: &RunRow) -> Result<()> {
+        insert_run_on(&self.conn(), r)
+    }
+
+    /// Inserts a run unless its parent already has `max_children` active children. The
+    /// count and the insert share one transaction, so concurrent spawns cannot overshoot.
+    pub fn insert_run_checked(&self, r: &RunRow, max_children: usize) -> Result<InsertRun> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(parent) = &r.parent_run_id {
+            let active = &*ACTIVE;
+            let n: i64 = tx.query_row(
+                &format!("SELECT COUNT(*) FROM runs WHERE parent_run_id = ?1 AND {active}"),
+                [parent],
+                |row| row.get(0),
+            )?;
+            let n = usize::try_from(n).unwrap_or(usize::MAX);
+            if n >= max_children {
+                return Ok(InsertRun::ChildCap { active: n });
+            }
+        }
+        insert_run_on(&tx, r)?;
+        tx.commit()?;
+        Ok(InsertRun::Inserted)
+    }
+
+    pub fn get_run(&self, id: &str) -> Result<Option<RunRow>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!("SELECT {COLS} FROM runs WHERE id = ?1"))?;
+        let mut rows = st.query_map([id], map)?;
+        Ok(rows.next().transpose()?)
+    }
+
+    /// Finds the single run whose id starts with `prefix`.
+    pub fn get_run_by_prefix(&self, prefix: &str) -> Result<RunRow> {
+        let not_found = || StoreError::NotFound {
+            entity: "run",
+            id: prefix.into(),
+        };
+        if prefix.is_empty() {
+            return Err(not_found());
+        }
+        let esc = prefix
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
+            "SELECT {COLS} FROM runs WHERE id LIKE ?1 ESCAPE '\\' LIMIT 2"
+        ))?;
+        let mut found = st
+            .query_map([format!("{esc}%")], map)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        match found.len() {
+            0 => Err(not_found()),
+            1 => Ok(found.remove(0)),
+            _ => Err(StoreError::AmbiguousPrefix {
+                entity: "run",
+                prefix: prefix.into(),
+            }),
+        }
+    }
+
+    /// Compare-and-set state change: succeeds only if the run is in `from` and
+    /// `from -> to` is an allowed transition.
+    pub fn update_run_state(&self, id: &str, from: RunState, to: RunState) -> Result<()> {
+        cas_state(&self.conn(), id, from, to)
+    }
+
+    /// Claims a slot for resuming a `succeeded`, `failed` or `pending_review` run (a message
+    /// or a rejection continues its native session). With room under the caps the run goes
+    /// back to `running`; without, to `queued` with `prompt` kept as its resume intent, so
+    /// the queue resumes it when a slot frees. Its result and error are cleared and its
+    /// session is reopened. `pending_review` holds no slot, so it counts as free.
+    #[allow(clippy::too_many_arguments)] // one atomic claim, like `try_claim_slot`
+    pub fn claim_resume(
+        &self,
+        run_id: &str,
+        account: &str,
+        account_cap: i64,
+        global_cap: i64,
+        prompt: &str,
+    ) -> Result<ResumeClaim> {
+        // Dead wrapper sessions hold caps: end them before the transaction opens, so
+        // liveness checks never run inside it.
+        self.reap_dead_interactive_sessions()?;
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let from = current_state(&tx, run_id)?;
+        if !matches!(
+            from,
+            RunState::Succeeded | RunState::Failed | RunState::PendingReview
+        ) {
+            return Ok(ResumeClaim::Conflict(from));
+        }
+        let slot = &*SLOT_HOLDING;
+        let account_runs: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE account = ?1 AND id != ?2 AND {slot}"),
+            params![account, run_id],
+            |r| r.get(0),
+        )?;
+        let interactive = crate::sessions::count_interactive(&tx, account)?;
+        let total: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE id != ?1 AND {slot}"),
+            [run_id],
+            |r| r.get(0),
+        )?;
+        let room = account_runs + interactive < account_cap && total < global_cap;
+        let to = if room {
+            RunState::Running
+        } else {
+            RunState::Queued
+        };
+        tx.execute(
+            "UPDATE runs SET state = ?2, finished_at = NULL, error_kind = NULL, \
+             result_json = NULL WHERE id = ?1",
+            params![run_id, enum_to_sql(&to)],
+        )?;
+        if !room {
+            tx.execute(
+                "INSERT INTO run_meta (run_id, resume_prompt) VALUES (?1, ?2) \
+                 ON CONFLICT(run_id) DO UPDATE SET resume_prompt = excluded.resume_prompt",
+                params![run_id, prompt],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO run_meta (run_id, turn_prompt) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET turn_prompt = excluded.turn_prompt",
+            params![run_id, prompt],
+        )?;
+        let sid: String =
+            tx.query_row("SELECT session_id FROM runs WHERE id = ?1", [run_id], |r| {
+                r.get(0)
+            })?;
+        tx.execute(
+            "UPDATE sessions SET status = 'active', ended_at = NULL WHERE id = ?1",
+            [sid],
+        )?;
+        tx.commit()?;
+        Ok(ResumeClaim::Moved { from, to })
+    }
+
+    /// Returns and clears the resume intent of a queued run.
+    pub fn take_resume_prompt(&self, run_id: &str) -> Result<Option<String>> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let prompt: Option<Option<String>> = tx
+            .query_row(
+                "SELECT resume_prompt FROM run_meta WHERE run_id = ?1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?;
+        let prompt = prompt.flatten();
+        if prompt.is_some() {
+            tx.execute(
+                "UPDATE run_meta SET resume_prompt = NULL WHERE run_id = ?1",
+                [run_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(prompt)
+    }
+
+    /// Drops the extras of a run (checks, fork source, resume intent); used when its
+    /// worktree is pruned.
+    pub fn delete_run_meta(&self, run_id: &str) -> Result<()> {
+        self.conn()
+            .execute("DELETE FROM run_meta WHERE run_id = ?1", [run_id])?;
+        Ok(())
+    }
+
+    /// Stores the review checks of a run (`ci`, `pr_threads`, `cmd:<shell>`).
+    pub fn set_run_checks(&self, run_id: &str, checks: &[String]) -> Result<()> {
+        let json = serde_json::to_string(checks).unwrap_or_else(|_| "[]".into());
+        self.conn().execute(
+            "INSERT INTO run_meta (run_id, checks_json) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET checks_json = excluded.checks_json",
+            params![run_id, json],
+        )?;
+        Ok(())
+    }
+
+    /// The review checks of a run; empty when none were set.
+    pub fn get_run_checks(&self, run_id: &str) -> Result<Vec<String>> {
+        let json: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT checks_json FROM run_meta WHERE run_id = ?1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?;
+        Ok(json
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default())
+    }
+
+    /// Stores how a run was routed (the caller's pins as JSON), for failover.
+    pub fn set_run_route(&self, run_id: &str, route_json: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO run_meta (run_id, route_json) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET route_json = excluded.route_json",
+            params![run_id, route_json],
+        )?;
+        Ok(())
+    }
+
+    /// How a run was routed; `None` for a run whose harness and account were both named.
+    pub fn get_run_route(&self, run_id: &str) -> Result<Option<String>> {
+        let v: Option<Option<String>> = self
+            .conn()
+            .query_row(
+                "SELECT route_json FROM run_meta WHERE run_id = ?1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?;
+        Ok(v.flatten())
+    }
+
+    /// Records the prompt the run's current turn was given.
+    pub fn set_run_turn_prompt(&self, run_id: &str, prompt: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO run_meta (run_id, turn_prompt) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET turn_prompt = excluded.turn_prompt",
+            params![run_id, prompt],
+        )?;
+        Ok(())
+    }
+
+    /// Adds text the run was given mid-turn (a message), so a failover re-sends it too.
+    pub fn append_run_turn_prompt(&self, run_id: &str, text: &str) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO run_meta (run_id, turn_prompt) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET turn_prompt = \
+             CASE WHEN turn_prompt IS NULL THEN excluded.turn_prompt \
+             ELSE turn_prompt || char(10) || char(10) || excluded.turn_prompt END",
+            params![run_id, text],
+        )?;
+        Ok(())
+    }
+
+    /// The route decision of a queued run that moved, to announce when it starts.
+    pub fn set_queued_route_event(&self, run_id: &str, json: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO run_meta (run_id, queued_route_json) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET queued_route_json = excluded.queued_route_json",
+            params![run_id, json],
+        )?;
+        Ok(())
+    }
+
+    pub fn take_queued_route_event(&self, run_id: &str) -> Result<Option<String>> {
+        let v = self.meta_text(run_id, "queued_route_json")?;
+        if v.is_some() {
+            self.conn().execute(
+                "UPDATE run_meta SET queued_route_json = NULL WHERE run_id = ?1",
+                [run_id],
+            )?;
+        }
+        Ok(v)
+    }
+
+    /// Drops what a queued run was waiting to announce (it ended before it started).
+    pub fn clear_queued_pending(&self, run_id: &str) -> Result<()> {
+        self.conn().execute(
+            "UPDATE run_meta SET failover_json = NULL, queued_route_json = NULL WHERE run_id = ?1",
+            [run_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_run_turn_prompt(&self, run_id: &str) -> Result<Option<String>> {
+        self.meta_text(run_id, "turn_prompt")
+    }
+
+    pub fn set_failover_pending(&self, run_id: &str, json: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO run_meta (run_id, failover_json) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET failover_json = excluded.failover_json",
+            params![run_id, json],
+        )?;
+        Ok(())
+    }
+
+    /// The failover a queued run is waiting to carry out (JSON), if any.
+    pub fn get_failover_pending(&self, run_id: &str) -> Result<Option<String>> {
+        self.meta_text(run_id, "failover_json")
+    }
+
+    /// Returns and clears the pending failover of a run.
+    pub fn take_failover_pending(&self, run_id: &str) -> Result<Option<String>> {
+        let v = self.meta_text(run_id, "failover_json")?;
+        if v.is_some() {
+            self.conn().execute(
+                "UPDATE run_meta SET failover_json = NULL WHERE run_id = ?1",
+                [run_id],
+            )?;
+        }
+        Ok(v)
+    }
+
+    fn meta_text(&self, run_id: &str, column: &str) -> Result<Option<String>> {
+        let v: Option<Option<String>> = self
+            .conn()
+            .query_row(
+                &format!("SELECT {column} FROM run_meta WHERE run_id = ?1"),
+                [run_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?;
+        Ok(v.flatten())
+    }
+
+    /// Failover with every target account full: the run gives up its slot, goes back to
+    /// `queued` on `to.account` and keeps `pending` (JSON) until the queue starts it there.
+    /// This is the one move into `queued` from a running state.
+    pub fn requeue_for_failover(
+        &self,
+        run_id: &str,
+        from_account: &str,
+        to: &Reassign,
+        pending: &str,
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = current_state(&tx, run_id)?;
+        let current: Option<String> =
+            tx.query_row("SELECT account FROM runs WHERE id = ?1", [run_id], |r| {
+                r.get(0)
+            })?;
+        if !state.is_active()
+            || state == RunState::Queued
+            || state == RunState::PendingReview
+            || current.as_deref() != Some(from_account)
+        {
+            return Err(StoreError::StateConflict {
+                id: run_id.into(),
+                expected: RunState::Running,
+                actual: state,
+            });
+        }
+        tx.execute(
+            "UPDATE runs SET state = 'queued', account = ?2, harness = ?3, choice_id = ?4, \
+             model = ?5, effort = ?6, native_session_id = NULL WHERE id = ?1",
+            params![
+                run_id,
+                to.account,
+                enum_to_sql(&to.harness),
+                to.choice_id,
+                to.model,
+                to.effort
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO run_meta (run_id, failover_json) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET failover_json = excluded.failover_json",
+            params![run_id, pending],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// A queued run that has not started moves to another account (its first one is full).
+    /// Returns `false` when the run is no longer queued on `from_account`.
+    pub fn retarget_queued(&self, run_id: &str, from_account: &str, to: &Reassign) -> Result<bool> {
+        let n = self.conn().execute(
+            "UPDATE runs SET account = ?3, harness = ?4, choice_id = ?5, model = ?6, effort = ?7 \
+             WHERE id = ?1 AND state = 'queued' AND account = ?2 AND native_session_id IS NULL",
+            params![
+                run_id,
+                from_account,
+                to.account,
+                enum_to_sql(&to.harness),
+                to.choice_id,
+                to.model,
+                to.effort
+            ],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Failover: atomically moves a running run's slot from `from_account` to `to.account`,
+    /// switching its harness, choice, model and effort and clearing its native session (it
+    /// belongs to the old account). Only done if the new account (slot-holding runs plus open
+    /// interactive sessions) is below `account_cap`; returns `false` when it is not. The
+    /// global count does not change, because this run already holds a slot.
+    pub fn reassign_run(
+        &self,
+        run_id: &str,
+        from_account: &str,
+        to: &Reassign,
+        account_cap: i64,
+    ) -> Result<bool> {
+        // Dead wrapper sessions hold caps: end them before the transaction opens, so
+        // liveness checks never run inside it.
+        self.reap_dead_interactive_sessions()?;
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = current_state(&tx, run_id)?;
+        if !state.is_active() || state == RunState::Queued || state == RunState::PendingReview {
+            return Err(StoreError::StateConflict {
+                id: run_id.into(),
+                expected: RunState::Running,
+                actual: state,
+            });
+        }
+        let current: Option<String> =
+            tx.query_row("SELECT account FROM runs WHERE id = ?1", [run_id], |r| {
+                r.get(0)
+            })?;
+        if current.as_deref() != Some(from_account) {
+            return Err(StoreError::Constraint(format!(
+                "run `{run_id}` is not on account `{from_account}`"
+            )));
+        }
+        let slot = &*SLOT_HOLDING;
+        let on_target: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE account = ?1 AND id != ?2 AND {slot}"),
+            params![to.account, run_id],
+            |r| r.get(0),
+        )?;
+        let interactive = crate::sessions::count_interactive(&tx, &to.account)?;
+        if on_target + interactive >= account_cap {
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE runs SET account = ?2, harness = ?3, choice_id = ?4, model = ?5, \
+             effort = ?6, native_session_id = NULL WHERE id = ?1",
+            params![
+                run_id,
+                to.account,
+                enum_to_sql(&to.harness),
+                to.choice_id,
+                to.model,
+                to.effort
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Marks a run as a fork: it resumes a copy of this native session when it starts.
+    pub fn set_run_fork(&self, run_id: &str, native_session_id: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO run_meta (run_id, fork_from) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET fork_from = excluded.fork_from",
+            params![run_id, native_session_id],
+        )?;
+        Ok(())
+    }
+
+    /// The native session a fork run starts from.
+    pub fn get_run_fork(&self, run_id: &str) -> Result<Option<String>> {
+        let v: Option<Option<String>> = self
+            .conn()
+            .query_row(
+                "SELECT fork_from FROM run_meta WHERE run_id = ?1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?;
+        Ok(v.flatten())
+    }
+
+    /// Atomically claims a concurrency slot: moves the run `from -> to` and sets its account,
+    /// only if the account (slot-holding runs plus open interactive sessions) is below
+    /// `account_cap` and all slot-holding runs are below `global_cap`. Moving into
+    /// `starting` also sets `started_at` to `now`. Returns `false`
+    /// (changing nothing) when a cap is reached.
+    #[allow(clippy::too_many_arguments)] // one atomic claim; a params struct would only add noise
+    pub fn try_claim_slot(
+        &self,
+        run_id: &str,
+        from: RunState,
+        to: RunState,
+        account: &str,
+        account_cap: i64,
+        global_cap: i64,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        if !from.can_transition(to) {
+            return Err(StoreError::InvalidTransition { from, to });
+        }
+        // Dead wrapper sessions hold caps: end them before the transaction opens, so
+        // liveness checks never run inside it.
+        self.reap_dead_interactive_sessions()?;
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let actual = current_state(&tx, run_id)?;
+        if actual != from {
+            return Err(StoreError::StateConflict {
+                id: run_id.into(),
+                expected: from,
+                actual,
+            });
+        }
+        let slot = &*SLOT_HOLDING;
+        let account_runs: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE account = ?1 AND id != ?2 AND {slot}"),
+            params![account, run_id],
+            |r| r.get(0),
+        )?;
+        let interactive = crate::sessions::count_interactive(&tx, account)?;
+        let total: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE id != ?1 AND {slot}"),
+            [run_id],
+            |r| r.get(0),
+        )?;
+        if account_runs + interactive >= account_cap || total >= global_cap {
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE runs SET state = ?2, account = ?3, started_at = COALESCE(?4, started_at) \
+             WHERE id = ?1",
+            params![
+                run_id,
+                enum_to_sql(&to),
+                account,
+                (to == RunState::Starting).then(|| ts_to_sql(&now))
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// Atomically moves a run `from -> to` and writes the final fields of `patch`.
+    pub fn finish_run(
+        &self,
+        run_id: &str,
+        from: RunState,
+        to: RunState,
+        patch: &FinishPatch,
+    ) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        cas_state(&tx, run_id, from, to)?;
+        tx.execute(
+            "UPDATE runs SET result_json = COALESCE(?2, result_json), \
+             error_kind = COALESCE(?3, error_kind), finished_at = COALESCE(?4, finished_at) \
+             WHERE id = ?1",
+            params![
+                run_id,
+                patch.result_json,
+                patch.error_kind.as_ref().map(enum_to_sql),
+                opt_ts_to_sql(&patch.finished_at),
+            ],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Sets the fields present in `p`; other columns are untouched.
+    pub fn patch_run(&self, id: &str, p: &RunPatch) -> Result<()> {
+        let mut sets: Vec<&str> = Vec::new();
+        let mut vals: Vec<Box<dyn ToSql>> = Vec::new();
+        macro_rules! set {
+            ($col:literal, $v:expr) => {
+                sets.push(concat!($col, " = ?"));
+                vals.push(Box::new($v));
+            };
+        }
+        if let Some(v) = &p.choice_id {
+            set!("choice_id", v.clone());
+        }
+        if let Some(v) = &p.harness {
+            set!("harness", enum_to_sql(v));
+        }
+        if let Some(v) = &p.model {
+            set!("model", v.clone());
+        }
+        if let Some(v) = &p.effort {
+            set!("effort", v.clone());
+        }
+        if let Some(v) = &p.account {
+            set!("account", v.clone());
+        }
+        if let Some(v) = &p.worktree_path {
+            set!("worktree_path", v.clone());
+        }
+        if let Some(v) = &p.branch {
+            set!("branch", v.clone());
+        }
+        if let Some(v) = &p.worktree_base {
+            set!("worktree_base", v.clone());
+        }
+        if let Some(v) = &p.worktree_repo {
+            set!("worktree_repo", v.clone());
+        }
+        if let Some(v) = &p.native_session_id {
+            set!("native_session_id", v.clone());
+        }
+        if let Some(v) = &p.result_json {
+            set!("result_json", v.clone());
+        }
+        if let Some(v) = &p.error_kind {
+            set!("error_kind", v.as_ref().map(enum_to_sql));
+        }
+        if let Some(v) = &p.started_at {
+            set!("started_at", ts_to_sql(v));
+        }
+        if let Some(v) = &p.finished_at {
+            set!("finished_at", opt_ts_to_sql(v));
+        }
+        if sets.is_empty() {
+            sets.push("id = id");
+        }
+        let sql = format!("UPDATE runs SET {} WHERE id = ?", sets.join(", "));
+        vals.push(Box::new(id.to_string()));
+        let n = self
+            .conn()
+            .execute(&sql, rusqlite::params_from_iter(vals.iter().map(|v| &**v)))?;
+        if n == 0 {
+            return Err(StoreError::NotFound {
+                entity: "run",
+                id: id.into(),
+            });
+        }
+        Ok(())
+    }
+
+    fn query_runs(&self, sql: &str, p: impl rusqlite::Params) -> Result<Vec<RunRow>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(sql)?;
+        let rows = st.query_map(p, map)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn list_runs_by_session(&self, session_id: &str, limit: usize) -> Result<Vec<RunRow>> {
+        self.query_runs(
+            &format!(
+                "SELECT {COLS} FROM runs WHERE session_id = ?1 ORDER BY created_at, id LIMIT ?2"
+            ),
+            params![session_id, limit as i64],
+        )
+    }
+
+    pub fn list_child_runs(&self, parent_run_id: &str, limit: usize) -> Result<Vec<RunRow>> {
+        self.query_runs(
+            &format!(
+                "SELECT {COLS} FROM runs WHERE parent_run_id = ?1 ORDER BY created_at, id LIMIT ?2"
+            ),
+            params![parent_run_id, limit as i64],
+        )
+    }
+
+    /// Runs not in a terminal state, including `queued` (unlike the slot counts).
+    pub fn list_active_runs(&self, limit: usize) -> Result<Vec<RunRow>> {
+        let active = &*ACTIVE;
+        self.query_runs(
+            &format!("SELECT {COLS} FROM runs WHERE {active} ORDER BY created_at, id LIMIT ?1"),
+            [limit as i64],
+        )
+    }
+
+    /// How many runs `list_active_runs` would return.
+    pub fn count_active_runs(&self) -> Result<i64> {
+        let active = &*ACTIVE;
+        Ok(self.conn().query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE {active}"),
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Queued runs, oldest first (FIFO queue drain).
+    pub fn list_queued_runs(&self, limit: usize) -> Result<Vec<RunRow>> {
+        self.query_runs(
+            &format!("SELECT {COLS} FROM runs WHERE state = ?1 ORDER BY created_at, id LIMIT ?2"),
+            params![enum_to_sql(&RunState::Queued), limit as i64],
+        )
+    }
+
+    /// Slot-holding runs (not queued, not terminal) on `account`.
+    pub fn count_active_runs_by_account(&self, account: &str) -> Result<i64> {
+        let slot = &*SLOT_HOLDING;
+        Ok(self.conn().query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE account = ?1 AND {slot}"),
+            [account],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Slot-holding runs across all accounts.
+    pub fn count_active_runs_total(&self) -> Result<i64> {
+        let slot = &*SLOT_HOLDING;
+        Ok(self.conn().query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE {slot}"),
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Records the start of an attempt on `account`; returns its id.
+    pub fn start_attempt(
+        &self,
+        run_id: &str,
+        account: &str,
+        pool: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<String> {
+        let id = new_id();
+        self.conn().execute(
+            "INSERT INTO attempts (id, run_id, account, pool, started_at) VALUES (?1,?2,?3,?4,?5)",
+            params![id, run_id, account, pool, ts_to_sql(&now)],
+        )?;
+        Ok(id)
+    }
+
+    /// Start of the most recent attempt on `account`, for least-recently-used ranking.
+    pub fn last_attempt_started(&self, account: &str) -> Result<Option<DateTime<Utc>>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(
+            "SELECT started_at FROM attempts WHERE account = ?1 ORDER BY started_at DESC LIMIT 1",
+        )?;
+        let mut rows = st.query_map([account], |r| get_ts(r, 0))?;
+        Ok(rows.next().transpose()?)
+    }
+
+    pub fn finish_attempt(&self, id: &str, outcome: &str, now: DateTime<Utc>) -> Result<()> {
+        let n = self.conn().execute(
+            "UPDATE attempts SET ended_at = ?2, outcome = ?3 WHERE id = ?1",
+            params![id, ts_to_sql(&now), outcome],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound {
+                entity: "attempt",
+                id: id.into(),
+            });
+        }
+        Ok(())
+    }
+
+    pub fn list_attempts(&self, run_id: &str, limit: usize) -> Result<Vec<AttemptRow>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(
+            "SELECT id, run_id, account, pool, started_at, ended_at, outcome FROM attempts \
+             WHERE run_id = ?1 ORDER BY started_at, id LIMIT ?2",
+        )?;
+        let rows = st.query_map(params![run_id, limit as i64], map_attempt)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+}
+
+fn insert_run_on(conn: &Connection, r: &RunRow) -> Result<()> {
+    conn.execute(
+        &format!(
+            "INSERT INTO runs ({COLS}) VALUES \
+             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,\
+              ?25,?26,?27,?28,?29)"
+        ),
+        params![
+            r.id,
+            r.session_id,
+            r.parent_run_id,
+            r.depth,
+            r.name,
+            r.agent,
+            r.choice_id,
+            enum_to_sql(&r.harness),
+            r.account,
+            r.model,
+            r.effort,
+            r.cwd,
+            r.worktree_path,
+            r.branch,
+            r.native_session_id,
+            enum_to_sql(&r.state),
+            r.review,
+            r.output_schema,
+            r.result_json,
+            r.error_kind.as_ref().map(enum_to_sql),
+            r.prompt,
+            ts_to_sql(&r.created_at),
+            opt_ts_to_sql(&r.started_at),
+            opt_ts_to_sql(&r.finished_at),
+            enum_to_sql(&r.isolation),
+            r.max_turns.map(i64::from),
+            r.worktree_base,
+            r.worktree_repo,
+            r.timeout_ms.and_then(|n| i64::try_from(n).ok()),
+        ],
+    )?;
+    Ok(())
+}
+
+fn current_state(conn: &Connection, id: &str) -> Result<RunState> {
+    match conn.query_row("SELECT state FROM runs WHERE id = ?1", [id], |r| {
+        get_enum::<RunState>(r, 0)
+    }) {
+        Ok(s) => Ok(s),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Err(StoreError::NotFound {
+            entity: "run",
+            id: id.into(),
+        }),
+        Err(e) => Err(e.into()),
+    }
+}
+
+fn cas_state(conn: &Connection, id: &str, from: RunState, to: RunState) -> Result<()> {
+    if !from.can_transition(to) {
+        return Err(StoreError::InvalidTransition { from, to });
+    }
+    let n = conn.execute(
+        "UPDATE runs SET state = ?3 WHERE id = ?1 AND state = ?2",
+        params![id, enum_to_sql(&from), enum_to_sql(&to)],
+    )?;
+    if n == 1 {
+        return Ok(());
+    }
+    Err(StoreError::StateConflict {
+        id: id.into(),
+        expected: from,
+        actual: current_state(conn, id)?,
+    })
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::rows::FinishPatch;
+    use crate::sessions::tests::session;
+    use so_core::{ErrorKind, Harness};
+
+    pub fn run(session_id: &str, account: Option<&str>) -> RunRow {
+        RunRow {
+            id: new_id(),
+            session_id: session_id.into(),
+            parent_run_id: None,
+            depth: 0,
+            name: Some("w".into()),
+            agent: None,
+            choice_id: None,
+            harness: Harness::Codex,
+            account: account.map(Into::into),
+            model: None,
+            effort: None,
+            cwd: None,
+            worktree_path: None,
+            branch: None,
+            native_session_id: None,
+            state: RunState::Queued,
+            review: false,
+            output_schema: None,
+            result_json: None,
+            error_kind: None,
+            prompt: Some("do it".into()),
+            isolation: so_core::Isolation::None,
+            max_turns: None,
+            worktree_base: None,
+            worktree_repo: None,
+            timeout_ms: None,
+            created_at: crate::codec::now(),
+            started_at: None,
+            finished_at: None,
+        }
+    }
+
+    fn setup() -> (Store, String) {
+        let s = Store::open_in_memory().unwrap();
+        let sess = session(None);
+        s.insert_session(&sess).unwrap();
+        (s, sess.id)
+    }
+
+    #[test]
+    fn insert_get_list_and_fk() {
+        let (s, sid) = setup();
+        let mut r = run(&sid, Some("codex-acc1"));
+        r.review = true;
+        s.insert_run(&r).unwrap();
+        assert_eq!(s.get_run(&r.id).unwrap().unwrap(), r);
+        let mut child = run(&sid, None);
+        child.parent_run_id = Some(r.id.clone());
+        child.depth = 1;
+        s.insert_run(&child).unwrap();
+        assert_eq!(s.list_runs_by_session(&sid, 10).unwrap().len(), 2);
+        let kids = s.list_child_runs(&r.id, 10).unwrap();
+        assert_eq!(kids.len(), 1);
+        assert_eq!(kids[0].id, child.id);
+        assert!(matches!(
+            s.insert_run(&run("missing-session", None)),
+            Err(StoreError::Constraint(_))
+        ));
+    }
+
+    #[test]
+    fn prefix_lookup() {
+        let (s, sid) = setup();
+        let r = run(&sid, None);
+        s.insert_run(&r).unwrap();
+        assert_eq!(s.get_run_by_prefix(&r.id[..12]).unwrap().id, r.id);
+        assert!(matches!(
+            s.get_run_by_prefix("zzzz"),
+            Err(StoreError::NotFound { .. })
+        ));
+        assert!(matches!(
+            s.get_run_by_prefix(""),
+            Err(StoreError::NotFound { .. })
+        ));
+        for id in ["abc1", "abc2", "a_c3", "a\\c4"] {
+            let mut x = run(&sid, None);
+            x.id = id.into();
+            s.insert_run(&x).unwrap();
+        }
+        assert!(matches!(
+            s.get_run_by_prefix("abc"),
+            Err(StoreError::AmbiguousPrefix { .. })
+        ));
+        assert_eq!(s.get_run_by_prefix("abc2").unwrap().id, "abc2");
+        // `_` and `\` are literals, not LIKE wildcards
+        assert_eq!(s.get_run_by_prefix("a_").unwrap().id, "a_c3");
+        assert_eq!(s.get_run_by_prefix("a\\").unwrap().id, "a\\c4");
+        assert!(matches!(
+            s.get_run_by_prefix("%"),
+            Err(StoreError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn state_cas() {
+        let (s, sid) = setup();
+        let r = run(&sid, None);
+        s.insert_run(&r).unwrap();
+        s.update_run_state(&r.id, RunState::Queued, RunState::Starting)
+            .unwrap();
+        // wrong from
+        assert!(matches!(
+            s.update_run_state(&r.id, RunState::Queued, RunState::Cancelled),
+            Err(StoreError::StateConflict {
+                actual: RunState::Starting,
+                ..
+            })
+        ));
+        // forbidden transition
+        assert!(matches!(
+            s.update_run_state(&r.id, RunState::Starting, RunState::Succeeded),
+            Err(StoreError::InvalidTransition { .. })
+        ));
+        assert!(matches!(
+            s.update_run_state("nope", RunState::Queued, RunState::Starting),
+            Err(StoreError::NotFound { .. })
+        ));
+        assert_eq!(s.get_run(&r.id).unwrap().unwrap().state, RunState::Starting);
+    }
+
+    #[test]
+    fn slot_sql_sets_match_states() {
+        for st in RunState::ALL {
+            let slot = st.is_active() && st != RunState::Queued && st != RunState::PendingReview;
+            let q = format!("'{}'", st.as_str());
+            assert_eq!(SLOT_HOLDING.contains(&q), slot, "{st}");
+            assert_eq!(ACTIVE.contains(&q), st.is_active(), "{st}");
+        }
+    }
+
+    #[test]
+    fn patch_set_and_clear() {
+        let (s, sid) = setup();
+        let a = run(&sid, Some("a1"));
+        s.insert_run(&a).unwrap();
+        let now = crate::codec::now();
+        s.patch_run(
+            &a.id,
+            &RunPatch {
+                native_session_id: Some(Some("nat".into())),
+                branch: Some(Some("br".into())),
+                worktree_path: Some(Some("/wt".into())),
+                error_kind: Some(Some(ErrorKind::Quota)),
+                result_json: Some(Some("{}".into())),
+                started_at: Some(now),
+                finished_at: Some(Some(now)),
+                model: Some("m".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let got = s.get_run(&a.id).unwrap().unwrap();
+        assert_eq!(got.native_session_id.as_deref(), Some("nat"));
+        assert_eq!(got.branch.as_deref(), Some("br"));
+        assert_eq!(got.error_kind, Some(ErrorKind::Quota));
+        assert_eq!(got.model.as_deref(), Some("m"));
+        assert_eq!(got.account.as_deref(), Some("a1"));
+        assert_eq!(got.finished_at, Some(now));
+        s.patch_run(
+            &a.id,
+            &RunPatch {
+                error_kind: Some(None),
+                finished_at: Some(None),
+                account: Some(None),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let got = s.get_run(&a.id).unwrap().unwrap();
+        assert_eq!(got.error_kind, None);
+        assert_eq!(got.finished_at, None);
+        assert_eq!(got.account, None);
+        assert_eq!(got.branch.as_deref(), Some("br"));
+        s.patch_run(&a.id, &RunPatch::default()).unwrap();
+        assert!(matches!(
+            s.patch_run("nope", &RunPatch::default()),
+            Err(StoreError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn slot_counts_exclude_queued() {
+        let (s, sid) = setup();
+        let a = run(&sid, Some("a1"));
+        let b = run(&sid, Some("a1"));
+        let c = run(&sid, Some("a2"));
+        for r in [&a, &b, &c] {
+            s.insert_run(r).unwrap();
+        }
+        assert_eq!(s.count_active_runs_by_account("a1").unwrap(), 0);
+        assert_eq!(s.count_active_runs_total().unwrap(), 0);
+        assert_eq!(s.list_active_runs(10).unwrap().len(), 3);
+        assert_eq!(s.count_active_runs().unwrap(), 3);
+        assert_eq!(s.list_queued_runs(2).unwrap().len(), 2);
+        assert_eq!(s.list_queued_runs(10).unwrap()[0].id, a.id);
+        for r in [&a, &b, &c] {
+            s.update_run_state(&r.id, RunState::Queued, RunState::Starting)
+                .unwrap();
+        }
+        assert!(s.list_queued_runs(10).unwrap().is_empty());
+        assert_eq!(s.count_active_runs_by_account("a1").unwrap(), 2);
+        assert_eq!(s.count_active_runs_total().unwrap(), 3);
+        s.update_run_state(&a.id, RunState::Starting, RunState::Cancelled)
+            .unwrap();
+        assert_eq!(s.count_active_runs_by_account("a1").unwrap(), 1);
+        assert_eq!(s.count_active_runs_total().unwrap(), 2);
+        assert_eq!(s.list_active_runs(10).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn claim_slot_respects_caps() {
+        let (s, sid) = setup();
+        let runs: Vec<_> = (0..4).map(|_| run(&sid, None)).collect();
+        for r in &runs {
+            s.insert_run(r).unwrap();
+        }
+        let claim = |i: usize, acct_cap, global_cap| {
+            s.try_claim_slot(
+                &runs[i].id,
+                RunState::Queued,
+                RunState::Starting,
+                "a1",
+                acct_cap,
+                global_cap,
+                crate::codec::now(),
+            )
+            .unwrap()
+        };
+        assert!(claim(0, 2, 10));
+        assert!(
+            s.get_run(&runs[0].id)
+                .unwrap()
+                .unwrap()
+                .started_at
+                .is_some()
+        );
+        assert!(
+            s.get_run(&runs[1].id)
+                .unwrap()
+                .unwrap()
+                .started_at
+                .is_none()
+        );
+        assert_eq!(
+            s.get_run(&runs[0].id).unwrap().unwrap().account.as_deref(),
+            Some("a1")
+        );
+        // an open interactive session on the account takes the second slot
+        let mut inter = session(None);
+        inter.kind = so_core::SessionKind::Interactive;
+        inter.account = Some("a1".into());
+        s.insert_session(&inter).unwrap();
+        assert!(!claim(1, 2, 10));
+        assert_eq!(
+            s.get_run(&runs[1].id).unwrap().unwrap().state,
+            RunState::Queued
+        );
+        s.end_session(&inter.id, "ended", crate::codec::now())
+            .unwrap();
+        assert!(claim(1, 2, 10));
+        assert!(!claim(2, 2, 10)); // account cap
+        assert!(!claim(2, 5, 2)); // global cap
+        assert!(claim(2, 5, 3));
+        // errors
+        assert!(matches!(
+            s.try_claim_slot(
+                &runs[2].id,
+                RunState::Queued,
+                RunState::Starting,
+                "a",
+                9,
+                9,
+                crate::codec::now()
+            ),
+            Err(StoreError::StateConflict { .. })
+        ));
+        assert!(matches!(
+            s.try_claim_slot(
+                &runs[3].id,
+                RunState::Queued,
+                RunState::Running,
+                "a",
+                9,
+                9,
+                crate::codec::now()
+            ),
+            Err(StoreError::InvalidTransition { .. })
+        ));
+        assert!(matches!(
+            s.try_claim_slot(
+                "nope",
+                RunState::Queued,
+                RunState::Starting,
+                "a",
+                9,
+                9,
+                crate::codec::now()
+            ),
+            Err(StoreError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn claim_slot_race_has_one_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let a = Store::open(&path).unwrap();
+        let b = Store::open(&path).unwrap();
+        let sess = session(None);
+        a.insert_session(&sess).unwrap();
+        let r1 = run(&sess.id, None);
+        let r2 = run(&sess.id, None);
+        a.insert_run(&r1).unwrap();
+        a.insert_run(&r2).unwrap();
+        let handles: Vec<_> = [(a.clone(), r1.id.clone()), (b, r2.id.clone())]
+            .into_iter()
+            .map(|(st, id)| {
+                std::thread::spawn(move || {
+                    st.try_claim_slot(
+                        &id,
+                        RunState::Queued,
+                        RunState::Starting,
+                        "acc",
+                        1,
+                        1,
+                        crate::codec::now(),
+                    )
+                    .unwrap()
+                })
+            })
+            .collect();
+        let wins = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|w| *w)
+            .count();
+        assert_eq!(wins, 1);
+        assert_eq!(a.count_active_runs_total().unwrap(), 1);
+    }
+
+    #[test]
+    fn reopen_and_checks() {
+        let (s, sid) = setup();
+        let r = run(&sid, None);
+        s.insert_run(&r).unwrap();
+        assert!(matches!(
+            s.claim_resume(&r.id, "a", 2, 16, "go").unwrap(),
+            ResumeClaim::Conflict(RunState::Queued)
+        ));
+        s.set_run_checks(&r.id, &["ci".into(), "cmd:true".into()])
+            .unwrap();
+        assert_eq!(s.get_run_checks(&r.id).unwrap(), ["ci", "cmd:true"]);
+        assert!(s.get_run_checks("none").unwrap().is_empty());
+        assert_eq!(s.get_run_fork(&r.id).unwrap(), None);
+        s.set_run_fork(&r.id, "native-1").unwrap();
+        assert_eq!(s.get_run_fork(&r.id).unwrap().as_deref(), Some("native-1"));
+        assert_eq!(s.get_run_checks(&r.id).unwrap(), ["ci", "cmd:true"]);
+        let patch = FinishPatch {
+            result_json: Some("1".into()),
+            error_kind: None,
+            finished_at: Some(crate::codec::now()),
+        };
+        s.finish_run(&r.id, RunState::Queued, RunState::Failed, &patch)
+            .unwrap();
+        // A failed run resumes into a free slot.
+        assert_eq!(
+            s.claim_resume(&r.id, "acc", 1, 16, "hello").unwrap(),
+            ResumeClaim::Moved {
+                from: RunState::Failed,
+                to: RunState::Running
+            }
+        );
+        let got = s.get_run(&r.id).unwrap().unwrap();
+        assert_eq!(got.state, RunState::Running);
+        assert!(got.finished_at.is_none() && got.result_json.is_none());
+        assert_eq!(s.take_resume_prompt(&r.id).unwrap(), None);
+        s.delete_run_meta(&r.id).unwrap();
+        assert!(s.get_run_checks(&r.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn claim_resume_queues_when_the_account_is_full() {
+        let (s, sid) = setup();
+        let mut busy = run(&sid, Some("acc"));
+        busy.state = RunState::Running;
+        s.insert_run(&busy).unwrap();
+        let mut done = run(&sid, Some("acc"));
+        done.state = RunState::Succeeded;
+        s.insert_run(&done).unwrap();
+        assert_eq!(
+            s.claim_resume(&done.id, "acc", 1, 16, "do more").unwrap(),
+            ResumeClaim::Moved {
+                from: RunState::Succeeded,
+                to: RunState::Queued
+            }
+        );
+        assert_eq!(
+            s.get_run(&done.id).unwrap().unwrap().state,
+            RunState::Queued
+        );
+        assert_eq!(
+            s.take_resume_prompt(&done.id).unwrap().as_deref(),
+            Some("do more")
+        );
+        assert_eq!(s.take_resume_prompt(&done.id).unwrap(), None);
+        // Not finished: no claim.
+        assert_eq!(
+            s.claim_resume(&busy.id, "acc", 1, 16, "x").unwrap(),
+            ResumeClaim::Conflict(RunState::Running)
+        );
+    }
+
+    #[test]
+    fn finish_run_is_atomic() {
+        let (s, sid) = setup();
+        let r = run(&sid, None);
+        s.insert_run(&r).unwrap();
+        let patch = FinishPatch {
+            result_json: Some("{\"ok\":false}".into()),
+            error_kind: Some(ErrorKind::Auth),
+            finished_at: Some(crate::codec::now()),
+        };
+        // wrong from: nothing is written
+        assert!(matches!(
+            s.finish_run(&r.id, RunState::Running, RunState::Failed, &patch),
+            Err(StoreError::StateConflict { .. })
+        ));
+        let got = s.get_run(&r.id).unwrap().unwrap();
+        assert_eq!((got.state, got.error_kind), (RunState::Queued, None));
+        s.finish_run(&r.id, RunState::Queued, RunState::Failed, &patch)
+            .unwrap();
+        let got = s.get_run(&r.id).unwrap().unwrap();
+        assert_eq!(got.state, RunState::Failed);
+        assert_eq!(got.error_kind, Some(ErrorKind::Auth));
+        assert!(got.finished_at.is_some() && got.result_json.is_some());
+        assert!(matches!(
+            s.finish_run(&r.id, RunState::Failed, RunState::Running, &patch),
+            Err(StoreError::InvalidTransition { .. })
+        ));
+    }
+
+    #[test]
+    fn attempts() {
+        let (s, sid) = setup();
+        let r = run(&sid, None);
+        s.insert_run(&r).unwrap();
+        let now = crate::codec::now();
+        let id = s.start_attempt(&r.id, "acc", Some("pool"), now).unwrap();
+        let v = s.list_attempts(&r.id, 10).unwrap();
+        assert_eq!(v.len(), 1);
+        assert!(v[0].ended_at.is_none());
+        s.finish_attempt(&id, "quota", now).unwrap();
+        let v = s.list_attempts(&r.id, 10).unwrap();
+        assert_eq!(v[0].outcome.as_deref(), Some("quota"));
+        assert_eq!(v[0].ended_at, Some(now));
+        assert!(matches!(
+            s.finish_attempt("nope", "x", now),
+            Err(StoreError::NotFound { .. })
+        ));
+        assert!(matches!(
+            s.start_attempt("nope", "a", None, now),
+            Err(StoreError::Constraint(_))
+        ));
+    }
+
+    #[test]
+    fn insert_run_checked_caps_active_children() {
+        let (s, sid) = setup();
+        let parent = run(&sid, None);
+        s.insert_run(&parent).unwrap();
+        let child = |state| {
+            let mut r = run(&sid, None);
+            r.parent_run_id = Some(parent.id.clone());
+            r.state = state;
+            r
+        };
+        assert_eq!(
+            s.insert_run_checked(&child(RunState::Queued), 2).unwrap(),
+            InsertRun::Inserted
+        );
+        s.insert_run(&child(RunState::Succeeded)).unwrap();
+        assert_eq!(
+            s.insert_run_checked(&child(RunState::Running), 2).unwrap(),
+            InsertRun::Inserted
+        );
+        assert_eq!(
+            s.insert_run_checked(&child(RunState::Queued), 2).unwrap(),
+            InsertRun::ChildCap { active: 2 }
+        );
+        assert_eq!(s.list_child_runs(&parent.id, 10).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn route_meta_round_trips_next_to_checks() {
+        let (s, sid) = setup();
+        let r = run(&sid, None);
+        assert_eq!(s.get_run_route(&r.id).unwrap(), None);
+        s.set_run_checks(&r.id, &["ci".into()]).unwrap();
+        s.set_run_route(&r.id, "{\"role\":\"worker\"}").unwrap();
+        assert_eq!(
+            s.get_run_route(&r.id).unwrap().as_deref(),
+            Some("{\"role\":\"worker\"}")
+        );
+        assert_eq!(s.get_run_checks(&r.id).unwrap(), vec!["ci".to_string()]);
+    }
+
+    #[test]
+    fn reassign_moves_the_slot_only_below_the_target_cap() {
+        let (s, sid) = setup();
+        let mut moving = run(&sid, Some("a"));
+        moving.state = RunState::Running;
+        s.insert_run(&moving).unwrap();
+        let mut busy = run(&sid, Some("b"));
+        busy.state = RunState::Running;
+        s.insert_run(&busy).unwrap();
+        let to = Reassign {
+            account: "b".into(),
+            harness: Harness::Opencode,
+            choice_id: Some("c2".into()),
+            model: Some("m".into()),
+            effort: None,
+        };
+        // `b` already holds one slot and its cap is 1.
+        assert!(!s.reassign_run(&moving.id, "a", &to, 1).unwrap());
+        assert_eq!(s.count_active_runs_by_account("a").unwrap(), 1);
+        assert!(s.reassign_run(&moving.id, "a", &to, 2).unwrap());
+        let got = s.get_run(&moving.id).unwrap().unwrap();
+        assert_eq!(got.account.as_deref(), Some("b"));
+        assert_eq!(got.harness, Harness::Opencode);
+        assert_eq!(got.choice_id.as_deref(), Some("c2"));
+        assert_eq!(s.count_active_runs_by_account("a").unwrap(), 0);
+        assert_eq!(s.count_active_runs_by_account("b").unwrap(), 2);
+        // Not on `a` any more, and a queued run holds no slot to move.
+        assert!(matches!(
+            s.reassign_run(&moving.id, "a", &to, 9),
+            Err(StoreError::Constraint(_))
+        ));
+        let queued = run(&sid, Some("a"));
+        s.insert_run(&queued).unwrap();
+        assert!(matches!(
+            s.reassign_run(&queued.id, "a", &to, 9),
+            Err(StoreError::StateConflict { .. })
+        ));
+    }
+
+    #[test]
+    fn turn_prompt_failover_pending_requeue_and_retarget() {
+        let (s, sid) = setup();
+        let mut r = run(&sid, Some("a"));
+        r.state = RunState::Running;
+        s.insert_run(&r).unwrap();
+        assert_eq!(s.get_run_turn_prompt(&r.id).unwrap(), None);
+        s.set_run_turn_prompt(&r.id, "first").unwrap();
+        s.append_run_turn_prompt(&r.id, "and this").unwrap();
+        assert_eq!(
+            s.get_run_turn_prompt(&r.id).unwrap().as_deref(),
+            Some("first\n\nand this")
+        );
+        s.set_run_turn_prompt(&r.id, "first").unwrap();
+        s.set_queued_route_event(&r.id, "{}").unwrap();
+        s.clear_queued_pending(&r.id).unwrap();
+        assert_eq!(s.take_queued_route_event(&r.id).unwrap(), None);
+        assert_eq!(s.get_failover_pending(&r.id).unwrap(), None);
+        s.set_run_checks(&r.id, &["ci".into()]).unwrap();
+        assert_eq!(
+            s.get_run_turn_prompt(&r.id).unwrap().as_deref(),
+            Some("first")
+        );
+        let to = Reassign {
+            account: "b".into(),
+            harness: Harness::Opencode,
+            choice_id: Some("c".into()),
+            model: None,
+            effort: None,
+        };
+        s.requeue_for_failover(&r.id, "a", &to, "{\"x\":1}")
+            .unwrap();
+        let got = s.get_run(&r.id).unwrap().unwrap();
+        assert_eq!(
+            (got.state, got.account.as_deref()),
+            (RunState::Queued, Some("b"))
+        );
+        assert_eq!(
+            s.count_active_runs_by_account("b").unwrap(),
+            0,
+            "queued holds no slot"
+        );
+        // Taking it clears it, once.
+        assert_eq!(
+            s.get_failover_pending(&r.id).unwrap().as_deref(),
+            Some("{\"x\":1}")
+        );
+        assert_eq!(
+            s.take_failover_pending(&r.id).unwrap().as_deref(),
+            Some("{\"x\":1}")
+        );
+        assert_eq!(s.take_failover_pending(&r.id).unwrap(), None);
+        // A queued run moves to a free account only from where it is.
+        let other = Reassign {
+            account: "c".into(),
+            ..to.clone()
+        };
+        assert!(!s.retarget_queued(&r.id, "zzz", &other).unwrap());
+        assert!(s.retarget_queued(&r.id, "b", &other).unwrap());
+        assert_eq!(
+            s.get_run(&r.id).unwrap().unwrap().account.as_deref(),
+            Some("c")
+        );
+        // Not from a running state.
+        let mut live = run(&sid, Some("a"));
+        live.state = RunState::Running;
+        s.insert_run(&live).unwrap();
+        assert!(!s.retarget_queued(&live.id, "a", &to).unwrap());
+        // A resume claim records its prompt as the turn's.
+        let mut done = run(&sid, Some("a"));
+        done.state = RunState::Succeeded;
+        s.insert_run(&done).unwrap();
+        s.claim_resume(&done.id, "a", 5, 5, "again").unwrap();
+        assert_eq!(
+            s.get_run_turn_prompt(&done.id).unwrap().as_deref(),
+            Some("again")
+        );
+    }
+
+    #[test]
+    fn last_attempt_started_is_the_newest() {
+        let (s, sid) = setup();
+        let r = run(&sid, None);
+        s.insert_run(&r).unwrap();
+        let now = crate::codec::now();
+        assert_eq!(s.last_attempt_started("acc").unwrap(), None);
+        s.start_attempt(&r.id, "acc", None, now - chrono::Duration::hours(2))
+            .unwrap();
+        s.start_attempt(&r.id, "acc", None, now).unwrap();
+        s.start_attempt(&r.id, "other", None, now + chrono::Duration::hours(1))
+            .unwrap();
+        assert_eq!(s.last_attempt_started("acc").unwrap(), Some(now));
+    }
+}

@@ -40,7 +40,7 @@ Terms used here are defined in [CONTEXT.md](CONTEXT.md). Architectural decisions
 | Workflows | QuickJS through `rquickjs` |
 | CLI | `clap`, plus an interactive menu (`dialoguer` or equivalent) |
 | HTTP client | `reqwest` (OpenRouter, models.dev) |
-| Process isolation | `bwrap` on Linux, for agy accounts only |
+| Process isolation | agy accounts select their state with `--gemini_dir`; supervised agy runs use `bwrap` (Linux, optional) only for `--die-with-parent --new-session` |
 | Distribution | GitHub `datamonsterr/superorchestrator`. Release binaries built by cargo-dist for linux x86_64/aarch64 and macOS aarch64/x86_64. An `install.sh` curl installer, with `cargo install` as a fallback. |
 
 Before coding against `rmcp`, `axum`, `rquickjs` or any harness protocol, check the current documentation. The flags in this spec were checked against codex-cli 0.163.0, Claude Code 2.1.308, opencode 1.18.35 and agy 1.4.4 on 2026-10-22.
@@ -58,7 +58,7 @@ Before coding against `rmcp`, `axum`, `rquickjs` or any harness protocol, check 
                                                   ├─► codex app-server (per run, account CODEX_HOME)
                                                   ├─► opencode serve   (per run, account XDG dirs)
                                                   ├─► claude -p stream-json (per run, CLAUDE_CONFIG_DIR)
-                                                  └─► bwrap … agy -p stream-json (per run, --gemini_dir)
+                                                  └─► [bwrap …] agy -p= stream-json (per run, --gemini_dir)
                                                         │
                                 each child has its own superorchestrator mcp,
                                 with SUPERORCHESTRATOR_RUN_ID set, so it can
@@ -102,7 +102,7 @@ Each driver implements: `launch(run) -> Handle`, an `events()` stream normalised
 | codex | `codex app-server --listen ws://127.0.0.1:<port> --ws-auth …`, one per run, with the account's `CODEX_HOME`. The supervisor starts a thread with `cwd`, `model`, `model_reasoning_effort`, sandbox `danger-full-access` and approval `never`. | thread id from `thread/started` | `turn/start` when idle, `turn/steer` while a turn runs, `turn/interrupt` to cancel | Live: `codex-acc2 resume --remote ws://127.0.0.1:<port> --remote-auth-token-env SO_WS_TOKEN <thread>`. After the run: `codex-acc2 resume <thread>`. |
 | opencode | `opencode serve --hostname 127.0.0.1 --port 0`, one per run, with `OPENCODE_SERVER_PASSWORD` and the account's XDG dirs. A session is created with `POST /session`. | opencode session id | `POST /session/{id}/prompt_async`. Cancel: `POST /session/{id}/abort`. Events: `GET /event` (SSE). | Live: `opencode attach <url> --session <id>`. After the run: `opencode-acc1 --session <id>`. |
 | claude | `claude -p --input-format stream-json --output-format stream-json --dangerously-skip-permissions --session-id <uuid> --mcp-config <run>/mcp.json --append-system-prompt-file <run>/system.md`, with the account's `CLAUDE_CONFIG_DIR` | the `--session-id` uuid | NDJSON user message on stdin | After the run pauses or ends: `claude-acc1 --resume <uuid>`, from the run's cwd |
-| agy | `bwrap --die-with-parent --new-session --bind / / --dev-bind /dev /dev -- agy --gemini_dir=<home>/.gemini -p --input-format stream-json --output-format stream-json --dangerously-skip-permissions --model M --effort E` | conversation id from the stream | NDJSON user message on stdin | After the run pauses or ends: `agy-acc1 --conversation <id>` |
+| agy | `[bwrap --die-with-parent --new-session --bind / / --dev-bind /dev /dev --] agy --gemini_dir=<run>/gemini -p= --input-format stream-json --output-format stream-json --dangerously-skip-permissions --model M --effort E` | conversation id from the stream | NDJSON user message on stdin | After the run pauses or ends: `agy-acc1 --conversation <id>` |
 
 Rules:
 
@@ -143,7 +143,7 @@ Account names match `^[a-z][a-z0-9-]{1,31}$`. The name doubles as the wrapper co
 | codex | `~/.<name>` | `CODEX_HOME=<home>` |
 | opencode | `~/.<name>` | `XDG_CONFIG_HOME=<home>/config`, `XDG_DATA_HOME=<home>/data`, `XDG_STATE_HOME=<home>/state` |
 | claude | `~/.<name>` | `CLAUDE_CONFIG_DIR=<home>` |
-| agy | `~/.<name>` holding `.gemini/` | `--gemini_dir=<home>/.gemini` under `bwrap`, with `HOME` unchanged ([ADR-0003](docs/adr/0003-agy-accounts-isolate-gemini-dir.md)) |
+| agy | `~/.<name>` holding `.gemini/` | `--gemini_dir=<home>/.gemini` (a per-run gemini dir for supervised runs), with `HOME` unchanged ([ADR-0003](docs/adr/0003-agy-accounts-isolate-gemini-dir.md), [ADR-0005](docs/adr/0005-agy-runs-use-per-run-gemini-dir.md)) |
 
 Credential homes live in `$HOME`, so a person can log in with the normal CLI through the wrapper. Superorchestrator only links to them.
 
@@ -202,7 +202,7 @@ When a run fails with a quota, rate-limit or auth error (`classify_error`), the 
 
 ### 6.4 macOS
 
-agy multi-account needs `bwrap`, which is Linux-only. On macOS, superorchestrator allows only one enabled agy account, and it uses the real `~/.gemini`. `doctor` reports this.
+agy multi-account is Linux-only until it is checked on a Mac (ADR-0005). On macOS, superorchestrator allows only one enabled agy account, and it uses the real `~/.gemini`. `doctor` reports this.
 
 ## 7. Runs
 
@@ -278,6 +278,13 @@ A run with `review: true`:
 2. Enters `pending_review` when the checks pass. A failed check is sent back to the child as a message once, then the run is reported to the parent.
 3. Waits for the parent. `accept_run` marks it `succeeded`. `reject_run(feedback)` sends the feedback on the same native session and returns the run to `running`.
 
+Notes on the implementation:
+- `cmd:<shell>` runs with `sh -c` in the run's worktree (or cwd) with a 10 minute limit, in its own process group (killed whole on timeout or cancel), with at most 64 KiB of output kept. The command is chosen by the orchestrator in the `checks` of its `spawn_agent` call; it is never built from task text or run output. It runs with the daemon's privileges, outside the harness sandbox, so treat `checks` like any command you would run yourself.
+- `ci` and `pr_threads` use `gh` against the pull request of the run's branch. `ci` is green when every check is SUCCESS, SKIPPED or NEUTRAL.
+- At `pending_review` the harness process is stopped and its slot is freed; the native session stays so `reject_run` (or `send_message`, which counts as a rejection) can resume it. A resume claims a slot like a new start; with none free the run goes back to `queued` and resumes when one frees. A worktree run resumes in its worktree. If the directory is gone it is recreated from the run's branch; if the branch went with an untouched worktree, it is recreated at the run's base commit. A run that still cannot be resumed keeps its state and the caller gets the error.
+- `accept_run` removes the run's worktree and branch when the branch is merged into the repository's `HEAD` or contained in a remote branch, and the tree is clean (7.3). Otherwise the worktree stays until `worktrees prune`.
+- Failed checks are sent to the child once. If they fail again the run still goes to `pending_review`, and the parent gets a `result` message that lists the failed checks.
+
 ### 7.6 Stall handling
 
 When a run is `stalled`:
@@ -320,7 +327,7 @@ description = "Fast worker for bounded implementation, scripts, docs and routine
 enabled = true
 ```
 
-`init` seeds the choices from agent-dispatcher's current `config.example.json`, plus Codex and Claude choices disabled by default.
+`init` seeds the choices from agent-dispatcher's current `config.example.json`, plus Codex and Claude choices. Codex choices are enabled: a choice with no usable account is not eligible (8.3), so they start routing when a codex account is added. Claude choices are disabled by default (8.4); set `enabled = true` to let auto routing use them as the last resort. `enabled` is the user's switch and `init` is the only thing that writes it.
 
 ### 8.3 Decision procedure (`route`)
 
@@ -484,7 +491,7 @@ Full transcripts are stored as files under `runs/<run_id>/transcript.jsonl`, in 
 
 **Subagents only:** `report_progress`, `ask_parent`.
 
-Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tasks when the client supports tasks. Otherwise they block, with progress notifications.
+Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tasks when the client declares the tasks extension. Progress goes to the task's status message, and `tasks/cancel` stops the wait without cancelling the runs. Otherwise the tools block, with progress notifications.
 
 ## 14. Web UI
 
@@ -617,11 +624,13 @@ The default `min_confidence` and `min_margin` values are placeholders until `rou
 | `attempts` | id, run_id, account, started_at, ended_at, outcome |
 | `events` | id, session_id, run_id, ts, type, data_json (indexed by session_id, ts) |
 | `messages` | as in section 9 |
+| `run_meta` | run_id, checks_json (review checks), fork_from (native session a fork resumes), resume_prompt (set while a finished run waits in `queued` to be resumed). No foreign key: written before the run row. Deleted by `worktrees prune`. |
 | `headroom` | account, pool, five_hour_remaining_pct, five_hour_resets_at, weekly_remaining_pct, weekly_resets_at, status, source, observed_at |
 | `ledger` | account, pool, run_id, ts, input_tokens, output_tokens, cost |
 | `flags` | account, pool, until, reason |
 | `workflow_cache` | key_hash, workflow, result_json, created_at |
 | `workflow_runs` | id, name, session_id, state, args_json, started_at, finished_at |
+| `workflow_steps` | id, workflow_run_id, step_index, phase, prompt_hash, run_id, state, started_at, finished_at |
 
 Migrations are embedded and run on open. Each table has a schema version.
 
@@ -696,7 +705,7 @@ Each milestone is one or more PRs with `cargo test` coverage, and is usable by i
    - Scope: workspace, config dir and `init`, `config`, `doctor`, `state.db` with migrations, supervisor lifecycle with socket and idle exit, `mcp` thin client exposing `list_harnesses`, `install` (MCP registration), `install.sh`, release pipeline.
    - Done when: Claude Code lists the server and `list_harnesses` returns the configured accounts.
 2. **M2 Accounts and usage.**
-   - Scope: `account add|import|login|list|remove|enable|disable|flag`, wrappers and `exec` with interactive sessions, agy `bwrap` isolation, the codex and agy probes, ledger, headroom, `status`.
+   - Scope: `account add|import|login|list|remove|enable|disable|flag`, wrappers and `exec` with interactive sessions, agy per-run gemini dir, the codex and agy probes, ledger, headroom, `status`.
    - Done when: two Codex accounts and two agy accounts show correct headroom, and a wrapper launch appears as a session.
 3. **M3 Drivers and runs.**
    - Scope: the four drivers (after the section 4 spikes), `spawn_agent`, `wait_agent`, `get_run`, `cancel_agent`, worktree isolation, child instructions, structured output, events and transcripts, `join`, `runs list|show|watch`, `migrate`.

@@ -1,0 +1,40 @@
+data: {"id": "evt_162f178ec001wg1PFiTMoK66GB", "type": "server.connected", "properties": {}}
+
+data: {"id": "evt_162f17ce30014Vkd0aqWfxBjje", "type": "session.created", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "info": {"id": "ses_e9d0e831fffejyPMluk5gnwrFx", "slug": "silent-wizard", "version": "1.18.35", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1792661355745, "updated": 1792661355745}}}}
+
+data: {"id": "evt_162f19043001djCXprFPm58RVU", "type": "session.updated", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "info": {"id": "ses_e9d0e831fffejyPMluk5gnwrFx", "slug": "silent-wizard", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike", "agent": "build", "model": {"id": "deepseek-v4.1-flash-free", "providerID": "opencode", "variant": "default"}, "version": "1.18.35", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1792661355745, "updated": 1792661360705}}}}
+
+data: {"id": "evt_162f1904c001GorC6FQ5i60LeT", "type": "message.updated", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "info": {"id": "msg_162f19041001KCWMaYUkO6UJJr", "role": "user", "sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "time": {"created": 1792661360705}, "agent": "build", "model": {"providerID": "opencode", "modelID": "deepseek-v4.1-flash-free"}}}}
+
+data: {"id": "evt_162f192ed001xwfo2ydha1u5v9", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "part": {"type": "text", "text": "Create a file hello.txt containing the word hi, then reply with exactly: done", "messageID": "msg_162f19041001KCWMaYUkO6UJJr", "sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "id": "prt_162f1904b001fAFvtUxX6FX0In"}, "time": 1792661361389}}
+
+data: {"id": "evt_162f192f400193fFPyuDgN1V1T", "type": "session.updated", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "info": {"id": "ses_e9d0e831fffejyPMluk5gnwrFx", "slug": "silent-wizard", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike", "agent": "build", "model": {"id": "deepseek-v4.1-flash-free", "providerID": "opencode", "variant": "default"}, "version": "1.18.35", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1792661355745, "updated": 1792661361395}}}}
+
+data: {"id": "evt_162f192fb0016QSiPRL3hcxjnP", "type": "session.status", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "status": {"type": "busy"}}}
+
+data: {"id": "evt_162f192ff001B3y1U9tIrDoQkO", "type": "message.updated", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "info": {"id": "msg_162f192ff001Dccw0O0FQrw3zI", "parentID": "msg_162f19041001KCWMaYUkO6UJJr", "role": "assistant", "mode": "build", "agent": "build", "path": {"cwd": "/work/spike-opencode", "root": "/work/spike-opencode"}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "modelID": "deepseek-v4.1-flash-free", "providerID": "opencode", "time": {"created": 1792661361407}, "sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx"}}}
+
+data: {"id": "evt_162f19b07001vaHreUNU4QuczO", "type": "session.updated", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "info": {"id": "ses_e9d0e831fffejyPMluk5gnwrFx", "slug": "silent-wizard", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike", "agent": "build", "model": {"id": "deepseek-v4.1-flash-free", "providerID": "opencode", "variant": "default"}, "version": "1.18.35", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1792661355745, "updated": 1792661363461}}}}
+
+data: {"id": "evt_162f19b0d0015cAVMBeFxRsCCf", "type": "session.diff", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "diff": []}}
+
+data: {"id": "evt_162f19b0f001d1oXLZlkFCDK80", "type": "message.updated", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "info": {"role": "user", "time": {"created": 1792661360705}, "agent": "build", "model": {"providerID": "opencode", "modelID": "deepseek-v4.1-flash-free"}, "id": "msg_162f19041001KCWMaYUkO6UJJr", "sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "summary": {"diffs": []}}}}
+
+data: {"id": "evt_162f1a007001Wubi8sBCJu2L94", "type": "server.heartbeat", "properties": {}}
+
+data: {"id": "evt_162f1a3be001L6QPFK5YugoXZn", "type": "session.status", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "status": {"type": "busy"}}}
+
+data: {"id": "evt_162f1c718001m3HRB8u3tI6Lqu", "type": "server.heartbeat", "properties": {}}
+
+data: {"id": "evt_162f2f43a001BuhwNxCAaE7oWq", "type": "session.error", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "error": {"name": "MessageAbortedError", "data": {"message": "Aborted"}}}}
+
+data: {"id": "evt_162f2f43b001bI86W2gvEnWQr3", "type": "session.status", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "status": {"type": "idle"}}}
+
+data: {"id": "evt_162f2f43b002cF1vo60TP6Q7gS", "type": "session.idle", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx"}}
+
+data: {"id": "evt_162f2f468001A6F6CuCS3oOfzh", "type": "message.updated", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "info": {"id": "msg_162f192ff001Dccw0O0FQrw3zI", "parentID": "msg_162f19041001KCWMaYUkO6UJJr", "role": "assistant", "mode": "build", "agent": "build", "path": {"cwd": "/work/spike-opencode", "root": "/work/spike-opencode"}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "modelID": "deepseek-v4.1-flash-free", "providerID": "opencode", "time": {"created": 1792661361407, "completed": 1792661451879}, "sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "error": {"name": "MessageAbortedError", "data": {"message": "Aborted"}}}}}
+
+data: {"id": "evt_162f2f472001c0FQ5DYCwhTA1v", "type": "session.status", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx", "status": {"type": "idle"}}}
+
+data: {"id": "evt_162f2f472002i7MmRK7ML1BKqy", "type": "session.idle", "properties": {"sessionID": "ses_e9d0e831fffejyPMluk5gnwrFx"}}
+

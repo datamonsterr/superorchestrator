@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Full gate before push. Bypass with SKIP_PREPUSH=1.
+set -euo pipefail
+
+if [ "${SKIP_PREPUSH:-}" = "1" ]; then
+  echo "pre-push: SKIP_PREPUSH=1, skipping scripts/check.sh (CI will still run it)" >&2
+  exit 0
+fi
+
+# stdin lines: <local ref> <local sha> <remote ref> <remote sha>
+zeros='^0+$'
+need=0
+while read -r local_ref local_sha _ _; do
+  [ -z "${local_ref:-}" ] && continue
+  if [[ "$local_sha" =~ $zeros ]]; then continue; fi # deletion
+  case "$local_ref" in refs/tags/*) continue ;; esac
+  need=1
+done
+
+if [ "$need" = 0 ]; then
+  echo "pre-push: only deletions or tags, skipping checks" >&2
+  exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+exec scripts/check.sh

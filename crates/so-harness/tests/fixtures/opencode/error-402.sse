@@ -1,0 +1,38 @@
+data: {"id": "evt_162f5ae66001tEfc33YQn7uAm6", "type": "server.connected", "properties": {}}
+
+data: {"id": "evt_162f5b252001ts33uNuYtt2oXm", "type": "session.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "ses_e9d0c9735ffeANTApp10GZgEp6", "slug": "eager-cactus", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike2", "agent": "build", "model": {"id": "claude-haiku-5-5", "providerID": "opencode-go", "variant": "default"}, "version": "1.18.35", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 14528, "output": 72, "reasoning": 0, "cache": {"read": 13056, "write": 0}}, "time": {"created": 1792661481674, "updated": 1792661631568}}}}
+
+data: {"id": "evt_162f5b257001LYlNmr5Q4b9Ifv", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "msg_162f5b25000114NuQCuLSCh74h", "role": "user", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "time": {"created": 1792661631568}, "agent": "build", "model": {"providerID": "opencode-go", "modelID": "claude-haiku-5-5"}}}}
+
+data: {"id": "evt_162f5b259001tgsNZ8rb2NqoCX", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "part": {"type": "text", "text": "Create a file hello.txt containing the word hi, then reply with exactly: done", "messageID": "msg_162f5b25000114NuQCuLSCh74h", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "id": "prt_162f5b257001TP3ZHI8CXm50gr"}, "time": 1792661631577}}
+
+data: {"id": "evt_162f5b25c001mD5IywQGas9f3O", "type": "session.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "ses_e9d0c9735ffeANTApp10GZgEp6", "slug": "eager-cactus", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike2", "agent": "build", "model": {"id": "claude-haiku-5-5", "providerID": "opencode-go", "variant": "default"}, "version": "1.18.35", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 14528, "output": 72, "reasoning": 0, "cache": {"read": 13056, "write": 0}}, "time": {"created": 1792661481674, "updated": 1792661631579}}}}
+
+data: {"id": "evt_162f5b25f001ToXaRKCmqmMBdJ", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "busy"}}}
+
+data: {"id": "evt_162f5b261001obSj7mUWnj28J5", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "msg_162f5b261001VlG164mSqB9pO1", "parentID": "msg_162f5b25000114NuQCuLSCh74h", "role": "assistant", "mode": "build", "agent": "build", "path": {"cwd": "/work/spike-opencode", "root": "/work/spike-opencode"}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "modelID": "claude-haiku-5-5", "providerID": "opencode-go", "time": {"created": 1792661631585}, "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6"}}}
+
+data: {"id": "evt_162f5b293001r64ggYEzy3RHOV", "type": "session.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "ses_e9d0c9735ffeANTApp10GZgEp6", "slug": "eager-cactus", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike2", "agent": "build", "model": {"id": "claude-haiku-5-5", "providerID": "opencode-go", "variant": "default"}, "version": "1.18.35", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 14528, "output": 72, "reasoning": 0, "cache": {"read": 13056, "write": 0}}, "time": {"created": 1792661481674, "updated": 1792661631633}}}}
+
+data: {"id": "evt_162f5b297001JxRGGUDTtJA7My", "type": "session.diff", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "diff": []}}
+
+data: {"id": "evt_162f5b298001lsrEHKrOytTRkw", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"role": "user", "time": {"created": 1792661631568}, "agent": "build", "model": {"providerID": "opencode-go", "modelID": "claude-haiku-5-5"}, "id": "msg_162f5b25000114NuQCuLSCh74h", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "summary": {"diffs": []}}}}
+
+data: {"id": "evt_162f5b5b3001Y20W7FUFpt7X4m", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "busy"}}}
+
+data: {"id": "evt_162f5b786001QDjGUQAocG6iMG", "type": "session.error", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "error": {"name": "APIError", "data": {"message": "Upstream request failed: Insufficient account funds", "statusCode": 402, "isRetryable": false, "responseHeaders": {"cf-ray": "CF_RAY", "connection": "keep-alive", "content-length": "109", "content-type": "application/json", "date": "Thu, 22 Oct 2026 09:33:52 GMT", "server": "cloudflare", "x-opencode-log-id": "LOG_ID"}, "responseBody": "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Upstream request failed: Insufficient account funds\"}}", "metadata": {"url": "https://opencode.ai/inference/go/anthropic/v1/messages"}}}}}
+
+data: {"id": "evt_162f5b78600271y54XNhpd8h2V", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "idle"}}}
+
+data: {"id": "evt_162f5b787001Xfg05fFQn4eTyy", "type": "session.idle", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6"}}
+
+data: {"id": "evt_162f5b78f001o9ZoJ9gotnkJ3S", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "msg_162f5b261001VlG164mSqB9pO1", "parentID": "msg_162f5b25000114NuQCuLSCh74h", "role": "assistant", "mode": "build", "agent": "build", "path": {"cwd": "/work/spike-opencode", "root": "/work/spike-opencode"}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "modelID": "claude-haiku-5-5", "providerID": "opencode-go", "time": {"created": 1792661631585, "completed": 1792661632911}, "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "error": {"name": "APIError", "data": {"message": "Upstream request failed: Insufficient account funds", "statusCode": 402, "isRetryable": false, "responseHeaders": {"cf-ray": "CF_RAY", "connection": "keep-alive", "content-length": "109", "content-type": "application/json", "date": "Thu, 22 Oct 2026 09:33:52 GMT", "server": "cloudflare", "x-opencode-log-id": "LOG_ID"}, "responseBody": "{\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Upstream request failed: Insufficient account funds\"}}", "metadata": {"url": "https://opencode.ai/inference/go/anthropic/v1/messages"}}}}}}
+
+data: {"id": "evt_162f5b793001dL1pNrKvBlZmYI", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "idle"}}}
+
+data: {"id": "evt_162f5b793002zGr3nPgLpQ7Qev", "type": "session.idle", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6"}}
+
+data: {"id": "evt_162f5d582001liWyzxt5fpZrb1", "type": "server.heartbeat", "properties": {}}
+
+data: {"id": "evt_162f5fc93001Dm0Mjm2to8y7d2", "type": "server.heartbeat", "properties": {}}
+

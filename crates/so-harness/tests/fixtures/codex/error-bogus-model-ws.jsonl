@@ -1,0 +1,4 @@
+{"dir": "in", "msg": {"method": "warning", "params": {"threadId": "T", "message": "Model metadata for `bogus-model-xyz` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}}
+{"dir": "in", "msg": {"method": "thread/status/changed", "params": {"threadId": "T", "status": {"type": "systemError"}}}}
+{"dir": "in", "msg": {"method": "error", "params": {"error": {"message": "{\"type\":\"error\",\"status\":400,\"error\":{\"type\":\"invalid_request_error\",\"message\":\"The 'bogus-model-xyz' model is not supported when using Codex with a ChatGPT account.\"}}", "codexErrorInfo": "other", "additionalDetails": null, "misalignment": null}, "willRetry": false, "threadId": "T", "turnId": "U"}}}
+{"dir": "in", "msg": {"id": 4, "error": {"code": -32600, "message": "No models are available. Set `model` explicitly or check your model catalog configuration."}}, "note": "thread/start with model \"\" over stdio"}

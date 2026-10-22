@@ -1,0 +1,1 @@
+{"$schema":"https://opencode.ai/config.json","mcp":{"so":{"type":"local","command":["echo","noop"],"enabled":true,"environment":{"SUPERORCHESTRATOR_RUN_ID":"r1"}}},"agent":{"so-child":{"description":"run child","prompt":"You are a spike agent.","mode":"primary"}},"permission":{"*":"allow"}}

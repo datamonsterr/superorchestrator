@@ -1,0 +1,11 @@
+{
+  "name": "superorchestrator",
+  "displayName": "Superorchestrator",
+  "version": "0.1.0",
+  "description": "Delegate coding work to Codex, Antigravity, OpenCode or Claude across many logged-in accounts, with every run recorded.",
+  "author": { "name": "datamonsterr" },
+  "homepage": "https://github.com/datamonsterr/superorchestrator",
+  "repository": "https://github.com/datamonsterr/superorchestrator",
+  "license": "MIT",
+  "keywords": ["delegation", "subagents", "codex", "opencode", "mcp"]
+}

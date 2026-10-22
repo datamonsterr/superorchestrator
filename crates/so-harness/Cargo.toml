@@ -1,0 +1,48 @@
+[package]
+name = "so-harness"
+description = "One driver per harness"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Builds the scripted `fake-harness` binary used by driver tests. Never shipped.
+test-support = []
+
+[[bin]]
+name = "fake-harness"
+path = "src/bin/fake-harness.rs"
+required-features = ["test-support"]
+
+[[bin]]
+name = "fake-codex"
+path = "src/bin/fake-codex.rs"
+required-features = ["test-support"]
+
+[dependencies]
+so-core = { path = "../so-core" }
+so-accounts = { path = "../so-accounts" }
+chrono.workspace = true
+reqwest.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+rustix = { version = "1", features = ["process"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+tokio-tungstenite = "0.30"
+uuid.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+futures-core = "0.3"
+# Self dev-dependency enables the feature (and so the fake-harness binary) for tests.
+so-harness = { path = ".", features = ["test-support"] }
+tempfile.workspace = true

@@ -1,0 +1,40 @@
+# superorchestrator configuration.
+#
+# Every section is optional; the values below are the defaults, shown commented
+# out. Change one with `superorchestrator config set <key> <value>` or edit this
+# file with `superorchestrator config edit`.
+
+# [limits]
+# global_cap = 16
+# max_children = 8
+
+# [runs]
+# stall_ms = 300000
+# ask_timeout = "30m"
+
+# [usage]
+# probe_ttl = "5m"
+# low_pct = 15
+# default_cooldown = "5h"
+
+# [router]
+# priority = ["agy", "opencode", "codex", "claude"]
+
+# [worktrees]
+# dir = "{repo_parent}/{repo}-worktrees"
+# branch_prefix = "so/"
+
+# [accounts]
+# wrapper_dir = "~/.local/bin"
+
+# [ui]
+# bind = "127.0.0.1"
+# port = 7878
+
+# [supervisor]
+# idle_exit = "10m"
+
+# [notifications]
+# desktop = true
+
+# Choices are the routable set: each binds a harness, model and effort.
