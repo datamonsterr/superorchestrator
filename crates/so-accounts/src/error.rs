@@ -15,7 +15,7 @@ pub enum AccountsError {
         source: std::io::Error,
     },
     #[error(
-        "agy account `{0}` needs bwrap, which is Linux-only; on macOS only the default ~/.gemini works"
+        "agy account `{0}` is not supported on macOS yet; only the default ~/.gemini works there"
     )]
     AgyMultiAccountUnsupported(String),
     #[error("binary `{0}` not found on PATH")]

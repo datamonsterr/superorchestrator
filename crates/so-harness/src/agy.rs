@@ -126,6 +126,12 @@ fn account_gemini_dir(spec: &LaunchSpec) -> Result<PathBuf, DriverError> {
 /// state, a real `config/` copied from the account (files only), and a
 /// `config/mcp_config.json` holding the account's servers plus ours.
 /// Directories are 0700, files 0600. An existing dir is rebuilt.
+///
+/// Credentials and conversations live under the account's `antigravity-cli/`
+/// (ADR-0004), which is linked, so sign-in and `--conversation` resume work and
+/// refreshed tokens are written back to the account. `config/` is copied so
+/// the run's `mcp_config.json` never edits the account's. Removing old run
+/// dirs is the supervisor's job (run retention); this function only rebuilds.
 pub fn prepare_gemini_dir(spec: &LaunchSpec, account: &Path) -> std::io::Result<PathBuf> {
     let dir = gemini_dir(&spec.run_dir);
     create_private_dir(&spec.run_dir)?;
@@ -157,14 +163,16 @@ pub fn prepare_gemini_dir(spec: &LaunchSpec, account: &Path) -> std::io::Result<
 
     // An unreadable or invalid account file is replaced rather than blocking
     // the run.
-    let mut root: Map<String, Value> = std::fs::read(config.join("mcp_config.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
-        .and_then(|v| match v {
-            Value::Object(m) => Some(m),
-            _ => None,
-        })
-        .unwrap_or_default();
+    let mut root: Map<String, Value> = match std::fs::read(config.join("mcp_config.json")) {
+        Ok(b) => match serde_json::from_slice::<Value>(&b) {
+            Ok(Value::Object(m)) => m,
+            _ => {
+                tracing::warn!("account mcp_config.json is invalid; starting from an empty one");
+                Map::new()
+            }
+        },
+        Err(_) => Map::new(),
+    };
     if !root.get("mcpServers").is_some_and(Value::is_object) {
         root.insert("mcpServers".into(), Value::Object(Map::new()));
     }
@@ -215,7 +223,10 @@ impl Driver for AgyDriver {
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
         let account = account_gemini_dir(&spec)?;
-        prepare_gemini_dir(&spec, &account)?;
+        let prep = spec.clone();
+        tokio::task::spawn_blocking(move || prepare_gemini_dir(&prep, &account))
+            .await
+            .map_err(|e| DriverError::Other(format!("gemini dir task failed: {e}")))??;
 
         let mut cmd = match &self.bwrap {
             Some(bwrap) => {
@@ -241,7 +252,7 @@ impl Driver for AgyDriver {
             cmd,
             &spec.run_dir,
             self.config.shutdown_grace,
-            AgyParser::new(spec.output_schema.is_some(), id_tx),
+            AgyParser::new(spec.output_schema.is_some(), spec.resume.is_some(), id_tx),
         )?;
         let control = AgyControl {
             proc: Arc::new(sup.handle),
@@ -252,16 +263,28 @@ impl Driver for AgyDriver {
             return Err(e);
         }
         // The conversation id is only known from `init`. Wait briefly so the
-        // handle and join info carry it; stop early if agy exits.
+        // handle and join info carry it. If agy exits first the launch fails.
+        // If 10 s pass without `init` the launch still succeeds with no id:
+        // callers must then take the id from `SessionStarted`, and
+        // `JoinInfo.native_session_id` is empty until they do.
         let mut exit = control.proc.exit.clone();
         let peek = id_rx.clone();
-        let id = tokio::select! {
-            r = id_rx.wait_for(Option::is_some) => r.ok().and_then(|v| v.clone()),
-            _ = exit.wait_for(|v| v.is_some()) => peek.borrow().clone(),
-            () = tokio::time::sleep(INIT_TIMEOUT) => None,
+        let mut events = sup.events;
+        let (id, exited_early) = tokio::select! {
+            // Err: the parser is gone, i.e. stdout closed because agy exited.
+            r = id_rx.wait_for(Option::is_some) => match r {
+                Ok(v) => (v.clone(), false),
+                Err(_) => (None, true),
+            },
+            _ = exit.wait_for(|v| v.is_some()) => (None, true),
+            () = tokio::time::sleep(INIT_TIMEOUT) => (None, false),
         };
+        let id = id.or_else(|| peek.borrow().clone());
+        if exited_early && id.is_none() {
+            return Err(early_exit_error(&mut events, &control).await);
+        }
         Ok(RunHandle {
-            events: sup.events,
+            events,
             control: RunControl::Agy(control),
             native_session_id: id.clone(),
             join: JoinInfo {
@@ -290,6 +313,43 @@ impl Driver for AgyDriver {
     fn classify_error(&self, text: &str) -> ErrorKind {
         classify_agy(text)
     }
+}
+
+/// Error for an agy that exited before `init`: its failed `result` or stderr,
+/// classified. Drains the (already finished) event stream.
+async fn early_exit_error(
+    events: &mut tokio::sync::mpsc::UnboundedReceiver<HarnessEvent>,
+    control: &AgyControl,
+) -> DriverError {
+    let mut error_text = None;
+    let mut stderr = Vec::new();
+    let drain = async {
+        while let Some(e) = events.recv().await {
+            match e {
+                HarnessEvent::TurnFinished {
+                    error_text: Some(t),
+                    ..
+                } => error_text = Some(t),
+                HarnessEvent::Raw {
+                    channel: crate::driver::Channel::Stderr,
+                    line,
+                    ..
+                } => stderr.push(line),
+                HarnessEvent::Exited { .. } => break,
+                _ => {}
+            }
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(3), drain).await;
+    let code = control.proc.exit.borrow().flatten();
+    let text = error_text
+        .or_else(|| (!stderr.is_empty()).then(|| stderr.join("; ")))
+        .unwrap_or_else(|| "no output".into());
+    let text: String = text.chars().take(500).collect();
+    DriverError::Other(format!(
+        "agy exited before init (code {code:?}, {:?}): {text}",
+        classify_agy(&text)
+    ))
 }
 
 /// `classify_common` plus the agy texts from ADR-0004.
@@ -341,8 +401,13 @@ impl AgyControl {
             .ok()
             .and_then(rustix::process::Pid::from_raw)
             .ok_or_else(|| DriverError::Other("invalid agy pid".into()))?;
-        rustix::process::kill_process(pid, rustix::process::Signal::INT)
-            .map_err(|e| DriverError::Other(format!("SIGINT failed: {e}")))?;
+        rustix::process::kill_process(pid, rustix::process::Signal::INT).map_err(|e| {
+            if e == rustix::io::Errno::SRCH {
+                DriverError::Closed
+            } else {
+                DriverError::Other(format!("SIGINT failed: {e}"))
+            }
+        })?;
         match exited(&self.proc.exit, INTERRUPT_TIMEOUT).await {
             Some(_) => Ok(()),
             None => Err(DriverError::Other(
@@ -391,12 +456,19 @@ pub struct AgyParser {
     text: HashMap<u64, String>,
     tools: HashMap<u64, String>,
     started_tools: HashSet<u64>,
-    /// Cumulative `(input, output)` already reported.
+    /// Highest cumulative `(input, output)` seen so far.
     reported: (u64, u64),
+    /// A resumed conversation's first result only sets the baseline: its
+    /// cumulative usage includes earlier processes, which were already counted.
+    baseline_pending: bool,
 }
 
 impl AgyParser {
-    pub fn new(expect_structured: bool, id_tx: watch::Sender<Option<String>>) -> Self {
+    pub fn new(
+        expect_structured: bool,
+        resumed: bool,
+        id_tx: watch::Sender<Option<String>>,
+    ) -> Self {
         Self {
             expect_structured,
             session: None,
@@ -406,12 +478,13 @@ impl AgyParser {
             tools: HashMap::new(),
             started_tools: HashSet::new(),
             reported: (0, 0),
+            baseline_pending: resumed,
         }
     }
 
     /// Parser without a conversation-id consumer (tests).
     pub fn standalone(expect_structured: bool) -> Self {
-        Self::new(expect_structured, watch::channel(None).0)
+        Self::new(expect_structured, false, watch::channel(None).0)
     }
 
     /// Normalised events for one stdout line (without the `Raw` event).
@@ -504,19 +577,29 @@ impl AgyParser {
         self.tools.clear();
         self.started_tools.clear();
 
-        // `result.usage` is cumulative over the conversation: report the delta.
+        // `result.usage` is cumulative over the conversation: report the delta
+        // above the highest value seen per field. Empty usage (failed turns)
+        // changes nothing; a resumed process's first result is the baseline.
         let u = &r["usage"];
-        if u.is_object() {
-            let n = |k: &str| u[k].as_u64().unwrap_or(0);
-            let input = n("input_tokens") + n("cache_read_tokens");
-            let output = n("output_tokens") + n("thinking_tokens");
+        let n = |k: &str| u[k].as_u64().unwrap_or(0);
+        let input = n("input_tokens") + n("cache_read_tokens");
+        let output = n("output_tokens") + n("thinking_tokens");
+        let delta = (
+            input.saturating_sub(self.reported.0),
+            output.saturating_sub(self.reported.1),
+        );
+        self.reported = (self.reported.0.max(input), self.reported.1.max(output));
+        let baseline = self.baseline_pending && (input, output) != (0, 0);
+        if baseline {
+            self.baseline_pending = false;
+        }
+        if !baseline && delta != (0, 0) {
             out.push(HarnessEvent::Usage {
-                input_tokens: input.saturating_sub(self.reported.0),
-                output_tokens: output.saturating_sub(self.reported.1),
+                input_tokens: delta.0,
+                output_tokens: delta.1,
                 cost: None,
                 rate_limits: None,
             });
-            self.reported = (input, output);
         }
 
         let is_error = r["status"] != "SUCCESS";
@@ -665,6 +748,41 @@ mod tests {
             Some(HarnessEvent::TurnFinished { structured: Some(s), .. }) if s["a"] == 1
         ));
         assert!(p.parse_line("agy: not json").is_empty());
+    }
+
+    #[test]
+    fn empty_usage_is_skipped_and_resume_sets_a_baseline() {
+        let ok = |i: u64, o: u64| {
+            format!(
+                r#"{{"event":"result","result":{{"status":"SUCCESS","response":"x","usage":{{"input_tokens":{i},"output_tokens":{o}}}}}}}"#
+            )
+        };
+        let usages = |ev: &[HarnessEvent]| -> Vec<(u64, u64)> {
+            ev.iter()
+                .filter_map(|e| match e {
+                    HarnessEvent::Usage {
+                        input_tokens,
+                        output_tokens,
+                        ..
+                    } => Some((*input_tokens, *output_tokens)),
+                    _ => None,
+                })
+                .collect()
+        };
+        // An error result with empty usage reports nothing and loses nothing.
+        let mut p = AgyParser::standalone(false);
+        let ev = p
+            .parse_line(r#"{"event":"result","result":{"status":"ERROR","error":"x","usage":{}}}"#);
+        assert!(usages(&ev).is_empty());
+        assert_eq!(usages(&p.parse_line(&ok(100, 10))), [(100, 10)]);
+        // A lower cumulative value never goes negative or rewinds the maximum.
+        assert!(usages(&p.parse_line(&ok(90, 10))).is_empty());
+        assert_eq!(usages(&p.parse_line(&ok(150, 12))), [(50, 2)]);
+
+        // Resumed: the first result is the baseline, later ones are deltas.
+        let mut p = AgyParser::new(false, true, watch::channel(None).0);
+        assert!(usages(&p.parse_line(&ok(5000, 500))).is_empty());
+        assert_eq!(usages(&p.parse_line(&ok(5200, 530))), [(200, 30)]);
     }
 
     #[test]

@@ -538,3 +538,22 @@ fn any_driver_selects_agy_and_join_command_uses_conversation() {
     assert!(c.env.is_empty());
     assert_eq!(c.cwd, PathBuf::from("/work"));
 }
+
+#[tokio::test]
+async fn exit_before_init_fails_the_launch_with_the_classified_error() {
+    let rig = Rig::new();
+    let s = script(&[
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"stderr": "error: Eligibility check failed: not eligible"}),
+        json!({"exit": 1}),
+    ]);
+    let Err(err) = driver().launch(rig.spec(&s)).await else {
+        panic!("launch should fail");
+    };
+    let msg = err.to_string();
+    assert!(
+        msg.contains("exited before init") && msg.contains("Eligibility"),
+        "{msg}"
+    );
+    assert!(msg.contains("Auth"), "{msg}");
+}

@@ -93,6 +93,7 @@ pub enum LaunchMode {
 /// stability and are unused: no recipe needs bwrap (ADR-0005), because agy
 /// reads its account from `--gemini_dir=<home>/.gemini` and never binds it
 /// over `~/.gemini`.
+// TODO(M9): remove unused bwrap/mode params
 pub fn build_launch(
     account: &AccountFile,
     host: &HostEnv,

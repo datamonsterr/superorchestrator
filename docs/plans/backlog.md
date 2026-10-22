@@ -10,3 +10,4 @@ Minor review findings deferred to M9 hardening. Each line names the file and the
 - `crates/so-supervisor`: idle-exit negative tests use timed sleeps; server writer timeout and join-error logging have no tests.
 - `crates/so-mcp`: progress for `spawn_agent wait` and `run_workflow` is connection-scoped, not per call.
 - `crates/so-accounts`: failed `add` leaves the new home behind; `reserve_backup` leaks an empty file if both rename and copy fail.
+- `crates/so-accounts/src/env.rs`: `build_launch` keeps unused `bwrap_path` and `mode` params (ADR-0005); remove them and update `exec.rs`, `so-usage/src/probe.rs` and tests.

@@ -138,6 +138,8 @@ impl fmt::Debug for Endpoint {
 pub struct JoinInfo {
     /// Account name; its wrapper is the command that sets the account env.
     pub account_name: String,
+    /// Empty when the harness had not reported its session id at launch
+    /// (agy, after a 10 s wait): then take it from `SessionStarted`.
     pub native_session_id: String,
     pub endpoint: Option<Endpoint>,
     pub cwd: PathBuf,

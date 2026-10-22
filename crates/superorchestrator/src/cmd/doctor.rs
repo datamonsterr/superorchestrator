@@ -179,15 +179,12 @@ fn check_binaries(c: &mut Checks, host: &HostEnv, accounts: &[AccountFile]) {
         }
     }
     if host.platform == Platform::Linux {
-        let needs_bwrap = accounts
-            .iter()
-            .any(|a| a.enabled && a.harness == Harness::Agy);
         match resolve_binary("bwrap", host.path_var.as_deref()) {
             Ok(p) => c.ok("bwrap", p.display().to_string()),
-            Err(_) if needs_bwrap => {
-                c.fail("bwrap", "not on PATH, but an enabled agy account needs it");
-            }
-            Err(_) => c.warn("bwrap", "not on PATH (needed for agy accounts)"),
+            Err(_) => c.warn(
+                "bwrap",
+                "not on PATH (optional: agy runs are launched without --die-with-parent)",
+            ),
         }
     }
 }
