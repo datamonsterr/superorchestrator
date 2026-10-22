@@ -165,7 +165,12 @@ fn dry_run_is_the_default_prints_the_plan_and_changes_nothing() {
     );
     assert!(s.contains("+- "), "{s}");
     // Only the live cooldown is planned.
-    assert!(s.contains("flag") && s.contains("agy-acc1"), "{s}");
+    let line = |words: &[&str]| s.lines().any(|l| words.iter().all(|w| l.contains(w)));
+    assert!(line(&["cooldown", "flag", "agy-acc1", "until"]), "{s}");
+    assert!(!line(&["flag", "codex-acc2"]), "{s}");
+    assert!(line(&["choices", "create", "legacy-pick"]), "{s}");
+    assert!(line(&["rules", "update", "CLAUDE.md"]), "{s}");
+    assert!(s.contains("--- ~/.claude/CLAUDE.md"), "{s}");
     assert_eq!(before, snapshot(&e), "dry run changed files");
     assert!(!e.cfg.exists());
     assert_clean("dry run", &s);
@@ -185,6 +190,9 @@ fn dry_run_json_describes_the_plan() {
         && i["action"] == "import"
         && i["target"].as_str().unwrap().contains("codex-acc2")));
     assert!(v["diff"].as_str().unwrap().contains("orchestrate"));
+    assert_eq!(v["legacy"], true);
+    // Nothing was backed up, so no backup directory is reported.
+    assert!(v["backup_dir"].is_null());
 }
 
 #[test]
@@ -312,7 +320,7 @@ fn second_apply_changes_nothing() {
         .assert()
         .success();
     let s = stdout(&out);
-    assert!(s.contains("nothing to do"), "{s}");
+    assert!(s.contains("nothing to migrate"), "{s}");
     assert_eq!(before, snapshot(&e), "second apply changed files");
     assert_eq!(backup_dirs(&e).len(), 1);
     // A repeat without --yes needs no confirmation either: there is nothing to confirm.
@@ -366,4 +374,231 @@ fn unreadable_jev_config_entries_are_skipped_not_fatal() {
         .success();
     let cfg = so_core::Config::load(&e.paths()).unwrap();
     assert!(cfg.choices.iter().any(|c| c.id == "ok"));
+}
+
+fn minimal_env() -> Env {
+    let e = Env::new();
+    // A legacy artifact so that migrate has something to do.
+    write(
+        &e.home.join(".local/bin/check-account-usage"),
+        "#!/bin/sh\n",
+    );
+    e
+}
+
+fn tree_has_secret(root: &Path) -> bool {
+    fn walk(p: &Path) -> bool {
+        let meta = std::fs::symlink_metadata(p).unwrap();
+        if meta.is_dir() {
+            std::fs::read_dir(p)
+                .unwrap()
+                .any(|d| walk(&d.unwrap().path()))
+        } else if meta.is_file() {
+            std::fs::read_to_string(p).is_ok_and(|t| t.contains(SECRET))
+        } else {
+            false
+        }
+    }
+    root.exists() && walk(root)
+}
+
+#[test]
+fn clean_machine_has_nothing_to_migrate_and_installs_nothing() {
+    let e = Env::new();
+    let before = snapshot(&e);
+    for args in [vec!["migrate"], vec!["migrate", "--apply"]] {
+        let out = cmd(&e).args(&args).assert().success();
+        let s = stdout(&out);
+        assert!(s.contains("nothing to migrate"), "{s}");
+        assert!(s.contains("superorchestrator install"), "{s}");
+    }
+    assert_eq!(before, snapshot(&e));
+}
+
+#[test]
+fn a_symlinked_legacy_dir_is_unlinked_not_followed() {
+    let e = Env::new();
+    let outside = e.home.join("elsewhere");
+    write(&outside.join("keep.txt"), SECRET);
+    let link = e.home.join(".claude/skills/coding-agent-management");
+    std::fs::create_dir_all(link.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(&outside, &link).unwrap();
+    cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .success();
+    assert!(std::fs::symlink_metadata(&link).is_err(), "link remains");
+    assert_eq!(read(&outside.join("keep.txt")), SECRET);
+    let backed = backup_dirs(&e)[0]
+        .join(e.home.strip_prefix("/").unwrap())
+        .join(".claude/skills/coding-agent-management");
+    assert!(std::fs::symlink_metadata(&backed).unwrap().is_symlink());
+    assert!(!tree_has_secret(&backup_dirs(&e)[0]));
+}
+
+#[test]
+fn a_symlinked_foreign_wrapper_never_touches_the_file_it_points_at() {
+    let e = Env::new();
+    write(&e.home.join(".codex-acc2/auth.json"), SECRET);
+    std::fs::create_dir_all(e.home.join(".local/bin")).unwrap();
+    std::os::unix::fs::symlink(
+        e.home.join(".codex-acc2/auth.json"),
+        e.home.join(".local/bin/codex-acc2"),
+    )
+    .unwrap();
+    cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .success();
+    assert_eq!(read(&e.home.join(".codex-acc2/auth.json")), SECRET);
+    let w = read(&e.home.join(".local/bin/codex-acc2"));
+    assert!(w.contains("managed-by: superorchestrator"), "{w}");
+    assert!(!tree_has_secret(&backup_dirs(&e)[0]));
+}
+
+#[test]
+fn legacy_trees_are_backed_up_as_they_are() {
+    // Documented behaviour: a legacy tree is copied verbatim, whatever it holds.
+    let e = Env::new();
+    write(
+        &e.home.join(".claude/orchestrator/notes/secret.txt"),
+        SECRET,
+    );
+    let out = cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .success();
+    assert_clean("apply", &stdout(&out));
+    assert!(tree_has_secret(&backup_dirs(&e)[0]));
+    assert!(!e.home.join(".claude/orchestrator").exists());
+}
+
+#[test]
+fn a_broken_config_is_an_error_item_while_the_other_steps_still_run() {
+    for broken in ["{ not json", "{\n // a comment\n \"mcp\": {}\n}"] {
+        let e = minimal_env();
+        write(&e.home.join(".config/opencode/opencode.json"), broken);
+        write(
+            &e.home.join(".claude/CLAUDE.md"),
+            "- Use the `orchestrate` skill\n",
+        );
+        write(&e.home.join(".codex-acc2/auth.json"), SECRET);
+        let out = cmd(&e)
+            .args(["migrate", "--apply", "--yes", "--json"])
+            .assert()
+            .code(1);
+        let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+        assert_eq!(v["ok"], false);
+        let items = v["items"].as_array().unwrap();
+        assert!(
+            items.iter().any(|i| i["action"] == "error"
+                && i["target"].as_str().unwrap().contains("opencode.json")),
+            "{items:?}"
+        );
+        // The rest was done.
+        assert!(!e.home.join(".local/bin/check-account-usage").exists());
+        assert!(e.cfg.join("accounts/codex-acc2.toml").is_file());
+        assert!(!read(&e.home.join(".claude/CLAUDE.md")).contains("`orchestrate`"));
+        // The broken file was left alone.
+        assert_eq!(read(&e.home.join(".config/opencode/opencode.json")), broken);
+    }
+}
+
+#[test]
+fn only_the_first_orchestrate_rule_is_rewritten_and_the_rest_are_noted() {
+    let e = Env::new();
+    let md = "- Use the `orchestrate` skill for all work\r\n\
+              - Never use the orchestrate skill for tiny edits\r\n\
+              - Run the orchestrate skill again after review\r\n\
+              - Keep the orchestrator-state files out of git\r\n";
+    write(&e.home.join(".claude/CLAUDE.md"), md);
+    let out = cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .success();
+    let s = stdout(&out);
+    let new = read(&e.home.join(".claude/CLAUDE.md"));
+    let lines: Vec<&str> = new.split("\r\n").collect();
+    assert!(lines[0].starts_with("- Delegate implementation through the superorchestrator"));
+    assert_eq!(lines[1], "- Never use the orchestrate skill for tiny edits");
+    assert_eq!(lines[2], "- Run the orchestrate skill again after review");
+    assert_eq!(lines[3], "- Keep the orchestrator-state files out of git");
+    assert!(
+        !new.replace("\r\n", "").contains('\n'),
+        "CRLF lost: {new:?}"
+    );
+    // The untouched rules are listed for the user.
+    assert!(s.contains("line 2") && s.contains("line 3"), "{s}");
+    assert!(!s.contains("line 4"), "{s}");
+    // A second apply changes nothing.
+    let before = snapshot(&e);
+    cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .success();
+    assert_eq!(before, snapshot(&e));
+}
+
+#[test]
+fn only_real_state_files_are_removed() {
+    let e = Env::new();
+    for f in [
+        "orchestrator-state.json",
+        "orchestrator-state-12.json",
+        "orchestrator-state-x.json",
+        "orchestrator-state.json.bak",
+    ] {
+        write(&e.home.join(".claude").join(f), "{}");
+    }
+    std::fs::create_dir_all(e.home.join(".claude/orchestrator-state-3.json")).unwrap();
+    cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .success();
+    let c = e.home.join(".claude");
+    assert!(!c.join("orchestrator-state.json").exists());
+    assert!(!c.join("orchestrator-state-12.json").exists());
+    assert!(c.join("orchestrator-state-x.json").exists());
+    assert!(c.join("orchestrator-state.json.bak").exists());
+    assert!(c.join("orchestrator-state-3.json").is_dir());
+}
+
+#[test]
+fn choices_are_not_written_into_an_invalid_config() {
+    let e = Env::new();
+    write(
+        &e.home.join(".config/jev-router/config.json"),
+        r#"{"choices":[{"id":"x","harness":"codex","model":"m"}]}"#,
+    );
+    let broken = "limits = \"not a table\"\n";
+    write(&e.cfg.join("config.toml"), broken);
+    cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .code(1);
+    assert_eq!(read(&e.cfg.join("config.toml")), broken);
+}
+
+#[test]
+fn cooldowns_for_unknown_accounts_are_skipped_and_stay_idempotent() {
+    let e = Env::new();
+    write(
+        &e.home
+            .join(".local/state/coding-agent/.state/codex/codex-ghost.meta"),
+        &format!("exhausted_until={}\n", future_epoch()),
+    );
+    write(&e.home.join(".local/bin/add-agy-worker"), "#!/bin/sh\n");
+    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
+    cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .success();
+    let before = snapshot(&e);
+    let out = cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .success();
+    let s = stdout(&out);
+    assert!(s.contains("nothing to migrate"), "{s}");
+    assert_eq!(before, snapshot(&e));
 }

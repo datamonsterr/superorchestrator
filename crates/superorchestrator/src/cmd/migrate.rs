@@ -1,10 +1,36 @@
 //! `migrate`: cut over from the legacy tooling (SPEC 19.2).
 //!
-//! One code path serves the dry run and `--apply`: every step goes through a shared
-//! [`Writer`] whose `dry_run` flag turns writes, removals and backups into no-ops, so the
-//! printed plan is exactly what `--apply` does. Every step checks its own precondition,
-//! so a second `--apply` finds nothing to do and writes nothing (not even a backup dir).
-//! Credential files are never opened: accounts are imported by linking their homes.
+//! # How it works
+//!
+//! A *plan* is computed by running every step against a [`Writer`] in dry-run mode, where
+//! writes, removals and backups are no-ops. `--apply` shows that plan, asks for
+//! confirmation (or needs `--yes`), then **re-plans and compares** with the confirmed plan;
+//! if anything changed on disk in between, nothing is touched and the new plan is shown.
+//! Only then are the steps run for real. Every step checks its own precondition, so a
+//! second `--apply` finds nothing to do and writes nothing (not even a backup directory).
+//!
+//! Registering the MCP server and skill (`install`) and creating the config dir (`init`)
+//! only happen when at least one legacy artifact is found. On a clean machine `migrate`
+//! says so and points at `superorchestrator install`.
+//!
+//! # Backups
+//!
+//! Everything migrate changes is first copied to `legacy-backup/<ts>/`, mirroring its
+//! absolute path. Legacy trees (`~/.claude/orchestrator/`, ...) are backed up **as they
+//! are**, with whatever they contain; symlinks are backed up as symlinks and never
+//! followed. Credential homes are never copied: accounts are imported by linking the home,
+//! and auth files are never opened. The one file not backed up is Claude Code's own
+//! `~/.claude.json`, which `claude mcp add` edits itself and which holds account data.
+//!
+//! # The `CLAUDE.md` heuristic (SPEC 19.2 step 5)
+//!
+//! A line mentions the old skill when the word `orchestrate` (not `orchestrator`, not
+//! `superorchestrator`; backticks and quotes ignored) is directly next to the word `skill`,
+//! as in ``the `orchestrate` skill`` or `skill orchestrate`. Only the **first** such line is
+//! replaced, and only when no `never`, `don't` or `do not` comes before the mention (those
+//! are prohibitions that must not turn into instructions). Every other such line is left
+//! unchanged and listed as a note, for the user to edit. The replaced line keeps its bullet,
+//! indent and line ending (CRLF files stay CRLF).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -28,8 +54,11 @@ use crate::register::{codex_remove_key, json_remove_key};
 /// The legacy router's MCP server name in the harness configs.
 const JEV_KEY: &str = "jev-router-mcp";
 
+/// Steps whose non-skip items mean that legacy tooling was found.
+const LEGACY_STEPS: [&str; 5] = ["accounts", "cooldown", "choices", "remove", "rules"];
+
 /// One thing the plan found, and what happens to it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct Item {
     step: &'static str,
     /// `import`, `rewrite`, `flag`, `remove`, `update`, `create`, `skip` or `error`.
@@ -43,6 +72,10 @@ struct Item {
 struct Report {
     items: Vec<Item>,
     diff: Option<String>,
+    /// Whether any legacy artifact was found.
+    legacy: bool,
+    /// The `legacy-backup/<ts>` directory, when this run wrote backups.
+    backup: Option<PathBuf>,
 }
 
 impl Report {
@@ -55,17 +88,23 @@ impl Report {
         });
     }
 
-    fn add_note(&mut self, step: &'static str, action: &str, target: String, note: String) {
+    fn add_note(
+        &mut self,
+        step: &'static str,
+        action: &str,
+        target: impl Into<String>,
+        note: impl Into<String>,
+    ) {
         self.items.push(Item {
             step,
             action: action.to_string(),
-            target,
-            note: Some(note),
+            target: target.into(),
+            note: Some(note.into()),
         });
     }
 
     fn error(&mut self, step: &'static str, target: impl Into<String>, e: &anyhow::Error) {
-        self.add_note(step, "error", target.into(), format!("{e:#}"));
+        self.add_note(step, "error", target, format!("{e:#}"));
     }
 
     fn changed(&self) -> bool {
@@ -77,16 +116,27 @@ impl Report {
     fn failures(&self) -> usize {
         self.items.iter().filter(|i| i.action == "error").count()
     }
+
+    fn found_legacy(&self) -> bool {
+        self.items
+            .iter()
+            .any(|i| LEGACY_STEPS.contains(&i.step) && i.action != "skip")
+    }
 }
 
-pub fn run(ctx: &Ctx, apply: bool) -> Result<ExitCode> {
-    let plan = collect(ctx, true)?;
-    if !apply {
-        print(ctx, &plan, true, None)?;
+/// True when the two plans would do the same thing.
+fn same_plan(a: &Report, b: &Report) -> bool {
+    a.items == b.items && a.diff == b.diff
+}
+
+pub fn run(ctx: &Ctx, apply_it: bool) -> Result<ExitCode> {
+    let plan = plan(ctx)?;
+    if !apply_it {
+        print(ctx, &plan, true)?;
         return Ok(ExitCode::SUCCESS);
     }
     if !plan.changed() {
-        print(ctx, &plan, false, None)?;
+        print(ctx, &plan, false)?;
         return Ok(ExitCode::SUCCESS);
     }
     if !ctx.yes {
@@ -103,28 +153,12 @@ pub fn run(ctx: &Ctx, apply: bool) -> Result<ExitCode> {
             bail!("not confirmed; nothing was changed");
         }
     }
-    let done = collect(ctx, false)?;
-    let backup = backup_dir_of(ctx, &done);
-    print(ctx, &done, false, backup)?;
+    let done = apply(ctx, &plan)?;
+    print(ctx, &done, false)?;
     match done.failures() {
         0 => Ok(ExitCode::SUCCESS),
         n => Err(anyhow!("{n} step(s) failed")),
     }
-}
-
-/// The newest `legacy-backup/<ts>` directory when this run wrote backups.
-fn backup_dir_of(ctx: &Ctx, report: &Report) -> Option<PathBuf> {
-    if !report.changed() {
-        return None;
-    }
-    let root = ctx.paths.config_dir.join("legacy-backup");
-    let mut dirs: Vec<_> = std::fs::read_dir(root)
-        .ok()?
-        .flatten()
-        .map(|e| e.path())
-        .collect();
-    dirs.sort();
-    dirs.pop()
 }
 
 fn render(report: &Report, dry_run: bool) -> String {
@@ -132,8 +166,10 @@ fn render(report: &Report, dry_run: bool) -> String {
     if dry_run {
         out.push_str("dry run: nothing was changed (pass --apply to execute)\n");
     }
-    if !report.changed() && report.failures() == 0 {
-        out.push_str("nothing to do\n");
+    if !report.legacy && !report.changed() && report.failures() == 0 {
+        out.push_str(
+            "nothing to migrate; run `superorchestrator install` to register the MCP server and skill\n",
+        );
     }
     for i in &report.items {
         out.push_str(&format!("{:<8} {:<9} {}", i.step, i.action, i.target));
@@ -149,50 +185,82 @@ fn render(report: &Report, dry_run: bool) -> String {
     out
 }
 
-fn print(ctx: &Ctx, report: &Report, dry_run: bool, backup: Option<PathBuf>) -> Result<()> {
+fn print(ctx: &Ctx, report: &Report, dry_run: bool) -> Result<()> {
     let value = json!({
         "ok": report.failures() == 0,
         "dry_run": dry_run,
         "changed": report.changed(),
-        "backup_dir": backup,
+        "legacy": report.legacy,
+        "backup_dir": report.backup,
         "items": report.items,
         "diff": report.diff,
     });
     ctx.emit(&value, |w| {
         write!(w, "{}", render(report, dry_run))?;
-        if let Some(b) = &backup {
+        if let Some(b) = &report.backup {
             writeln!(w, "\nbackups: {}", b.display())?;
         }
         Ok(())
     })
 }
 
-/// Runs every step against a shared writer; `dry_run` only plans.
-fn collect(ctx: &Ctx, dry_run: bool) -> Result<Report> {
+/// The dry-run report: what `--apply` would do right now.
+fn plan(ctx: &Ctx) -> Result<Report> {
     let host = ctx.host()?;
-    let w = Writer::new(&ctx.paths, dry_run);
-    let mut r = Report::default();
-
-    step_init(ctx, dry_run, &mut r);
     let cfg = ctx.config()?;
-    let accounts = import_accounts(ctx, &cfg, &host, &w, &mut r);
-    cooldowns(ctx, &host, &w, &accounts, &mut r);
-    seed_choices(ctx, &host, &w, &mut r);
-    remove_legacy(&host, &w, &mut r);
-    remove_jev_entries(ctx, &host, &w, &mut r);
-    install_step(ctx, &w, &mut r);
-    claude_md(&host, &w, &mut r);
+    let w = Writer::new(&ctx.paths, true);
+    let mut r = Report::default();
+    steps(ctx, &cfg, &host, &w, &mut r);
+    r.legacy = r.found_legacy();
+    if r.legacy {
+        if !ctx.paths.config_toml().exists() {
+            r.items.insert(
+                0,
+                Item {
+                    step: "init",
+                    action: "create".into(),
+                    target: host.tildify(&ctx.paths.config_dir),
+                    note: None,
+                },
+            );
+        }
+        install_step(ctx, &host, &w, &mut r);
+    }
     Ok(r)
 }
 
-fn step_init(ctx: &Ctx, dry_run: bool, r: &mut Report) {
-    let target = ctx.paths.config_dir.display().to_string();
-    if dry_run {
-        if !ctx.paths.config_toml().exists() {
-            r.add("init", "create", target);
-        }
-        return;
+/// Re-plans, aborts when the plan differs from the confirmed one, then executes.
+fn apply(ctx: &Ctx, confirmed: &Report) -> Result<Report> {
+    let now = plan(ctx)?;
+    if !same_plan(&now, confirmed) {
+        bail!(
+            "the system changed since the plan was shown, so nothing was changed; \
+             re-run to confirm the new plan:\n{}",
+            render(&now, true)
+        );
     }
+    let host = ctx.host()?;
+    let w = Writer::new(&ctx.paths, false);
+    let mut r = Report {
+        legacy: now.legacy,
+        ..Report::default()
+    };
+    if now.legacy {
+        step_init(ctx, &host, &mut r);
+    }
+    let cfg = ctx.config()?;
+    steps(ctx, &cfg, &host, &w, &mut r);
+    if now.legacy {
+        install_step(ctx, &host, &w, &mut r);
+    }
+    if w.backup_root().exists() {
+        r.backup = Some(w.backup_root().to_path_buf());
+    }
+    Ok(r)
+}
+
+fn step_init(ctx: &Ctx, host: &HostEnv, r: &mut Report) {
+    let target = host.tildify(&ctx.paths.config_dir);
     match init::init(&ctx.paths) {
         Ok(done) => {
             if done.iter().any(|(_, o)| *o == init::Outcome::Created) {
@@ -203,11 +271,23 @@ fn step_init(ctx: &Ctx, dry_run: bool, r: &mut Report) {
     }
 }
 
+/// SPEC 19.2 steps 2 to 6, against `w`.
+fn steps(ctx: &Ctx, cfg: &Config, host: &HostEnv, w: &Writer, r: &mut Report) {
+    let accounts = import_accounts(ctx, cfg, host, w, r);
+    cooldowns(ctx, host, w, &accounts, r);
+    seed_choices(ctx, host, w, r);
+    remove_legacy(host, w, r);
+    remove_jev_entries(ctx, host, w, r);
+    claude_md(host, w, r);
+}
+
 /// Copies `path` into the backup tree: a file as is, a directory recursively, a symlink
-/// as a symlink. Does nothing in a dry run.
-fn backup_tree(w: &Writer, path: &Path) -> Result<()> {
+/// as a symlink (never followed). Returns the entries that could not be backed up because
+/// they are neither file, directory nor link. Does nothing in a dry run.
+fn backup_tree(w: &Writer, path: &Path) -> Result<Vec<PathBuf>> {
+    let mut skipped = Vec::new();
     if w.dry_run {
-        return Ok(());
+        return Ok(skipped);
     }
     let meta = std::fs::symlink_metadata(path)
         .with_context(|| format!("could not stat {}", path.display()))?;
@@ -216,8 +296,8 @@ fn backup_tree(w: &Writer, path: &Path) -> Result<()> {
         if let Some(dir) = dest.parent() {
             install::create_private_dirs(dir)?;
         }
-        let target = std::fs::read_link(path)?;
-        if !dest.exists() {
+        if dest.symlink_metadata().is_err() {
+            let target = std::fs::read_link(path)?;
             std::os::unix::fs::symlink(target, &dest)
                 .with_context(|| format!("could not back up link {}", path.display()))?;
         }
@@ -229,30 +309,34 @@ fn backup_tree(w: &Writer, path: &Path) -> Result<()> {
             .collect();
         kids.sort();
         for k in kids {
-            backup_tree(w, &k)?;
+            skipped.extend(backup_tree(w, &k)?);
         }
-    } else {
+    } else if meta.is_file() {
         w.backup(path)?;
+    } else {
+        skipped.push(path.to_path_buf());
     }
-    Ok(())
+    Ok(skipped)
 }
 
-/// Backs up and removes a file, link or directory tree; the parent stays.
-fn remove_path(w: &Writer, path: &Path) -> Result<()> {
+/// Backs up and removes a file, link or directory tree (the parent stays). Returns the
+/// entries that were removed without a backup. Does nothing in a dry run.
+fn remove_path(w: &Writer, path: &Path) -> Result<Vec<PathBuf>> {
     if w.dry_run {
-        return Ok(());
+        return Ok(Vec::new());
     }
-    backup_tree(w, path)?;
+    let skipped = backup_tree(w, path)?;
     let meta = std::fs::symlink_metadata(path)?;
     if meta.is_dir() {
         std::fs::remove_dir_all(path)
     } else {
         std::fs::remove_file(path)
     }
-    .with_context(|| format!("could not remove {}", path.display()))
+    .with_context(|| format!("could not remove {}", path.display()))?;
+    Ok(skipped)
 }
 
-/// Steps 2: import the scanned accounts and rewrite their wrappers. Returns the names of
+/// Step 2: import the scanned accounts and rewrite their wrappers. Returns the names of
 /// the accounts that exist (or, in a dry run, will exist) afterwards.
 fn import_accounts(
     ctx: &Ctx,
@@ -287,16 +371,15 @@ fn import_accounts(
         let foreign = wrapper.symlink_metadata().is_ok() && !is_managed(&wrapper);
         let missing = wrapper.symlink_metadata().is_err();
         let desc = format!("{} ({}) at {}", c.name, c.harness, host.tildify(&c.home));
-        let result = (|| -> Result<()> {
+        let result = (|| -> Result<Option<(&'static str, String)>> {
             if !is_new && !foreign && !missing {
-                return Ok(());
+                return Ok(None);
             }
             if foreign {
                 // `write_wrapper` also parks the old file in `wrappers.bak`.
                 backup_tree(w, &wrapper)?;
             }
             if is_new {
-                r.add(STEP, "import", desc.clone());
                 if !w.dry_run {
                     manage::import(
                         &ctx.paths,
@@ -307,16 +390,24 @@ fn import_accounts(
                         &host.tildify(&c.home),
                     )?;
                 }
+                Ok(Some(("import", desc.clone())))
             } else {
-                r.add(STEP, "rewrite", format!("wrapper {}", wrapper.display()));
                 if !w.dry_run {
                     write_wrapper(&wdir, &ctx.paths.wrappers_bak_dir(), &c.name, SELF_EXE)?;
                 }
+                Ok(Some((
+                    "rewrite",
+                    format!("wrapper {}", host.tildify(&wrapper)),
+                )))
             }
-            Ok(())
         })();
         match result {
-            Ok(()) => present.push(c.name.clone()),
+            Ok(done) => {
+                if let Some((action, target)) = done {
+                    r.add(STEP, action, target);
+                }
+                present.push(c.name.clone());
+            }
             Err(e) => r.error(STEP, desc, &e),
         }
     }
@@ -353,7 +444,7 @@ fn cooldowns(ctx: &Ctx, host: &HostEnv, w: &Writer, accounts: &[String], r: &mut
         match Store::open(&db) {
             Ok(s) => Some(s),
             Err(e) => {
-                r.error(STEP, db.display().to_string(), &e.into());
+                r.error(STEP, host.tildify(&db), &e.into());
                 return;
             }
         }
@@ -375,15 +466,29 @@ fn cooldowns(ctx: &Ctx, host: &HostEnv, w: &Writer, accounts: &[String], r: &mut
         if until <= now {
             continue;
         }
-        if !accounts.contains(&name) && !ctx.paths.account_file(&name).exists() {
-            r.add_note(STEP, "skip", name, "no such account".to_string());
+        let file = ctx.paths.account_file(&name);
+        // `None` pools: the account is about to be imported (dry run only).
+        let pools: Option<Vec<String>> = if file.exists() {
+            match AccountFile::load(&file) {
+                Ok(a) => Some(a.pools),
+                Err(e) => {
+                    r.error(STEP, name, &e.into());
+                    continue;
+                }
+            }
+        } else if accounts.contains(&name) && w.dry_run {
+            None
+        } else {
+            r.add_note(STEP, "skip", name, "no such account");
+            continue;
+        };
+        if pools.as_ref().is_some_and(Vec::is_empty) {
+            r.add_note(STEP, "skip", name, "no pools");
             continue;
         }
-        let pools = AccountFile::load(&ctx.paths.account_file(&name))
-            .map(|a| a.pools)
-            .unwrap_or_default();
         let stale: Vec<String> = pools
             .iter()
+            .flatten()
             .filter(|p| {
                 store
                     .as_ref()
@@ -392,15 +497,18 @@ fn cooldowns(ctx: &Ctx, host: &HostEnv, w: &Writer, accounts: &[String], r: &mut
             })
             .cloned()
             .collect();
-        if !pools.is_empty() && stale.is_empty() {
+        if pools.is_some() && stale.is_empty() {
             continue; // already flagged at least this long
         }
-        r.add(STEP, "flag", format!("{name} until {}", until.to_rfc3339()));
-        if let (false, Some(s)) = (w.dry_run, &store)
-            && let Err(e) = apply_flag(s, &name, &stale, FlagAction::Until(until), Some("migrated"))
-        {
-            r.error(STEP, name, &e.into());
+        let target = format!("{name} until {}", until.to_rfc3339());
+        if let (false, Some(s)) = (w.dry_run, &store) {
+            let flagged = apply_flag(s, &name, &stale, FlagAction::Until(until), Some("migrated"));
+            if let Err(e) = flagged {
+                r.error(STEP, name, &e.into());
+                continue;
+            }
         }
+        r.add(STEP, "flag", target);
     }
 }
 
@@ -445,6 +553,53 @@ fn choice_table(v: &Value) -> Result<(String, Table)> {
     Ok((id.to_string(), t))
 }
 
+/// What merging the old choices into `config.toml` text produced.
+#[derive(Debug, Default)]
+struct Merged {
+    /// The new text; `None` when nothing was added.
+    text: Option<String>,
+    added: Vec<String>,
+    /// `(entry description, reason)` for entries that were not usable.
+    skipped: Vec<(String, String)>,
+}
+
+/// Appends the choices of `list` that `base` does not have. The result must parse and
+/// validate as a [`Config`], otherwise nothing is produced.
+fn merge_choices(base: &str, list: &[Value], path: &Path) -> Result<Merged> {
+    let mut doc: DocumentMut = base.parse().context("config.toml is not valid TOML")?;
+    let mut have: Vec<String> = doc
+        .get("choices")
+        .and_then(TomlItem::as_array_of_tables)
+        .map(|a| {
+            a.iter()
+                .filter_map(|t| t.get("id").and_then(TomlItem::as_str).map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut out = Merged::default();
+    for (n, v) in list.iter().enumerate() {
+        match choice_table(v) {
+            Ok((id, _)) if have.contains(&id) => {}
+            Ok((id, table)) => {
+                doc.entry("choices")
+                    .or_insert_with(|| TomlItem::ArrayOfTables(ArrayOfTables::new()))
+                    .as_array_of_tables_mut()
+                    .context("`choices` is not an array of tables")?
+                    .push(table);
+                have.push(id.clone());
+                out.added.push(id);
+            }
+            Err(e) => out.skipped.push((format!("entry {n}"), format!("{e:#}"))),
+        }
+    }
+    if !out.added.is_empty() {
+        let text = doc.to_string();
+        Config::parse(&text, path).context("the merged choices make config.toml invalid")?;
+        out.text = Some(text);
+    }
+    Ok(out)
+}
+
 /// Step 6: add the old router's choices that `config.toml` does not have yet.
 fn seed_choices(ctx: &Ctx, host: &HostEnv, w: &Writer, r: &mut Report) {
     const STEP: &str = "choices";
@@ -452,51 +607,53 @@ fn seed_choices(ctx: &Ctx, host: &HostEnv, w: &Writer, r: &mut Report) {
     let Ok(text) = std::fs::read_to_string(&src) else {
         return;
     };
-    let result = (|| -> Result<()> {
-        let json: Value = serde_json::from_str(&text)
-            .with_context(|| format!("{} is not valid JSON", src.display()))?;
+    let shown = host.tildify(&src);
+    let cfg_path = ctx.paths.config_toml();
+    let result = (|| -> Result<Merged> {
+        let json: Value =
+            serde_json::from_str(&text).with_context(|| format!("{shown} is not valid JSON"))?;
         let list = json.get("choices").unwrap_or(&json);
         let list = list
             .as_array()
-            .with_context(|| format!("{} has no choices list", src.display()))?;
-        let cfg_path = ctx.paths.config_toml();
-        let old = std::fs::read_to_string(&cfg_path).unwrap_or_else(|_| init::config_toml_text());
-        let mut doc: DocumentMut = old.parse().context("config.toml is not valid TOML")?;
-        let mut have: Vec<String> = doc
-            .get("choices")
-            .and_then(TomlItem::as_array_of_tables)
-            .map(|a| {
-                a.iter()
-                    .filter_map(|t| t.get("id").and_then(TomlItem::as_str).map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let mut added = 0;
-        for (n, v) in list.iter().enumerate() {
-            match choice_table(v) {
-                Ok((id, _)) if have.contains(&id) => {}
-                Ok((id, table)) => {
-                    let arr = doc
-                        .entry("choices")
-                        .or_insert_with(|| TomlItem::ArrayOfTables(ArrayOfTables::new()))
-                        .as_array_of_tables_mut()
-                        .context("`choices` is not an array of tables")?;
-                    arr.push(table);
-                    r.add(STEP, "create", id.clone());
-                    have.push(id);
-                    added += 1;
-                }
-                Err(e) => r.add_note(STEP, "skip", format!("entry {n}"), format!("{e:#}")),
+            .with_context(|| format!("{shown} has no choices list"))?;
+        let base = match std::fs::read_to_string(&cfg_path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => init::config_toml_text(),
+            Err(e) => {
+                return Err(anyhow!(e).context(format!("could not read {}", cfg_path.display())));
+            }
+        };
+        let merged = merge_choices(&base, list, &cfg_path)?;
+        if let Some(t) = &merged.text {
+            w.write(&cfg_path, t)?;
+        }
+        Ok(merged)
+    })();
+    match result {
+        Ok(m) => {
+            for id in m.added {
+                r.add(STEP, "create", id);
+            }
+            for (entry, why) in m.skipped {
+                r.add_note(STEP, "skip", entry, why);
             }
         }
-        if added > 0 {
-            w.write(&cfg_path, &doc.to_string())?;
-        }
-        Ok(())
-    })();
-    if let Err(e) = result {
-        r.error(STEP, src.display().to_string(), &e);
+        Err(e) => r.error(STEP, shown, &e),
     }
+}
+
+/// `orchestrator-state.json` or `orchestrator-state-<digits>.json`.
+fn is_state_file_name(n: &str) -> bool {
+    let Some(rest) = n
+        .strip_prefix("orchestrator-state")
+        .and_then(|r| r.strip_suffix(".json"))
+    else {
+        return false;
+    };
+    rest.is_empty()
+        || rest
+            .strip_prefix('-')
+            .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Step 4a: the old tooling's files and directories.
@@ -505,9 +662,10 @@ fn remove_legacy(host: &HostEnv, w: &Writer, r: &mut Report) {
     let h = &host.home;
     let mut targets = vec![h.join(".claude/orchestrator")];
     targets.extend(sorted_children(&h.join(".claude")).into_iter().filter(|p| {
-        p.file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.starts_with("orchestrator-state") && n.ends_with(".json"))
+        p.symlink_metadata().is_ok_and(|m| m.is_file())
+            && p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(is_state_file_name)
     }));
     targets.extend([
         h.join(".claude/skills/coding-agent-management"),
@@ -518,11 +676,32 @@ fn remove_legacy(host: &HostEnv, w: &Writer, r: &mut Report) {
         if t.symlink_metadata().is_err() {
             continue;
         }
-        r.add(STEP, "remove", host.tildify(&t));
-        if let Err(e) = remove_path(w, &t) {
-            r.error(STEP, host.tildify(&t), &e);
+        let shown = host.tildify(&t);
+        match remove_path(w, &t) {
+            Ok(unsaved) => {
+                r.add(STEP, "remove", shown);
+                for p in unsaved {
+                    r.add_note(
+                        STEP,
+                        "skip",
+                        host.tildify(&p),
+                        "not a file, directory or link; removed without a backup",
+                    );
+                }
+            }
+            Err(e) => r.error(STEP, shown, &e),
         }
     }
+}
+
+/// True when `mcp_servers` is an inline table holding `key`, which the line-preserving
+/// editor cannot remove.
+fn codex_inline_entry(text: &str, key: &str) -> bool {
+    text.parse::<DocumentMut>().is_ok_and(|d| {
+        d.get("mcp_servers")
+            .and_then(TomlItem::as_inline_table)
+            .is_some_and(|t| t.contains_key(key))
+    })
 }
 
 /// Step 4b: the `jev-router-mcp` entries of the Codex, agy and OpenCode configs.
@@ -546,26 +725,34 @@ fn remove_jev_entries(ctx: &Ctx, host: &HostEnv, w: &Writer, r: &mut Report) {
         let Ok(old) = std::fs::read_to_string(&t.path) else {
             continue;
         };
+        let shown = host.tildify(&t.path);
+        let target = format!("{JEV_KEY} in {shown}");
+        if matches!(t.kind, Kind::Codex) && codex_inline_entry(&old, JEV_KEY) {
+            r.add_note(
+                STEP,
+                "skip",
+                target,
+                "`mcp_servers` is an inline table; remove the entry by hand",
+            );
+            continue;
+        }
         let new = match t.kind {
             Kind::Codex => codex_remove_key(&old, JEV_KEY),
             Kind::Json(k) => json_remove_key(&old, k, JEV_KEY),
         };
-        let target = format!("{JEV_KEY} in {}", host.tildify(&t.path));
         match new {
             Ok(None) => {}
-            Ok(Some(text)) => {
-                r.add(STEP, "update", target.clone());
-                if let Err(e) = w.write(&t.path, &text) {
-                    r.error(STEP, target, &e);
-                }
-            }
-            Err(e) => r.error(STEP, format!("{}", t.path.display()), &e),
+            Ok(Some(text)) => match w.write(&t.path, &text) {
+                Ok(()) => r.add(STEP, "update", target),
+                Err(e) => r.error(STEP, target, &e),
+            },
+            Err(e) => r.error(STEP, shown, &e),
         }
     }
 }
 
 /// Registers the MCP server and ships the skill, as `install` does.
-fn install_step(ctx: &Ctx, w: &Writer, r: &mut Report) {
+fn install_step(ctx: &Ctx, host: &HostEnv, w: &Writer, r: &mut Report) {
     const STEP: &str = "install";
     match install::install_steps(ctx, w, false) {
         Ok(results) => {
@@ -573,11 +760,13 @@ fn install_step(ctx: &Ctx, w: &Writer, r: &mut Report) {
                 match res {
                     Ok(o) if o.action == "unchanged" => {}
                     Ok(o) => {
-                        let path = o.path.unwrap_or_else(|| o.target.clone());
+                        let path = o.path.as_deref().map_or(String::new(), |p| {
+                            format!(" {}", host.tildify(Path::new(p)))
+                        });
                         r.items.push(Item {
                             step: STEP,
                             action: o.action.to_string(),
-                            target: format!("{} {path}", o.target),
+                            target: format!("{}{path}", o.target),
                             note: o.note,
                         });
                     }
@@ -589,40 +778,107 @@ fn install_step(ctx: &Ctx, w: &Writer, r: &mut Report) {
     }
 }
 
-/// True when `line` names the `orchestrate` skill (not `superorchestrator`).
-fn mentions_orchestrate_skill(line: &str) -> bool {
-    let word = |c: Option<char>| c.is_none_or(|c| !c.is_alphanumeric() && c != '_' && c != '-');
-    line.contains("skill")
-        && line.match_indices("orchestrate").any(|(i, m)| {
-            word(line[..i].chars().next_back()) && word(line[i + m.len()..].chars().next())
-        })
+/// How a line relates to the old `orchestrate` skill.
+#[derive(Debug, PartialEq, Eq)]
+enum Mention {
+    None,
+    /// A reference that can be rewritten.
+    Rule,
+    /// A reference after a prohibition (`never`, `don't`, `do not`).
+    Prohibition,
+}
+
+fn is_word_char(c: Option<char>) -> bool {
+    c.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Classifies `line` per the heuristic in the module docs.
+fn mention(line: &str) -> Mention {
+    let n: String = line
+        .chars()
+        .filter(|c| !matches!(c, '`' | '"' | '\'' | '\u{2019}'))
+        .collect();
+    for (i, m) in n.match_indices("orchestrate") {
+        let (before, after) = (&n[..i], &n[i + m.len()..]);
+        if is_word_char(before.chars().next_back()) || is_word_char(after.chars().next()) {
+            continue;
+        }
+        let skill_after = after
+            .trim_start()
+            .strip_prefix("skill")
+            .is_some_and(|r| !is_word_char(r.chars().next()));
+        let skill_before = before
+            .trim_end()
+            .strip_suffix("skill")
+            .is_some_and(|r| !is_word_char(r.chars().next_back()));
+        if !(skill_after || skill_before) {
+            continue;
+        }
+        let lower = before.to_lowercase();
+        let prohibited = ["never", "dont", "do not"]
+            .iter()
+            .any(|p| lower.contains(p));
+        return if prohibited {
+            Mention::Prohibition
+        } else {
+            Mention::Rule
+        };
+    }
+    Mention::None
 }
 
 const NEW_RULE: &str = "Delegate implementation through the superorchestrator MCP tools and skill (`route`, `spawn_agent`, `wait_agent`, `get_run`).";
 
-/// Replaces the first line about the `orchestrate` skill with the new rule and drops later
-/// duplicates; every other line is kept. `None` when nothing matches.
-fn rewrite_rules(old: &str) -> Option<String> {
+/// The rewritten text (when a rule was replaced) and notes `(line number, text)` for the
+/// other lines that mention the skill.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Rewrite {
+    text: Option<String>,
+    notes: Vec<(usize, &'static str)>,
+}
+
+fn rewrite_rules(old: &str) -> Rewrite {
     let mut out = String::new();
-    let mut replaced = false;
-    for line in old.split_inclusive('\n') {
-        let body = line.trim_end_matches('\n');
-        if !mentions_orchestrate_skill(body) {
-            out.push_str(line);
-            continue;
-        }
-        if !replaced {
-            replaced = true;
-            let indent = &body[..body.len() - body.trim_start().len()];
-            let rest = body.trim_start();
-            let bullet = ["- ", "* "].into_iter().find(|b| rest.starts_with(b));
-            out.push_str(indent);
-            out.push_str(bullet.unwrap_or(""));
-            out.push_str(NEW_RULE);
-            out.push('\n');
+    let mut rw = Rewrite::default();
+    // Already migrated: the rule is in place, so further mentions are only noted.
+    let mut replaced = old.lines().any(|l| l.contains(NEW_RULE));
+    let mut rewrote = false;
+    for (idx, line) in old.split_inclusive('\n').enumerate() {
+        let (body, eol) = if let Some(b) = line.strip_suffix("\r\n") {
+            (b, "\r\n")
+        } else if let Some(b) = line.strip_suffix('\n') {
+            (b, "\n")
+        } else {
+            (line, "")
+        };
+        match mention(body) {
+            Mention::Rule if !replaced => {
+                replaced = true;
+                rewrote = true;
+                let indent = &body[..body.len() - body.trim_start().len()];
+                let rest = body.trim_start();
+                let bullet = ["- ", "* "].into_iter().find(|b| rest.starts_with(b));
+                out.push_str(&format!("{indent}{}{NEW_RULE}{eol}", bullet.unwrap_or("")));
+            }
+            Mention::Rule => {
+                rw.notes.push((
+                    idx + 1,
+                    "also mentions the orchestrate skill; edit it by hand",
+                ));
+                out.push_str(line);
+            }
+            Mention::Prohibition => {
+                rw.notes.push((
+                    idx + 1,
+                    "a prohibition about the orchestrate skill; left unchanged, edit it by hand if needed",
+                ));
+                out.push_str(line);
+            }
+            Mention::None => out.push_str(line),
         }
     }
-    replaced.then_some(out)
+    rw.text = rewrote.then_some(out);
+    rw
 }
 
 /// A line diff of the lines `rewrite_rules` changed.
@@ -645,14 +901,20 @@ fn claude_md(host: &HostEnv, w: &Writer, r: &mut Report) {
     let Ok(old) = std::fs::read_to_string(&path) else {
         return;
     };
-    let Some(new) = rewrite_rules(&old) else {
+    let shown = host.tildify(&path);
+    let rw = rewrite_rules(&old);
+    for (line, note) in &rw.notes {
+        r.add_note(STEP, "skip", format!("{shown} line {line}"), *note);
+    }
+    let Some(new) = rw.text else {
         return;
     };
-    let shown = host.tildify(&path);
-    r.add(STEP, "update", shown.clone());
-    r.diff = Some(diff_text(&shown, &old, &new));
-    if let Err(e) = w.write(&path, &new) {
-        r.error(STEP, shown, &e);
+    match w.write(&path, &new) {
+        Ok(()) => {
+            r.add(STEP, "update", shown.clone());
+            r.diff = Some(diff_text(&shown, &old, &new));
+        }
+        Err(e) => r.error(STEP, shown, &e),
     }
 }
 
@@ -661,30 +923,121 @@ mod tests {
     use super::*;
 
     #[test]
-    fn matches_the_orchestrate_skill_only() {
-        assert!(mentions_orchestrate_skill("- Use the `orchestrate` skill"));
-        assert!(mentions_orchestrate_skill(
-            "orchestrate skill for everything"
-        ));
-        assert!(!mentions_orchestrate_skill(
-            "- Use the superorchestrator skill"
-        ));
-        assert!(!mentions_orchestrate_skill("- orchestrator skill"));
-        assert!(!mentions_orchestrate_skill("- orchestrate things"));
+    fn mention_needs_the_skill_next_to_the_word() {
+        assert_eq!(mention("- Use the `orchestrate` skill"), Mention::Rule);
+        assert_eq!(mention("orchestrate skill for everything"), Mention::Rule);
+        assert_eq!(mention("- the skill \"orchestrate\" rules"), Mention::Rule);
+        assert_eq!(mention("- Use the superorchestrator skill"), Mention::None);
+        assert_eq!(mention("- orchestrator skill"), Mention::None);
+        assert_eq!(mention("- orchestrate things"), Mention::None);
+        assert_eq!(mention("- the orchestrate-state skill"), Mention::None);
+        assert_eq!(
+            mention("- Never use the orchestrate skill"),
+            Mention::Prohibition
+        );
+        assert_eq!(
+            mention("- Don't use the `orchestrate` skill"),
+            Mention::Prohibition
+        );
+        assert_eq!(
+            mention("- do not call the orchestrate skill"),
+            Mention::Prohibition
+        );
     }
 
     #[test]
-    fn rewrite_keeps_other_lines_and_is_idempotent() {
-        let old = "- a\n  - Send work through the `orchestrate` skill\n- b\n";
-        let new = rewrite_rules(old).unwrap();
-        assert_eq!(new, format!("- a\n  - {NEW_RULE}\n- b\n"));
-        assert_eq!(rewrite_rules(&new), None);
-        assert_eq!(rewrite_rules("- nothing here\n"), None);
+    fn rewrite_keeps_other_lines_endings_and_is_idempotent() {
+        let old = "- a\r\n  - Send work through the `orchestrate` skill\r\n- b\r\n";
+        let rw = rewrite_rules(old);
+        assert_eq!(
+            rw.text.as_deref(),
+            Some(format!("- a\r\n  - {NEW_RULE}\r\n- b\r\n").as_str())
+        );
+        assert!(rw.notes.is_empty());
+        assert_eq!(rewrite_rules(&rw.text.unwrap()), Rewrite::default());
+        assert_eq!(rewrite_rules("- nothing here\n"), Rewrite::default());
+    }
+
+    #[test]
+    fn rewrite_replaces_only_the_first_rule_and_notes_the_rest() {
+        let old = "- Use the orchestrate skill\n- Never use the orchestrate skill\n- Then the orchestrate skill again\nlast";
+        let rw = rewrite_rules(old);
+        let new = rw.text.unwrap();
+        assert!(new.starts_with("- Delegate implementation"));
+        assert!(new.ends_with("skill again\nlast"));
+        assert_eq!(rw.notes.iter().map(|n| n.0).collect::<Vec<_>>(), [2, 3]);
     }
 
     #[test]
     fn exhausted_until_parses() {
         assert!(parse_exhausted_until("exhausted_until=1792810402\n").is_some());
         assert!(parse_exhausted_until("x=1").is_none());
+    }
+
+    #[test]
+    fn state_file_names() {
+        assert!(is_state_file_name("orchestrator-state.json"));
+        assert!(is_state_file_name("orchestrator-state-12.json"));
+        for bad in [
+            "orchestrator-state-.json",
+            "orchestrator-state-x.json",
+            "orchestrator-state.json.bak",
+            "orchestrator-state2.json",
+        ] {
+            assert!(!is_state_file_name(bad), "{bad}");
+        }
+    }
+
+    fn report(items: &[(&'static str, &str)], diff: Option<&str>) -> Report {
+        let mut r = Report::default();
+        for (step, target) in items {
+            r.add(step, "remove", *target);
+        }
+        r.diff = diff.map(String::from);
+        r
+    }
+
+    #[test]
+    fn plans_are_compared_by_items_and_diff() {
+        let a = report(&[("remove", "x")], None);
+        assert!(same_plan(&a, &report(&[("remove", "x")], None)));
+        assert!(!same_plan(
+            &a,
+            &report(&[("remove", "x"), ("remove", "y")], None)
+        ));
+        assert!(!same_plan(&a, &report(&[("remove", "z")], None)));
+        assert!(!same_plan(&a, &report(&[("remove", "x")], Some("d"))));
+    }
+
+    #[test]
+    fn merged_choices_must_leave_a_valid_config() {
+        let path = Path::new("config.toml");
+        let list = [json!({"id": "n", "harness": "codex", "model": "m"})];
+        let ok = merge_choices("", &list, path).unwrap();
+        assert_eq!(ok.added, ["n"]);
+        let text = ok.text.unwrap();
+        assert_eq!(merge_choices(&text, &list, path).unwrap().text, None);
+        // An already-invalid config is never extended.
+        assert!(merge_choices("limits = \"x\"\n", &list, path).is_err());
+        // Unusable entries are skipped, not fatal.
+        let bad = [
+            json!({"nope": 1}),
+            json!({"id": "z", "harness": "zzz", "model": "m"}),
+        ];
+        let m = merge_choices("", &bad, path).unwrap();
+        assert_eq!(m.skipped.len(), 2);
+        assert_eq!(m.text, None);
+    }
+
+    #[test]
+    fn inline_mcp_servers_are_detected() {
+        assert!(codex_inline_entry(
+            "mcp_servers = { jev-router-mcp = { command = \"x\" } }\n",
+            JEV_KEY
+        ));
+        assert!(!codex_inline_entry(
+            "[mcp_servers.jev-router-mcp]\ncommand = \"x\"\n",
+            JEV_KEY
+        ));
     }
 }

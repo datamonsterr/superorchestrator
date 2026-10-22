@@ -189,6 +189,15 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Backup directory name: sortable timestamp, zero-padded millis, pid.
+fn backup_id(now: chrono::DateTime<Utc>, pid: u32) -> String {
+    format!(
+        "{}-{:03}-{pid}",
+        now.format("%Y%m%dT%H%M%SZ"),
+        now.timestamp_subsec_millis()
+    )
+}
+
 /// Writes files with a backup of what they replace.
 pub(crate) struct Writer {
     pub(crate) dry_run: bool,
@@ -197,17 +206,16 @@ pub(crate) struct Writer {
 
 impl Writer {
     pub(crate) fn new(paths: &Paths, dry_run: bool) -> Self {
-        let now = Utc::now();
-        let id = format!(
-            "{}-{}-{}",
-            now.format("%Y%m%dT%H%M%SZ"),
-            now.timestamp_subsec_millis(),
-            std::process::id()
-        );
         Self {
             dry_run,
-            backup_root: paths.legacy_backup_dir(&id),
+            backup_root: paths.legacy_backup_dir(&backup_id(Utc::now(), std::process::id())),
         }
+    }
+
+    /// The `legacy-backup/<id>` directory this writer backs up into. It exists only once
+    /// something was backed up.
+    pub(crate) fn backup_root(&self) -> &Path {
+        &self.backup_root
     }
 
     /// Where `path` lands in the backup tree.
@@ -585,4 +593,19 @@ pub fn uninstall(ctx: &Ctx, dry_run: bool) -> Result<()> {
         results.push(skill_step(&w, &p, None));
     }
     finish(ctx, results, dry_run)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    #[test]
+    fn backup_id_pads_millis_so_ids_sort() {
+        let t = Utc.with_ymd_and_hms(2026, 1, 2, 3, 4, 5).unwrap();
+        let early = t + chrono::Duration::milliseconds(7);
+        let late = t + chrono::Duration::milliseconds(120);
+        assert_eq!(backup_id(early, 9), "20260102T030405Z-007-9");
+        assert!(backup_id(early, 9) < backup_id(late, 9));
+    }
 }
