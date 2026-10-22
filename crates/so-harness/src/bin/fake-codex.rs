@@ -20,7 +20,9 @@
 //! keeps serving like the real server. `FAKE_CODEX_LOG=<path>` receives JSONL:
 //! `{"argv", "env_keys"}` first (keys only), then `{"recv": <frame>}` per client
 //! frame and `{"auth_rejected": true}` per refused upgrade.
-//! `FAKE_CODEX_READY_DELAY_MS` delays binding the port.
+//! `FAKE_CODEX_READY_DELAY_MS` delays binding the port. After binding (port 0 is
+//! fine) it prints the real server's banner `  listening on: ws://127.0.0.1:<port>`
+//! on stderr; `FAKE_CODEX_BANNER_HOST` replaces the host in it.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::result_large_err)]
 
 use std::fs::OpenOptions;
@@ -87,6 +89,11 @@ async fn main() {
         tokio::time::sleep(Duration::from_millis(ms)).await;
     }
     let listener = TcpListener::bind(&addr).await.expect("bind");
+    let port = listener.local_addr().unwrap().port();
+    let host = std::env::var("FAKE_CODEX_BANNER_HOST").unwrap_or_else(|_| "127.0.0.1".into());
+    eprintln!("codex app-server (WebSockets)");
+    eprintln!("  listening on: ws://{host}:{port}");
+    eprintln!("  readyz: http://127.0.0.1:{port}/readyz");
     loop {
         let (stream, _) = listener.accept().await.expect("accept");
         tokio::spawn(serve(stream, token.clone(), l.clone(), script.clone()));

@@ -18,5 +18,8 @@ pub use driver::{
     classify_common,
 };
 pub use opencode::{EventMapper, OpencodeControl, OpencodeDriver};
-pub use process::{ProcessGuard, ProcessHandle, Supervised, spawn_supervised};
+pub use process::{
+    EventSink, ProcessGuard, ProcessHandle, ProducerGuard, Supervised, spawn_supervised,
+    spawn_supervised_with,
+};
 pub use transcript::{Dir, TranscriptWriter};

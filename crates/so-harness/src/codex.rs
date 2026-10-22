@@ -8,10 +8,12 @@
 //! connect with `Authorization: Bearer <token>`, then `initialize`,
 //! `thread/start` (or `thread/resume`) and `turn/start`.
 //!
-//! The token only ever lives in the token file, in the WebSocket upgrade
-//! header, and in the join command environment, never in argv, the transcript
-//! or `Debug` output. `ws://127.0.0.1:0` is accepted by app-server but it does
-//! not print the bound address, so a free port is picked up front.
+//! The server is started on `ws://127.0.0.1:0`; its banner line
+//! `listening on: ws://127.0.0.1:<port>` gives the real port, and the host must
+//! be 127.0.0.1 before the token is sent anywhere. The token only ever lives in
+//! the token file (deleted on shutdown), in the WebSocket upgrade header, and
+//! in the join command environment, never in argv, the transcript or `Debug`
+//! output.
 //!
 //! The superorchestrator MCP server and the system addendum travel in the
 //! `thread/start` params (`config.mcp_servers.superorchestrator` and
@@ -39,11 +41,13 @@ use crate::driver::{
     RateLimits, RunControl, RunHandle, ShutdownOutcome, classify_common,
 };
 use crate::process::{
-    ExitWatch, LineParser, ProcessHandle, Supervised, create_private_dir, record, spawn_supervised,
-    write_private,
+    EventSink, ExitWatch, LineParser, ProcessHandle, ProducerGuard, Supervised, create_private_dir,
+    record_with, spawn_supervised_with, write_private,
 };
 use crate::transcript::{Dir, SharedTranscript};
 
+/// How long the server gets to print its listening banner.
+const BANNER_TIMEOUT: Duration = Duration::from_secs(15);
 /// How long the server gets to answer `/readyz`.
 const READY_TIMEOUT: Duration = Duration::from_secs(15);
 /// Time allowed for the WebSocket upgrade.
@@ -71,11 +75,11 @@ impl CodexDriver {
 }
 
 /// Harness arguments (after `program argv_prefix extra_args`).
-pub fn build_args(port: u16, token_file: &Path) -> Vec<String> {
+pub fn build_args(token_file: &Path) -> Vec<String> {
     vec![
         "app-server".into(),
         "--listen".into(),
-        format!("ws://127.0.0.1:{port}"),
+        "ws://127.0.0.1:0".into(),
         "--ws-auth".into(),
         "capability-token".into(),
         "--ws-token-file".into(),
@@ -87,11 +91,6 @@ fn random_token() -> std::io::Result<String> {
     let mut bytes = [0u8; 32];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
-}
-
-fn free_port() -> std::io::Result<u16> {
-    let l = std::net::TcpListener::bind("127.0.0.1:0")?;
-    Ok(l.local_addr()?.port())
 }
 
 /// `thread/start` or `thread/resume` params. The sandbox and approval policy
@@ -142,20 +141,30 @@ impl Driver for CodexDriver {
         let token = random_token()?;
         let token_file = spec.run_dir.join("ws-token");
         write_private(&token_file, token.as_bytes())?;
-        let port = free_port()?;
 
         let mut cmd = Command::new(&spec.launch.program);
         cmd.args(&spec.launch.argv_prefix)
             .args(&spec.launch.extra_args)
-            .args(build_args(port, &token_file))
+            .args(build_args(&token_file))
             .envs(spec.launch.vars.iter().map(|(k, v)| (k, v)))
             .current_dir(&spec.cwd);
+        let (banner_tx, banner_rx) = oneshot::channel();
+        let banner = Banner(Arc::new(Mutex::new(Some(banner_tx))));
+        let sup = spawn_supervised_with(
+            cmd,
+            &spec.run_dir,
+            self.config.shutdown_grace,
+            banner.clone(),
+            Some(Box::new(banner)),
+        )?;
+        let guard = sup.producer_guard();
         let Supervised {
             events,
             handle,
             transcript,
-            events_tx,
-        } = spawn_supervised(cmd, &spec.run_dir, self.config.shutdown_grace, LogParser)?;
+            events_sink,
+            ..
+        } = sup;
 
         let shared = Arc::new(Mutex::new(Shared::default()));
         let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
@@ -166,11 +175,19 @@ impl Driver for CodexDriver {
                 shared: shared.clone(),
                 effort: spec.effort.clone(),
                 output_schema: spec.output_schema.clone(),
+                send_lock: tokio::sync::Mutex::new(()),
+                token_file,
             }),
         };
 
-        match start(&spec, &control, port, &token, transcript, events_tx, cmd_rx).await {
-            Ok(thread_id) => Ok(RunHandle {
+        let conn = ConnParts {
+            transcript,
+            events: events_sink,
+            cmd_rx,
+            guard,
+        };
+        match start(&spec, &control, &token, banner_rx, conn).await {
+            Ok((thread_id, port)) => Ok(RunHandle {
                 events,
                 control: RunControl::Codex(control),
                 native_session_id: Some(thread_id.clone()),
@@ -223,13 +240,12 @@ impl Driver for CodexDriver {
 async fn start(
     spec: &LaunchSpec,
     control: &CodexControl,
-    port: u16,
     token: &str,
-    transcript: SharedTranscript,
-    events_tx: mpsc::UnboundedSender<HarnessEvent>,
-    cmd_rx: mpsc::UnboundedReceiver<Cmd>,
-) -> Result<String, DriverError> {
+    banner: oneshot::Receiver<String>,
+    conn: ConnParts,
+) -> Result<(String, u16), DriverError> {
     let exit = control.inner.proc.exit.clone();
+    let port = loopback_port(&wait_banner(banner, &exit).await?)?;
     wait_ready(port, &exit).await?;
 
     let mut req = format!("ws://127.0.0.1:{port}")
@@ -258,13 +274,14 @@ async fn start(
         Conn {
             sink,
             stream,
-            cmd_rx,
+            cmd_rx: conn.cmd_rx,
             pending: HashMap::new(),
             next_id: 0,
             parser: CodexParser::new(control.inner.shared.clone(), spec.output_schema.is_some()),
-            transcript,
-            events: events_tx,
+            transcript: conn.transcript,
+            events: conn.events,
             exit,
+            _guard: conn.guard,
         }
         .run(),
     );
@@ -298,7 +315,58 @@ async fn start(
         .ok_or_else(|| DriverError::Other(format!("{method} response has no thread id")))?
         .to_string();
     control.send(&spec.prompt).await?;
-    Ok(thread_id)
+    Ok((thread_id, port))
+}
+
+struct ConnParts {
+    transcript: SharedTranscript,
+    events: EventSink,
+    cmd_rx: mpsc::UnboundedReceiver<Cmd>,
+    guard: ProducerGuard,
+}
+
+/// Waits for the server's `listening on:` banner.
+async fn wait_banner(
+    rx: oneshot::Receiver<String>,
+    exit: &ExitWatch,
+) -> Result<String, DriverError> {
+    let mut exit = exit.clone();
+    tokio::select! {
+        r = rx => r.map_err(|_| DriverError::Other(
+            "codex app-server ended its output before it printed a listening address".into())),
+        _ = exit.wait_for(|v| v.is_some()) => Err(DriverError::Other(
+            "codex app-server exited before it printed a listening address".into())),
+        _ = tokio::time::sleep(BANNER_TIMEOUT) => Err(DriverError::Other(format!(
+            "codex app-server printed no listening address within {} s", BANNER_TIMEOUT.as_secs()))),
+    }
+}
+
+/// The port of a `ws://127.0.0.1:<port>` address. Any other host is refused,
+/// so the token is never sent to a non-loopback address.
+fn loopback_port(addr: &str) -> Result<u16, DriverError> {
+    addr.strip_prefix("ws://127.0.0.1:")
+        .and_then(|p| p.trim().parse::<u16>().ok())
+        .filter(|p| *p != 0)
+        .ok_or_else(|| {
+            DriverError::Other(format!(
+                "codex app-server listens on {addr:?}, not ws://127.0.0.1:<port>; refusing to send the token"
+            ))
+        })
+}
+
+/// Finds the listening address in the server's log lines (either stream).
+#[derive(Clone)]
+struct Banner(Arc<Mutex<Option<oneshot::Sender<String>>>>);
+
+impl LineParser for Banner {
+    fn parse_line(&mut self, line: &str) -> Vec<HarnessEvent> {
+        if let Some((_, addr)) = line.split_once("listening on: ")
+            && let Some(tx) = self.0.lock().unwrap_or_else(|p| p.into_inner()).take()
+        {
+            let _ = tx.send(addr.trim().to_string());
+        }
+        vec![]
+    }
 }
 
 /// Polls `GET /readyz` until 200, the process exits or the deadline passes.
@@ -339,16 +407,6 @@ async fn readyz(port: u16) -> bool {
     )
     .await;
     buf.starts_with(b"HTTP/1.1 200") || buf.starts_with(b"HTTP/1.0 200")
-}
-
-/// stdout and stderr of the server are logs: they reach the transcript and
-/// `Raw` events but produce no normalised events.
-struct LogParser;
-
-impl LineParser for LogParser {
-    fn parse_line(&mut self, _line: &str) -> Vec<HarnessEvent> {
-        vec![]
-    }
 }
 
 /// How a response is folded into parser state.
@@ -416,6 +474,10 @@ struct Inner {
     shared: Arc<Mutex<Shared>>,
     effort: Option<String>,
     output_schema: Option<Value>,
+    /// Serialises `send`, so a second concurrent send sees the turn the first
+    /// one started and steers it instead of starting another.
+    send_lock: tokio::sync::Mutex<()>,
+    token_file: std::path::PathBuf,
 }
 
 /// Clonable control handle for a running codex app-server. Dropping the last
@@ -467,6 +529,7 @@ impl CodexControl {
 
     /// `turn/start` when idle, `turn/steer` into the running turn otherwise.
     pub async fn send(&self, text: &str) -> Result<(), DriverError> {
+        let _serial = self.inner.send_lock.lock().await;
         let (thread, turn) = self.snapshot();
         let thread = thread.ok_or(DriverError::Closed)?;
         let input = json!([{"type": "text", "text": text}]);
@@ -479,12 +542,10 @@ impl CodexControl {
                     REQUEST_TIMEOUT,
                 )
                 .await;
-            match steer {
-                Ok(_) => return Ok(()),
-                // The turn may have ended meanwhile; then start a new one.
-                Err(e) if self.snapshot().1.as_deref() == Some(turn.as_str()) => return Err(e),
-                Err(_) => {}
+            if steer.is_ok() {
+                return Ok(());
             }
+            // Rejected (the turn may have just ended): start a new turn.
         }
         let mut params = json!({"threadId": thread, "input": input});
         if let Some(e) = &self.inner.effort {
@@ -516,17 +577,19 @@ impl CodexControl {
         .map(|_| ())
     }
 
-    /// Closes the WebSocket, then ends the process. app-server never exits by
-    /// itself, so the clean-exit wait is capped at 500 ms.
+    /// Closes the WebSocket, deletes the token file and ends the process:
+    /// `Exited` if SIGTERM sufficed, `Killed` only after SIGKILL. app-server
+    /// never exits by itself, so the wait before SIGTERM is capped at 500 ms.
     pub async fn shutdown(&self, deadline: Duration) -> Result<ShutdownOutcome, DriverError> {
         let (tx, rx) = oneshot::channel();
         if self.inner.cmd.send(Cmd::Close(tx)).is_ok() {
             let _ = tokio::time::timeout(Duration::from_secs(1), rx).await;
         }
+        let _ = std::fs::remove_file(&self.inner.token_file);
         Ok(self
             .inner
             .proc
-            .shutdown(deadline.min(CLEAN_EXIT_WAIT))
+            .shutdown_by_signal(deadline.min(CLEAN_EXIT_WAIT))
             .await)
     }
 
@@ -550,13 +613,16 @@ struct Conn {
     next_id: u64,
     parser: CodexParser,
     transcript: SharedTranscript,
-    events: mpsc::UnboundedSender<HarnessEvent>,
+    events: EventSink,
     exit: ExitWatch,
+    /// Holds back `Exited` until this task is done with the event stream.
+    _guard: ProducerGuard,
 }
 
 impl Conn {
     async fn run(mut self) {
         let mut closing = false;
+        let mut process_exited = false;
         let mut exit = self.exit.clone();
         loop {
             tokio::select! {
@@ -590,14 +656,21 @@ impl Conn {
                         break;
                     }
                 },
-                _ = exit.changed() => { closing = true; break }
+                _ = exit.changed() => { process_exited = true; break }
             }
         }
         // Requests still waiting get `Closed` (their senders drop here).
         self.pending.clear();
-        if !closing {
-            for e in self.parser.connection_lost() {
-                let _ = self.events.send(e);
+        let why = if process_exited {
+            Some("harness exited")
+        } else if !closing {
+            Some("connection to codex app-server lost")
+        } else {
+            None
+        };
+        if let Some(why) = why {
+            for e in self.parser.fail_open_turn(why) {
+                self.events.send(e);
             }
         }
     }
@@ -605,14 +678,9 @@ impl Conn {
     /// Sends one frame, recording it first (secrets redacted).
     async fn write(&mut self, frame: Value) {
         let shown = redact_frame(&frame).to_string();
-        let offset = record(
-            &self.transcript,
-            Dir::Out,
-            Channel::Ws,
-            &shown,
-            &[],
-            &self.events,
-        );
+        let offset = record_with(&self.transcript, Dir::Out, Channel::Ws, &shown, &[], |e| {
+            self.events.send(e);
+        });
         let _ = self.events.send(HarnessEvent::Raw {
             channel: Channel::Ws,
             line: shown,
@@ -666,14 +734,9 @@ impl Conn {
                 (None, None) => {}
             }
         }
-        let offset = record(
-            &self.transcript,
-            Dir::In,
-            Channel::Ws,
-            text,
-            &events,
-            &self.events,
-        );
+        let offset = record_with(&self.transcript, Dir::In, Channel::Ws, text, &events, |e| {
+            self.events.send(e);
+        });
         let _ = self.events.send(HarnessEvent::Raw {
             channel: Channel::Ws,
             line: text.to_string(),
@@ -739,24 +802,28 @@ fn readable_message(raw: &str) -> String {
         .unwrap_or_else(|| raw.to_string())
 }
 
-fn rate_limits(snapshot: &Value) -> RateLimits {
+/// `None` when no window of a known length (5 h, 7 d) is present.
+fn rate_limits(snapshot: &Value) -> Option<RateLimits> {
     let mut out = RateLimits::default();
+    let mut any = false;
     for w in [&snapshot["primary"], &snapshot["secondary"]] {
         let used = w["usedPercent"].as_f64();
         let resets = w["resetsAt"].as_i64();
         match w["windowDurationMins"].as_i64() {
             Some(300) => {
+                any = true;
                 out.five_hour_used_pct = used;
                 out.five_hour_resets_at = resets;
             }
             Some(10080) => {
+                any = true;
                 out.weekly_used_pct = used;
                 out.weekly_resets_at = resets;
             }
             _ => {}
         }
     }
-    out
+    any.then_some(out)
 }
 
 /// Display name for an item that is a tool call, `None` for messages,
@@ -915,12 +982,15 @@ impl CodexParser {
     /// with `thread/tokenUsage/updated`), plus a quota `Error` when codex says
     /// a limit was reached.
     fn rate_limits_updated(&mut self, snapshot: &Value) -> Vec<HarnessEvent> {
-        let mut out = vec![HarnessEvent::Usage {
-            input_tokens: 0,
-            output_tokens: 0,
-            cost: None,
-            rate_limits: Some(rate_limits(snapshot)),
-        }];
+        let mut out: Vec<HarnessEvent> = rate_limits(snapshot)
+            .map(|rl| HarnessEvent::Usage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cost: None,
+                rate_limits: Some(rl),
+            })
+            .into_iter()
+            .collect();
         if let Some(reached) = snapshot["rateLimitReachedType"].as_str() {
             out.push(HarnessEvent::Error {
                 kind: ErrorKind::Quota,
@@ -1016,8 +1086,8 @@ impl CodexParser {
         }]
     }
 
-    /// The socket died while the process lives: fail the open turn.
-    fn connection_lost(&mut self) -> Vec<HarnessEvent> {
+    /// The socket or the process died: fail the open turn.
+    fn fail_open_turn(&mut self, why: &str) -> Vec<HarnessEvent> {
         let mut shared = self.shared();
         if !shared.active {
             return vec![];
@@ -1029,7 +1099,7 @@ impl CodexParser {
             structured: None,
             is_error: true,
             error_kind: Some(ErrorKind::Other),
-            error_text: Some("connection to codex app-server lost".into()),
+            error_text: Some(why.into()),
         }]
     }
 }
@@ -1281,6 +1351,48 @@ mod tests {
                 }
             ]
         ));
+    }
+
+    #[test]
+    fn rate_limits_become_a_zero_token_usage_only_with_a_known_window() {
+        let mut p = parser(false);
+        let ev = p.notification(&json!({"method": "account/rateLimits/updated", "params": {
+            "rateLimits": {
+                "primary": {"usedPercent": 21, "windowDurationMins": 300, "resetsAt": 10},
+                "secondary": {"usedPercent": 70, "windowDurationMins": 10080, "resetsAt": 20},
+                "rateLimitReachedType": null}}}));
+        assert_eq!(
+            ev,
+            [HarnessEvent::Usage {
+                input_tokens: 0,
+                output_tokens: 0,
+                cost: None,
+                rate_limits: Some(RateLimits {
+                    five_hour_used_pct: Some(21.0),
+                    five_hour_resets_at: Some(10),
+                    weekly_used_pct: Some(70.0),
+                    weekly_resets_at: Some(20),
+                })
+            }]
+        );
+        let none = p.notification(&json!({"method": "account/rateLimits/updated", "params": {
+            "rateLimits": {"primary": {"usedPercent": 5, "windowDurationMins": 60}}}}));
+        assert!(none.is_empty(), "no recognised window, no Usage");
+    }
+
+    #[test]
+    fn banner_address_must_be_loopback() {
+        assert_eq!(loopback_port("ws://127.0.0.1:4242").unwrap(), 4242);
+        for bad in [
+            "ws://0.0.0.0:4242",
+            "ws://localhost:4242",
+            "ws://10.0.0.1:1",
+            "ws://127.0.0.1:0",
+            "wss://127.0.0.1:1",
+            "garbage",
+        ] {
+            assert!(loopback_port(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

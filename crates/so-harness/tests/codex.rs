@@ -516,7 +516,7 @@ async fn launch_fails_when_the_server_dies_before_it_is_ready() {
     let started = std::time::Instant::now();
     let err = driver().launch(spec).await.unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(10));
-    assert!(err.to_string().contains("exited before"), "{err}");
+    assert!(err.to_string().contains("before it printed"), "{err}");
 }
 
 #[tokio::test]
@@ -551,7 +551,7 @@ async fn token_never_reaches_argv_transcript_or_debug_and_join_commands_work() {
         .collect();
     assert_eq!(&argv[0], "app-server");
     let port = port_of(&h);
-    assert!(argv.contains(&format!("ws://127.0.0.1:{port}")));
+    assert!(argv.contains(&"ws://127.0.0.1:0".to_string()));
     assert!(argv.contains(&"capability-token".to_string()));
     assert!(argv.contains(&token_file.display().to_string()));
     assert!(!argv.iter().any(|a| a.contains(&token)));
@@ -622,10 +622,14 @@ async fn shutdown_closes_the_socket_and_kills_the_process() {
     let mut h = driver().launch(rig.spec(&steps)).await.unwrap();
     let pid = h.control.pid().unwrap();
     let outcome = h.control.shutdown(Duration::from_secs(2)).await.unwrap();
-    assert!(matches!(
-        outcome,
-        ShutdownOutcome::Killed | ShutdownOutcome::Exited(_)
-    ));
+    assert!(
+        matches!(outcome, ShutdownOutcome::Exited(_)),
+        "SIGTERM suffices: {outcome:?}"
+    );
+    assert!(
+        !rig.run_dir().join("ws-token").exists(),
+        "token file deleted"
+    );
     let events = until(&mut h, is_exit).await;
     assert!(is_exit(events.last().unwrap()));
     assert!(
@@ -643,36 +647,32 @@ async fn shutdown_closes_the_socket_and_kills_the_process() {
 }
 
 async fn spawn_fake(rig: &Rig) -> (tokio::process::Child, u16, String) {
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = l.local_addr().unwrap().port();
-    drop(l);
     let token = "abc123token".to_string();
     let token_file = rig.dir.path().join("tok");
     std::fs::write(&token_file, &token).unwrap();
-    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_fake-codex"))
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_fake-codex"))
         .args([
             "app-server",
             "--listen",
-            &format!("ws://127.0.0.1:{port}"),
+            "ws://127.0.0.1:0",
             "--ws-auth",
             "capability-token",
             "--ws-token-file",
         ])
         .arg(&token_file)
         .env("FAKE_CODEX_LOG", rig.dir.path().join("log.jsonl"))
+        .stderr(std::process::Stdio::piped())
         .kill_on_drop(true)
         .spawn()
         .unwrap();
-    for _ in 0..100 {
-        if tokio::net::TcpStream::connect(("127.0.0.1", port))
-            .await
-            .is_ok()
-        {
-            return (child, port, token);
+    use tokio::io::AsyncBufReadExt;
+    let mut lines = tokio::io::BufReader::new(child.stderr.take().unwrap()).lines();
+    while let Some(line) = lines.next_line().await.unwrap() {
+        if let Some((_, addr)) = line.split_once("listening on: ws://127.0.0.1:") {
+            return (child, addr.trim().parse().unwrap(), token);
         }
-        tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!("fake-codex did not start");
+    panic!("fake-codex printed no banner");
 }
 
 #[tokio::test]
@@ -705,4 +705,97 @@ async fn the_fake_server_rejects_missing_and_wrong_tokens() {
         .filter(|l| l["auth_rejected"] == true)
         .count();
     assert_eq!(rejected, 2);
+}
+
+#[tokio::test]
+async fn a_banner_with_another_host_is_refused_before_any_connection() {
+    let rig = Rig::new();
+    let mut spec = rig.spec(&handshake(THREAD));
+    spec.launch
+        .vars
+        .push(("FAKE_CODEX_BANNER_HOST".into(), "10.0.0.7".into()));
+    let err = driver().launch(spec).await.unwrap_err();
+    assert!(err.to_string().contains("refusing"), "{err}");
+    assert!(rig.received().is_empty(), "nothing was sent to the server");
+}
+
+#[tokio::test]
+async fn process_death_mid_turn_fails_the_turn_before_exited() {
+    let rig = Rig::new();
+    let mut steps = handshake(THREAD);
+    steps.extend([turn_start("turn-1"), turn_started("turn-1")]);
+    let mut h = driver().launch(rig.spec(&steps)).await.unwrap();
+    until(&mut h, is_turn_start).await;
+    let pid = h.control.pid().unwrap();
+    rustix::process::kill_process(
+        rustix::process::Pid::from_raw(pid as i32).unwrap(),
+        rustix::process::Signal::KILL,
+    )
+    .unwrap();
+    let events = until(&mut h, is_exit).await;
+    let finished = events.iter().position(is_turn).expect("TurnFinished");
+    assert!(matches!(
+        &events[finished],
+        HarnessEvent::TurnFinished {
+            is_error: true,
+            error_kind: Some(ErrorKind::Other),
+            ..
+        }
+    ));
+    assert_eq!(finished, events.len() - 2, "right before Exited");
+    // Nothing follows Exited: the stream is closed.
+    assert!(
+        tokio::time::timeout(Duration::from_secs(3), h.events.recv())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn a_rejected_steer_falls_back_to_a_new_turn() {
+    let rig = Rig::new();
+    let mut steps = handshake(THREAD);
+    steps.extend([
+        turn_start("turn-1"),
+        turn_started("turn-1"),
+        json!({"expect": "turn/steer",
+            "respond_error": {"code": -32600, "message": "turn is not steerable"}}),
+        turn_start("turn-2"),
+    ]);
+    let mut h = driver().launch(rig.spec(&steps)).await.unwrap();
+    until(&mut h, is_turn_start).await;
+    h.control.send("more").await.unwrap();
+    let methods: Vec<String> = rig
+        .received()
+        .iter()
+        .filter_map(|f| f["method"].as_str().map(String::from))
+        .collect();
+    assert_eq!(&methods[3..], ["turn/start", "turn/steer", "turn/start"]);
+}
+
+#[tokio::test]
+async fn concurrent_sends_start_one_turn_and_steer_the_other() {
+    let rig = Rig::new();
+    let mut steps = handshake(THREAD);
+    steps.extend([
+        turn_start("turn-1"),
+        turn_started("turn-1"),
+        message("m1", "first"),
+        turn_completed("turn-1", "completed"),
+        turn_start("turn-2"),
+        json!({"expect": "turn/steer", "respond": {"turnId": "turn-2"},
+            "check": {"/params/expectedTurnId": "turn-2"}}),
+    ]);
+    let mut h = driver().launch(rig.spec(&steps)).await.unwrap();
+    until(&mut h, is_turn).await;
+    let (a, b) = tokio::join!(h.control.send("a"), h.control.send("b"));
+    a.unwrap();
+    b.unwrap();
+    let methods: Vec<String> = rig
+        .received()
+        .iter()
+        .filter_map(|f| f["method"].as_str().map(String::from))
+        .collect();
+    assert_eq!(&methods[4..], ["turn/start", "turn/steer"]);
 }

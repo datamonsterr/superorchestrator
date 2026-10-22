@@ -151,6 +151,11 @@ impl ProcessGuard {
         self.state.alive()
     }
 
+    /// SIGTERM the group once (no escalation).
+    pub fn term(&self) {
+        self.state.signal(rustix::process::Signal::TERM);
+    }
+
     fn kill_leader(&self) {
         if let Ok(mut k) = self.kill_leader.lock()
             && let Some(tx) = k.take()
@@ -266,12 +271,26 @@ pub fn record(
     events: &[HarnessEvent],
     tx: &mpsc::UnboundedSender<HarnessEvent>,
 ) -> Option<u64> {
+    record_with(transcript, dir, channel, raw, events, |e| {
+        let _ = tx.send(e);
+    })
+}
+
+/// [`record`] with a custom way to report the failure (e.g. an [`EventSink`]).
+pub fn record_with(
+    transcript: &SharedTranscript,
+    dir: Dir,
+    channel: Channel,
+    raw: &str,
+    events: &[HarnessEvent],
+    report: impl FnOnce(HarnessEvent),
+) -> Option<u64> {
     let mut w = transcript.lock().unwrap_or_else(|p| p.into_inner());
     match w.append(dir, channel, raw, events) {
         Ok(off) => Some(off),
         Err(e) => {
             if w.take_first_failure() {
-                let _ = tx.send(HarnessEvent::Error {
+                report(HarnessEvent::Error {
                     kind: so_core::ErrorKind::Other,
                     message: format!("transcript write failed: {e}"),
                 });
@@ -280,6 +299,33 @@ pub fn record(
         }
     }
 }
+
+/// A sender into the event stream that is shut at `Exited`: after the waiter
+/// sent `Exited` every later [`EventSink::send`] is dropped, so `Exited` is
+/// always the last event even for producers that outlive the process.
+#[derive(Debug, Clone)]
+pub struct EventSink(Arc<Mutex<Option<mpsc::UnboundedSender<HarnessEvent>>>>);
+
+impl EventSink {
+    /// False if the stream is already shut (the event was dropped).
+    pub fn send(&self, e: HarnessEvent) -> bool {
+        let g = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        g.as_ref().is_some_and(|tx| tx.send(e).is_ok())
+    }
+
+    fn close_with(&self, last: HarnessEvent) {
+        let mut g = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(tx) = g.take() {
+            let _ = tx.send(last);
+        }
+    }
+}
+
+/// Held by a driver task that still produces events after the process may
+/// have exited. `Exited` is only sent once every guard is dropped (the waiter
+/// gives up after 2 s and shuts the [`EventSink`] anyway).
+#[derive(Debug)]
+pub struct ProducerGuard(#[allow(dead_code)] mpsc::Sender<()>);
 
 /// Reads one line of at most [`MAX_LINE_BYTES`] into `buf` (cleared first).
 /// Returns `None` at EOF, else whether the line was truncated.
@@ -397,6 +443,23 @@ impl ProcessHandle {
         exited(&self.exit, Duration::from_secs(5)).await;
         ShutdownOutcome::Killed
     }
+
+    /// For servers that never exit by themselves: closes stdin, waits `wait`
+    /// for an exit, then SIGTERMs the group and waits the grace. `Exited` if
+    /// that sufficed, `Killed` only after SIGKILL was needed.
+    pub async fn shutdown_by_signal(&self, wait: Duration) -> ShutdownOutcome {
+        self.stdin.close();
+        if let Some(code) = exited(&self.exit, wait).await {
+            return ShutdownOutcome::Exited(code);
+        }
+        self.guard.term();
+        if let Some(code) = exited(&self.exit, self.grace).await {
+            return ShutdownOutcome::Exited(code);
+        }
+        self.guard.terminate(Duration::ZERO).await;
+        exited(&self.exit, Duration::from_secs(5)).await;
+        ShutdownOutcome::Killed
+    }
 }
 
 /// A started process: its event stream and its control handle.
@@ -407,10 +470,17 @@ pub struct Supervised {
     /// (opencode HTTP and SSE) with consistent offsets.
     pub transcript: SharedTranscript,
     pub handle: ProcessHandle,
-    /// A sender into `events`. The event channel only closes once every clone
-    /// is dropped, so a driver that keeps one must drop it when the process
-    /// exits.
-    pub events_tx: mpsc::UnboundedSender<HarnessEvent>,
+    /// A sender into `events` that is shut at `Exited`.
+    pub events_sink: EventSink,
+    producers: mpsc::Sender<()>,
+}
+
+impl Supervised {
+    /// A guard that delays `Exited` until it is dropped (see [`ProducerGuard`]).
+    /// Take it before the process can exit.
+    pub fn producer_guard(&self) -> ProducerGuard {
+        ProducerGuard(self.producers.clone())
+    }
 }
 
 /// Spawns `cmd` as a supervised process: piped stdio, `kill_on_drop`, own
@@ -418,10 +488,21 @@ pub struct Supervised {
 /// stdout, stderr and stdin; parser events after the matching `Raw`; `Exited`
 /// last and terminal (the event channel closes after it). The exit flag flips right after the leader is reaped, before any send.
 pub fn spawn_supervised(
+    cmd: Command,
+    run_dir: &Path,
+    grace: Duration,
+    parser: impl LineParser,
+) -> Result<Supervised, DriverError> {
+    spawn_supervised_with(cmd, run_dir, grace, parser, None)
+}
+
+/// [`spawn_supervised`] with an optional parser for stderr as well.
+pub fn spawn_supervised_with(
     mut cmd: Command,
     run_dir: &Path,
     grace: Duration,
     parser: impl LineParser,
+    stderr_parser: Option<Box<dyn LineParser>>,
 ) -> Result<Supervised, DriverError> {
     let program = cmd.as_std().get_program().to_string_lossy().into_owned();
     cmd.stdin(Stdio::piped())
@@ -451,7 +532,7 @@ pub fn spawn_supervised(
             tokio::spawn(pump(
                 e,
                 Channel::Stderr,
-                None,
+                stderr_parser,
                 transcript.clone(),
                 tx.clone(),
             ))
@@ -473,7 +554,9 @@ pub fn spawn_supervised(
         tx.clone(),
         exit_rx.clone(),
     ));
-    let events_tx = tx.clone();
+    let sink = EventSink(Arc::new(Mutex::new(Some(tx.clone()))));
+    let (producers_tx, mut producers_rx) = mpsc::channel::<()>(1);
+    let waiter_sink = sink.clone();
 
     tokio::spawn(async move {
         let status = tokio::select! {
@@ -497,8 +580,11 @@ pub fn spawn_supervised(
                 let _ = r.await;
             }
         }
-        // Terminal: after Exited no sender is left, so the channel closes.
-        let _ = tx.send(HarnessEvent::Exited { code });
+        drop(tx);
+        // Wait for producer guards (bounded), then send `Exited` and shut the
+        // sink: after Exited no sender is left, so the channel closes.
+        let _ = tokio::time::timeout(Duration::from_secs(2), producers_rx.recv()).await;
+        waiter_sink.close_with(HarnessEvent::Exited { code });
     });
 
     Ok(Supervised {
@@ -512,7 +598,8 @@ pub fn spawn_supervised(
             grace,
         },
         transcript,
-        events_tx,
+        events_sink: sink,
+        producers: producers_tx,
     })
 }
 
