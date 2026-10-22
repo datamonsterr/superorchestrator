@@ -36,23 +36,25 @@ const LaneRows = memo(function LaneRows({ lane }: { lane: RunLane }) {
 /** Visually hidden table with the same data as the plot (design 4.6). */
 export function SummaryTable({ model }: { model: TimelineModel }) {
   return (
-    <table className="sr-only" data-testid="timeline-summary">
-      <caption>Timeline summary: one row per state segment and marker</caption>
-      <thead>
-        <tr>
-          <th scope="col">Run</th>
-          <th scope="col">Kind</th>
-          <th scope="col">Detail</th>
-          <th scope="col">Start</th>
-          <th scope="col">End</th>
-          <th scope="col">Account</th>
-        </tr>
-      </thead>
-      <tbody>
-        {model.lanes.map((lane) => (
-          <LaneRows key={lane.runId} lane={lane} />
-        ))}
-      </tbody>
-    </table>
+    <div className="sr-only">
+      <table data-testid="timeline-summary">
+        <caption>Timeline summary: one row per state segment and marker</caption>
+        <thead>
+          <tr>
+            <th scope="col">Run</th>
+            <th scope="col">Kind</th>
+            <th scope="col">Detail</th>
+            <th scope="col">Start</th>
+            <th scope="col">End</th>
+            <th scope="col">Account</th>
+          </tr>
+        </thead>
+        <tbody>
+          {model.lanes.map((lane) => (
+            <LaneRows key={lane.runId} lane={lane} />
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 }

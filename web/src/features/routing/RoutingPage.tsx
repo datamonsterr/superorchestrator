@@ -9,6 +9,7 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { TableSkeleton } from '@/components/common/TableSkeleton'
+import { ScrollTable } from '@/components/common/ScrollTable'
 import { useChoices, usePutChoices } from '@/api/queries'
 import type { Choice } from '@/api/types'
 import { ChoiceDialog } from './ChoiceDialog'
@@ -70,7 +71,7 @@ export function RoutingPage() {
               action={<Button onClick={() => setTarget('new')}>Add choice</Button>}
             />
           ) : (
-            <div className="overflow-x-auto rounded-md border">
+            <ScrollTable>
               <ChoicesTable
                 choices={view.choices}
                 pending={put.isPending}
@@ -78,7 +79,7 @@ export function RoutingPage() {
                 onEdit={setTarget}
                 onDelete={setDeleting}
               />
-            </div>
+            </ScrollTable>
           )}
           <ModelsPanel />
         </TabsContent>

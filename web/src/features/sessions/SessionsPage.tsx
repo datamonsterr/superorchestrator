@@ -9,6 +9,7 @@ import { CommandBlock } from '@/components/common/CommandBlock'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { TableSkeleton } from '@/components/common/TableSkeleton'
+import { ScrollTable } from '@/components/common/ScrollTable'
 import { useSessions } from '@/api/queries'
 import { STATUS_FILTERS, filterFromParams, paramsFromFilter } from './filters'
 import { SessionsTable } from './SessionsTable'
@@ -108,9 +109,9 @@ export function SessionsPage() {
       ) : (
         <div className="flex flex-col gap-3">
           {query.isError && <ErrorAlert error={query.error} title="Showing stale data" onRetry={() => void query.refetch()} />}
-          <div className="overflow-x-auto rounded-md border">
+          <ScrollTable>
             <SessionsTable sessions={sessions} />
-          </div>
+          </ScrollTable>
           {query.hasNextPage && (
             <div className="flex justify-center">
               <Button variant="outline" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>

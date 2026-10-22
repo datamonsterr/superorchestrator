@@ -1,10 +1,13 @@
 /**
  * API types for `/api/v1` (docs/ui/design.md 2.1 and 6.1).
  *
- * Hand-written stubs, one-to-one with `crates/so-core/src/proto.rs`. T2.1 will
- * generate the same types from schemars; this file then re-exports them. Page
- * tasks must not edit this file.
+ * The shapes the server generates live in `generated.ts` (`cargo run -p so-web --bin gen-ts`).
+ * This file re-exports the ones pages use from there, and keeps hand-written types only where the
+ * generated one is not usable yet: the workflow run types (the supervisor does not serve runs yet),
+ * and types the pages narrow further (for example string unions).
  */
+
+import type { Config } from './generated'
 
 export type Harness = 'codex' | 'agy' | 'opencode' | 'claude'
 export type RunState =
@@ -189,24 +192,6 @@ export interface StatusView extends StatusResult {
 export interface AckResult {
   ok: boolean
 }
-export interface AgentView {
-  name: string
-  description: string
-}
-export interface AgentsView {
-  agents: AgentView[]
-}
-export interface AgentDetail {
-  name: string
-  description: string
-  path: string
-  source: string
-}
-/** Response of `POST /agents` and `PUT /agents/:name`. */
-export interface AgentWriteResult {
-  ok: boolean
-  warnings: string[]
-}
 export interface JoinView {
   argv: string[]
   cwd: string
@@ -277,7 +262,7 @@ export interface ApiErrorBody {
   error: { code: number; message: string; data?: unknown }
 }
 
-// ---- Choices, models, worktrees, doctor (stubs matching 2.1) ----
+// ---- Choices and models ----
 
 export interface ChoicesView {
   choices: Choice[]
@@ -292,33 +277,9 @@ export interface ModelCatalog {
   refreshed_at: string | null
   models: ModelEntry[]
 }
-export interface WorktreeView {
-  path: string
-  branch: string
-  run_id?: string
-  size_bytes: number
-  orphaned: boolean
-}
-export interface PruneResult {
-  removed: string[]
-}
-export interface DoctorCheck {
-  name: string
-  ok: boolean
-  detail: string
-}
-export interface DoctorReport {
-  checks: DoctorCheck[]
-}
-
-// ---- Workflows (stubs; T2.8 refines from the Rust types) ----
+// ---- Workflows (the summary is generated; run types are hand-written until the supervisor serves runs) ----
 
 export type WorkflowState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
-export interface WorkflowSummary {
-  name: string
-  description?: string
-  path?: string
-}
 export interface WorkflowStep {
   name: string
   state: WorkflowState
@@ -346,26 +307,27 @@ export interface RunWorkflowResult {
   session_id?: string
 }
 
-// ---- Config (stub; T2.8 refines) ----
+// ---- Agents, config, doctor, worktrees (generated) ----
 
-/** Secrets are never sent; only where they come from. */
-export interface SecretSource {
-  source: 'env' | 'file' | 'unset'
-  name?: string
-}
-export interface ConfigView {
-  platform?: 'linux' | 'macos' | 'windows'
-  caps: { global: number; per_account?: number }
-  stall_ms: number
-  notifications: { enabled: boolean; command?: string }
-  worktree: { root?: string; default_isolation?: Isolation }
-  routing: { min_confidence: number; min_margin: number }
-  openrouter: { key: SecretSource }
-  ui: { bind: string; port: number }
-}
-export type ConfigPatch = {
-  [K in keyof ConfigView]?: ConfigView[K] extends object ? Partial<ConfigView[K]> : ConfigView[K]
-}
+export type {
+  AgentDetail,
+  AgentView,
+  AgentWriteResult,
+  AgentsView,
+  Check as DoctorCheck,
+  Config,
+  ConfigView,
+  DoctorReport,
+  PruneRequest,
+  PruneResult,
+  SecretOrigin,
+  SecretSource,
+  WorkflowSummary,
+  WorktreeView,
+} from './generated'
+
+/** Body of `PATCH /config`: a partial config object (each leaf is a dotted key on the server). */
+export type ConfigPatch = Config
 
 // ---- Server-sent events ----
 

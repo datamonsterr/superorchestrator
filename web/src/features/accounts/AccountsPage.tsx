@@ -5,6 +5,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { TableSkeleton } from '@/components/common/TableSkeleton'
+import { ScrollTable } from '@/components/common/ScrollTable'
 import { useAccounts, usePatchAccount } from '@/api/queries'
 import type { AccountView } from '@/api/types'
 import { AccountsTable } from './AccountsTable'
@@ -55,7 +56,7 @@ export function AccountsPage() {
           action={<Button onClick={() => setAdding(true)}>Add account</Button>}
         />
       ) : (
-        <div className="overflow-x-auto rounded-md border">
+        <ScrollTable>
           <AccountsTable
             accounts={accounts}
             actions={{
@@ -67,7 +68,7 @@ export function AccountsPage() {
               onRemove: (a) => setRemoving(a.name),
             }}
           />
-        </div>
+        </ScrollTable>
       )}
 
       <AddAccountDialog open={adding} onOpenChange={setAdding} accounts={accounts} onCreated={setSignIn} />

@@ -1,5 +1,5 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
-import type { ApiErrorBody, Event, Page, TranscriptLine } from '../types'
+import type { ApiErrorBody, Event, Harness, Page, TranscriptLine } from '../types'
 import { LARGE_SESSION_ID, makeLargeSession, type LargeSession } from '@/test/fixtures/large'
 import * as fx from './fixtures'
 
@@ -30,6 +30,9 @@ export interface HandlerOptions {
 export function createHandlers({ large = false, largeOptions }: HandlerOptions = {}): RequestHandler[] {
   let cached: LargeSession | null = null
   const getLarge = () => (cached ??= makeLargeSession({ seed: 1, ...largeOptions }))
+  // Harness of accounts created through the mock API, by name.
+  const createdHarness = new Map<string, Harness>()
+  const harnessOf = (name: string): Harness | undefined => createdHarness.get(name) ?? fx.accounts.find((a) => a.name === name)?.harness
   const largeRunIds = () => new Set(getLarge().session.runs.map((r) => r.run_id))
 
   const sessionList = () => (large ? [{ ...getLarge().session, runs: undefined } as never, ...fx.sessions] : fx.sessions)
@@ -110,7 +113,8 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
 
     http.get(`${B}/accounts`, () => HttpResponse.json(fx.accounts)),
     http.post(`${B}/accounts`, async ({ request }) => {
-      const b = (await request.json()) as { harness: never; name: string }
+      const b = (await request.json()) as { harness: Harness; name: string }
+      createdHarness.set(b.name, b.harness)
       return HttpResponse.json({ ...fx.accounts[0], name: b.name, harness: b.harness, signed_in: 'signed_out', active_runs: 0, headroom: [] }, { status: 201 })
     }),
     http.post(`${B}/accounts/import`, async ({ request }) => {
@@ -125,8 +129,12 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
     }),
     http.delete(`${B}/accounts/:name`, () => HttpResponse.json(ok)),
     http.post(`${B}/accounts/:name/flag`, ({ params }) => HttpResponse.json(fx.accounts.find((a) => a.name === params.name) ?? fx.accounts[0])),
-    http.post(`${B}/accounts/:name/login`, () =>
-      HttpResponse.json({ mode: 'device_auth', url: 'https://example.test/device', code: 'ABCD-1234', expires_at: new Date(Date.UTC(2026, 0, 1, 12, 15)).toISOString() }),
+    http.post(`${B}/accounts/:name/login`, ({ params }) =>
+      // Claude accounts sign in with a command; the others use a device code. The harness is what the
+      // account was created with, never guessed from its name.
+      harnessOf(String(params.name)) === 'claude'
+        ? HttpResponse.json({ mode: 'manual', command: 'claude login', cwd: '/home/me' })
+        : HttpResponse.json({ mode: 'device_auth', url: 'https://example.test/device', code: 'ABCD-1234', expires_at: new Date(Date.UTC(2026, 0, 1, 12, 15)).toISOString() }),
     ),
     http.get(`${B}/accounts/:name/login`, () => HttpResponse.json({ signed_in: 'signed_out', mode: 'device_auth', state: 'pending' })),
 
@@ -137,23 +145,33 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
 
     http.get(`${B}/worktrees`, () => HttpResponse.json(fx.worktrees)),
     http.post(`${B}/worktrees/prune`, async ({ request }) => {
-      const b = (await request.json().catch(() => ({}))) as { dry_run?: boolean }
-      void b
-      return HttpResponse.json({ removed: fx.worktrees.filter((w) => w.orphaned).map((w) => w.path) })
+      const b = (await request.json().catch(() => ({}))) as { ids?: string[] }
+      const prunable = fx.worktrees.filter((w) => w.orphaned).map((w) => w.run_id)
+      if (!b.ids) return HttpResponse.json({ removed: prunable, skipped: [] })
+      return HttpResponse.json({ removed: b.ids.filter((id) => prunable.includes(id)), skipped: b.ids.filter((id) => !prunable.includes(id)) })
     }),
 
-    http.get(`${B}/agents`, () => HttpResponse.json({ agents: fx.agents.map(({ name, description }) => ({ name, description })) })),
+    http.get(`${B}/agents`, () => HttpResponse.json({ agents: fx.agentViews })),
     http.post(`${B}/agents`, async ({ request }) => {
-      const b = (await request.json()) as { name: string }
-      if (fx.agents.some((a) => a.name === b.name)) return apiError(409, -32602, `agent ${b.name} already exists`)
-      return HttpResponse.json({ ok: true, warnings: [] }, { status: 201 })
+      const b = (await request.json()) as { name: string; source: string }
+      if (fx.agents.some((a) => a.name === b.name)) return apiError(409, -32002, `agent \`${b.name}\` already exists`)
+      return agentWrite(b.source, 201)
     }),
     http.get(`${B}/agents/:name`, ({ params }) => {
       const a = fx.agents.find((x) => x.name === params.name)
-      return a ? HttpResponse.json(a) : apiError(404, -32003, `agent ${String(params.name)} not found`)
+      return a ? HttpResponse.json(a) : apiError(404, -32003, `no agent named \`${String(params.name)}\``)
     }),
-    http.put(`${B}/agents/:name`, () => HttpResponse.json({ ok: true, warnings: [] })),
-    http.delete(`${B}/agents/:name`, () => HttpResponse.json(ok)),
+    http.put(`${B}/agents/:name`, async ({ params, request }) => {
+      const a = fx.agents.find((x) => x.name === params.name)
+      if (!a) return apiError(404, -32003, `no agent named \`${String(params.name)}\``)
+      if (a.read_only) return apiError(422, -32602, `\`${a.name}\` is a read-only import; copy it to the config agents dir to edit it`)
+      return agentWrite(((await request.json()) as { source: string }).source)
+    }),
+    http.delete(`${B}/agents/:name`, ({ params }) => {
+      const a = fx.agents.find((x) => x.name === params.name)
+      if (a?.read_only) return apiError(422, -32602, `\`${a.name}\` is a read-only import; copy it to the config agents dir to remove it`)
+      return HttpResponse.json(ok)
+    }),
 
     http.get(`${B}/workflows`, () => HttpResponse.json(fx.workflows)),
     http.get(`${B}/workflows/runs`, ({ request }) => HttpResponse.json(paginate(fx.workflowRuns, new URL(request.url), 200))),
@@ -165,11 +183,20 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
 
     http.get(`${B}/config`, () => HttpResponse.json(fx.config)),
     http.patch(`${B}/config`, async ({ request }) => {
-      const p = (await request.json()) as Record<string, unknown>
-      return HttpResponse.json({ ...fx.config, ...p })
+      const p = (await request.json()) as Record<string, Record<string, unknown>>
+      const config: Record<string, unknown> = { ...fx.config.config }
+      for (const [k, v] of Object.entries(p)) config[k] = { ...(config[k] as object), ...v }
+      return HttpResponse.json({ ...fx.config, config, restart_required: 'ui' in p })
     }),
     http.post(`${B}/auth`, () => new HttpResponse(null, { status: 204 })),
   ]
+}
+
+/** Mirrors the server: the source needs frontmatter with a name and description. */
+function agentWrite(source: string, status = 200) {
+  if (!source.startsWith('---')) return apiError(422, -32602, 'the agent file must start with a `---` frontmatter block')
+  if (!/^description:/m.test(source)) return apiError(422, -32602, 'the frontmatter needs a `description`')
+  return HttpResponse.json({ ok: true, warnings: [] }, { status })
 }
 
 export const handlers = createHandlers()

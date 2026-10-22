@@ -699,9 +699,18 @@ async fn choices_config_and_worktrees() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(v, json!({"removed": []}));
+    assert_eq!(v, json!({"removed": [], "skipped": []}));
     let (s, _) = post(&f.app, "/api/v1/worktrees/prune", None).await;
     assert_eq!(s, StatusCode::OK);
+    // Confirmed ids that are no longer prunable are skipped, not an error, and nothing else goes.
+    let (s, v) = post(
+        &f.app,
+        "/api/v1/worktrees/prune",
+        Some(json!({"ids": ["gone-1", "gone-2"]})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v, json!({"removed": [], "skipped": ["gone-1", "gone-2"]}));
 }
 
 // --------------------------------------------------------------------- security

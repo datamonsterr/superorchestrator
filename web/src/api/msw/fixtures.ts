@@ -1,6 +1,7 @@
 import type {
   AccountView,
   AgentDetail,
+  AgentView,
   ChoicesView,
   ConfigView,
   DailyUsage,
@@ -194,10 +195,11 @@ export const dashboard: DashboardView = {
 }
 
 export const doctor: DoctorReport = {
+  ok: false,
   checks: [
-    { name: 'supervisor socket', ok: true, detail: 'reachable' },
-    { name: 'codex binary', ok: true, detail: '/usr/bin/codex' },
-    { name: 'agy binary', ok: false, detail: 'not found on PATH' },
+    { name: 'supervisor socket', ok: true, status: 'ok', detail: 'reachable' },
+    { name: 'codex binary', ok: true, status: 'ok', detail: '/usr/bin/codex' },
+    { name: 'agy binary', ok: false, status: 'fail', detail: 'not found on PATH' },
   ],
 }
 
@@ -211,16 +213,53 @@ export const models: ModelCatalog = {
 
 export const worktrees: WorktreeView[] = [
   { path: '/work/wt/run-1', branch: 'so/run-1', run_id: 'run-1', size_bytes: 12_345_678, orphaned: false },
-  { path: '/work/wt/old', branch: 'so/old', size_bytes: 2_000_000, orphaned: true },
+  { path: '/work/wt/old', branch: 'so/old', run_id: 'run-0', size_bytes: 2_000_000, orphaned: true },
 ]
 
 export const scanCandidates: ImportCandidate[] = [{ harness: 'codex', name: 'codex-acc9', home: '/home/me/.codex-acc9' }]
 
+const agentSource = (name: string, description: string, body = 'Review carefully.') =>
+  `---\nname: ${name}\ndescription: ${description}\n---\n${body}\n`
+
 export const agents: AgentDetail[] = [
-  { name: 'reviewer', description: 'Reviews diffs for bugs', path: '~/.config/so/agents/reviewer.md', source: '---\nname: reviewer\ndescription: Reviews diffs for bugs\n---\nReview carefully.\n' },
+  {
+    name: 'reviewer',
+    description: 'Reviews diffs for bugs',
+    path: '/home/me/.config/superorchestrator/agents/reviewer/AGENT.md',
+    origin: 'user',
+    read_only: false,
+    redacted: false,
+    source: agentSource('reviewer', 'Reviews diffs for bugs'),
+  },
+  {
+    name: 'imported',
+    description: 'Imported from .claude/agents',
+    path: '/work/.claude/agents/imported.md',
+    origin: 'claude',
+    read_only: true,
+    redacted: false,
+    source: agentSource('imported', 'Imported from .claude/agents'),
+  },
+  {
+    name: 'secretive',
+    description: 'Has a secret in its file',
+    path: '/home/me/.config/superorchestrator/agents/secretive/AGENT.md',
+    origin: 'user',
+    read_only: false,
+    redacted: true,
+    source: agentSource('secretive', 'Has a secret in its file', 'token: [REDACTED]'),
+  },
 ]
 
-export const workflows: WorkflowSummary[] = [{ name: 'ship-feature', description: 'Plan, implement, review' }]
+export const agentViews: AgentView[] = [
+  { name: 'reviewer', description: 'Reviews diffs for bugs', source: 'user', path: agents[0].path, harness: 'auto' },
+  { name: 'imported', description: 'Imported from .claude/agents', source: 'claude', path: agents[1].path, harness: 'claude' },
+  { name: 'secretive', description: 'Has a secret in its file', source: 'user', path: agents[2].path, harness: 'codex' },
+]
+
+export const workflows: WorkflowSummary[] = [
+  { name: 'ship-feature', path: '/work/.superorchestrator/workflows/ship-feature.js', source: 'project' },
+]
 
 export const workflowRuns: WorkflowRunView[] = [
   { id: 'wf-1', name: 'ship-feature', state: 'running', started_at: at(0), session_id: 'sess-1' },
@@ -237,11 +276,16 @@ export const workflowRunDetail: WorkflowRunDetail = {
 
 export const config: ConfigView = {
   platform: 'linux',
-  caps: { global: 8, per_account: 2 },
-  stall_ms: 300_000,
-  notifications: { enabled: false },
-  worktree: { default_isolation: 'worktree' },
-  routing: { min_confidence: 0.5, min_margin: 0.1 },
-  openrouter: { key: { source: 'env', name: 'OPENROUTER_API_KEY' } },
-  ui: { bind: '127.0.0.1', port: 7878 },
+  restart_required: false,
+  ui_token: { source: 'unset', name: null },
+  openrouter_key: { source: 'env', name: 'OPENROUTER_API_KEY' },
+  config: {
+    limits: { global_cap: 8, max_children: 5 },
+    runs: { stall_ms: 300_000, ask_timeout: '10m' },
+    notifications: { desktop: false, discord_webhook_env: '', on: ['escalated'] },
+    worktrees: { dir: '', branch_prefix: 'so/' },
+    router: { policy: { min_confidence: 0.5, min_margin: 0.1 } },
+    ui: { bind: '127.0.0.1', port: 7878, enabled: false },
+    defaults: { harness: null, model: null, effort: null },
+  },
 }
