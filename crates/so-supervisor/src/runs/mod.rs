@@ -62,6 +62,19 @@ fn store_rpc(e: StoreError) -> RpcError {
     }
 }
 
+/// Weak references to the live per-run locks.
+type RunLocks = HashMap<(LockKind, String), std::sync::Weak<tokio::sync::Mutex<()>>>;
+
+/// What a per-run lock protects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum LockKind {
+    /// A run entering the review gate, or being resumed: the state change, its events and
+    /// the claim are one step, so a reject sees the gate announced before it acts.
+    Gate,
+    /// Putting a run's worktree back, and undoing it.
+    Worktree,
+}
+
 /// A run with a harness process.
 pub(crate) struct LiveRun {
     pub control: RunControl,
@@ -101,11 +114,13 @@ struct Inner {
     finished: watch::Sender<u64>,
     /// Bumped when a message is stored, so blocked `ask_parent` calls look again.
     msg_tick: watch::Sender<u64>,
-    /// Held while a run enters the review gate (state change, event, message), so a resume
-    /// of that run waits and sees them in order.
-    gate: tokio::sync::Mutex<()>,
-    /// Serialises recreating worktrees, so two resumes of one run do not both add it.
-    recreate: tokio::sync::Mutex<()>,
+    /// Per-run locks (see [`LockKind`]).
+    locks: Mutex<RunLocks>,
+    /// Test hook: how long `enter_review` holds the gate between the state change and
+    /// its announcement.
+    gate_delay_ms: AtomicU64,
+    /// Test hook: make storing a gated run's result fail.
+    fault_gate_result: std::sync::atomic::AtomicBool,
     /// Runs whose process died, to be resumed by the resumer task.
     resume_tx: tokio::sync::mpsc::UnboundedSender<reconcile::ResumeRequest>,
     notifications: Notifications,
@@ -162,8 +177,9 @@ impl RunManager {
             finished: watch::channel(0).0,
             msg_tick: watch::channel(0).0,
             resume_tx,
-            gate: tokio::sync::Mutex::new(()),
-            recreate: tokio::sync::Mutex::new(()),
+            locks: Mutex::default(),
+            gate_delay_ms: AtomicU64::new(0),
+            fault_gate_result: std::sync::atomic::AtomicBool::new(false),
             notifications,
             go_live_open: watch::channel(true).0,
             launch_timeout_ms: AtomicU64::new(
@@ -209,6 +225,33 @@ impl RunManager {
         });
     }
 
+    /// Takes the per-run lock of `kind`. The map keeps only weak references and drops dead
+    /// ones as it grows, so finished runs leave nothing behind.
+    pub(crate) async fn lock_run(
+        &self,
+        kind: LockKind,
+        run_id: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let m = {
+            let mut map = lock(&self.inner.locks);
+            let key = (kind, run_id.to_string());
+            match map.get(&key).and_then(std::sync::Weak::upgrade) {
+                Some(m) => m,
+                None => {
+                    map.retain(|_, w| w.strong_count() > 0);
+                    let m = Arc::new(tokio::sync::Mutex::new(()));
+                    map.insert(key, Arc::downgrade(&m));
+                    m
+                }
+            }
+        };
+        m.lock_owned().await
+    }
+
+    pub(crate) fn gate_delay(&self) -> Duration {
+        Duration::from_millis(self.inner.gate_delay_ms.load(Ordering::SeqCst))
+    }
+
     pub(crate) fn config(&self) -> &Config {
         &self.inner.config
     }
@@ -233,6 +276,20 @@ impl RunManager {
     #[doc(hidden)]
     pub fn set_go_live_open(&self, open: bool) {
         self.inner.go_live_open.send_replace(open);
+    }
+
+    /// Test hook: hold `enter_review` this long between the state change and its
+    /// announcement, to show that a resume of the run waits.
+    #[doc(hidden)]
+    pub fn set_gate_delay(&self, d: Duration) {
+        let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        self.inner.gate_delay_ms.store(ms, Ordering::SeqCst);
+    }
+
+    /// Test hook: make storing the result of a gated run fail.
+    #[doc(hidden)]
+    pub fn set_fault_gate_result(&self, on: bool) {
+        self.inner.fault_gate_result.store(on, Ordering::SeqCst);
     }
 
     /// Test hook: how long a harness may take to start.

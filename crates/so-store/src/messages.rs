@@ -68,6 +68,29 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Like [`Store::unread_messages`], but only the given kinds, so a limit never cuts
+    /// off the kind the caller wants behind other kinds.
+    pub fn unread_messages_of_kinds(
+        &self,
+        session_id: &str,
+        to_run: Option<&str>,
+        kinds: &[so_core::MessageKind],
+        limit: usize,
+    ) -> Result<Vec<MessageRow>> {
+        let list = kinds
+            .iter()
+            .map(|k| format!("'{}'", enum_to_sql(k)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
+            "SELECT {COLS} FROM messages WHERE session_id = ?1 AND to_run IS ?2 \
+             AND read_at IS NULL AND kind IN ({list}) ORDER BY created_at, id LIMIT ?3"
+        ))?;
+        let rows = st.query_map(params![session_id, to_run, limit as i64], map)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Marks the given messages read and returns the ids this call actually changed. Two
     /// callers racing over the same ids get disjoint sets, so a message is handed to
     /// exactly one of them.
