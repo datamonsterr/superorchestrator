@@ -521,6 +521,60 @@ async fn launch_fails_when_the_server_dies_before_it_is_ready() {
     assert!(err.to_string().contains("before it printed"), "{err}");
 }
 
+/// A launch against a fake that prints `stderr_lines` on stderr and exits.
+async fn launch_failing_with(stderr_lines: &[&str]) -> DriverError {
+    let rig = Rig::new();
+    let mut spec = rig.spec(&[]);
+    let script_path = rig.dir.path().join("exit.jsonl");
+    let mut script: String = stderr_lines
+        .iter()
+        .map(|l| format!("{}\n", json!({"stderr": l})))
+        .collect();
+    script.push_str("{\"exit\": 1}\n");
+    std::fs::write(&script_path, script).unwrap();
+    spec.launch.program = PathBuf::from(env!("CARGO_BIN_EXE_fake-harness"));
+    spec.launch.vars = vec![(
+        "FAKE_HARNESS_SCRIPT".into(),
+        script_path.display().to_string(),
+    )];
+    driver().launch(spec).await.unwrap_err()
+}
+
+#[tokio::test]
+async fn a_server_that_exits_with_an_auth_or_quota_line_is_classified() {
+    match launch_failing_with(&["Error: not logged in. Run codex login"]).await {
+        DriverError::Exited { kind, text } => {
+            assert_eq!(kind, ErrorKind::Auth);
+            assert!(text.contains("before it printed"), "{text}");
+            assert!(text.contains("not logged in"), "{text}");
+        }
+        other => panic!("{other:?}"),
+    }
+    match launch_failing_with(&[
+        "starting",
+        "You have hit your usage limit. Try again later.",
+    ])
+    .await
+    {
+        DriverError::Exited { kind, text } => {
+            assert_eq!(kind, ErrorKind::Quota);
+            assert!(text.contains("starting"), "{text}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn an_unrecognised_stderr_tail_is_kept_with_kind_other() {
+    match launch_failing_with(&["segmentation fault"]).await {
+        DriverError::Exited { kind, text } => {
+            assert_eq!(kind, ErrorKind::Other);
+            assert!(text.contains("segmentation fault"), "{text}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 #[tokio::test]
 async fn token_never_reaches_argv_transcript_or_debug_and_join_commands_work() {
     let rig = Rig::new();

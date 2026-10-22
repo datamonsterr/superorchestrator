@@ -67,6 +67,59 @@ pub trait LineParser: Send + 'static {
     fn on_eof(&mut self) {}
 }
 
+/// How many stderr lines and bytes of a failed start are kept in the error text.
+const STARTUP_TAIL_LINES: usize = 10;
+const STARTUP_TAIL_BYTES: usize = 500;
+
+/// Turns a failed start-up (the harness never became ready) into a
+/// [`DriverError::Exited`] when the process itself said why: the tail of its stderr,
+/// classified by the driver. The caller has already shut the process down, so the
+/// stream ends with `Exited`; a process that wrote nothing keeps `cause` as it was.
+pub(crate) async fn startup_failure(
+    cause: DriverError,
+    events: &mut mpsc::UnboundedReceiver<HarnessEvent>,
+    classify: impl Fn(&str) -> so_core::ErrorKind,
+) -> DriverError {
+    if !matches!(cause, DriverError::Other(_)) {
+        return cause;
+    }
+    let mut tail: std::collections::VecDeque<String> = std::collections::VecDeque::new();
+    let drain = async {
+        while let Some(ev) = events.recv().await {
+            match ev {
+                HarnessEvent::Raw {
+                    channel: Channel::Stderr,
+                    line,
+                    ..
+                } if !line.trim().is_empty() => {
+                    if tail.len() == STARTUP_TAIL_LINES {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line.trim().to_string());
+                }
+                HarnessEvent::Exited { .. } => break,
+                _ => {}
+            }
+        }
+    };
+    let _ = tokio::time::timeout(Duration::from_secs(3), drain).await;
+    if tail.is_empty() {
+        return cause;
+    }
+    let mut text = tail.into_iter().collect::<Vec<_>>().join("; ");
+    if text.len() > STARTUP_TAIL_BYTES {
+        let mut at = text.len() - STARTUP_TAIL_BYTES;
+        while !text.is_char_boundary(at) {
+            at += 1;
+        }
+        text = format!("...{}", &text[at..]);
+    }
+    DriverError::Exited {
+        kind: classify(&text),
+        text: format!("{cause}: {text}"),
+    }
+}
+
 /// `None` while the leader runs, `Some(code)` once reaped.
 pub type ExitWatch = watch::Receiver<Option<Option<i32>>>;
 
