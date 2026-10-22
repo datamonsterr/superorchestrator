@@ -613,10 +613,32 @@ mod tests {
             host.clone(),
             Arc::new(TokioProbeRunner),
         );
-        let codex = AccountFile::new("codex", Harness::Codex, "~/.codex", "codex").unwrap();
-        let agy = AccountFile::new("agy", Harness::Agy, "~", "agy").unwrap();
+        let codex = AccountFile::new("codex-probe", Harness::Codex, "~/.codex", "codex").unwrap();
+        let agy = AccountFile::new(
+            "agy-probe",
+            Harness::Agy,
+            "~/.agent-farm/profiles/agy_worker_5",
+            "agy",
+        )
+        .unwrap();
         for a in [codex, agy] {
-            println!("{}: {:?}", a.name, svc.refresh(&a, true).await);
+            match svc.refresh(&a, true).await {
+                Ok(hs) => {
+                    for h in hs {
+                        println!(
+                            "{}/{}: {:?} 5h={:?}% resets {:?}; weekly={:?}% resets {:?}",
+                            a.name,
+                            h.pool,
+                            h.status,
+                            h.five_hour_remaining_pct,
+                            h.five_hour_resets_at,
+                            h.weekly_remaining_pct,
+                            h.weekly_resets_at
+                        );
+                    }
+                }
+                Err(e) => println!("{}: error {e}", a.name),
+            }
         }
     }
 }
