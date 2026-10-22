@@ -65,10 +65,10 @@ fn basic(password: &str) -> String {
     )
 }
 
-struct Rx(mpsc::UnboundedReceiver<String>);
+struct Rx(mpsc::UnboundedReceiver<Vec<u8>>);
 
 impl Stream for Rx {
-    type Item = Result<String, Infallible>;
+    type Item = Result<Vec<u8>, Infallible>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         self.0.poll_recv(cx).map(|o| o.map(Ok))
     }
@@ -85,15 +85,37 @@ struct Fake {
     prompts: Mutex<Vec<Value>>,
     session_bodies: Mutex<Vec<Value>>,
     aborts: Mutex<u32>,
-    subscribers: Mutex<Vec<mpsc::UnboundedSender<String>>>,
+    subscribers: Mutex<Vec<mpsc::UnboundedSender<Vec<u8>>>>,
+    /// `/event` answers 503 while set.
+    refuse_event: std::sync::atomic::AtomicBool,
+    /// Body of `GET /session/status`.
+    status: Mutex<Option<Value>>,
+    /// Send events one byte per chunk.
+    byte_chunks: bool,
 }
 
 impl Fake {
+    /// Ends every open event stream (the server side closes the response).
+    fn drop_streams(&self) {
+        self.subscribers.lock().unwrap().clear();
+    }
+
+    fn streams(&self) -> usize {
+        self.subscribers.lock().unwrap().len()
+    }
+
     fn push(&self, lines: &[String]) {
         let subs = self.subscribers.lock().unwrap();
         for l in lines {
             for s in subs.iter() {
-                let _ = s.send(format!("{l}\n\n"));
+                let data = format!("{l}\n\n").into_bytes();
+                if self.byte_chunks {
+                    for b in data {
+                        let _ = s.send(vec![b]);
+                    }
+                } else {
+                    let _ = s.send(data);
+                }
             }
         }
     }
@@ -155,16 +177,25 @@ async fn serve(fake: Fake) -> (String, Arc<Fake>) {
         .route(
             "/event",
             get(|State(f): State<Arc<Fake>>| async move {
+                if f.refuse_event.load(std::sync::atomic::Ordering::SeqCst) {
+                    return StatusCode::SERVICE_UNAVAILABLE.into_response();
+                }
                 let (tx, rx) = mpsc::unbounded_channel();
                 let _ = tx.send(
-                    "data: {\"id\": \"evt_0\", \"type\": \"server.connected\", \"properties\": {}}\n\n"
-                        .to_string(),
+                    b"data: {\"id\": \"evt_0\", \"type\": \"server.connected\", \"properties\": {}}\n\n"
+                        .to_vec(),
                 );
                 f.subscribers.lock().unwrap().push(tx);
                 Response::builder()
                     .header(header::CONTENT_TYPE, "text/event-stream")
                     .body(Body::from_stream(Rx(rx)))
                     .unwrap()
+            }),
+        )
+        .route(
+            "/session/status",
+            get(|State(f): State<Arc<Fake>>| async move {
+                Json(f.status.lock().unwrap().clone().unwrap_or(json!({})))
             }),
         )
         .route(
@@ -705,4 +736,131 @@ async fn server_that_exits_before_listening_fails_fast() {
     let d = OpencodeDriver::new(DriverConfig::default());
     let err = d.launch(spec).await.unwrap_err();
     assert!(err.to_string().contains("exited before printing"), "{err}");
+}
+
+fn line(v: Value) -> String {
+    format!("data: {v}")
+}
+
+fn busy_line() -> String {
+    line(
+        json!({"type":"session.status","properties":{"sessionID":SESSION_ID,"status":{"type":"busy"}}}),
+    )
+}
+
+fn idle_line() -> String {
+    line(json!({"type":"session.idle","properties":{"sessionID":SESSION_ID}}))
+}
+
+async fn wait_streams(fake: &Fake, n: usize) {
+    for _ in 0..100 {
+        if fake.streams() >= n {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("no event stream reconnected");
+}
+
+#[tokio::test]
+async fn events_split_into_single_byte_chunks_still_map() {
+    let msg = "msg_u8";
+    let text = "caf\u{e9} \u{1f600} done";
+    let lines = vec![
+        busy_line(),
+        line(
+            json!({"type":"message.updated","properties":{"sessionID":SESSION_ID,"info":{
+            "id":msg,"role":"assistant","sessionID":SESSION_ID,"time":{"created":1}}}}),
+        ),
+        line(
+            json!({"type":"message.part.updated","properties":{"sessionID":SESSION_ID,"part":{
+            "id":"prt_1","type":"text","messageID":msg,"sessionID":SESSION_ID,
+            "text":text,"time":{"start":1,"end":2}}}}),
+        ),
+        idle_line(),
+    ];
+    let (url, _fake) = serve(Fake {
+        on_prompt: lines,
+        byte_chunks: true,
+        ..Fake::default()
+    })
+    .await;
+    let rig = Rig::new();
+    let mut h = driver(&url, "pw").launch(rig.spec()).await.unwrap();
+    let events = until(&mut h, is_turn).await;
+    assert!(events.contains(&HarnessEvent::AssistantMessage { text: text.into() }));
+}
+
+#[tokio::test]
+async fn dropped_stream_reconnects_and_the_turn_continues() {
+    let (url, fake) = serve(Fake {
+        on_prompt: vec![busy_line()],
+        ..Fake::default()
+    })
+    .await;
+    *fake.status.lock().unwrap() = Some(json!({SESSION_ID: {"type": "busy"}}));
+    let rig = Rig::new();
+    let mut h = driver(&url, "pw").launch(rig.spec()).await.unwrap();
+    until(&mut h, |e| matches!(e, HarnessEvent::TurnStarted)).await;
+    fake.drop_streams();
+    wait_streams(&fake, 1).await;
+    fake.push(&[idle_line()]);
+    let events = until(&mut h, is_turn).await;
+    assert!(matches!(
+        events.last(),
+        Some(HarnessEvent::TurnFinished {
+            is_error: false,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn idle_session_after_reconnect_closes_the_open_turn() {
+    // The idle event was lost while the stream was down.
+    let (url, fake) = serve(Fake {
+        on_prompt: vec![busy_line()],
+        ..Fake::default()
+    })
+    .await;
+    let rig = Rig::new();
+    let mut h = driver(&url, "pw").launch(rig.spec()).await.unwrap();
+    until(&mut h, |e| matches!(e, HarnessEvent::TurnStarted)).await;
+    fake.drop_streams();
+    let events = until(&mut h, is_turn).await;
+    assert!(matches!(
+        events.last(),
+        Some(HarnessEvent::TurnFinished {
+            is_error: false,
+            ..
+        })
+    ));
+}
+
+#[tokio::test]
+async fn failed_reconnect_fails_the_turn_and_exits() {
+    let (url, fake) = serve(Fake {
+        on_prompt: vec![busy_line()],
+        ..Fake::default()
+    })
+    .await;
+    let rig = Rig::new();
+    let mut h = driver(&url, "pw").launch(rig.spec()).await.unwrap();
+    until(&mut h, |e| matches!(e, HarnessEvent::TurnStarted)).await;
+    fake.refuse_event
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    fake.drop_streams();
+    let events = until(&mut h, |e| matches!(e, HarnessEvent::Exited { .. })).await;
+    let kinds: Vec<&str> = events
+        .iter()
+        .map(|e| match e {
+            HarnessEvent::TurnFinished { is_error: true, .. } => "turn_error",
+            HarnessEvent::Error { .. } => "error",
+            HarnessEvent::Exited { .. } => "exited",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, ["turn_error", "error", "exited"], "{events:?}");
+    // The channel closes after Exited.
+    assert!(h.events.recv().await.is_none());
 }

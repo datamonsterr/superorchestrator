@@ -21,8 +21,8 @@ use crate::driver::{
     LaunchSpec, RunControl, RunHandle, ShutdownOutcome, classify_common,
 };
 use crate::process::{
-    LineParser, MAX_LINE_BYTES, ProcessHandle, create_private_dir, record, spawn_supervised,
-    write_private,
+    ExitWatch, LineParser, MAX_LINE_BYTES, ProcessHandle, TRUNCATED_MARK, create_private_dir,
+    default_truncated_event, record, spawn_supervised, write_private,
 };
 use crate::transcript::{Dir, SharedTranscript, TranscriptWriter};
 
@@ -34,6 +34,15 @@ const PASSWORD_ENV: &str = "OPENCODE_SERVER_PASSWORD";
 /// Longest HTTP body kept in a transcript summary.
 const MAX_BODY_LOG: usize = 2048;
 const STRUCTURED_RETRIES: u32 = 2;
+/// No bytes (not even a heartbeat, sent about every 30 s) for this long means
+/// the stream is dead.
+const SSE_IDLE_TIMEOUT: Duration = Duration::from_secs(600);
+/// Waits before each of the three reconnect attempts.
+const RECONNECT_BACKOFF: [Duration; 3] = [
+    Duration::from_millis(500),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+];
 
 /// Where the server comes from.
 #[derive(Clone, Default)]
@@ -283,16 +292,49 @@ impl Api {
         }
     }
 
-    async fn wait_ready(&self) -> Result<(), DriverError> {
-        let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
+    /// Opens `GET /event`.
+    async fn open_events(&self) -> Result<reqwest::Response, DriverError> {
+        let resp = self
+            .builder(reqwest::Method::GET, "/event")
+            .header("accept", "text/event-stream")
+            .send()
+            .await
+            .map_err(|e| DriverError::Other(format!("opencode GET /event: request failed: {e}")))?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(http_error("GET", "/event", status, &body));
+        }
+        Ok(resp)
+    }
+
+    /// Polls `/global/health` until `deadline`; fails early when the server
+    /// process exits.
+    async fn wait_ready(
+        &self,
+        deadline: tokio::time::Instant,
+        mut exit: Option<ExitWatch>,
+    ) -> Result<(), DriverError> {
+        let timeout =
+            || DriverError::Other("opencode server did not become healthy within 20 s".into());
         loop {
-            if self.healthy().await? {
+            let probe = tokio::time::timeout_at(deadline, self.healthy());
+            let healthy = match exit.as_mut() {
+                Some(e) => tokio::select! {
+                    r = probe => r.map_err(|_| timeout())??,
+                    _ = e.wait_for(|v| v.is_some()) => {
+                        return Err(DriverError::Other(
+                            "opencode serve exited before becoming healthy".into(),
+                        ));
+                    }
+                },
+                None => probe.await.map_err(|_| timeout())??,
+            };
+            if healthy {
                 return Ok(());
             }
             if tokio::time::Instant::now() >= deadline {
-                return Err(DriverError::Other(
-                    "opencode server did not become healthy within 20 s".into(),
-                ));
+                return Err(timeout());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -385,7 +427,11 @@ impl EventMapper {
         let sid = str_at(props, &["sessionID"])
             .or_else(|| str_at(props, &["part", "sessionID"]))
             .or_else(|| str_at(props, &["info", "sessionID"]));
-        if sid != Some(self.session_id.as_str()) {
+        // A `session.error` without a session id while a turn runs is ours:
+        // the server has one session per run.
+        let ours = sid == Some(self.session_id.as_str())
+            || (sid.is_none() && kind == "session.error" && self.active);
+        if !ours {
             return vec![];
         }
         let mut out = Vec::new();
@@ -410,8 +456,24 @@ impl EventMapper {
                 self.start_turn(&mut out);
                 self.finish(true, Some(error_kind), Some(text), &mut out);
             }
+            // `session.status` idle and `session.idle` both end the turn; the
+            // second one finds no active turn and is ignored.
             "session.idle" if self.active => self.finish(false, None, None, &mut out),
+            "session.status"
+                if self.active && str_at(props, &["status", "type"]) == Some("idle") =>
+            {
+                self.finish(false, None, None, &mut out);
+            }
             _ => {}
+        }
+        out
+    }
+
+    /// The session was found idle after a reconnect (events were missed).
+    pub fn on_idle_detected(&mut self) -> Vec<HarnessEvent> {
+        let mut out = Vec::new();
+        if self.active {
+            self.finish(false, None, None, &mut out);
         }
         out
     }
@@ -551,66 +613,264 @@ impl EventMapper {
 // SSE
 // ---------------------------------------------------------------------------
 
-/// Reads `resp` as server-sent events until the stream ends or `stop` fires.
-async fn sse_loop(
-    mut resp: reqwest::Response,
-    out: Arc<Out>,
-    mut mapper: EventMapper,
-    mut stop: watch::Receiver<()>,
-) {
-    let mut buf: Vec<u8> = Vec::new();
-    let mut discarding = false;
-    let reason = loop {
+/// One server-sent event: the raw lines of the block and the joined `data`.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Frame {
+    lines: Vec<String>,
+    data: Option<String>,
+    /// A line or the whole event exceeded the size cap and was cut.
+    truncated: bool,
+}
+
+/// Splits a byte stream into SSE events. Chunk boundaries may fall anywhere,
+/// including inside a UTF-8 sequence: bytes are only decoded per full line.
+/// An event ends at a blank line; its `data:` lines are joined with `\n`.
+struct SseFramer {
+    max: usize,
+    buf: Vec<u8>,
+    line_over: bool,
+    cur: Frame,
+    data: Vec<String>,
+    size: usize,
+}
+
+impl SseFramer {
+    fn new(max: usize) -> Self {
+        Self {
+            max,
+            buf: Vec::new(),
+            line_over: false,
+            cur: Frame::default(),
+            data: Vec::new(),
+            size: 0,
+        }
+    }
+
+    fn feed(&mut self, bytes: &[u8]) -> Vec<Frame> {
+        let mut frames = Vec::new();
+        for &b in bytes {
+            if b != b'\n' {
+                if self.buf.len() < self.max {
+                    self.buf.push(b);
+                } else {
+                    self.line_over = true;
+                }
+            } else if let Some(f) = self.end_line() {
+                frames.push(f);
+            }
+        }
+        frames
+    }
+
+    fn end_line(&mut self) -> Option<Frame> {
+        let mut line = String::from_utf8_lossy(&self.buf).into_owned();
+        self.buf.clear();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+        if std::mem::take(&mut self.line_over) {
+            self.cur.truncated = true;
+            line.push_str(TRUNCATED_MARK);
+        }
+        if line.is_empty() {
+            if self.cur.lines.is_empty() && !self.cur.truncated {
+                return None;
+            }
+            let mut f = std::mem::take(&mut self.cur);
+            if !self.data.is_empty() {
+                f.data = Some(self.data.join("\n"));
+            }
+            self.data.clear();
+            self.size = 0;
+            return Some(f);
+        }
+        self.size += line.len();
+        if self.size > self.max {
+            self.cur.truncated = true;
+            return None;
+        }
+        if let Some(d) = line.strip_prefix("data:") {
+            self.data.push(d.strip_prefix(' ').unwrap_or(d).to_string());
+        }
+        self.cur.lines.push(line);
+        None
+    }
+
+    /// Lines of an unterminated event when the stream ends.
+    fn finish(&mut self) -> Vec<String> {
+        let mut lines = std::mem::take(&mut self.cur.lines);
+        if !self.buf.is_empty() {
+            lines.push(String::from_utf8_lossy(&self.buf).into_owned());
+        }
+        *self = Self::new(self.max);
+        lines
+    }
+}
+
+/// Records a frame's lines and attaches the mapped events to the last one.
+fn dispatch(frame: Frame, out: &Out, mapper: &mut EventMapper) {
+    let mut events = Vec::new();
+    if frame.truncated {
+        events.push(default_truncated_event());
+        events.extend(mapper.on_stream_end("opencode event exceeded 4 MiB"));
+    } else if let Some(d) = &frame.data {
+        events = mapper.map_line(d);
+    }
+    let n = frame.lines.len();
+    if n == 0 {
+        // Only a cut line was recorded.
+        out.emit(Dir::In, Channel::Sse, TRUNCATED_MARK, events);
+        return;
+    }
+    let mut events = Some(events);
+    for (i, line) in frame.lines.iter().enumerate() {
+        let evs = if i + 1 == n {
+            events.take().unwrap_or_default()
+        } else {
+            vec![]
+        };
+        out.emit(Dir::In, Channel::Sse, line, evs);
+    }
+}
+
+/// Stop signals for the SSE task: the control was dropped or shut down, or
+/// the server process exited.
+struct Signals {
+    stop: watch::Receiver<()>,
+    exit: Option<ExitWatch>,
+}
+
+impl Signals {
+    async fn fired(&mut self) {
+        match &mut self.exit {
+            Some(e) => tokio::select! {
+                _ = self.stop.changed() => {}
+                _ = e.wait_for(|v| v.is_some()) => {}
+            },
+            None => {
+                let _ = self.stop.changed().await;
+            }
+        }
+    }
+}
+
+enum Read {
+    Stopped,
+    Dropped(String),
+}
+
+async fn read_stream(
+    resp: &mut reqwest::Response,
+    framer: &mut SseFramer,
+    out: &Out,
+    mapper: &mut EventMapper,
+    sig: &mut Signals,
+) -> Read {
+    loop {
         let chunk = tokio::select! {
-            _ = stop.changed() => return,
-            c = resp.chunk() => c,
+            _ = sig.fired() => return Read::Stopped,
+            c = tokio::time::timeout(SSE_IDLE_TIMEOUT, resp.chunk()) => c,
         };
         let bytes = match chunk {
-            Ok(Some(b)) => b,
-            Ok(None) => break "opencode event stream closed".to_string(),
-            Err(e) => break format!("opencode event stream failed: {e}"),
+            Err(_) => return Read::Dropped("no data for 10 minutes".into()),
+            Ok(Ok(Some(b))) => b,
+            Ok(Ok(None)) => return Read::Dropped("stream closed by the server".into()),
+            Ok(Err(e)) => return Read::Dropped(format!("stream failed: {e}")),
         };
-        for &b in bytes.iter() {
-            if b != b'\n' {
-                if buf.len() < MAX_LINE_BYTES {
-                    buf.push(b);
-                } else {
-                    discarding = true;
-                }
-                continue;
-            }
-            let mut line = String::from_utf8_lossy(&buf).into_owned();
-            buf.clear();
-            if line.ends_with('\r') {
-                line.pop();
-            }
-            if std::mem::take(&mut discarding) {
-                line.push_str(crate::process::TRUNCATED_MARK);
-                out.emit(
-                    Dir::In,
-                    Channel::Sse,
-                    &line,
-                    vec![crate::process::default_truncated_event()],
-                );
-                continue;
-            }
-            if line.is_empty() {
-                continue;
-            }
-            let events = match line.strip_prefix("data:") {
-                Some(d) => mapper.map_line(d.strip_prefix(' ').unwrap_or(d)),
-                None => vec![],
-            };
-            out.emit(Dir::In, Channel::Sse, &line, events);
+        for frame in framer.feed(&bytes) {
+            dispatch(frame, out, mapper);
         }
-    };
-    for e in mapper.on_stream_end(&reason) {
-        out.event(e);
     }
-    out.event(HarnessEvent::Error {
-        kind: ErrorKind::Other,
-        message: reason,
-    });
+}
+
+/// Reconnects `GET /event` with backoff. `None` if stopped meanwhile.
+async fn reconnect(api: &Api, sig: &mut Signals) -> Option<Result<reqwest::Response, DriverError>> {
+    let mut last = DriverError::Other("no attempt".into());
+    for delay in RECONNECT_BACKOFF {
+        tokio::select! {
+            _ = sig.fired() => return None,
+            _ = tokio::time::sleep(delay) => {}
+        }
+        api.out
+            .emit(Dir::Out, Channel::Http, "GET /event (reconnect)", vec![]);
+        match api.open_events().await {
+            Ok(r) => return Some(Ok(r)),
+            Err(e) => last = e,
+        }
+    }
+    Some(Err(last))
+}
+
+/// Reads `resp` as server-sent events until stopped. A dropped stream is
+/// reopened; if that fails the run ends: open turn failed, `Error`, server
+/// stopped, `Exited`.
+async fn sse_loop(
+    mut resp: reqwest::Response,
+    api: Api,
+    mut mapper: EventMapper,
+    mut sig: Signals,
+    proc: Option<Arc<ProcessHandle>>,
+) {
+    let out = api.out.clone();
+    let mut framer = SseFramer::new(MAX_LINE_BYTES);
+    loop {
+        let reason = match read_stream(&mut resp, &mut framer, &out, &mut mapper, &mut sig).await {
+            Read::Stopped => return,
+            Read::Dropped(r) => r,
+        };
+        for line in framer.finish() {
+            out.emit(Dir::In, Channel::Sse, &line, vec![]);
+        }
+        match reconnect(&api, &mut sig).await {
+            None => return,
+            Some(Ok(r)) => {
+                resp = r;
+                framer = SseFramer::new(MAX_LINE_BYTES);
+                resync(&api, &mut mapper).await;
+            }
+            Some(Err(e)) => {
+                let msg = format!("opencode event stream lost ({reason}): {e}");
+                for ev in mapper.on_stream_end(&msg) {
+                    out.event(ev);
+                }
+                out.event(HarnessEvent::Error {
+                    kind: ErrorKind::Other,
+                    message: msg,
+                });
+                match &proc {
+                    // The forwarder closes the channel on `Exited`.
+                    Some(p) => {
+                        p.shutdown(Duration::ZERO).await;
+                    }
+                    None => out.close_with(HarnessEvent::Exited { code: None }),
+                }
+                return;
+            }
+        }
+    }
+}
+
+/// After a reconnect events may have been missed. If a turn is open but the
+/// server says the session is idle, close the turn.
+async fn resync(api: &Api, mapper: &mut EventMapper) {
+    if !mapper.active() {
+        return;
+    }
+    let Ok(text) = api
+        .call(reqwest::Method::GET, "/session/status", None)
+        .await
+    else {
+        return;
+    };
+    let busy = serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|v| v.get(&mapper.session_id).cloned())
+        .is_some_and(|s| str_at(&s, &["type"]) != Some("idle"));
+    if !busy {
+        for ev in mapper.on_idle_detected() {
+            api.out.event(ev);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -651,9 +911,9 @@ struct Inner {
     api: Api,
     session_id: String,
     defaults: PromptDefaults,
-    stop: watch::Sender<()>,
+    stop: Arc<watch::Sender<()>>,
     sse: Arc<Mutex<Option<JoinHandle<()>>>>,
-    proc: Option<ProcessHandle>,
+    proc: Option<Arc<ProcessHandle>>,
 }
 
 impl Drop for Inner {
@@ -773,6 +1033,8 @@ impl Driver for OpencodeDriver {
             }),
         };
         let (tx, events) = mpsc::unbounded_channel();
+        // One budget for the URL and the health check.
+        let deadline = tokio::time::Instant::now() + READY_TIMEOUT;
 
         // Server: spawned (own transcript via the process pipeline) or given.
         let (proc, forward, out, base, password) = match &self.server {
@@ -782,7 +1044,9 @@ impl Driver for OpencodeDriver {
                     &config_path,
                     &serde_json::to_vec_pretty(&run_config(&spec)).map_err(std::io::Error::from)?,
                 )?;
-                let password = random_password()?;
+                let password = random_password().map_err(|e| {
+                    DriverError::Other(format!("cannot read random bytes from /dev/urandom: {e}"))
+                })?;
                 let (url_tx, url_rx) = oneshot::channel();
                 let mut cmd = Command::new(&spec.launch.program);
                 cmd.args(&spec.launch.argv_prefix)
@@ -802,7 +1066,7 @@ impl Driver for OpencodeDriver {
                 let out = Out::new(tx, sup.transcript.clone());
                 let mut exit = sup.handle.exit.clone();
                 let url = tokio::select! {
-                    u = tokio::time::timeout(READY_TIMEOUT, url_rx) => match u {
+                    u = tokio::time::timeout_at(deadline, url_rx) => match u {
                         Ok(Ok(u)) => Ok(u),
                         Ok(Err(_)) => Err("opencode serve exited before printing its URL".to_string()),
                         Err(_) => Err("opencode serve did not print its URL within 20 s".to_string()),
@@ -812,7 +1076,13 @@ impl Driver for OpencodeDriver {
                     }
                 };
                 match url {
-                    Ok(url) => (Some(sup.handle), Some(sup.events), out, url, password),
+                    Ok(url) => (
+                        Some(Arc::new(sup.handle)),
+                        Some(sup.events),
+                        out,
+                        url,
+                        password,
+                    ),
                     Err(msg) => {
                         sup.handle.shutdown(Duration::ZERO).await;
                         return Err(DriverError::Other(msg));
@@ -846,12 +1116,17 @@ impl Driver for OpencodeDriver {
         };
 
         let sse_slot: Arc<Mutex<Option<JoinHandle<()>>>> = Arc::new(Mutex::new(None));
+        let (stop, stop_rx) = watch::channel(());
+        let stop = Arc::new(stop);
         if let Some(mut sup_events) = forward {
             let out = out.clone();
             let slot = sse_slot.clone();
+            let stop = stop.clone();
             tokio::spawn(async move {
                 while let Some(ev) = sup_events.recv().await {
                     if let HarnessEvent::Exited { .. } = ev {
+                        // Tell the SSE task first so it does not retry against a dead server.
+                        let _ = stop.send(());
                         let sse = slot.lock().ok().and_then(|mut s| s.take());
                         if let Some(h) = sse {
                             let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
@@ -864,9 +1139,8 @@ impl Driver for OpencodeDriver {
             });
         }
 
-        let (stop, stop_rx) = watch::channel(());
         let started = self
-            .start_session(&spec, &api, &out, stop_rx, &sse_slot)
+            .start_session(&spec, &api, &out, (stop_rx, &proc, deadline), &sse_slot)
             .await;
         let session_id = match started {
             Ok(id) => id,
@@ -961,21 +1235,16 @@ impl OpencodeDriver {
         spec: &LaunchSpec,
         api: &Api,
         out: &Arc<Out>,
-        stop_rx: watch::Receiver<()>,
+        (stop_rx, proc, deadline): (
+            watch::Receiver<()>,
+            &Option<Arc<ProcessHandle>>,
+            tokio::time::Instant,
+        ),
         sse_slot: &Arc<Mutex<Option<JoinHandle<()>>>>,
     ) -> Result<String, DriverError> {
-        api.wait_ready().await?;
-        let resp = api
-            .builder(reqwest::Method::GET, "/event")
-            .header("accept", "text/event-stream")
-            .send()
-            .await
-            .map_err(|e| DriverError::Other(format!("opencode GET /event: request failed: {e}")))?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(http_error("GET", "/event", status, &body));
-        }
+        api.wait_ready(deadline, proc.as_ref().map(|p| p.exit.clone()))
+            .await?;
+        let resp = api.open_events().await?;
         out.emit(Dir::Out, Channel::Http, "GET /event", vec![]);
 
         let session_id = match &spec.resume {
@@ -994,7 +1263,11 @@ impl OpencodeDriver {
             }
         };
         let mapper = EventMapper::new(&session_id, spec.output_schema.is_some());
-        let handle = tokio::spawn(sse_loop(resp, out.clone(), mapper, stop_rx));
+        let sig = Signals {
+            stop: stop_rx,
+            exit: proc.as_ref().map(|p| p.exit.clone()),
+        };
+        let handle = tokio::spawn(sse_loop(resp, api.clone(), mapper, sig, proc.clone()));
         if let Ok(mut slot) = sse_slot.lock() {
             *slot = Some(handle);
         }
@@ -1002,5 +1275,176 @@ impl OpencodeDriver {
             native_session_id: session_id.clone(),
         });
         Ok(session_id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SID: &str = "ses_1";
+
+    fn ev(v: Value) -> String {
+        v.to_string()
+    }
+
+    fn text_part(msg: &str, id: &str, text: &str) -> String {
+        ev(
+            json!({"type":"message.part.updated","properties":{"sessionID":SID,"part":{
+            "id":id,"type":"text","messageID":msg,"sessionID":SID,"text":text,
+            "time":{"start":1,"end":2}}}}),
+        )
+    }
+
+    fn role(msg: &str, role: &str) -> String {
+        ev(
+            json!({"type":"message.updated","properties":{"sessionID":SID,
+            "info":{"id":msg,"role":role,"sessionID":SID,"time":{"created":1}}}}),
+        )
+    }
+
+    fn busy() -> String {
+        ev(json!({"type":"session.status","properties":{"sessionID":SID,"status":{"type":"busy"}}}))
+    }
+
+    fn idle() -> String {
+        ev(json!({"type":"session.idle","properties":{"sessionID":SID}}))
+    }
+
+    #[test]
+    fn text_before_role_is_held_until_the_role_is_known() {
+        let mut m = EventMapper::new(SID, false);
+        assert_eq!(m.map_line(&busy()), vec![HarnessEvent::TurnStarted]);
+        assert!(m.map_line(&text_part("msg_a", "p1", "hello")).is_empty());
+        assert_eq!(
+            m.map_line(&role("msg_a", "assistant")),
+            vec![HarnessEvent::AssistantMessage {
+                text: "hello".into()
+            }]
+        );
+        // A user message's finished text part never becomes an assistant message.
+        assert!(m.map_line(&text_part("msg_u", "p2", "prompt")).is_empty());
+        assert!(m.map_line(&role("msg_u", "user")).is_empty());
+        // Re-sending the same part is not a second message.
+        assert!(m.map_line(&text_part("msg_a", "p1", "hello")).is_empty());
+    }
+
+    #[test]
+    fn idle_ends_a_turn_once_whichever_form_comes_first() {
+        let status_idle = ev(
+            json!({"type":"session.status","properties":{"sessionID":SID,"status":{"type":"idle"}}}),
+        );
+        let mut m = EventMapper::new(SID, false);
+        // Idle without a turn is noise.
+        assert!(m.map_line(&idle()).is_empty());
+        assert!(m.map_line(&status_idle).is_empty());
+        m.map_line(&busy());
+        let first = m.map_line(&status_idle);
+        assert!(matches!(
+            first.as_slice(),
+            [HarnessEvent::TurnFinished {
+                is_error: false,
+                ..
+            }]
+        ));
+        assert!(m.map_line(&idle()).is_empty());
+        assert!(m.map_line(&status_idle).is_empty());
+        // And a second turn works again.
+        m.map_line(&busy());
+        assert!(matches!(
+            m.map_line(&idle()).as_slice(),
+            [HarnessEvent::TurnFinished { .. }]
+        ));
+    }
+
+    #[test]
+    fn session_error_without_session_id_belongs_to_the_active_turn() {
+        let err = ev(json!({"type":"session.error","properties":{
+            "error":{"name":"APIError","data":{"message":"boom","statusCode":429}}}}));
+        let mut m = EventMapper::new(SID, false);
+        assert!(m.map_line(&err).is_empty(), "no turn: not ours");
+        m.map_line(&busy());
+        let out = m.map_line(&err);
+        assert!(matches!(
+            out.as_slice(),
+            [HarnessEvent::TurnFinished {
+                is_error: true,
+                error_kind: Some(ErrorKind::RateLimit),
+                ..
+            }]
+        ));
+        // Another session's error is never ours.
+        m.map_line(&busy());
+        let other = ev(
+            json!({"type":"session.error","properties":{"sessionID":"ses_x",
+            "error":{"name":"APIError","data":{"message":"x"}}}}),
+        );
+        assert!(m.map_line(&other).is_empty());
+    }
+
+    #[test]
+    fn framer_handles_arbitrary_chunk_boundaries_and_utf8() {
+        let line = "data: {\"t\":\"h\u{e9}llo \u{1f600}\"}\n\n: ping\n\ndata: {\"n\":2}\r\n\r\n";
+        let whole: Vec<Frame> = SseFramer::new(1024).feed(line.as_bytes());
+        assert_eq!(whole.len(), 3);
+        assert_eq!(
+            whole[0].data.as_deref(),
+            Some("{\"t\":\"h\u{e9}llo \u{1f600}\"}")
+        );
+        assert_eq!(whole[1].data, None);
+        assert_eq!(whole[1].lines, [": ping"]);
+        assert_eq!(whole[2].data.as_deref(), Some("{\"n\":2}"));
+        // Every split point, including inside the two- and four-byte characters.
+        for cut in 0..line.len() {
+            let mut f = SseFramer::new(1024);
+            let mut got = f.feed(&line.as_bytes()[..cut]);
+            got.extend(f.feed(&line.as_bytes()[cut..]));
+            assert_eq!(got, whole, "cut at {cut}");
+        }
+        // One byte at a time.
+        let mut f = SseFramer::new(1024);
+        let got: Vec<Frame> = line.as_bytes().iter().flat_map(|b| f.feed(&[*b])).collect();
+        assert_eq!(got, whole);
+    }
+
+    #[test]
+    fn framer_joins_multiline_data_and_maps_it() {
+        let mut f = SseFramer::new(1024);
+        let frames = f.feed(
+            format!(
+                "data: {{\"type\":\"session.status\",\ndata:  \"properties\":{{\"sessionID\":\"{SID}\",\ndata: \"status\":{{\"type\":\"busy\"}}}}}}\n\n"
+            )
+            .as_bytes(),
+        );
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].lines.len(), 3);
+        let mut m = EventMapper::new(SID, false);
+        assert_eq!(
+            m.map_line(frames[0].data.as_deref().unwrap()),
+            vec![HarnessEvent::TurnStarted]
+        );
+    }
+
+    #[test]
+    fn framer_flags_oversized_events() {
+        let mut f = SseFramer::new(16);
+        // One long line.
+        let frames = f.feed(format!("data: {}\n\n", "x".repeat(100)).as_bytes());
+        assert_eq!(frames.len(), 1);
+        assert!(frames[0].truncated);
+        // Many short lines adding up.
+        let many: String = (0..10).map(|_| "data: abcdef\n").collect::<String>() + "\n";
+        let frames = f.feed(many.as_bytes());
+        assert!(frames[0].truncated);
+        // The next event is fine again.
+        let frames = f.feed(b"data: ok\n\n");
+        assert!(!frames[0].truncated && frames[0].data.as_deref() == Some("ok"));
+        // A turn open when an oversized event arrives is failed.
+        let mut m = EventMapper::new(SID, false);
+        m.map_line(&busy());
+        assert!(matches!(
+            m.on_stream_end("opencode event exceeded 4 MiB").as_slice(),
+            [HarnessEvent::TurnFinished { is_error: true, .. }]
+        ));
     }
 }
