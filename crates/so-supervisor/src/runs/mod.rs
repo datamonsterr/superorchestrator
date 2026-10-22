@@ -4,19 +4,23 @@
 //! `lifecycle` (start, finish, cancel, worktree cleanup), `view` (read models and waiting),
 //! `reconcile` (take over runs after a restart) and `events` (store and fan out events).
 
+mod comm;
 mod events;
+mod fork;
 mod handlers;
 mod instructions;
 mod lifecycle;
 mod pump;
 mod queue;
 mod reconcile;
+mod review;
 mod spawn;
 mod view;
 pub mod worktree;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -26,12 +30,12 @@ use so_core::{Config, Paths};
 use so_harness::{DriverConfig, JoinInfo, RunControl};
 use so_store::{RunRow, Store, StoreError};
 use tokio::sync::{Notify, watch};
-use tokio::task::JoinHandle;
 
 pub use events::{Delivered, Subscription};
-pub use view::{WaitOutcome, display_argv, mask_argv};
+pub use view::{WaitMode, WaitOutcome, display_argv, mask_argv};
 
 use crate::dispatch::internal;
+use crate::notify::{Notifications, Sink, sinks_from_config};
 use crate::server::SupervisorState;
 
 pub(crate) type R<T> = Result<T, RpcError>;
@@ -61,8 +65,6 @@ fn store_rpc(e: StoreError) -> RpcError {
 pub(crate) struct LiveRun {
     pub control: RunControl,
     pub join: JoinInfo,
-    #[allow(dead_code)] // owned so the pump is tied to the run; finishing detaches it
-    pub task: Option<JoinHandle<()>>,
 }
 
 /// Everything the supervisor knows about one unfinished run besides its row. An entry
@@ -73,6 +75,9 @@ pub(crate) struct RunRt {
     pub live: Option<LiveRun>,
     /// A cancel was requested: a launch still in flight must not go live.
     pub cancel_requested: bool,
+    /// Blocking calls in progress (`ask_parent`, `wait_agent` on children). While there is
+    /// one the run is `waiting` and is not stall-checked.
+    pub waits: u32,
 }
 
 struct Inner {
@@ -91,6 +96,22 @@ struct Inner {
     drain: tokio::sync::Mutex<()>,
     drain_wake: Arc<Notify>,
     finished: watch::Sender<u64>,
+    /// Bumped when a message is stored, so blocked `ask_parent` calls look again.
+    msg_tick: watch::Sender<u64>,
+    /// Runs whose process died, to be resumed by the resumer task.
+    resume_tx: tokio::sync::mpsc::UnboundedSender<reconcile::ResumeRequest>,
+    notifications: Notifications,
+    /// Test hooks: hold `go_live`, shorten the launch limit, slow the launch down.
+    go_live_open: watch::Sender<bool>,
+    launch_timeout_ms: AtomicU64,
+    launch_delay_ms: AtomicU64,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // Let the drainer notice the manager is gone and end.
+        self.drain_wake.notify_one();
+    }
 }
 
 /// Cheap to clone; all clones share one state.
@@ -113,6 +134,8 @@ impl RunManager {
             .or_else(|| std::env::current_exe().ok())
             .unwrap_or_else(|| PathBuf::from("superorchestrator"));
         let drain_wake = Arc::new(Notify::new());
+        let (resume_tx, resume_rx) = tokio::sync::mpsc::unbounded_channel();
+        let notifications = Notifications::new(&config.notifications.on);
         let inner = Arc::new(Inner {
             store,
             config,
@@ -127,9 +150,40 @@ impl RunManager {
             drain: tokio::sync::Mutex::new(()),
             drain_wake: drain_wake.clone(),
             finished: watch::channel(0).0,
+            msg_tick: watch::channel(0).0,
+            resume_tx,
+            notifications,
+            go_live_open: watch::channel(true).0,
+            launch_timeout_ms: AtomicU64::new(
+                u64::try_from(LAUNCH_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+            ),
+            launch_delay_ms: AtomicU64::new(0),
         });
         queue::spawn_drainer(&inner, drain_wake);
+        reconcile::spawn_resumer(&inner, resume_rx);
         Self { inner }
+    }
+
+    /// Starts sending notifications to the sinks the config asks for (Discord, desktop).
+    /// Off by default so tests and embedded use never notify.
+    pub fn enable_notifications(&self) {
+        let client = reqwest::Client::new();
+        let sinks = sinks_from_config(&self.inner.config.notifications, &client);
+        self.inner.notifications.set_sinks(sinks);
+    }
+
+    /// Test hook: replace the notification sinks.
+    #[doc(hidden)]
+    pub fn set_notify_sinks(&self, sinks: Vec<Arc<dyn Sink>>) {
+        self.inner.notifications.set_sinks(sinks);
+    }
+
+    /// Sends a notification about `key` (rate limited, filtered by `notifications.on`).
+    pub(crate) async fn notify(&self, event: &str, key: &str, name: &str, reason: &str) {
+        self.inner
+            .notifications
+            .notify(event, key, name, reason)
+            .await;
     }
 
     pub(crate) fn config(&self) -> &Config {
@@ -150,6 +204,39 @@ impl RunManager {
             .values()
             .filter(|r| r.live.is_some())
             .count()
+    }
+
+    /// Test hook: while closed, a launched harness waits before it is registered.
+    #[doc(hidden)]
+    pub fn set_go_live_open(&self, open: bool) {
+        self.inner.go_live_open.send_replace(open);
+    }
+
+    /// Test hook: how long a harness may take to start.
+    #[doc(hidden)]
+    pub fn set_launch_timeout(&self, d: Duration) {
+        let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        self.inner.launch_timeout_ms.store(ms, Ordering::SeqCst);
+    }
+
+    /// Test hook: extra time every launch takes (counts against the launch limit).
+    #[doc(hidden)]
+    pub fn set_launch_delay(&self, d: Duration) {
+        let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        self.inner.launch_delay_ms.store(ms, Ordering::SeqCst);
+    }
+
+    pub(crate) fn launch_timeout(&self) -> Duration {
+        Duration::from_millis(self.inner.launch_timeout_ms.load(Ordering::SeqCst))
+    }
+
+    pub(crate) fn launch_delay(&self) -> Duration {
+        Duration::from_millis(self.inner.launch_delay_ms.load(Ordering::SeqCst))
+    }
+
+    pub(crate) async fn wait_go_live_gate(&self) {
+        let mut rx = self.inner.go_live_open.subscribe();
+        let _ = rx.wait_for(|open| *open).await;
     }
 
     /// True while any run is queued, starting or live.
@@ -212,4 +299,81 @@ pub(crate) fn register(state: &Arc<SupervisorState>) {
     handlers::register(state);
     state.set_probe(Arc::new(state.runs.clone()));
     state.set_reconcile_hook(Arc::new(state.runs.clone()));
+}
+
+#[cfg(test)]
+pub(crate) mod testutil {
+    use chrono::Utc;
+    use so_core::{AccountFile, Harness, Isolation, RunState, SessionKind, new_id};
+    use so_store::{RunRow, SessionRow};
+
+    use super::*;
+
+    /// A manager over an in-memory store with one claude account `claude-t`.
+    pub fn manager() -> (RunManager, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(dir.path().to_path_buf());
+        AccountFile::new("claude-t", Harness::Claude, "~/.claude-t", "claude")
+            .unwrap()
+            .save(&paths)
+            .unwrap();
+        let m = RunManager::new(
+            Store::open_in_memory().unwrap(),
+            Config::default(),
+            paths,
+            None,
+            dir.path().join("s.sock"),
+            None,
+        );
+        (m, dir)
+    }
+
+    pub fn insert_run(m: &RunManager, state: RunState) -> RunRow {
+        let session = SessionRow {
+            id: new_id(),
+            kind: SessionKind::Orchestrator,
+            client: "t".into(),
+            cwd: None,
+            account: None,
+            pid: None,
+            started_at: Utc::now(),
+            ended_at: None,
+            status: "active".into(),
+        };
+        m.store().insert_session(&session).unwrap();
+        let row = RunRow {
+            id: new_id(),
+            session_id: session.id,
+            parent_run_id: None,
+            depth: 1,
+            name: None,
+            agent: None,
+            choice_id: None,
+            harness: Harness::Claude,
+            account: Some("claude-t".into()),
+            model: None,
+            effort: None,
+            cwd: None,
+            worktree_path: None,
+            branch: None,
+            native_session_id: None,
+            state,
+            review: false,
+            output_schema: None,
+            result_json: None,
+            error_kind: None,
+            prompt: None,
+            created_at: Utc::now(),
+            started_at: None,
+            finished_at: None,
+            isolation: Isolation::None,
+            max_turns: None,
+            worktree_base: None,
+            worktree_repo: None,
+            timeout_ms: None,
+        };
+        m.store().insert_run(&row).unwrap();
+        lock(&m.inner.runs).insert(row.id.clone(), RunRt::default());
+        row
+    }
 }

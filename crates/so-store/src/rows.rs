@@ -159,6 +159,7 @@ pub struct WorkflowCacheRow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// `state` is `running`, `succeeded`, `failed` or `cancelled`.
 pub struct WorkflowRunRow {
     pub id: String,
     pub name: String,
@@ -199,4 +200,18 @@ pub struct DailyLedger {
     pub input_tokens: i64,
     pub output_tokens: i64,
     pub cost: f64,
+}
+
+/// One `agent()` step of a workflow run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkflowStepRow {
+    pub workflow_run_id: String,
+    pub step_index: i64,
+    pub phase: Option<String>,
+    pub prompt_hash: String,
+    pub run_id: Option<String>,
+    /// `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`.
+    pub state: String,
+    pub started_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
 }

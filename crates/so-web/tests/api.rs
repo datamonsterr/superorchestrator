@@ -150,6 +150,7 @@ async fn fx_with(token: Option<&str>) -> Fx {
         usage: Default::default(),
         alternatives: vec![],
         config_fingerprint: "f".into(),
+        ranked_accounts: Default::default(),
     };
     store
         .append_event(&event(

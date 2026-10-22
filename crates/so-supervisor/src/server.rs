@@ -129,6 +129,9 @@ pub struct SupervisorState {
     pub host: Option<HostEnv>,
     /// Runs: spawn, queue, wait, cancel.
     pub runs: RunManager,
+    /// Shared HTTP client for outbound calls (the route decider). Never follows redirects, so
+    /// the bearer key cannot be forwarded to another host.
+    pub http: reqwest::Client,
     max_inflight: usize,
     pub(crate) started: Instant,
     clients: AtomicUsize,
@@ -272,6 +275,10 @@ impl Supervisor {
             router: Router::default(),
             host,
             runs,
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_default(),
             max_inflight,
             started: Instant::now(),
             clients: AtomicUsize::new(0),

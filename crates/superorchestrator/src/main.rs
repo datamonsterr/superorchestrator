@@ -67,6 +67,7 @@ fn dispatch(cli: Cli, path: &str) -> Result<ExitCode> {
         Command::Init => ok(cmd::init::run(&ctx)),
         Command::Config(c) => cmd::config::run(&ctx, c),
         Command::Account(a) => cmd::account::run(&ctx, a),
+        Command::Agent(a) => ok(cmd::agent::run(&ctx, a)),
         // `exec::run` only returns on error: success replaces the process, and
         // `Infallible` has no values, so the empty match proves it.
         Command::Exec(e) => match cmd::exec::run(&ctx, &e.account, &e.args)? {},
@@ -80,6 +81,8 @@ fn dispatch(cli: Cli, path: &str) -> Result<ExitCode> {
         Command::Runs(c) => cmd::runs::run(&ctx, c),
         Command::Join(a) => cmd::runs::join(&ctx, &a.run, a.exec),
         Command::Worktrees(c) => cmd::worktrees::run(&ctx, c),
+        Command::Route(a) => cmd::route::run(&ctx, a),
+        Command::Models(c) => cmd::models::run(&ctx, c).map(|()| ExitCode::SUCCESS),
         // Commands without an arm yet; later tasks add only their own arm above.
         _ => Err(CliError::not_implemented(path).into()),
     }

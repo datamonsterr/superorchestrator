@@ -1248,6 +1248,21 @@ impl OpencodeDriver {
         out.emit(Dir::Out, Channel::Http, "GET /event", vec![]);
 
         let session_id = match &spec.resume {
+            Some(id) if spec.fork => {
+                let text = api
+                    .call(
+                        reqwest::Method::POST,
+                        &format!("/session/{id}/fork"),
+                        Some(&json!({})),
+                    )
+                    .await?;
+                serde_json::from_str::<Value>(&text)
+                    .ok()
+                    .and_then(|v| v.get("id").and_then(Value::as_str).map(String::from))
+                    .ok_or_else(|| {
+                        DriverError::Other("opencode session fork: response has no id".into())
+                    })?
+            }
             Some(id) => id.clone(),
             None => {
                 let body = json!({"title": spec.run_id});

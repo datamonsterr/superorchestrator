@@ -812,8 +812,13 @@ async fn queued_run_of_a_disabled_account_fails_and_the_queue_keeps_working() {
     h.shutdown().await;
 }
 
+async fn pid_alive(pidfile: &Path) -> Option<bool> {
+    let pid = std::fs::read_to_string(pidfile).ok()?;
+    Some(Path::new(&format!("/proc/{}", pid.trim())).exists())
+}
+
 #[tokio::test]
-async fn cancel_right_after_spawn_leaves_no_process() {
+async fn cancel_between_launch_and_go_live_leaves_no_process() {
     let env = Env::new();
     let pidfile = env.dir.path().join("pid");
     // Records its pid, then waits for input that never comes (stdin EOF ends it).
@@ -827,10 +832,25 @@ async fn cancel_right_after_spawn_leaves_no_process() {
         ]),
     );
     let h = env.start().await;
+    let runs = h.state().runs.clone();
     let c = env.client(&h).await;
+    // Hold the run between "harness launched" and "harness registered".
+    runs.set_go_live_open(false);
     let mut p = env.spawn_params("claude-acc1");
     p.isolation = Some(so_core::Isolation::None);
     let r = spawn(&c, p).await;
+    for _ in 0..200 {
+        if pidfile.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        pid_alive(&pidfile).await,
+        Some(true),
+        "harness never started"
+    );
+
     let v: RunView = c
         .call(
             METHOD_CANCEL_AGENT,
@@ -841,15 +861,53 @@ async fn cancel_right_after_spawn_leaves_no_process() {
         .await
         .unwrap();
     assert_eq!(v.state, RunState::Cancelled);
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    if let Ok(pid) = std::fs::read_to_string(&pidfile) {
-        let proc = format!("/proc/{}", pid.trim());
-        assert!(
-            !Path::new(&proc).exists(),
-            "harness {pid} survived the cancel"
-        );
+    // Nothing knows the process yet, so it is still running.
+    assert_eq!(pid_alive(&pidfile).await, Some(true));
+
+    runs.set_go_live_open(true);
+    for _ in 0..200 {
+        if pid_alive(&pidfile).await == Some(false) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
     }
-    assert_eq!(h.state().runs.live_count(), 0);
+    assert_eq!(
+        pid_alive(&pidfile).await,
+        Some(false),
+        "harness survived the cancel"
+    );
+    assert_eq!(runs.live_count(), 0);
     assert_eq!(view(&c, &r.run_id).await.state, RunState::Cancelled);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn slow_launch_fails_the_run() {
+    let env = Env::new();
+    env.account("claude-acc1", 2, &ok_script(&[]));
+    let h = env.start().await;
+    h.state()
+        .runs
+        .set_launch_timeout(Duration::from_millis(200));
+    h.state().runs.set_launch_delay(Duration::from_secs(3));
+    let c = env.client(&h).await;
+    let mut p = env.spawn_params("claude-acc1");
+    p.wait = true;
+    p.isolation = Some(so_core::Isolation::None);
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Failed);
+    let v = view(&c, &r.run_id).await;
+    let finished = v
+        .recent_events
+        .iter()
+        .find(|e| e.event_type == EventType::RunFinished)
+        .unwrap();
+    assert!(
+        finished.data["reason"]
+            .as_str()
+            .unwrap()
+            .contains("did not start"),
+        "{finished:?}"
+    );
     h.shutdown().await;
 }

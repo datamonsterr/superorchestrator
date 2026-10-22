@@ -192,3 +192,40 @@ impl RunManager {
         self.inner.bus.forget_session(id);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::testutil::manager;
+    use super::*;
+
+    fn sub_count(m: &RunManager) -> usize {
+        lock(&m.inner.bus.state).subs.values().map(Vec::len).sum()
+    }
+
+    #[tokio::test]
+    async fn dropping_a_subscription_removes_the_subscriber() {
+        let (m, _dir) = manager();
+        let sessions = ["s1".to_string(), "s2".to_string()];
+        let a = m.subscribe(&sessions, None);
+        let b = m.subscribe(&sessions[..1], Some(&["r".to_string()]));
+        assert_eq!(sub_count(&m), 3);
+        drop(a);
+        assert_eq!(sub_count(&m), 1);
+        drop(b);
+        assert_eq!(sub_count(&m), 0);
+    }
+
+    #[tokio::test]
+    async fn run_filter_is_applied_when_publishing() {
+        let (m, _dir) = manager();
+        let mut sub = m.subscribe(&["s".to_string()], Some(&["r1".to_string()]));
+        for run in ["r2", "r1"] {
+            m.emit("s", Some(run), EventType::Progress, serde_json::json!({}))
+                .await;
+        }
+        let got = sub.recv().await.unwrap();
+        assert_eq!(got.event.run_id.as_deref(), Some("r1"));
+        assert_eq!(got.seq, 2);
+        assert!(sub.try_recv().is_err());
+    }
+}

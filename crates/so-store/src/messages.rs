@@ -57,6 +57,17 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Messages sent to or from `run_id`, oldest first.
+    pub fn list_messages_by_run(&self, run_id: &str, limit: usize) -> Result<Vec<MessageRow>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
+            "SELECT {COLS} FROM messages WHERE to_run = ?1 OR from_run = ?1 \
+             ORDER BY created_at, id LIMIT ?2"
+        ))?;
+        let rows = st.query_map(params![run_id, limit as i64], map)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Marks messages read now; returns how many were newly marked.
     pub fn mark_messages_read(&self, ids: &[String], now: DateTime<Utc>) -> Result<usize> {
         let now = ts_to_sql(&now);

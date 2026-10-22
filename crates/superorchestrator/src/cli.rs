@@ -170,16 +170,33 @@ pub struct AccountFlag {
 
 #[derive(Subcommand, Debug)]
 pub enum AgentCmd {
-    Create,
+    /// Scaffold a new agent in the config agents dir
+    Create(AgentCreate),
+    /// List agents from all search locations
     List,
+    /// Show an agent's fields and per-harness gaps
     Show { name: String },
+    /// Open an agent file in $EDITOR
     Edit { name: String },
+    /// Delete an agent (not for `.claude/agents` imports)
     Remove { name: String },
+}
+
+#[derive(Args, Debug)]
+pub struct AgentCreate {
+    pub name: String,
+    /// auto, codex, agy, opencode or claude
+    #[arg(long)]
+    pub harness: Option<String>,
+    #[arg(long)]
+    pub description: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
 pub enum ModelsCmd {
+    /// Collect models from the harness CLIs and models.dev into models.toml
     Refresh,
+    /// List the catalog
     List,
 }
 

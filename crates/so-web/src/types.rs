@@ -7,7 +7,9 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use so_core::proto::{AccountView, RouteResult, RunView, SignInState, StatusResult, UsageTotals};
+use so_core::proto::{
+    AccountView, MessageView, RouteResult, RunView, SignInState, StatusResult, UsageTotals,
+};
 use so_core::{Choice, Config, ErrorKind, Event, Harness, RunState};
 
 /// One page of a list. `next_cursor` is opaque; pass it back as `cursor` (or `after`).
@@ -54,6 +56,9 @@ pub struct RunViewPublic {
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<DateTime<Utc>>,
+    /// Messages to and from the run, oldest first; bodies are redacted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<MessageView>,
 }
 
 impl From<RunView> for RunViewPublic {
@@ -82,6 +87,7 @@ impl From<RunView> for RunViewPublic {
             cwd,
             created_at,
             finished_at,
+            messages,
         } = v;
         Self {
             run_id,
@@ -102,6 +108,7 @@ impl From<RunView> for RunViewPublic {
             cwd,
             created_at,
             finished_at,
+            messages,
         }
     }
 }

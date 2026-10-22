@@ -22,6 +22,9 @@ pub fn redact_event(e: &mut Event) {
 
 pub fn redact_run(v: &mut RunViewPublic) {
     v.recent_events.iter_mut().for_each(redact_event);
+    for m in &mut v.messages {
+        m.body = so_core::redact::redact(&m.body);
+    }
     if let Some(r) = v.result.as_mut() {
         redact_json(r);
     }

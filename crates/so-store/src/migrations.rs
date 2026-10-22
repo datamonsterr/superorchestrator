@@ -80,13 +80,29 @@ CREATE TABLE workflow_runs (
   args_json TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT
 );
 
+CREATE TABLE workflow_steps (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  workflow_run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  step_index INTEGER NOT NULL, phase TEXT, prompt_hash TEXT NOT NULL, run_id TEXT,
+  state TEXT NOT NULL, started_at TEXT NOT NULL, finished_at TEXT,
+  UNIQUE (workflow_run_id, step_index)
+);
+
 INSERT INTO schema_versions (table_name, version) VALUES
   ('sessions',1),('runs',1),('attempts',1),('events',1),('messages',1),('headroom',1),
-  ('ledger',1),('flags',1),('workflow_cache',1),('workflow_runs',1);
+  ('ledger',1),('flags',1),('workflow_cache',1),('workflow_runs',1),('workflow_steps',1);
+";
+
+const V2: &str = "
+-- Per-run extras. No foreign key: the row is written before the run is inserted.
+CREATE TABLE run_meta (
+  run_id TEXT PRIMARY KEY, checks_json TEXT NOT NULL DEFAULT '[]', fork_from TEXT
+);
+UPDATE schema_versions SET version = 2 WHERE table_name = 'runs';
 ";
 
 /// Ordered migrations; entry `i` brings the database to version `i + 1`.
-const MIGRATIONS: &[&str] = &[V1];
+const MIGRATIONS: &[&str] = &[V1, V2];
 
 /// Latest schema version known to this build.
 pub fn latest_version() -> i64 {

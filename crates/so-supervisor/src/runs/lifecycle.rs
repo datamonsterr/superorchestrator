@@ -5,6 +5,7 @@
 
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::{Value, json};
@@ -15,7 +16,15 @@ use so_store::{FinishPatch, RunPatch, RunRow, StoreError};
 use super::instructions::{MAX_DEPTH, child_instructions};
 use super::pump::PumpCtx;
 use super::worktree;
-use super::{LAUNCH_TIMEOUT, LiveRun, R, RunManager, SHUTDOWN_DEADLINE, lock};
+use super::{LiveRun, R, RunManager, SHUTDOWN_DEADLINE, lock};
+
+enum Step {
+    Won(Box<RunRow>),
+    /// Already terminal (or gone): another caller ended it.
+    Lost,
+    /// A store error; try again.
+    Retry(String),
+}
 
 /// How a run ends.
 pub(crate) struct Outcome {
@@ -119,6 +128,7 @@ impl RunManager {
         cwd: PathBuf,
         prompt: String,
         resume: Option<String>,
+        fork: bool,
     ) -> Result<LaunchSpec, String> {
         let launch = self.launch_for(account).map_err(|e| e.message)?;
         let run_dir = self.inner.paths.run_dir(&row.id);
@@ -150,6 +160,7 @@ impl RunManager {
             output_schema,
             max_turns: row.max_turns,
             resume,
+            fork,
         })
     }
 
@@ -161,14 +172,18 @@ impl RunManager {
     ) -> Result<RunHandle, String> {
         let driver = AnyDriver::for_harness(row.harness, self.inner.driver_cfg)
             .map_err(|e| e.to_string())?;
-        match tokio::time::timeout(LAUNCH_TIMEOUT, driver.launch(spec)).await {
+        let limit = self.launch_timeout();
+        let delay = self.launch_delay();
+        let launch = async {
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
+            driver.launch(spec).await
+        };
+        match tokio::time::timeout(limit, launch).await {
             Ok(Ok(h)) => Ok(h),
             Ok(Err(e)) => Err(format!("could not launch {}: {e}", row.harness)),
-            Err(_) => Err(format!(
-                "{} did not start within {} s",
-                row.harness,
-                LAUNCH_TIMEOUT.as_secs()
-            )),
+            Err(_) => Err(format!("{} did not start within {:?}", row.harness, limit)),
         }
     }
 
@@ -198,18 +213,44 @@ impl RunManager {
         if row.isolation == Isolation::Worktree {
             cwd = self.make_worktree(row, &cwd).await?;
         }
+        let fork_from = {
+            let id = row.id.clone();
+            self.db(move |s| s.get_run_fork(&id))
+                .await
+                .map_err(|e| e.message)?
+        };
+        let mut prompt = row.prompt.clone().unwrap_or_default();
+        prompt.push_str(&self.start_messages(row).await);
+        let fork = fork_from.is_some();
         let spec = self
-            .build_spec(
-                row,
-                &account,
-                cwd,
-                row.prompt.clone().unwrap_or_default(),
-                None,
-            )
+            .build_spec(row, &account, cwd, prompt, fork_from, fork)
             .await?;
         let handle = self.launch_harness(row, spec).await?;
         self.go_live(row, &account, handle, false).await;
         Ok(())
+    }
+
+    /// Messages sent to the run while it was queued, ready to append to its prompt. They
+    /// are marked read.
+    async fn start_messages(&self, row: &RunRow) -> String {
+        let (sid, id) = (row.session_id.clone(), row.id.clone());
+        let msgs = self
+            .db(move |s| {
+                let msgs = s.unread_messages(&sid, Some(&id), 100)?;
+                let ids: Vec<String> = msgs.iter().map(|m| m.id.clone()).collect();
+                s.mark_messages_read(&ids, Utc::now())?;
+                Ok(msgs)
+            })
+            .await
+            .unwrap_or_default();
+        if msgs.is_empty() {
+            return String::new();
+        }
+        let mut s = String::from("\n\nMessages sent to you before you started:\n");
+        for m in msgs {
+            s.push_str(&format!("- {}\n", m.body));
+        }
+        s
     }
 
     /// Creates the run's worktree and returns the directory the harness starts in.
@@ -293,6 +334,7 @@ impl RunManager {
             join,
         } = handle;
         let id = row.id.clone();
+        self.wait_go_live_gate().await;
         let registered = {
             let mut runs = lock(&self.inner.runs);
             match runs.get_mut(&id) {
@@ -300,7 +342,6 @@ impl RunManager {
                     rt.live = Some(LiveRun {
                         control: control.clone(),
                         join,
-                        task: None,
                     });
                     true
                 }
@@ -314,13 +355,25 @@ impl RunManager {
         if !resumed {
             let moved = {
                 let id = id.clone();
-                self.db(move |s| s.update_run_state(&id, RunState::Starting, RunState::Running))
+                self.db_raw(move |s| s.update_run_state(&id, RunState::Starting, RunState::Running))
                     .await
             };
-            if moved.is_err() {
+            match moved {
+                Ok(()) => {}
                 // Finished (cancelled) while launching.
-                self.abandon_launch(&id, &control).await;
-                return;
+                Err(StoreError::StateConflict { .. } | StoreError::InvalidTransition { .. }) => {
+                    self.abandon_launch(&id, &control).await;
+                    return;
+                }
+                Err(e) => {
+                    let reason = format!("could not record that the run started: {e}");
+                    self.finish(
+                        &id,
+                        Outcome::failed(ErrorKind::Other, &reason, Some(control)),
+                    )
+                    .await;
+                    return;
+                }
             }
         }
         if let Some(n) = native_session_id
@@ -385,14 +438,9 @@ impl RunManager {
             account: account.clone(),
             pool: pool.unwrap_or_else(|| "default".into()),
             validator,
+            review: row.review,
         };
-        let task = tokio::spawn(self.clone().pump(pc, events, control));
-        if let Some(live) = lock(&self.inner.runs)
-            .get_mut(&id)
-            .and_then(|rt| rt.live.as_mut())
-        {
-            live.task = Some(task);
-        }
+        tokio::spawn(self.clone().pump(pc, events, control));
     }
 
     /// A launch whose run was finished meanwhile: stop the process, drop the entry and
@@ -423,6 +471,7 @@ impl RunManager {
         let Ok(account) = self.load_account(&name).await else {
             return;
         };
+        let account_label = account.name.clone();
         let pool = account
             .pools
             .first()
@@ -437,17 +486,65 @@ impl RunManager {
                     .map_err(|e| StoreError::Constraint(e.to_string()))
             })
             .await;
-        if let Err(e) = r {
-            tracing::warn!(%run_id, error = %e.message, "could not flag the account");
+        match r {
+            Ok(()) => {
+                let account_name = account_label;
+                self.notify(
+                    "account_exhausted",
+                    &account_name,
+                    &account_name,
+                    "the account hit a limit and is in cooldown",
+                )
+                .await;
+            }
+            Err(e) => tracing::warn!(%run_id, error = %e.message, "could not flag the account"),
         }
     }
 
     /// Ends a run. Returns `true` when this call made the transition; a run that is
     /// already terminal is left alone.
+    ///
+    /// Store errors are retried with backoff and then the run is force-failed. However it
+    /// goes, the harness is shut down, a worktree nobody can use is cleaned up and the
+    /// registry entry is dropped once the row is terminal (or gone).
     pub(crate) async fn finish(&self, run_id: &str, outcome: Outcome) -> bool {
         let cancelled = self.is_cancelling(run_id);
-        let won = self.finish_inner(run_id, outcome, cancelled).await;
-        if won {
+        let mut o = outcome;
+        let mut step = Step::Retry(String::new());
+        for attempt in 0..5u32 {
+            step = self.transition(run_id, &o).await;
+            if !matches!(step, Step::Retry(_)) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50 << attempt)).await;
+        }
+        if let Step::Retry(why) = &step {
+            tracing::error!(%run_id, %why, "could not record the outcome; failing the run");
+            let reason = format!("could not record the outcome: {why}");
+            o = Outcome::failed(ErrorKind::Other, &reason, o.control.take());
+            o.flag_account = false;
+            step = self.transition(run_id, &o).await;
+        }
+        let won = match step {
+            Step::Won(row) => {
+                self.wrap_up(&row, o, cancelled).await;
+                true
+            }
+            Step::Lost | Step::Retry(_) => {
+                if let Some(control) = &o.control {
+                    let _ = control.shutdown(SHUTDOWN_DEADLINE).await;
+                }
+                // The run is over (or unreadable); a worktree it left behind is still ours.
+                self.cleanup_worktree(run_id).await;
+                false
+            }
+        };
+        let id = run_id.to_string();
+        let settled = match self.db(move |s| s.get_run(&id)).await {
+            Ok(row) => row.is_none_or(|r| r.state.is_terminal()),
+            Err(_) => false,
+        };
+        if settled {
             lock(&self.inner.runs).remove(run_id);
         }
         self.inner.finished.send_modify(|n| *n += 1);
@@ -457,27 +554,22 @@ impl RunManager {
         won
     }
 
-    async fn finish_inner(&self, run_id: &str, o: Outcome, cancelled: bool) -> bool {
-        let Outcome {
-            to,
-            error_kind,
-            result_json,
-            reason,
-            flag_account,
-            control,
-        } = o;
-        let mut transition = None;
+    /// One try at moving the run to its final state.
+    async fn transition(&self, run_id: &str, o: &Outcome) -> Step {
+        let to = o.to;
         for _ in 0..8 {
             let id = run_id.to_string();
-            let Ok(Some(row)) = self.db(move |s| s.get_run(&id)).await else {
-                return false;
+            let row = match self.db_raw(move |s| s.get_run(&id)).await {
+                Ok(Some(row)) => row,
+                Ok(None) => return Step::Lost,
+                Err(e) => return Step::Retry(e.to_string()),
             };
             if row.state.is_terminal() {
-                return false;
+                return Step::Lost;
             }
             let patch = FinishPatch {
-                result_json: result_json.clone(),
-                error_kind,
+                result_json: o.result_json.clone(),
+                error_kind: o.error_kind,
                 finished_at: Some(Utc::now()),
             };
             let (id, from) = (run_id.to_string(), row.state);
@@ -497,25 +589,25 @@ impl RunManager {
                 })
                 .await;
             match r {
-                Ok(()) => {
-                    transition = Some(row);
-                    break;
-                }
+                Ok(()) => return Step::Won(Box::new(row)),
                 // Someone else moved the run: look again.
                 Err(StoreError::StateConflict { .. }) => {}
-                Err(e) => {
-                    tracing::warn!(%run_id, error = %e, "could not finish run");
-                    return false;
-                }
+                Err(e) => return Step::Retry(e.to_string()),
             }
         }
-        let Some(row) = transition else { return false };
+        Step::Retry("the run kept changing state".to_string())
+    }
+
+    /// Everything that follows a won transition.
+    async fn wrap_up(&self, row: &RunRow, o: Outcome, cancelled: bool) {
+        let run_id = row.id.as_str();
+        let to = o.to;
         let sid = row.session_id.clone();
         self.emit(
             &sid,
             Some(run_id),
             EventType::StateChanged,
-            json!({"from": row.state, "to": to, "reason": reason}),
+            json!({"from": row.state, "to": to, "reason": o.reason}),
         )
         .await;
         self.emit(
@@ -524,19 +616,19 @@ impl RunManager {
             EventType::RunFinished,
             json!({
                 "status": to,
-                "error_kind": error_kind,
-                "reason": reason,
-                "result_ref": result_json.as_ref().map(|_| run_id),
+                "error_kind": o.error_kind,
+                "reason": o.reason,
+                "result_ref": o.result_json.as_ref().map(|_| run_id),
             }),
         )
         .await;
 
         // The state is committed; now stop the harness, then tidy up after it.
-        if let Some(control) = control {
+        if let Some(control) = &o.control {
             let _ = control.shutdown(SHUTDOWN_DEADLINE).await;
         }
-        if flag_account && !cancelled {
-            self.flag_account(run_id, reason.as_deref().unwrap_or(""))
+        if o.flag_account && !cancelled {
+            self.flag_account(run_id, o.reason.as_deref().unwrap_or(""))
                 .await;
         }
         let id = run_id.to_string();
@@ -559,7 +651,6 @@ impl RunManager {
         }
         self.cleanup_worktree(run_id).await;
         self.maybe_end_session(&sid).await;
-        true
     }
 
     async fn maybe_end_session(&self, session_id: &str) {
@@ -580,7 +671,16 @@ impl RunManager {
             })
             .await;
         match r {
-            Ok(true) => self.forget_session_seq(session_id),
+            Ok(true) => {
+                self.forget_session_seq(session_id);
+                self.notify(
+                    "session_finished",
+                    session_id,
+                    "session",
+                    "all of its runs have finished",
+                )
+                .await;
+            }
             Ok(false) => {}
             Err(e) => tracing::warn!(%session_id, error = %e.message, "could not end session"),
         }
@@ -706,5 +806,34 @@ mod tests {
         let e = excerpt(&long, 280);
         assert_eq!(e.chars().count(), 280);
         assert!(e.ends_with('…'));
+    }
+
+    #[tokio::test]
+    async fn account_is_flagged_only_when_the_finish_wins() {
+        use super::super::testutil::{insert_run, manager};
+        let (m, _dir) = manager();
+        let quota = || Outcome::failed(ErrorKind::Quota, "usage limit reached", None);
+
+        // Already cancelled: the late quota error loses and flags nothing.
+        let cancelled = insert_run(&m, RunState::Cancelled);
+        assert!(!m.finish(&cancelled.id, quota()).await);
+        assert!(m.store().get_flag("claude-t", "default").unwrap().is_none());
+
+        // A running run is failed by it and the account is flagged.
+        let running = insert_run(&m, RunState::Running);
+        assert!(m.finish(&running.id, quota()).await);
+        assert!(m.store().get_flag("claude-t", "default").unwrap().is_some());
+        assert_eq!(m.live_count(), 0);
+        assert!(!m.busy());
+    }
+
+    #[tokio::test]
+    async fn finish_removes_the_registry_entry_of_an_already_finished_run() {
+        use super::super::testutil::{insert_run, manager};
+        let (m, _dir) = manager();
+        let done = insert_run(&m, RunState::Succeeded);
+        assert!(m.busy());
+        assert!(!m.finish(&done.id, Outcome::cancelled()).await);
+        assert!(!m.busy());
     }
 }

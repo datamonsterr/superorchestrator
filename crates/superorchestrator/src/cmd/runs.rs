@@ -47,7 +47,7 @@ pub(crate) async fn connect(ctx: &Ctx) -> Result<SupervisorClient> {
     Ok(client)
 }
 
-fn rpc(e: ClientError) -> anyhow::Error {
+pub(crate) fn rpc(e: ClientError) -> anyhow::Error {
     match e {
         ClientError::Rpc(r) if r.code == NOT_FOUND => CliError::not_found(r.message).into(),
         ClientError::Rpc(r) => anyhow::anyhow!("{}", r.message),
@@ -156,6 +156,24 @@ fn event_line(e: &Event) -> String {
     .to_string()
 }
 
+/// "<time> <kind> from <who> to <who>: <body>" with the first line of the body.
+fn message_line(m: &so_core::proto::MessageView, run: &str) -> String {
+    let who = |r: &Option<String>| match r.as_deref() {
+        None => "orchestrator".to_string(),
+        Some(id) if id == run => "this run".to_string(),
+        Some(id) => id.chars().take(8).collect(),
+    };
+    let body = m.body.lines().next().unwrap_or("");
+    format!(
+        "{} {} {} -> {}: {}",
+        m.created_at.format("%H:%M:%S"),
+        m.kind,
+        who(&m.from_run),
+        who(&m.to_run),
+        body
+    )
+}
+
 async fn show(ctx: &Ctx, run: &str) -> Result<()> {
     let client = connect(ctx).await?;
     let v = get(&client, run).await?;
@@ -188,6 +206,12 @@ async fn show(ctx: &Ctx, run: &str) -> Result<()> {
         }
         if let Some(r) = &v.result {
             writeln!(w, "result:   {r}")?;
+        }
+        if !v.messages.is_empty() {
+            writeln!(w, "messages:")?;
+            for m in &v.messages {
+                writeln!(w, "  {}", message_line(m, &v.run_id))?;
+            }
         }
         writeln!(w, "events:")?;
         for e in &v.recent_events {
@@ -225,12 +249,20 @@ async fn watch(ctx: &Ctx, run: &str) -> Result<ExitCode> {
                 r = &mut call => break r,
             }
         };
-        result.map_err(rpc)?;
+        let result = result.map_err(rpc)?;
         // Notifications are queued ahead of the reply.
         while let Some(n) = notes.as_mut().and_then(|r| r.try_recv().ok()) {
             print(n);
         }
         state = get(&client, run).await?.state;
+        // A run at the review gate waits for a decision, not for more events.
+        if state == so_core::RunState::PendingReview {
+            break;
+        }
+        // An unanswered question ends every wait at once: do not spin on it.
+        if !result.updates.is_empty() && !state.is_terminal() {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        }
     }
     println!("{state}");
     Ok(if state == RunState::Succeeded {
@@ -285,4 +317,31 @@ pub fn join(ctx: &Ctx, run: &str, exec: bool) -> Result<ExitCode> {
         Ok(())
     })?;
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod message_tests {
+    use super::*;
+    use so_core::MessageKind;
+    use so_core::proto::MessageView;
+
+    #[test]
+    fn message_lines_name_the_ends_and_keep_one_line() {
+        let m = MessageView {
+            id: "m".into(),
+            from_run: Some("child-run-1".into()),
+            to_run: None,
+            kind: MessageKind::Question,
+            body: "which db?\nOptions: a | b".into(),
+            created_at: "2026-01-01T10:20:30Z".parse().unwrap(),
+        };
+        assert_eq!(
+            message_line(&m, "child-run-1"),
+            "10:20:30 question this run -> orchestrator: which db?"
+        );
+        assert_eq!(
+            message_line(&m, "other-run"),
+            "10:20:30 question child-ru -> orchestrator: which db?"
+        );
+    }
 }

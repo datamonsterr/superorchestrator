@@ -1,0 +1,434 @@
+# Default model catalog (SPEC 8.1). Discovery and validation only; it never edits choices.
+
+[[agy.models]]
+id = "gemini-3.8-flash-high"
+tier = "mid"
+cost = "included"
+efforts = ["high"]
+pool = "gemini"
+
+[[agy.models]]
+id = "gemini-3.8-flash-medium"
+tier = "fast"
+cost = "included"
+efforts = ["medium"]
+pool = "gemini"
+
+[[agy.models]]
+id = "gemini-3.8-flash-low"
+tier = "fast"
+cost = "included"
+efforts = ["low"]
+pool = "gemini"
+
+[[agy.models]]
+id = "claude-sonnet-4-6"
+tier = "high"
+cost = "included"
+efforts = ["thinking"]
+pool = "claude"
+
+[[agy.models]]
+id = "claude-opus-4-6-thinking"
+tier = "high"
+cost = "included"
+efforts = ["thinking"]
+pool = "claude"
+
+[[agy.models]]
+id = "gpt-oss-120b-medium"
+tier = "mid"
+cost = "included"
+efforts = ["medium"]
+pool = "claude"
+
+[[codex.models]]
+id = "gpt-6.1-sol"
+tier = "high"
+cost = "included"
+efforts = ["low", "medium", "high", "xhigh"]
+
+[[codex.models]]
+id = "gpt-5.3-codex"
+tier = "mid"
+cost = "included"
+efforts = ["low", "medium", "high"]
+
+[[codex.models]]
+id = "gpt-5.3-codex-spark"
+tier = "fast"
+cost = "included"
+efforts = ["low", "medium"]
+
+[[claude.models]]
+id = "claude-opus-5-5"
+tier = "high"
+cost = "included"
+efforts = ["low", "medium", "high"]
+
+[[claude.models]]
+id = "claude-sonnet-5-5"
+tier = "mid"
+cost = "included"
+efforts = ["low", "medium", "high"]
+
+[[claude.models]]
+id = "claude-haiku-5-5"
+tier = "fast"
+cost = "included"
+efforts = ["low", "medium", "high"]
+
+[[opencode.models]]
+id = "opencode/beam-free"
+tier = "mid"
+cost = "free"
+
+[[opencode.models]]
+id = "opencode/big-pickle"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/claude-fable-5-1"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/claude-haiku-5-5"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/claude-opus-5-5"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/claude-sonnet-5-5"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/deepseek-v4-pro"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/deepseek-v4.1-flash"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/deepseek-v4.1-flash-free"
+tier = "fast"
+cost = "free"
+
+[[opencode.models]]
+id = "opencode/flint-40b-free"
+tier = "mid"
+cost = "free"
+
+[[opencode.models]]
+id = "opencode/gemini-3.1-pro"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/gemini-3.5-flash-lite"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/gemini-3.8-flash"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/gemini-4-argon"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/glm-5.3"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/glm-5.3-flash"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/glm-5.3-flash-free"
+tier = "fast"
+cost = "free"
+
+[[opencode.models]]
+id = "opencode/gpt-5.3-codex"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/gpt-5.3-codex-spark"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/gpt-5.4-mini"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/gpt-5.4-nano"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/gpt-5.5"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/gpt-5.5-pro"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/gpt-5.6-terra"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/gpt-6-astra"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/gpt-6-luna"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/gpt-6.1-sol"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/grok-4.7"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/grok-build-0.1"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/kimi-k2.7-code"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/kimi-k3"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/mimo-v2.6-flash-free"
+tier = "fast"
+cost = "free"
+
+[[opencode.models]]
+id = "opencode/minimax-m3"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/minimax-m3.1-flash-free"
+tier = "high"
+cost = "free"
+
+[[opencode.models]]
+id = "opencode/mistral-large-4"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/muse-spark-1.3"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/muse-wonder-1.0"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/nemotron-3-ultra-free"
+tier = "high"
+cost = "free"
+
+[[opencode.models]]
+id = "opencode/nemotron-3.5-lightning-free"
+tier = "fast"
+cost = "free"
+
+[[opencode.models]]
+id = "opencode/nemotron-3.5-super-vl-free"
+tier = "mid"
+cost = "free"
+
+[[opencode.models]]
+id = "opencode/qwen3.6-plus"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/qwen3.8-flash"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/beam-free"
+tier = "mid"
+cost = "free"
+
+[[opencode.models]]
+id = "opencode-go/claude-haiku-5-5"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/deepseek-v4-pro"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/deepseek-v4.1-flash"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/gemini-4-argon-contributor"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/glm-5.2"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/glm-5.3"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/glm-5.3-flash"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/gpt-5.6-luna"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/gpt-6-luna"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/grok-4.7"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/hy3"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/hy4-preview"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/kimi-k2.7-code"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/kimi-k3"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/longcat-2.0"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/mimo-v2.5"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/mimo-v2.5-pro"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/mimo-v2.6-flash"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/mimo-v2.6-pro"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/minimax-m3"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/minimax-m3.1-flash-free"
+tier = "high"
+cost = "free"
+
+[[opencode.models]]
+id = "opencode-go/muse-spark-1.2-contributor"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/muse-spark-1.3-contributor"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/qwen3.7-plus"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/qwen3.8-flash"
+tier = "fast"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/qwen3.8-max"
+tier = "high"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode-go/step-5-preview"
+tier = "mid"
+cost = "paid"
+
+[[opencode.models]]
+id = "opencode/muse-spark-1.3-contributor-free"
+tier = "mid"
+cost = "free"

@@ -89,6 +89,7 @@ impl RunManager {
         let Some(account_name) = p.account.clone() else {
             return Err(rpc(UNAVAILABLE, "routing not available yet"));
         };
+        validate_checks(p.review, &p.checks)?;
         if let Some(schema) = &p.output_schema
             && let Err(e) = jsonschema::validator_for(schema)
         {
@@ -193,14 +194,35 @@ impl RunManager {
         // Detached: a client that disconnects mid-call must not leave a queued run that
         // nothing will ever start.
         let mgr = self.clone();
-        tokio::spawn(async move { mgr.enqueue(row).await })
+        let checks = p.checks.clone();
+        tokio::spawn(async move { mgr.enqueue(row, checks, None).await })
             .await
             .map_err(internal)??;
         Ok((run_id, warnings))
     }
 
-    async fn enqueue(&self, row: RunRow) -> R<()> {
+    /// Inserts the run and asks for a slot. `checks` and `fork_from` are written before the
+    /// run exists, so the queue never starts it without them.
+    pub(super) async fn enqueue(
+        &self,
+        row: RunRow,
+        checks: Vec<String>,
+        fork_from: Option<String>,
+    ) -> R<()> {
         let id = row.id.clone();
+        if !checks.is_empty() || fork_from.is_some() {
+            let (rid, fork) = (id.clone(), fork_from);
+            self.db(move |s| {
+                if !checks.is_empty() {
+                    s.set_run_checks(&rid, &checks)?;
+                }
+                match &fork {
+                    Some(n) => s.set_run_fork(&rid, n),
+                    None => Ok(()),
+                }
+            })
+            .await?;
+        }
         let session = row.session_id.clone();
         let data = json!({
             "harness": row.harness,
@@ -233,6 +255,27 @@ impl RunManager {
         self.drain_once().await;
         Ok(())
     }
+}
+
+/// `checks` are `ci`, `pr_threads` or `cmd:<shell command>`, and only make sense with
+/// `review: true`.
+fn validate_checks(review: bool, checks: &[String]) -> R<()> {
+    if !checks.is_empty() && !review {
+        return Err(rpc(INVALID_PARAMS, "checks need review: true"));
+    }
+    for c in checks {
+        let ok = c == "ci"
+            || c == "pr_threads"
+            || c.strip_prefix("cmd:")
+                .is_some_and(|cmd| !cmd.trim().is_empty());
+        if !ok {
+            return Err(rpc(
+                INVALID_PARAMS,
+                format!("unknown check `{c}`: use ci, pr_threads or cmd:<command>"),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Resolves the working directory and decides whether worktree isolation is possible.

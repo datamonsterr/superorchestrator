@@ -283,6 +283,7 @@ export interface PruneResult {
 export interface RouteAlternative {
   account?: string | null;
   choice_id: string;
+  /** Source-dependent, so scores are not comparable across results: for `jev` it is the decider's probability for the choice, for `heuristic` and `pinned` the heuristic score. */
   score?: number | null;
 }
 
@@ -291,6 +292,8 @@ export interface RouteParams {
   effort?: string | null;
   /** Choice ids to drop from the eligible set. */
   exclude?: string[];
+  /** Account names to skip (failover). A choice left with no account is ineligible. */
+  exclude_accounts?: string[];
   harness?: string | null;
   model?: string | null;
   prompt: string;
@@ -316,6 +319,8 @@ export interface RouteResult {
   harness: Harness;
   model: string;
   probabilities?: Record<string, number>;
+  /** Usable accounts of the chosen choice, best first (`account` is the first). Failover walks this list, then re-routes with `exclude_accounts`. */
+  ranked_accounts?: string[];
   rationale: string;
   source: RouteSource;
   usage?: RouteUsage;
@@ -350,6 +355,8 @@ export interface RunViewPublic {
   error_kind?: ErrorKind | null;
   finished_at?: string | null;
   harness?: Harness | null;
+  /** Messages to and from the run, oldest first; bodies are redacted. */
+  messages?: MessageView[];
   model?: string | null;
   name?: string | null;
   parent_run?: string | null;

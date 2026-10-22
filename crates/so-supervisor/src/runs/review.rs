@@ -1,0 +1,564 @@
+//! The review gate (SPEC 7.5): checks when a `review: true` run finishes, then
+//! `accept_run` / `reject_run`.
+//!
+//! `cmd:` checks run the operator's own shell command (it comes from the `spawn_agent`
+//! caller's `checks`, never from task text or the run's output) with `sh -c` in the run's
+//! directory, under a 10 minute limit.
+
+use std::path::Path;
+use std::process::Stdio;
+use std::time::Duration;
+
+use serde_json::{Value, json};
+use so_core::proto::{AckResult, INVALID_REQUEST, RejectParams, RunRef, UNAVAILABLE};
+use so_core::{EventType, MessageKind, RunState};
+use so_harness::RunControl;
+use so_store::{RunPatch, RunRow};
+use tokio::io::AsyncReadExt;
+use tokio::process::Command;
+
+use super::lifecycle::{Outcome, excerpt};
+use super::{R, RunManager, SHUTDOWN_DEADLINE, lock, rpc};
+use crate::dispatch::ConnCtx;
+
+/// Longest a single check may run.
+pub(crate) const CHECK_TIMEOUT: Duration = Duration::from_secs(600);
+const OUTPUT_TAIL: usize = 600;
+const GH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The result of one check.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct CheckOutcome {
+    pub name: String,
+    pub ok: bool,
+    pub detail: String,
+}
+
+impl CheckOutcome {
+    fn pass(name: &str) -> Self {
+        Self {
+            name: name.into(),
+            ok: true,
+            detail: String::new(),
+        }
+    }
+
+    fn fail(name: &str, detail: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ok: false,
+            detail: detail.into(),
+        }
+    }
+}
+
+/// Everything captured from a finished child process.
+struct Ran {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+/// Runs `cmd` to completion with a time limit. The child is killed (with its process
+/// group's leader) when the limit passes or the future is dropped.
+async fn run_capture(mut cmd: Command, limit: Duration) -> Result<Ran, String> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let mut child = cmd.spawn().map_err(|e| format!("could not start: {e}"))?;
+    let mut out = child.stdout.take().ok_or("no stdout")?;
+    let mut err = child.stderr.take().ok_or("no stderr")?;
+    let work = async {
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let (_, _, status) = tokio::join!(
+            out.read_to_end(&mut o),
+            err.read_to_end(&mut e),
+            child.wait()
+        );
+        (o, e, status)
+    };
+    match tokio::time::timeout(limit, work).await {
+        Ok((o, e, status)) => Ok(Ran {
+            code: status.map_err(|e| e.to_string())?.code(),
+            stdout: String::from_utf8_lossy(&o).into_owned(),
+            stderr: String::from_utf8_lossy(&e).into_owned(),
+        }),
+        Err(_) => {
+            let _ = child.start_kill();
+            Err(format!("timed out after {}s", limit.as_secs()))
+        }
+    }
+}
+
+fn tail(text: &str) -> String {
+    let t = text.trim();
+    let n = t.chars().count();
+    if n <= OUTPUT_TAIL {
+        return t.to_string();
+    }
+    let s: String = t.chars().skip(n - OUTPUT_TAIL).collect();
+    format!("…{s}")
+}
+
+async fn check_cmd(name: &str, cmd: &str, cwd: &Path, limit: Duration) -> CheckOutcome {
+    let mut c = Command::new("sh");
+    c.arg("-c").arg(cmd).current_dir(cwd);
+    match run_capture(c, limit).await {
+        Ok(r) if r.code == Some(0) => CheckOutcome::pass(name),
+        Ok(r) => {
+            let both = format!("{}\n{}", r.stdout, r.stderr);
+            CheckOutcome::fail(
+                name,
+                format!(
+                    "exited with {}: {}",
+                    r.code.map_or("a signal".to_string(), |c| c.to_string()),
+                    tail(&both)
+                ),
+            )
+        }
+        Err(e) => CheckOutcome::fail(name, e),
+    }
+}
+
+async fn gh(args: &[&str], cwd: &Path) -> Result<Ran, String> {
+    let mut c = Command::new("gh");
+    c.args(args).current_dir(cwd);
+    run_capture(c, GH_TIMEOUT)
+        .await
+        .map_err(|e| format!("gh {e}"))
+}
+
+/// The pull request number of `branch`.
+async fn pr_number(branch: &str, cwd: &Path) -> Result<u64, String> {
+    let r = gh(&["pr", "view", branch, "--json", "number"], cwd).await?;
+    if r.code != Some(0) {
+        return Err(format!(
+            "no pull request for branch {branch}: {}",
+            tail(&r.stderr)
+        ));
+    }
+    parse_pr_number(&r.stdout)
+}
+
+pub(crate) fn parse_pr_number(json: &str) -> Result<u64, String> {
+    serde_json::from_str::<Value>(json)
+        .ok()
+        .and_then(|v| v["number"].as_u64())
+        .ok_or_else(|| "gh pr view returned no pull request number".to_string())
+}
+
+/// `gh pr checks --json state`: green when every check is SUCCESS, SKIPPED or NEUTRAL.
+/// An empty list is not green: nothing has reported yet.
+pub(crate) fn ci_verdict(json: &str) -> Result<(), String> {
+    let v: Value = serde_json::from_str(json).map_err(|_| "gh pr checks gave no JSON")?;
+    let checks = v.as_array().ok_or("gh pr checks gave no list")?;
+    if checks.is_empty() {
+        return Err("the pull request has no checks yet".into());
+    }
+    let bad: Vec<String> = checks
+        .iter()
+        .filter(|c| !matches!(c["state"].as_str(), Some("SUCCESS" | "SKIPPED" | "NEUTRAL")))
+        .map(|c| {
+            format!(
+                "{} ({})",
+                c["name"].as_str().unwrap_or("?"),
+                c["state"].as_str().unwrap_or("?")
+            )
+        })
+        .collect();
+    if bad.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("checks not green: {}", bad.join(", ")))
+    }
+}
+
+/// The GraphQL answer for review threads: no unresolved thread and no outstanding
+/// `CHANGES_REQUESTED`.
+pub(crate) fn threads_verdict(json: &str) -> Result<(), String> {
+    let v: Value = serde_json::from_str(json).map_err(|_| "gh api gave no JSON")?;
+    let pr = &v["data"]["repository"]["pullRequest"];
+    if pr.is_null() {
+        return Err("gh api returned no pull request".into());
+    }
+    let unresolved = pr["reviewThreads"]["nodes"].as_array().map_or(0, |n| {
+        n.iter().filter(|t| t["isResolved"] != json!(true)).count()
+    });
+    let mut problems = Vec::new();
+    if unresolved > 0 {
+        problems.push(format!("{unresolved} unresolved review thread(s)"));
+    }
+    if pr["reviewDecision"].as_str() == Some("CHANGES_REQUESTED") {
+        problems.push("changes requested".to_string());
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(problems.join(", "))
+    }
+}
+
+const THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewDecision reviewThreads(first:100){nodes{isResolved}}}}}";
+
+async fn check_ci(branch: Option<&str>, cwd: &Path) -> CheckOutcome {
+    let Some(branch) = branch else {
+        return CheckOutcome::fail("ci", "the run has no branch, so no pull request");
+    };
+    let number = match pr_number(branch, cwd).await {
+        Ok(n) => n,
+        Err(e) => return CheckOutcome::fail("ci", e),
+    };
+    // `gh pr checks` exits non-zero while checks are pending or failing but still prints.
+    match gh(
+        &["pr", "checks", &number.to_string(), "--json", "name,state"],
+        cwd,
+    )
+    .await
+    {
+        Ok(r) => match ci_verdict(&r.stdout) {
+            Ok(()) => CheckOutcome::pass("ci"),
+            Err(e) => CheckOutcome::fail("ci", e),
+        },
+        Err(e) => CheckOutcome::fail("ci", e),
+    }
+}
+
+async fn check_threads(branch: Option<&str>, cwd: &Path) -> CheckOutcome {
+    let Some(branch) = branch else {
+        return CheckOutcome::fail("pr_threads", "the run has no branch, so no pull request");
+    };
+    let number = match pr_number(branch, cwd).await {
+        Ok(n) => n,
+        Err(e) => return CheckOutcome::fail("pr_threads", e),
+    };
+    let number = number.to_string();
+    let args = [
+        "api",
+        "graphql",
+        "-F",
+        "owner={owner}",
+        "-F",
+        "name={repo}",
+        "-F",
+        &format!("number={number}"),
+        "-f",
+        &format!("query={THREADS_QUERY}"),
+    ];
+    match gh(&args, cwd).await {
+        Ok(r) if r.code == Some(0) => match threads_verdict(&r.stdout) {
+            Ok(()) => CheckOutcome::pass("pr_threads"),
+            Err(e) => CheckOutcome::fail("pr_threads", e),
+        },
+        Ok(r) => CheckOutcome::fail("pr_threads", tail(&r.stderr)),
+        Err(e) => CheckOutcome::fail("pr_threads", e),
+    }
+}
+
+/// Runs the checks in order, all of them.
+pub(crate) async fn run_checks(
+    checks: &[String],
+    cwd: &Path,
+    branch: Option<&str>,
+) -> Vec<CheckOutcome> {
+    let mut out = Vec::new();
+    for c in checks {
+        out.push(match c.as_str() {
+            "ci" => check_ci(branch, cwd).await,
+            "pr_threads" => check_threads(branch, cwd).await,
+            other => match other.strip_prefix("cmd:") {
+                Some(cmd) => check_cmd(other, cmd, cwd, CHECK_TIMEOUT).await,
+                None => CheckOutcome::fail(other, "unknown check"),
+            },
+        });
+    }
+    out
+}
+
+/// What the pump should do after a run's final result.
+pub(crate) enum Gate {
+    /// The run went to `pending_review`; the pump is finished.
+    Entered,
+    /// The failed checks were sent to the child; keep going and check again on its next
+    /// finished turn.
+    Retry,
+}
+
+impl RunManager {
+    /// Review gate for a `review: true` run that produced `result_json`. `failures` is how
+    /// many times its checks already failed.
+    pub(crate) async fn review_gate(
+        &self,
+        run_id: &str,
+        control: &RunControl,
+        result_json: Option<String>,
+        failures: u32,
+    ) -> Gate {
+        let id = run_id.to_string();
+        let loaded = self
+            .db(move |s| Ok((s.get_run(&id)?, s.get_run_checks(&id)?)))
+            .await;
+        let Ok((Some(row), checks)) = loaded else {
+            return self.enter_review(run_id, control, result_json, &[]).await;
+        };
+        let cwd = row
+            .worktree_path
+            .as_ref()
+            .or(row.cwd.as_ref())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_default();
+        let outcomes = run_checks(&checks, &cwd, row.branch.as_deref()).await;
+        for o in &outcomes {
+            self.emit(
+                &row.session_id,
+                Some(run_id),
+                EventType::CheckResult,
+                json!({"name": o.name, "ok": o.ok, "detail": excerpt(&o.detail, 300)}),
+            )
+            .await;
+        }
+        let failed: Vec<CheckOutcome> = outcomes.into_iter().filter(|o| !o.ok).collect();
+        if failed.is_empty() {
+            return self.enter_review(run_id, control, result_json, &[]).await;
+        }
+        if failures == 0 {
+            let mut text = String::from(
+                "Your work did not pass its review checks. Fix the problems, then finish again.\n",
+            );
+            for f in &failed {
+                text.push_str(&format!("- {}: {}\n", f.name, f.detail));
+            }
+            if control.send(&text).await.is_ok() {
+                let _ = self
+                    .store_message(
+                        &row.session_id,
+                        row.parent_run_id.as_deref(),
+                        Some(run_id),
+                        MessageKind::Message,
+                        &text,
+                        true,
+                    )
+                    .await;
+                return Gate::Retry;
+            }
+        }
+        self.enter_review(run_id, control, result_json, &failed)
+            .await
+    }
+
+    /// `running -> pending_review`. The harness process is stopped; its native session
+    /// stays for `reject_run` to resume. The parent gets a `result` message.
+    async fn enter_review(
+        &self,
+        run_id: &str,
+        control: &RunControl,
+        result_json: Option<String>,
+        failed: &[CheckOutcome],
+    ) -> Gate {
+        let id = run_id.to_string();
+        let patch = RunPatch {
+            result_json: Some(result_json),
+            ..RunPatch::default()
+        };
+        let moved = self
+            .db(move |s| {
+                s.patch_run(&id, &patch)?;
+                s.update_run_state(&id, RunState::Running, RunState::PendingReview)?;
+                s.get_run(&id)
+            })
+            .await;
+        let Ok(Some(row)) = moved else {
+            return Gate::Entered;
+        };
+        let names: Vec<&str> = failed.iter().map(|f| f.name.as_str()).collect();
+        self.emit(
+            &row.session_id,
+            Some(run_id),
+            EventType::StateChanged,
+            json!({"from": RunState::Running, "to": RunState::PendingReview, "failed_checks": names}),
+        )
+        .await;
+        let body = if failed.is_empty() {
+            format!("Run {run_id} is ready for review.")
+        } else {
+            let mut b = format!("Run {run_id} is ready for review, but checks failed:\n");
+            for f in failed {
+                b.push_str(&format!("- {}: {}\n", f.name, f.detail));
+            }
+            b
+        };
+        let _ = self
+            .store_message(
+                &row.session_id,
+                Some(run_id),
+                row.parent_run_id.as_deref(),
+                MessageKind::Result,
+                &body,
+                false,
+            )
+            .await;
+        let _ = control.shutdown(SHUTDOWN_DEADLINE).await;
+        let ended = {
+            let id = run_id.to_string();
+            self.db(move |s| {
+                if let Some(a) = s
+                    .list_attempts(&id, 1000)?
+                    .into_iter()
+                    .rev()
+                    .find(|a| a.ended_at.is_none())
+                {
+                    s.finish_attempt(&a.id, "pending_review", chrono::Utc::now())?;
+                }
+                Ok(())
+            })
+            .await
+        };
+        drop(ended);
+        if let Some(rt) = lock(&self.inner.runs).get_mut(run_id) {
+            rt.live = None;
+        }
+        self.inner.finished.send_modify(|n| *n += 1);
+        Gate::Entered
+    }
+
+    async fn pending_review_run(&self, ctx: &ConnCtx, run: &str) -> R<RunRow> {
+        let row = self.resolve_run(run).await?;
+        if ctx.session_id.as_deref() != Some(row.session_id.as_str()) {
+            return Err(rpc(
+                so_core::proto::INVALID_PARAMS,
+                "that run belongs to another session",
+            ));
+        }
+        if row.state != RunState::PendingReview {
+            return Err(rpc(
+                INVALID_REQUEST,
+                format!("the run is {}, not pending_review", row.state),
+            ));
+        }
+        Ok(row)
+    }
+
+    /// `accept_run`: `pending_review -> succeeded`. The worktree is kept when the run made
+    /// changes (see `cleanup_worktree`); `worktrees prune` removes it later.
+    pub async fn accept_run(&self, ctx: &ConnCtx, r: RunRef) -> R<AckResult> {
+        let row = self.pending_review_run(ctx, &r.run).await?;
+        self.emit(
+            &row.session_id,
+            Some(&row.id),
+            EventType::ReviewAccepted,
+            json!({}),
+        )
+        .await;
+        let outcome = Outcome {
+            to: RunState::Succeeded,
+            error_kind: None,
+            result_json: None,
+            reason: Some("review accepted".into()),
+            flag_account: false,
+            control: None,
+        };
+        if !self.finish(&row.id, outcome).await {
+            return Err(rpc(INVALID_REQUEST, "the run changed state; try again"));
+        }
+        Ok(AckResult { ok: true })
+    }
+
+    /// `reject_run`: sends `feedback` on the run's native session (resuming it) and moves
+    /// `pending_review -> running`.
+    pub async fn reject_run(&self, ctx: &ConnCtx, p: RejectParams) -> R<AckResult> {
+        if p.feedback.trim().is_empty() {
+            return Err(rpc(
+                so_core::proto::INVALID_PARAMS,
+                "feedback must not be empty",
+            ));
+        }
+        let row = self.pending_review_run(ctx, &p.run).await?;
+        let id = row.id.clone();
+        let moved = self
+            .db_raw(move |s| s.update_run_state(&id, RunState::PendingReview, RunState::Running))
+            .await
+            .is_ok();
+        if !moved {
+            return Err(rpc(INVALID_REQUEST, "the run changed state; try again"));
+        }
+        lock(&self.inner.runs).entry(row.id.clone()).or_default();
+        let _ = self
+            .store_message(
+                &row.session_id,
+                ctx.run_id.as_deref(),
+                Some(&row.id),
+                MessageKind::Message,
+                &p.feedback,
+                true,
+            )
+            .await;
+        self.emit(
+            &row.session_id,
+            Some(&row.id),
+            EventType::ReviewRejected,
+            json!({"feedback": excerpt(&p.feedback, 280)}),
+        )
+        .await;
+        self.emit(
+            &row.session_id,
+            Some(&row.id),
+            EventType::StateChanged,
+            json!({"from": RunState::PendingReview, "to": RunState::Running, "reason": "review rejected"}),
+        )
+        .await;
+        if let Err(reason) = self.resume_run(&row, &p.feedback).await {
+            self.fail_run(&row.id, so_core::ErrorKind::Other, &reason)
+                .await;
+            return Err(rpc(UNAVAILABLE, reason));
+        }
+        Ok(AckResult { ok: true })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ci_green_only_when_every_check_is_ok() {
+        let ok = r#"[{"name":"a","state":"SUCCESS"},{"name":"b","state":"SKIPPED"},{"name":"c","state":"NEUTRAL"}]"#;
+        assert!(ci_verdict(ok).is_ok());
+        let bad = r#"[{"name":"a","state":"SUCCESS"},{"name":"b","state":"FAILURE"},{"name":"c","state":"PENDING"}]"#;
+        let e = ci_verdict(bad).unwrap_err();
+        assert!(e.contains("b (FAILURE)") && e.contains("c (PENDING)") && !e.contains("a ("));
+        assert!(ci_verdict("[]").is_err());
+        assert!(ci_verdict("oops").is_err());
+    }
+
+    #[test]
+    fn threads_need_resolution_and_no_changes_requested() {
+        let t = |decision: &str, resolved: &[bool]| {
+            let nodes: Vec<Value> = resolved.iter().map(|r| json!({"isResolved": r})).collect();
+            json!({"data": {"repository": {"pullRequest": {
+                "reviewDecision": decision, "reviewThreads": {"nodes": nodes}}}}})
+            .to_string()
+        };
+        assert!(threads_verdict(&t("APPROVED", &[true, true])).is_ok());
+        assert!(threads_verdict(&t("", &[])).is_ok());
+        let e = threads_verdict(&t("CHANGES_REQUESTED", &[true, false])).unwrap_err();
+        assert!(e.contains("1 unresolved") && e.contains("changes requested"));
+        assert!(threads_verdict(r#"{"data":{"repository":{"pullRequest":null}}}"#).is_err());
+    }
+
+    #[test]
+    fn pr_number_parsing() {
+        assert_eq!(parse_pr_number(r#"{"number": 42}"#), Ok(42));
+        assert!(parse_pr_number("{}").is_err());
+    }
+
+    #[tokio::test]
+    async fn cmd_checks_pass_fail_and_time_out() {
+        let dir = std::env::temp_dir();
+        let long = Duration::from_secs(5);
+        assert!(check_cmd("cmd:true", "true", &dir, long).await.ok);
+        let f = check_cmd("cmd:x", "echo boom >&2; exit 3", &dir, long).await;
+        assert!(!f.ok && f.detail.contains("exited with 3") && f.detail.contains("boom"));
+        let t = check_cmd("cmd:sleep", "sleep 5", &dir, Duration::from_millis(100)).await;
+        assert!(!t.ok && t.detail.contains("timed out"));
+    }
+}
