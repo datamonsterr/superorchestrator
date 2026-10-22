@@ -158,6 +158,59 @@ impl Store {
         cas_state(&self.conn(), id, from, to)
     }
 
+    /// Brings a `succeeded` or `failed` run back to `running` (a message resumed its native
+    /// session) and clears its result. Returns `false` when the run is in another state.
+    pub fn reopen_run(&self, id: &str) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let n = tx.execute(
+            "UPDATE runs SET state = 'running', finished_at = NULL, error_kind = NULL, \
+             result_json = NULL WHERE id = ?1 AND state IN ('succeeded', 'failed')",
+            [id],
+        )?;
+        if n == 1 {
+            let sid: String =
+                tx.query_row("SELECT session_id FROM runs WHERE id = ?1", [id], |r| {
+                    r.get(0)
+                })?;
+            tx.execute(
+                "UPDATE sessions SET status = 'active', ended_at = NULL WHERE id = ?1",
+                [sid],
+            )?;
+        }
+        tx.commit()?;
+        Ok(n == 1)
+    }
+
+    /// Stores the review checks of a run (`ci`, `pr_threads`, `cmd:<shell>`).
+    pub fn set_run_checks(&self, run_id: &str, checks: &[String]) -> Result<()> {
+        let json = serde_json::to_string(checks).unwrap_or_else(|_| "[]".into());
+        self.conn().execute(
+            "INSERT OR REPLACE INTO run_checks (run_id, checks_json) VALUES (?1, ?2)",
+            params![run_id, json],
+        )?;
+        Ok(())
+    }
+
+    /// The review checks of a run; empty when none were set.
+    pub fn get_run_checks(&self, run_id: &str) -> Result<Vec<String>> {
+        let json: Option<String> = self
+            .conn()
+            .query_row(
+                "SELECT checks_json FROM run_checks WHERE run_id = ?1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?;
+        Ok(json
+            .and_then(|j| serde_json::from_str(&j).ok())
+            .unwrap_or_default())
+    }
+
     /// Atomically claims a concurrency slot: moves the run `from -> to` and sets its account,
     /// only if the account (slot-holding runs plus open interactive sessions) is below
     /// `account_cap` and all slot-holding runs are below `global_cap`. Moving into
@@ -843,6 +896,29 @@ pub(crate) mod tests {
             .count();
         assert_eq!(wins, 1);
         assert_eq!(a.count_active_runs_total().unwrap(), 1);
+    }
+
+    #[test]
+    fn reopen_and_checks() {
+        let (s, sid) = setup();
+        let r = run(&sid, None);
+        s.insert_run(&r).unwrap();
+        assert!(!s.reopen_run(&r.id).unwrap());
+        s.set_run_checks(&r.id, &["ci".into(), "cmd:true".into()])
+            .unwrap();
+        assert_eq!(s.get_run_checks(&r.id).unwrap(), ["ci", "cmd:true"]);
+        assert!(s.get_run_checks("none").unwrap().is_empty());
+        let patch = FinishPatch {
+            result_json: Some("1".into()),
+            error_kind: None,
+            finished_at: Some(crate::codec::now()),
+        };
+        s.finish_run(&r.id, RunState::Queued, RunState::Failed, &patch)
+            .unwrap();
+        assert!(s.reopen_run(&r.id).unwrap());
+        let got = s.get_run(&r.id).unwrap().unwrap();
+        assert_eq!(got.state, RunState::Running);
+        assert!(got.finished_at.is_none() && got.result_json.is_none());
     }
 
     #[test]

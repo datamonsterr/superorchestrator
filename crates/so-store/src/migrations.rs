@@ -93,8 +93,13 @@ INSERT INTO schema_versions (table_name, version) VALUES
   ('ledger',1),('flags',1),('workflow_cache',1),('workflow_runs',1),('workflow_steps',1);
 ";
 
+const V2: &str = "
+CREATE TABLE run_checks (run_id TEXT PRIMARY KEY REFERENCES runs(id), checks_json TEXT NOT NULL);
+UPDATE schema_versions SET version = 2 WHERE table_name = 'runs';
+";
+
 /// Ordered migrations; entry `i` brings the database to version `i + 1`.
-const MIGRATIONS: &[&str] = &[V1];
+const MIGRATIONS: &[&str] = &[V1, V2];
 
 /// Latest schema version known to this build.
 pub fn latest_version() -> i64 {
