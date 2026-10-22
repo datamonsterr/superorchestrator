@@ -225,11 +225,25 @@ impl fmt::Debug for Api {
     }
 }
 
+/// An error answer of the server. The status code is the harness's own signal: 401 and
+/// 403 are auth, 429 a rate limit, and both are returned as [`DriverError::Exited`] so the
+/// supervisor can fail the run over. The body is never used to classify.
 fn http_error(method: &str, path: &str, status: reqwest::StatusCode, body: &str) -> DriverError {
-    DriverError::Other(format!(
+    let text = format!(
         "opencode {method} {path}: HTTP {status} {}",
         truncate(body.trim(), 300)
-    ))
+    );
+    match status.as_u16() {
+        401 | 403 => DriverError::Exited {
+            kind: so_core::ErrorKind::Auth,
+            text,
+        },
+        429 => DriverError::Exited {
+            kind: so_core::ErrorKind::RateLimit,
+            text,
+        },
+        _ => DriverError::Other(text),
+    }
 }
 
 impl Api {

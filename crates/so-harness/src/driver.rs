@@ -35,14 +35,12 @@ pub enum DriverError {
     Closed,
     #[error("no driver for harness {0}")]
     Unsupported(Harness),
-    /// The process exited while starting and its own output says why. `kind` is what
-    /// the driver classified that output as; only this variant is classified by the
-    /// supervisor, so an unrelated error never passes for a limit.
+    /// A start-up failure that the harness itself reported (its process output, or the
+    /// status code of its server), with the `kind` the driver classified it as. The
+    /// supervisor trusts only this variant, so an unrelated error that merely mentions
+    /// a word like "quota" never passes for a limit.
     #[error("{text}")]
-    Exited {
-        kind: Option<ErrorKind>,
-        text: String,
-    },
+    Exited { kind: ErrorKind, text: String },
     #[error("{0}")]
     Other(String),
 }

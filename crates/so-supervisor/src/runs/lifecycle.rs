@@ -248,9 +248,7 @@ impl RunManager {
                 // Only the process's own output is classified: a spawn, io, websocket or
                 // timeout error may merely mention a word like "quota" in a path.
                 let kind = match &e {
-                    DriverError::Exited { kind, text } => {
-                        kind.unwrap_or_else(|| driver.classify_error(text))
-                    }
+                    DriverError::Exited { kind, .. } => *kind,
                     _ => ErrorKind::Other,
                 };
                 Err(LaunchFail {
@@ -280,11 +278,26 @@ impl RunManager {
         }
         let mut o = Outcome::failed(fail.kind, &fail.message, None);
         o.limit = Some(limit);
-        self.finish(&row.id, o).await;
+        if !self.finish(&row.id, o).await {
+            // The run ended first (cancelled): an attempt this failure opened is closed.
+            self.close_open_attempt(&row.id, "failed").await;
+        }
     }
 
-    /// Opens an attempt for a harness that never came up, so it is counted and tried once.
-    pub(crate) async fn record_launch_attempt(&self, run_id: &str, account: &AccountFile) {
+    /// Opens an attempt for a harness that never came up, so it is counted, shown on the
+    /// timeline and tried once. A run that was cancelled (or is over) meanwhile gets none:
+    /// nothing would close it.
+    pub(crate) async fn record_launch_attempt(&self, run_id: &str, account: &AccountFile) -> bool {
+        if self.is_cancelling(run_id) {
+            return false;
+        }
+        let id = run_id.to_string();
+        let Ok(Some(row)) = self.db(move |s| s.get_run(&id)).await else {
+            return false;
+        };
+        if !row.state.is_active() {
+            return false;
+        }
         let (id, name, pool) = (
             run_id.to_string(),
             account.name.clone(),
@@ -295,7 +308,34 @@ impl RunManager {
             .await
         {
             tracing::warn!(%run_id, error = %e.message, "could not record launch attempt");
+            return false;
         }
+        self.emit(
+            &row.session_id,
+            Some(run_id),
+            EventType::AttemptStarted,
+            json!({"account": account.name, "harness": account.harness, "resumed": false, "launch_failed": true}),
+        )
+        .await;
+        true
+    }
+
+    /// Closes the run's open attempt, if any.
+    pub(crate) async fn close_open_attempt(&self, run_id: &str, outcome: &'static str) {
+        let id = run_id.to_string();
+        let _ = self
+            .db(move |s| {
+                match s
+                    .list_attempts(&id, 1000)?
+                    .into_iter()
+                    .rev()
+                    .find(|a| a.ended_at.is_none())
+                {
+                    Some(a) => s.finish_attempt(&a.id, outcome, Utc::now()),
+                    None => Ok(()),
+                }
+            })
+            .await;
     }
 
     pub(crate) async fn start_run(&self, row: RunRow) {

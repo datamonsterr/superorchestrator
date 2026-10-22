@@ -351,7 +351,7 @@ async fn early_exit_error(
     let text: String = text.chars().take(500).collect();
     let kind = classify_agy(&text);
     DriverError::Exited {
-        kind: Some(kind),
+        kind,
         text: format!("agy exited before init (code {code:?}, {kind:?}): {text}"),
     }
 }

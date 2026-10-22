@@ -639,6 +639,19 @@ async fn launch_failures_are_bounded_and_never_revisit_an_account() {
     let store = env.store();
     let attempts = store.list_attempts(&r.run_id, 10).unwrap();
     assert_eq!(attempts.len(), 4, "{attempts:?}");
+    let outcomes: Vec<_> = attempts.iter().map(|a| a.outcome.as_deref()).collect();
+    assert_eq!(
+        outcomes,
+        [
+            Some("failover"),
+            Some("failover"),
+            Some("failover"),
+            Some("failed")
+        ]
+    );
+    // Each launch attempt shows on the timeline.
+    let v = view(&c, &r.run_id).await;
+    assert_eq!(events(&v, "attempt_started").len(), 4, "{:?}", types(&v));
     // An auth failure flags the account on every pool.
     for a in &attempts {
         for pool in ["gemini", "claude"] {
@@ -719,5 +732,116 @@ async fn stderr_of_a_clean_exit_is_not_a_limit() {
             .unwrap()
             .is_none()
     );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_during_a_failing_launch_leaves_no_open_attempt() {
+    let env = agy_env();
+    env.agy_account("agy-acc2", 2, &agy_ineligible_script());
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    h.state()
+        .runs
+        .set_launch_delay(std::time::Duration::from_millis(600));
+
+    let mut p = auto_params(&env);
+    p.wait = false;
+    let r = spawn(&c, p).await;
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let _: RunView = c
+        .call(
+            METHOD_CANCEL_AGENT,
+            RunRef {
+                run: r.run_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    // The launch fails after the cancel.
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    let v = view(&c, &r.run_id).await;
+    assert_eq!(v.state, RunState::Cancelled, "{:?}", types(&v));
+    let attempts = env.store().list_attempts(&r.run_id, 10).unwrap();
+    assert!(
+        attempts.iter().all(|a| a.ended_at.is_some()),
+        "open attempt left behind: {attempts:?}"
+    );
+    h.shutdown().await;
+}
+
+/// An `opencode serve` that comes up and then answers every request but the health
+/// probe with HTTP 429.
+fn fake_opencode_429(env: &Env, name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = env.dir.path().join(format!("{name}-opencode.py"));
+    let body = format!(
+        r#"#!/usr/bin/python3
+import http.server, json, sys
+with open({log:?}, "a") as f:
+    f.write(json.dumps({{"argv": sys.argv[1:]}}) + "\n")
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _do(self):
+        if self.path.startswith("/global/health"):
+            code, body = 200, b'{{"healthy":true}}'
+        else:
+            code, body = 429, b'{{"error":"too many requests"}}'
+        self.send_response(code)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = _do
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+print("opencode server listening on http://127.0.0.1:%d" % srv.server_address[1], flush=True)
+srv.serve_forever()
+"#,
+        log = env.launch_log(name).display().to_string()
+    );
+    std::fs::write(&path, body).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[tokio::test]
+async fn an_opencode_http_429_at_launch_fails_over() {
+    if !std::path::Path::new("/usr/bin/python3").exists() {
+        return;
+    }
+    let mut env = Env::new();
+    env.config.choices = vec![Choice {
+        harness: Harness::Opencode,
+        ..choice("oc-fast", "opencode/fake-model")
+    }];
+    env.config.router.jev.key_env = "SO_ROUTING_TEST_NO_SUCH_KEY".into();
+    for n in ["oc-a", "oc-b"] {
+        let bin = fake_opencode_429(&env, n);
+        env.account_with_binary(n, "opencode", 2, &bin);
+    }
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Failed, "{r:?}");
+    assert_eq!(r.error_kind, Some(ErrorKind::RateLimit));
+    // The first launch failed with a 429 and the run moved to the second account.
+    let store = env.store();
+    let outcomes: Vec<_> = store
+        .list_attempts(&r.run_id, 10)
+        .unwrap()
+        .iter()
+        .map(|a| (a.account.clone(), a.outcome.clone()))
+        .collect();
+    assert_eq!(
+        outcomes,
+        [
+            ("oc-a".to_string(), Some("failover".to_string())),
+            ("oc-b".to_string(), Some("failed".to_string()))
+        ]
+    );
+    for n in ["oc-a", "oc-b"] {
+        assert_eq!(env.launches(n).len(), 1, "{n}");
+        assert!(store.get_flag(n, "default").unwrap().is_some(), "{n}");
+    }
     h.shutdown().await;
 }

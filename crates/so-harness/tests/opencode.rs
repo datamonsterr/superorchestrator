@@ -596,7 +596,16 @@ async fn wrong_password_is_auth() {
     let rig = Rig::new();
     let d = driver(&url, "wrong");
     let err = d.launch(rig.spec()).await.unwrap_err();
-    assert!(matches!(err, DriverError::Other(_)), "{err:?}");
+    assert!(
+        matches!(
+            err,
+            DriverError::Exited {
+                kind: ErrorKind::Auth,
+                ..
+            }
+        ),
+        "{err:?}"
+    );
     let msg = err.to_string();
     assert!(msg.contains("401"), "{msg}");
     assert_eq!(d.classify_error(&msg), ErrorKind::Auth);

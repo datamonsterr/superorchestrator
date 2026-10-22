@@ -190,6 +190,21 @@ impl Env {
         .unwrap();
     }
 
+    /// An account of `harness` whose binary is the executable `binary`.
+    pub fn account_with_binary(&self, name: &str, harness: &str, cap: u32, binary: &Path) {
+        std::fs::create_dir_all(self.home.join(format!(".{name}"))).unwrap();
+        std::fs::create_dir_all(self.paths.accounts_dir()).unwrap();
+        std::fs::write(
+            self.paths.account_file(name),
+            format!(
+                "name = \"{name}\"\nharness = \"{harness}\"\nhome = \"{}\"\nbinary = \"{}\"\ncap = {cap}\n",
+                self.home.join(format!(".{name}")).display(),
+                binary.display()
+            ),
+        )
+        .unwrap();
+    }
+
     /// Where the fake harness of `name` records each launch (argv and env keys).
     pub fn launch_log(&self, name: &str) -> PathBuf {
         self.dir.path().join(format!("{name}.log"))

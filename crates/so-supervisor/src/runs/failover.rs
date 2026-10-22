@@ -28,6 +28,7 @@ use super::{Inner, RunManager, SHUTDOWN_DEADLINE, lock};
 
 /// Moves a run may make to another account. Each one costs a limit hit on a real account,
 /// so a run that keeps failing stops.
+/// A run is launched at most `1 + MAX_FAILOVERS` times (launch failures count).
 pub(crate) const MAX_FAILOVERS: usize = 3;
 /// Times the new account is looked for again when another run takes its last slot first.
 const MAX_ROUTE_TRIES: usize = 3;
@@ -195,7 +196,9 @@ impl RunManager {
         // The account was marked when the failover began; flagging it again would only
         // restart its cooldown.
         o.flag_account = false;
-        self.finish(&run_id, o).await;
+        if !self.finish(&run_id, o).await {
+            self.close_open_attempt(&run_id, "failed").await;
+        }
     }
 
     /// The prompt of the run's current turn: what a failover must send again.
