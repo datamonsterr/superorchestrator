@@ -327,7 +327,7 @@ description = "Fast worker for bounded implementation, scripts, docs and routine
 enabled = true
 ```
 
-`init` seeds the choices from agent-dispatcher's current `config.example.json`, plus Codex and Claude choices disabled by default.
+`init` seeds the choices from agent-dispatcher's current `config.example.json`, plus Codex and Claude choices. Codex choices are enabled: a choice with no usable account is not eligible (8.3), so they start routing when a codex account is added. Claude choices are disabled by default (8.4); set `enabled = true` to let auto routing use them as the last resort. `enabled` is the user's switch and `init` is the only thing that writes it.
 
 ### 8.3 Decision procedure (`route`)
 

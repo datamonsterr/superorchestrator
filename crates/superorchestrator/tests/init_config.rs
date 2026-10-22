@@ -41,11 +41,15 @@ fn seeded_choices_parse_with_core_config() {
     assert!(
         cfg.choices
             .iter()
-            .filter(|c| matches!(
-                c.harness,
-                so_core::Harness::Codex | so_core::Harness::Claude
-            ))
+            .filter(|c| c.harness == so_core::Harness::Claude)
             .all(|c| !c.enabled)
+    );
+    // Codex choices are on: without a signed-in account they are just not eligible.
+    assert!(
+        cfg.choices
+            .iter()
+            .filter(|c| c.harness == so_core::Harness::Codex)
+            .all(|c| c.enabled)
     );
     assert!(
         cfg.choices

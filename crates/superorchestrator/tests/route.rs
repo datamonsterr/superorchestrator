@@ -192,3 +192,71 @@ fn models_list_json_uses_the_default_catalog() {
     assert_eq!(m["pool"], "claude");
     assert_eq!(m["tier"], "high");
 }
+
+/// `init` with no accounts, then a codex account added later; `route` runs through a
+/// supervisor started on the config as it is now.
+async fn route_after_adding_codex(disable_codex: bool) -> std::process::Output {
+    let e = Env::new();
+    std::fs::set_permissions(e.tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    e.init();
+    e.cmd()
+        .args(["config", "set", "router.jev.key_env", "SO_CLI_TEST_NO_KEY"])
+        .assert()
+        .success();
+    if disable_codex {
+        let path = e.cfg.join("config.toml");
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        for id in ["codex-high", "codex-medium"] {
+            let at = text.find(&format!("id = \"{id}\"")).unwrap();
+            let off = text[at..].find("enabled = true").unwrap() + at;
+            text.replace_range(off..off + "enabled = true".len(), "enabled = false");
+        }
+        std::fs::write(&path, text).unwrap();
+    }
+    AccountFile::new(
+        "codex-acc1",
+        Harness::Codex,
+        &e.home.join("codex-acc1").to_string_lossy(),
+        "codex",
+    )
+    .unwrap()
+    .save(&e.paths())
+    .unwrap();
+    let host = HostEnv {
+        home: e.home.clone(),
+        path_var: Some("/usr/bin:/bin".into()),
+        platform: Platform::current(),
+    };
+    let config = Config::load(&e.paths()).unwrap();
+    let opts = SupervisorOptions::new(e.paths(), config, e.tmp.path().join("so.sock"))
+        .with_host(host)
+        .with_idle_exit(Duration::from_secs(600))
+        .with_setup(default_handlers);
+    let sup = Supervisor::start(opts).await.unwrap();
+    let mut cmd = e.cmd();
+    cmd.args(["route", "--json", "rename a variable in one file"]);
+    let out = tokio::task::spawn_blocking(move || cmd.output().unwrap())
+        .await
+        .unwrap();
+    sup.shutdown().await;
+    out
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_codex_account_added_after_init_makes_the_seeded_codex_choices_eligible() {
+    let out = route_after_adding_codex(false).await;
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["harness"], "codex");
+    assert_eq!(v["account"], "codex-acc1");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn codex_choices_the_user_disabled_stay_out_of_routing() {
+    let out = route_after_adding_codex(true).await;
+    assert!(!out.status.success());
+}

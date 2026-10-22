@@ -65,8 +65,8 @@ harness = "codex"
 model = "gpt-6.1-sol"
 effort = "high"
 roles = ["worker", "conductor"]
-description = "Codex with high reasoning effort. Strong general worker for complex implementation and review. Disabled until a codex account is signed in."
-enabled = false
+description = "Codex with high reasoning effort. Strong general worker for complex implementation and review. Not eligible until a codex account is signed in."
+enabled = true
 
 [[choices]]
 id = "codex-medium"
@@ -74,8 +74,8 @@ harness = "codex"
 model = "gpt-6.1-sol"
 effort = "medium"
 roles = ["worker"]
-description = "Codex with medium reasoning effort. Balanced worker for routine implementation. Disabled until a codex account is signed in."
-enabled = false
+description = "Codex with medium reasoning effort. Balanced worker for routine implementation. Not eligible until a codex account is signed in."
+enabled = true
 
 [[choices]]
 id = "claude-sonnet"
@@ -83,7 +83,7 @@ harness = "claude"
 model = "claude-sonnet-5-5"
 effort = "medium"
 roles = ["worker", "conductor"]
-description = "Claude Sonnet with medium effort. Capable worker for integration and judgment tasks. Disabled until a claude account is signed in."
+description = "Claude Sonnet with medium effort. Capable worker for integration and judgment tasks. Off by default so auto routing keeps Claude limits for the orchestrator (SPEC 8.4); set enabled = true to allow it as the last resort."
 enabled = false
 
 [[choices]]
@@ -92,5 +92,5 @@ harness = "claude"
 model = "claude-haiku-5-5"
 effort = "medium"
 roles = ["worker"]
-description = "Claude Haiku with medium effort. Fast worker for mechanical, fully specified tasks. Disabled until a claude account is signed in."
+description = "Claude Haiku with medium effort. Fast worker for mechanical, fully specified tasks. Off by default so auto routing keeps Claude limits for the orchestrator (SPEC 8.4); set enabled = true to allow it as the last resort."
 enabled = false

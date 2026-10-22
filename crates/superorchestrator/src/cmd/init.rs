@@ -10,8 +10,10 @@ use so_core::Paths;
 use crate::ctx::Ctx;
 
 const CONFIG_HEADER: &str = include_str!("../seed/config_header.toml");
-/// Choices seeded from agent-dispatcher's `config.example.json`, plus Codex and
-/// Claude choices that start disabled (SPEC 8.2).
+/// Choices seeded from agent-dispatcher's `config.example.json`, plus Codex choices
+/// and Claude choices that start disabled (SPEC 8.2). A Codex choice is enabled: with
+/// no signed-in codex account it is simply not eligible at routing time (SPEC 8.3),
+/// so adding an account later needs no config edit.
 pub const SEED_CHOICES: &str = include_str!("../seed/choices.toml");
 const MODELS_PLACEHOLDER: &str = "# Model catalog (SPEC 8.1): known models per harness with tier, efforts, pool and cost.\n\
 # Filled in by `superorchestrator models refresh`. The catalog is only used for\n\
