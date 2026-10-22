@@ -25,7 +25,7 @@ pub fn supervisor_status() -> Option<StatusResult> {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
         client
-            .hello("cli", &cwd, None, Some(std::process::id()))
+            .hello_inspect("cli", &cwd, Some(std::process::id()))
             .await
             .ok()?;
         client

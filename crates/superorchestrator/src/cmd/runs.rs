@@ -26,8 +26,28 @@ pub(crate) fn runtime() -> Result<tokio::runtime::Runtime> {
         .build()?)
 }
 
-/// Connects to the supervisor, starting it when it is not running.
+/// Connects to the supervisor, starting it when it is not running, without opening a
+/// session: for commands that only read or control (SPEC 3.1: only `mcp` opens one).
 pub(crate) async fn connect(ctx: &Ctx) -> Result<SupervisorClient> {
+    let socket = Paths::socket_path()?;
+    let exe = std::env::current_exe().context("could not find this executable")?;
+    let dir = ctx.paths.config_dir.clone();
+    let cwd = std::env::current_dir()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    SupervisorClient::connect_or_spawn_inspect(
+        &socket,
+        || spawn_daemon_process(&exe, &dir),
+        "cli",
+        &cwd,
+        Some(std::process::id()),
+    )
+    .await
+    .context("could not reach the supervisor")
+}
+
+/// Like [`connect`], but opens a session: for commands that spawn (`workflow run`).
+pub(crate) async fn connect_session(ctx: &Ctx) -> Result<SupervisorClient> {
     let socket = Paths::socket_path()?;
     let exe = std::env::current_exe().context("could not find this executable")?;
     let dir = ctx.paths.config_dir.clone();

@@ -205,6 +205,32 @@ async fn hello_creates_session_row() {
 }
 
 #[tokio::test]
+async fn inspect_hello_opens_no_session_and_refuses_spawns() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = connect(&h).await;
+    c.hello_inspect("cli", "/w", Some(7)).await.unwrap();
+    // Reads work without a session.
+    let st: StatusResult = c.call("status", json!({})).await.unwrap();
+    assert_eq!(st.sessions, 0);
+    assert!(
+        env.store()
+            .list_sessions(so_store::SessionFilter::All, 100)
+            .unwrap()
+            .is_empty()
+    );
+    // Spawning needs a session.
+    for m in ["spawn_agent", "run_workflow"] {
+        let e = c.call::<_, Value>(m, json!({})).await.unwrap_err();
+        assert!(
+            matches!(e, ClientError::Rpc(ref r) if r.code == INVALID_REQUEST),
+            "{m}: {e:?}"
+        );
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
 async fn hello_with_run_id_attaches_to_run_session() {
     let env = Env::new();
     let store = env.store();

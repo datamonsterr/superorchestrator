@@ -177,17 +177,48 @@ impl SupervisorClient {
     /// sequence is retried once, so `spawn` may be called twice.
     pub async fn connect_or_spawn_hello(
         socket_path: &Path,
-        mut spawn: impl FnMut() -> std::io::Result<()>,
+        spawn: impl FnMut() -> std::io::Result<()>,
         client: &str,
         cwd: &str,
         run_id: Option<String>,
         pid: Option<u32>,
     ) -> Result<(Self, HelloResult), ClientError> {
+        Self::connect_or_spawn_with(socket_path, spawn, client, cwd, run_id, pid, false).await
+    }
+
+    /// Like [`connect_or_spawn_hello`](Self::connect_or_spawn_hello), but the `hello` opens no
+    /// session: for commands that only read or control (`status`, `runs show`, `join`).
+    pub async fn connect_or_spawn_inspect(
+        socket_path: &Path,
+        spawn: impl FnMut() -> std::io::Result<()>,
+        client: &str,
+        cwd: &str,
+        pid: Option<u32>,
+    ) -> Result<Self, ClientError> {
+        let (c, _) =
+            Self::connect_or_spawn_with(socket_path, spawn, client, cwd, None, pid, true).await?;
+        Ok(c)
+    }
+
+    async fn connect_or_spawn_with(
+        socket_path: &Path,
+        mut spawn: impl FnMut() -> std::io::Result<()>,
+        client: &str,
+        cwd: &str,
+        run_id: Option<String>,
+        pid: Option<u32>,
+        inspect: bool,
+    ) -> Result<(Self, HelloResult), ClientError> {
         let mut attempt = 0;
         loop {
             attempt += 1;
             let c = Self::connect_with(socket_path, &mut spawn).await?;
-            match c.hello(client, cwd, run_id.clone(), pid).await {
+            let hello = if inspect {
+                c.hello_inspect(client, cwd, pid).await
+            } else {
+                c.hello(client, cwd, run_id.clone(), pid).await
+            };
+            match hello {
                 Ok(r) => return Ok((c, r)),
                 Err(ClientError::Disconnected) if attempt < 2 => {}
                 Err(e) => return Err(e),
@@ -293,6 +324,27 @@ impl SupervisorClient {
                 cwd: cwd.to_string(),
                 run_id,
                 pid,
+                inspect: false,
+            },
+        )
+        .await
+    }
+
+    /// `hello` that opens no session (see [`HelloParams::inspect`]).
+    pub async fn hello_inspect(
+        &self,
+        client: &str,
+        cwd: &str,
+        pid: Option<u32>,
+    ) -> Result<HelloResult, ClientError> {
+        self.call(
+            METHOD_HELLO,
+            HelloParams {
+                client: client.to_string(),
+                cwd: cwd.to_string(),
+                run_id: None,
+                pid,
+                inspect: true,
             },
         )
         .await
