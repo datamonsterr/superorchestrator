@@ -203,8 +203,10 @@ pub enum ModelsCmd {
 #[derive(Args, Debug)]
 #[command(args_conflicts_with_subcommands = true)]
 pub struct RouteArgs {
-    /// Task text to route
-    pub task: Option<String>,
+    /// Task text to route. Several words need no quotes; put `--` before a task that
+    /// starts with `eval` or `-`
+    #[arg(num_args = 1.., value_name = "TASK")]
+    pub task: Vec<String>,
     #[arg(long)]
     pub role: Option<String>,
     #[arg(long)]
@@ -351,4 +353,34 @@ pub struct MigrateArgs {
     /// Apply the migration instead of only reporting it
     #[arg(long)]
     pub apply: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn route(args: &[&str]) -> RouteArgs {
+        let mut argv = vec!["superorchestrator", "route"];
+        argv.extend_from_slice(args);
+        match Cli::try_parse_from(argv).unwrap().command {
+            Some(Command::Route(a)) => a,
+            other => panic!("not a route command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn route_joins_unquoted_words_and_keeps_flags_after_them() {
+        let a = route(&["fix", "a", "typo", "--explain"]);
+        assert_eq!(a.task.join(" "), "fix a typo");
+        assert!(a.explain);
+        assert!(a.sub.is_none());
+    }
+
+    #[test]
+    fn route_double_dash_lets_a_task_start_with_eval() {
+        let a = route(&["--", "eval", "foo"]);
+        assert_eq!(a.task.join(" "), "eval foo");
+        assert!(a.sub.is_none());
+        assert!(matches!(route(&["eval"]).sub, Some(RouteSub::Eval { .. })));
+    }
 }

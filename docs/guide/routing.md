@@ -27,7 +27,7 @@ Edit choices with `superorchestrator config edit`, or on the Choices page of the
 superorchestrator route "Rename the foo module to bar" --explain
 ```
 
-`route` previews only. It reserves nothing. Use `--role` to route for another role (default `worker`). The MCP tool `route` does the same.
+`route` previews only. It reserves nothing. The task needs no quotes: `route fix a typo in README` routes "fix a typo in README". A task that starts with `eval` or `-` needs `--` first, as in `route -- eval the parser`, because `route eval` is the evaluation command. Use `--role` to route for another role (default `worker`). The MCP tool `route` does the same.
 
 ## How the router decides
 

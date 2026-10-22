@@ -31,6 +31,8 @@ pub enum AccountsError {
     NotFound(String),
     #[error("credential home {0} does not exist")]
     HomeMissing(PathBuf),
+    #[error("account name `{name}` would shadow {}; pick another name", path.display())]
+    ShadowsCommand { name: String, path: PathBuf },
     #[error("invalid account name `{0}`")]
     InvalidName(String),
     #[error("refusing to purge {path}: {reason}")]

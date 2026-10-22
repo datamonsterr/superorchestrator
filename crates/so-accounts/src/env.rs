@@ -37,7 +37,7 @@ pub fn resolve_binary(name: &str, path_var: Option<&str>) -> Result<PathBuf> {
         .ok_or_else(|| AccountsError::BinaryNotFound(name.to_string()))
 }
 
-fn is_executable(p: &Path) -> bool {
+pub(crate) fn is_executable(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
 }
