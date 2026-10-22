@@ -1,7 +1,7 @@
 //! Method handlers registered on the supervisor's router.
 
 mod harnesses;
-mod route;
+pub mod route;
 
 use std::sync::Arc;
 

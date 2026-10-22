@@ -62,15 +62,13 @@ pub struct Catalog {
     pub harnesses: BTreeMap<Harness, HarnessModels>,
 }
 
-/// Tier guessed from a model name, for models the catalog has not seen.
+/// Tier guessed from a model name. Matches whole tokens (split on `-`, `/`, `.`, `_`), so
+/// `gemini` is not `mini`.
 pub fn infer_tier(model: &str) -> Tier {
-    let n = model.to_lowercase();
-    let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
-    if has(&[
+    const HIGH: &[&str] = &[
         "pro", "opus", "max", "ultra", "large", "sol", "terra", "astra", "fable",
-    ]) {
-        Tier::High
-    } else if has(&[
+    ];
+    const FAST: &[&str] = &[
         "flash",
         "mini",
         "nano",
@@ -79,7 +77,13 @@ pub fn infer_tier(model: &str) -> Tier {
         "lightning",
         "small",
         "spark",
-    ]) {
+    ];
+    let lower = model.to_lowercase();
+    let tokens: Vec<&str> = lower.split(['-', '/', '.', '_', ' ']).collect();
+    let has = |words: &[&str]| tokens.iter().any(|t| words.contains(t));
+    if has(HIGH) {
+        Tier::High
+    } else if has(FAST) {
         Tier::Fast
     } else {
         Tier::Mid
@@ -111,7 +115,8 @@ impl Catalog {
         toml::from_str(DEFAULT_CATALOG).expect("embedded catalog is valid")
     }
 
-    /// `models.toml`, or the shipped default when the file is missing or holds no models.
+    /// `models.toml` merged with the shipped default (user entries win); the default alone
+    /// when the file is missing.
     pub fn load(paths: &Paths) -> Result<Self> {
         let path = paths.models_toml();
         let text = match std::fs::read_to_string(&path) {
@@ -130,11 +135,18 @@ impl Catalog {
             path: path.clone(),
             reason: e.to_string(),
         })?;
-        Ok(if cat.model_count() == 0 {
-            Self::default_catalog()
-        } else {
-            cat
-        })
+        Ok(cat.with_defaults())
+    }
+
+    /// Adds embedded default entries the catalog lacks; entries already present win. This is
+    /// how a new release's models reach an existing models.toml.
+    pub fn with_defaults(mut self) -> Self {
+        for (harness, entry) in Self::default_catalog().entries() {
+            if !self.contains(harness, &entry.id) {
+                self.insert(harness, entry.clone());
+            }
+        }
+        self
     }
 
     pub fn save(&self, paths: &Paths) -> Result<()> {
@@ -456,134 +468,153 @@ async fn free_models(env: &RefreshEnv<'_>) -> std::result::Result<(Vec<String>, 
     }
 }
 
-/// Collects models from the harness CLIs and models.dev, merges them into `catalog` (existing
-/// entries keep their tier, efforts and pool) and reports against `choices`. Does not write.
+/// Output of one collector.
+struct Gathered {
+    sources: Vec<SourceReport>,
+    models: Vec<Collected>,
+    free: BTreeSet<String>,
+}
+
+async fn gather_codex(env: &RefreshEnv<'_>) -> Gathered {
+    let mut g = Gathered {
+        sources: Vec::new(),
+        models: Vec::new(),
+        free: BTreeSet::new(),
+    };
+    let Some(acct) = first_account(env, Harness::Codex) else {
+        g.sources.push(source(
+            "codex",
+            SourceStatus::Skipped,
+            0,
+            "no enabled codex account",
+        ));
+        return g;
+    };
+    match run_collector(
+        env,
+        acct,
+        &["app-server", "--listen", "stdio://"],
+        codex_model_list_lines(),
+        ResponseMatcher::JsonRpcResponses,
+    )
+    .await
+    {
+        Ok(out) => {
+            let models = parse_codex_models(&out);
+            if models.is_empty() {
+                g.sources.push(source(
+                    "codex",
+                    SourceStatus::Failed,
+                    0,
+                    "no models in the reply",
+                ));
+            } else {
+                g.sources.push(source(
+                    "codex",
+                    SourceStatus::Ok,
+                    models.len(),
+                    "model/list",
+                ));
+                g.models
+                    .extend(models.into_iter().map(|(id, efforts)| Collected {
+                        harness: Harness::Codex,
+                        id,
+                        efforts,
+                        free: false,
+                    }));
+            }
+        }
+        Err(e) => g.sources.push(source("codex", SourceStatus::Failed, 0, e)),
+    }
+    g
+}
+
+/// `opencode models` for opencode and `agy models` for agy: same shape, different parser.
+async fn gather_listing(env: &RefreshEnv<'_>, harness: Harness, name: &str) -> Gathered {
+    let mut g = Gathered {
+        sources: Vec::new(),
+        models: Vec::new(),
+        free: BTreeSet::new(),
+    };
+    let Some(acct) = first_account(env, harness) else {
+        g.sources.push(source(
+            name,
+            SourceStatus::Skipped,
+            0,
+            format!("no enabled {name} account"),
+        ));
+        return g;
+    };
+    match run_collector(env, acct, &["models"], Vec::new(), ResponseMatcher::Eof).await {
+        Ok(out) => {
+            let ids = if harness == Harness::Agy {
+                parse_agy_models(&out)
+            } else {
+                parse_opencode_models(&out)
+            };
+            if ids.is_empty() {
+                g.sources
+                    .push(source(name, SourceStatus::Failed, 0, "no models listed"));
+            } else {
+                g.sources.push(source(
+                    name,
+                    SourceStatus::Ok,
+                    ids.len(),
+                    format!("{name} models"),
+                ));
+                g.models.extend(ids.into_iter().map(|id| Collected {
+                    harness,
+                    id,
+                    efforts: Vec::new(),
+                    free: false,
+                }));
+            }
+        }
+        Err(e) => g.sources.push(source(name, SourceStatus::Failed, 0, e)),
+    }
+    g
+}
+
+async fn gather_models_dev(env: &RefreshEnv<'_>) -> Gathered {
+    let mut g = Gathered {
+        sources: Vec::new(),
+        models: Vec::new(),
+        free: BTreeSet::new(),
+    };
+    match free_models(env).await {
+        Ok((free, detail)) => {
+            g.sources
+                .push(source("models.dev", SourceStatus::Ok, free.len(), detail));
+            g.free.extend(free);
+        }
+        Err(e) => g
+            .sources
+            .push(source("models.dev", SourceStatus::Failed, 0, e)),
+    }
+    g
+}
+
+/// Collects models from the harness CLIs and models.dev (concurrently), merges them into
+/// `catalog` (existing entries keep their tier, efforts and pool) and reports against
+/// `choices`. Does not write.
 pub async fn refresh(
     env: &RefreshEnv<'_>,
     mut catalog: Catalog,
     choices: &[Choice],
 ) -> (Catalog, RefreshReport) {
+    let (codex, opencode, dev, agy) = tokio::join!(
+        gather_codex(env),
+        gather_listing(env, Harness::Opencode, "opencode"),
+        gather_models_dev(env),
+        gather_listing(env, Harness::Agy, "agy"),
+    );
     let mut sources = Vec::new();
     let mut collected: Vec<Collected> = Vec::new();
-
-    match first_account(env, Harness::Codex) {
-        None => sources.push(source(
-            "codex",
-            SourceStatus::Skipped,
-            0,
-            "no enabled codex account",
-        )),
-        Some(acct) => {
-            match run_collector(
-                env,
-                acct,
-                &["app-server", "--listen", "stdio://"],
-                codex_model_list_lines(),
-                ResponseMatcher::JsonRpcResponses,
-            )
-            .await
-            {
-                Ok(out) => {
-                    let models = parse_codex_models(&out);
-                    if models.is_empty() {
-                        sources.push(source(
-                            "codex",
-                            SourceStatus::Failed,
-                            0,
-                            "no models in the reply",
-                        ));
-                    } else {
-                        sources.push(source(
-                            "codex",
-                            SourceStatus::Ok,
-                            models.len(),
-                            "model/list",
-                        ));
-                        collected.extend(models.into_iter().map(|(id, efforts)| Collected {
-                            harness: Harness::Codex,
-                            id,
-                            efforts,
-                            free: false,
-                        }));
-                    }
-                }
-                Err(e) => sources.push(source("codex", SourceStatus::Failed, 0, e)),
-            }
-        }
-    }
-
     let mut free_set: BTreeSet<String> = BTreeSet::new();
-    match first_account(env, Harness::Opencode) {
-        None => sources.push(source(
-            "opencode",
-            SourceStatus::Skipped,
-            0,
-            "no enabled opencode account",
-        )),
-        Some(acct) => {
-            match run_collector(env, acct, &["models"], Vec::new(), ResponseMatcher::Eof).await {
-                Ok(out) => {
-                    let models = parse_opencode_models(&out);
-                    if models.is_empty() {
-                        sources.push(source(
-                            "opencode",
-                            SourceStatus::Failed,
-                            0,
-                            "no models listed",
-                        ));
-                    } else {
-                        sources.push(source(
-                            "opencode",
-                            SourceStatus::Ok,
-                            models.len(),
-                            "opencode models",
-                        ));
-                        collected.extend(models.into_iter().map(|id| Collected {
-                            harness: Harness::Opencode,
-                            id,
-                            efforts: Vec::new(),
-                            free: false,
-                        }));
-                    }
-                }
-                Err(e) => sources.push(source("opencode", SourceStatus::Failed, 0, e)),
-            }
-        }
-    }
-    match free_models(env).await {
-        Ok((free, detail)) => {
-            sources.push(source("models.dev", SourceStatus::Ok, free.len(), detail));
-            free_set.extend(free);
-        }
-        Err(e) => sources.push(source("models.dev", SourceStatus::Failed, 0, e)),
-    }
-
-    match first_account(env, Harness::Agy) {
-        None => sources.push(source(
-            "agy",
-            SourceStatus::Skipped,
-            0,
-            "no enabled agy account",
-        )),
-        Some(acct) => {
-            match run_collector(env, acct, &["models"], Vec::new(), ResponseMatcher::Eof).await {
-                Ok(out) => {
-                    let models = parse_agy_models(&out);
-                    if models.is_empty() {
-                        sources.push(source("agy", SourceStatus::Failed, 0, "no models listed"));
-                    } else {
-                        sources.push(source("agy", SourceStatus::Ok, models.len(), "agy models"));
-                        collected.extend(models.into_iter().map(|id| Collected {
-                            harness: Harness::Agy,
-                            id,
-                            efforts: Vec::new(),
-                            free: false,
-                        }));
-                    }
-                }
-                Err(e) => sources.push(source("agy", SourceStatus::Failed, 0, e)),
-            }
-        }
+    for g in [codex, opencode, dev, agy] {
+        sources.extend(g.sources);
+        collected.extend(g.models);
+        free_set.extend(g.free);
     }
 
     let mut added = Vec::new();
@@ -708,7 +739,39 @@ mod tests {
             },
         );
         c.save(&paths).unwrap();
-        assert_eq!(Catalog::load(&paths).unwrap(), c);
+        // A saved catalog with only a custom entry still gains the shipped defaults.
+        let loaded = Catalog::load(&paths).unwrap();
+        assert!(loaded.contains(Harness::Codex, "m"));
+        assert!(loaded.contains(Harness::Agy, "gemini-3.8-flash-low"));
+    }
+
+    #[test]
+    fn upgrade_adds_missing_defaults_and_user_entries_win() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(d.path().to_path_buf());
+        std::fs::write(
+            paths.models_toml(),
+            r#"[[agy.models]]
+id = "gemini-3.8-flash-low"
+tier = "high"
+cost = "paid"
+pool = "gemini"
+"#,
+        )
+        .unwrap();
+        let c = Catalog::load(&paths).unwrap();
+        let mine = c.get(Harness::Agy, "gemini-3.8-flash-low").unwrap();
+        assert_eq!((mine.tier, mine.cost), (Tier::High, Cost::Paid));
+        // Present exactly once, and the rest of the defaults arrived.
+        assert_eq!(
+            c.entries()
+                .iter()
+                .filter(|(_, m)| m.id == "gemini-3.8-flash-low")
+                .count(),
+            1
+        );
+        assert!(c.contains(Harness::Codex, "gpt-6.1-sol"));
+        assert_eq!(c.model_count(), Catalog::default_catalog().model_count());
     }
 
     #[test]
@@ -769,6 +832,11 @@ mod tests {
     fn infers_tier_and_cost() {
         assert_eq!(infer_tier("opencode/foo-pro"), Tier::High);
         assert_eq!(infer_tier("gemini-flash"), Tier::Fast);
+        // `gemini` contains `mini`, `terrain` contains `terra`: only whole tokens count.
+        assert_eq!(infer_tier("gemini-4-argon"), Tier::Mid);
+        assert_eq!(infer_tier("gemini-3.8-pro"), Tier::High);
+        assert_eq!(infer_tier("opencode/terrain-1"), Tier::Mid);
+        assert_eq!(infer_tier("opencode/gpt-5.4-mini"), Tier::Fast);
         assert_eq!(infer_tier("something"), Tier::Mid);
         assert_eq!(infer_cost(Harness::Opencode, "x-free"), Cost::Free);
         assert_eq!(infer_cost(Harness::Opencode, "x"), Cost::Paid);

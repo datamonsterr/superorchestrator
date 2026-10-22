@@ -41,7 +41,10 @@ async fn handler(
     text.push_str(&" ".repeat(pad));
     (
         StatusCode::from_u16(status).unwrap(),
-        [("content-type", "application/json")],
+        [
+            ("content-type", "application/json"),
+            ("retry-after", if status == 429 { "1" } else { "" }),
+        ],
         text,
     )
 }
@@ -363,6 +366,11 @@ async fn account_choice_follows_headroom_and_cap() {
         created_at: chrono::Utc::now(),
         started_at: None,
         finished_at: None,
+        isolation: so_core::Isolation::None,
+        max_turns: None,
+        worktree_base: None,
+        worktree_repo: None,
+        timeout_ms: None,
     };
     w.store.insert_run(&run).unwrap();
     let r = route_detailed(&w.inputs(), &p).await.unwrap().result;
@@ -418,4 +426,80 @@ async fn eval_reports_without_task_text() {
     assert!(rep.eligible_compliance > 0.6);
     let text = serde_json::to_string(&rep).unwrap();
     assert!(!text.contains("SECRET-TASK-TEXT"));
+}
+
+#[tokio::test]
+async fn rate_limit_and_timeout_statuses_are_retried_once_honouring_retry_after() {
+    for status in [429u16, 408] {
+        let (url, fake) = serve(vec![
+            (status, json!({}), 0),
+            (
+                200,
+                answer("agy-fast", 0.9, json!({"agy-fast": 0.9, "codex-big": 0.1})),
+                0,
+            ),
+        ])
+        .await;
+        let w = world(&url, true);
+        let t = std::time::Instant::now();
+        let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+        assert_eq!(out.result.source, RouteSource::Jev, "{status}");
+        assert_eq!(fake.hits.load(Ordering::SeqCst), 2);
+        if status == 429 {
+            // Retry-After: 1 was honoured.
+            assert!(t.elapsed() >= std::time::Duration::from_millis(900));
+        }
+    }
+}
+
+#[tokio::test]
+async fn plain_http_to_a_remote_host_is_refused() {
+    let mut w = world("http://example.com/decisions", true);
+    w.config.router.jev.endpoint = "http://example.com/decisions".into();
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    assert_eq!(out.result.source, RouteSource::Heuristic);
+    assert!(out.fallback_reason.unwrap().contains("https"));
+}
+
+#[tokio::test]
+async fn ranked_accounts_and_exclude_accounts_drive_failover() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    w.accounts
+        .push(AccountFile::new("codex-b", Harness::Codex, "/h/d", "codex").unwrap());
+    let mut p = params("Refactor the architecture and concurrency");
+    let r = route_detailed(&w.inputs(), &p).await.unwrap().result;
+    assert_eq!(r.choice_id, "codex-big");
+    assert_eq!(r.ranked_accounts, vec!["codex-a", "codex-b"]);
+    assert_eq!(r.account, r.ranked_accounts[0]);
+    // The first account failed: the same choice on the next one.
+    p.exclude_accounts = vec!["codex-a".into()];
+    let r = route_detailed(&w.inputs(), &p).await.unwrap().result;
+    assert_eq!(
+        (r.choice_id.as_str(), r.account.as_str()),
+        ("codex-big", "codex-b")
+    );
+    // No account left for codex: the choice becomes ineligible and routing moves on.
+    p.exclude_accounts = vec!["codex-a".into(), "codex-b".into()];
+    let r = route_detailed(&w.inputs(), &p).await.unwrap().result;
+    assert_eq!(r.choice_id, "agy-fast");
+    // Everything excluded: nothing eligible (Claude is last in rank but also has no account).
+    p.exclude_accounts = vec![
+        "codex-a".into(),
+        "codex-b".into(),
+        "agy-a".into(),
+        "claude-a".into(),
+    ];
+    assert!(route_detailed(&w.inputs(), &p).await.is_err());
+    // Pinned routes honour it too.
+    let mut p = params("x");
+    p.harness = Some("codex".into());
+    p.exclude_accounts = vec!["codex-a".into()];
+    assert_eq!(
+        route_detailed(&w.inputs(), &p)
+            .await
+            .unwrap()
+            .result
+            .account,
+        "codex-b"
+    );
 }

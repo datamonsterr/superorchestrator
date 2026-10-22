@@ -67,8 +67,12 @@ async fn refresh_cmd(ctx: &Ctx) -> Result<()> {
         models_dev_url: None,
         now: chrono::Utc::now(),
     };
-    let (catalog, report) = refresh(&env, Catalog::load(&ctx.paths)?, &config.choices).await;
-    catalog.save(&ctx.paths)?;
+    let before = Catalog::load(&ctx.paths)?;
+    let (catalog, report) = refresh(&env, before.clone(), &config.choices).await;
+    // Rewriting drops comments in models.toml, so only write when something changed.
+    if catalog != before || !ctx.paths.models_toml().is_file() {
+        catalog.save(&ctx.paths)?;
+    }
     ctx.emit(&report, |w| {
         for s in &report.sources {
             let st = match s.status {

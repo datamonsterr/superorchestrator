@@ -16,7 +16,7 @@ use crate::eligible::{Candidate, Snapshot, apply_claude_rank, candidate, eligibl
 use crate::error::{Result, RouterError};
 use crate::heuristic::{Complexity, ScoreInputs, estimate_complexity, harness_priority, score};
 use crate::jev::{EnvFn, JevFailure, JevRequest, decide, process_env, resolve_key};
-use crate::select::{headroom_of, select_account};
+use crate::select::{headroom_of, rank_accounts, select_account};
 
 pub const MAX_PROMPT_CHARS: usize = 200_000;
 const ALTERNATIVES: usize = 3;
@@ -59,16 +59,6 @@ impl<'a> RouteInputs<'a> {
             env: process_env,
         }
     }
-
-    /// Reads load and headroom. Blocks on SQLite.
-    pub fn snapshot(&self) -> Result<Snapshot> {
-        Snapshot::collect(
-            self.store,
-            self.accounts,
-            f64::from(self.config.usage.low_pct),
-            self.now,
-        )
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -89,15 +79,22 @@ pub fn config_fingerprint(config: &Config) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-pub async fn route(inputs: &RouteInputs<'_>, params: &RouteParams) -> Result<RouteResult> {
-    Ok(route_detailed(inputs, params).await?.result)
-}
-
+/// Collects the snapshot on the blocking pool, then routes. The store, accounts and
+/// config are cloned for that.
 pub async fn route_detailed(
     inputs: &RouteInputs<'_>,
     params: &RouteParams,
 ) -> Result<RouteOutcome> {
-    let snapshot = inputs.snapshot()?;
+    let (store, accounts, low, now) = (
+        inputs.store.clone(),
+        inputs.accounts.to_vec(),
+        f64::from(inputs.config.usage.low_pct),
+        inputs.now,
+    );
+    let snapshot =
+        tokio::task::spawn_blocking(move || Snapshot::collect(&store, &accounts, low, now))
+            .await
+            .map_err(|e| RouterError::Invalid(format!("snapshot task failed: {e}")))??;
     let ctx = RouteCtx {
         config: inputs.config,
         catalog: inputs.catalog,
@@ -296,17 +293,28 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
     }
     let pins = parse_pins(params)?;
     let pinned = pins.any();
-    let cands: Vec<Candidate<'_>> = if pinned {
+    let mut cands: Vec<Candidate<'_>> = if pinned {
         pinned_candidates(ctx, params, &pins)
     } else {
-        apply_claude_rank(eligible(
+        eligible(
             &ctx.config.choices,
             ctx.catalog,
             ctx.snapshot,
             &role,
             &params.exclude,
-        ))
+        )
     };
+    // Failover: skipped accounts leave some choices with none, which makes them ineligible.
+    if !params.exclude_accounts.is_empty() {
+        for c in &mut cands {
+            c.accounts
+                .retain(|a| !params.exclude_accounts.contains(&a.file.name));
+        }
+        cands.retain(|c| !c.accounts.is_empty());
+    }
+    if !pinned {
+        cands = apply_claude_rank(cands);
+    }
     if cands.is_empty() {
         return Err(RouterError::NoEligible(if pinned {
             "nothing matches the named harness, account, model and effort with an available account"
@@ -330,9 +338,11 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                   fallback_reason: Option<String>|
      -> RouteOutcome {
         let cand = &cands[pick];
-        let account = select_account(&cand.accounts, &cand.pool)
+        let ranked_accounts: Vec<String> = rank_accounts(&cand.accounts, &cand.pool)
+            .iter()
             .map(|a| a.file.name.clone())
-            .unwrap_or_default();
+            .collect();
+        let account = ranked_accounts.first().cloned().unwrap_or_default();
         let (confidence, probabilities, usage) = match (jev, fail) {
             (Some((c, p, u)), _) => (Some(c), p, u),
             (None, Some(f)) => (f.confidence, f.probabilities.clone(), f.usage.clone()),
@@ -370,6 +380,7 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                 usage,
                 alternatives,
                 config_fingerprint: fingerprint.clone(),
+                ranked_accounts,
             },
             fallback_reason,
         }
@@ -413,7 +424,13 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
     if cands.len() == 1 {
         return Ok(heuristic(None, None, "only one eligible choice"));
     }
-    let Some(key) = resolve_key(&ctx.config.router.jev, ctx.env) else {
+    // Reads a dotenv file, so it stays off the async threads.
+    let (jev_cfg, env) = (ctx.config.router.jev.clone(), ctx.env);
+    let key = tokio::task::spawn_blocking(move || resolve_key(&jev_cfg, env))
+        .await
+        .ok()
+        .flatten();
+    let Some(key) = key else {
         let reason = "Jev API key unavailable.".to_string();
         return Ok(heuristic(Some(reason.clone()), None, &reason));
     };

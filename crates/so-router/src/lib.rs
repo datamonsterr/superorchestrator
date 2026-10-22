@@ -15,5 +15,5 @@ pub use catalog::{Catalog, Cost, Tier};
 pub use eligible::{AccountState, Candidate, PoolState, Snapshot};
 pub use error::{Result, RouterError};
 pub use route::{
-    RouteCtx, RouteInputs, RouteOutcome, config_fingerprint, route, route_detailed, route_with,
+    RouteCtx, RouteInputs, RouteOutcome, config_fingerprint, route_detailed, route_with,
 };

@@ -1,7 +1,11 @@
 //! Jev decider client (SPEC 8.3 steps 2-3): OpenRouter `POST /api/alpha/decisions`.
 //! The API key is never logged, printed or placed in an error message.
+//!
+//! Privacy: the task text, the choice descriptions and the account names (inside the
+//! `usage_5h` context) are sent to the decider. Credentials and tokens are not.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use so_core::config::{Jev, Policy};
@@ -59,6 +63,7 @@ pub fn resolve_key(cfg: &Jev, env: EnvFn) -> Option<String> {
 
 pub struct JevRequest<'a> {
     pub task: &'a str,
+    /// The caller's own system prompt, when it has one; routing never supplies it today.
     pub system_instruction: &'a str,
     pub routing_instruction: &'a str,
     pub role: &'a str,
@@ -197,10 +202,42 @@ pub fn build_payload(cfg: &Jev, req: &JevRequest<'_>) -> Value {
     })
 }
 
+/// Longest wait honoured from `Retry-After`.
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(3);
+/// Pause before retrying a failure that gave no `Retry-After`.
+const BACKOFF: Duration = Duration::from_millis(150);
+
 enum Attempt {
     Done(Value),
-    Transient(String),
+    /// Worth one retry after the given pause.
+    Transient(String, Duration),
     Permanent(String),
+}
+
+fn retry_after(resp: &reqwest::Response) -> Duration {
+    resp.headers()
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map_or(BACKOFF, |s| Duration::from_secs(s).min(MAX_RETRY_WAIT))
+}
+
+/// https, or plain http to a loopback host (tests and local proxies). The bearer key must not
+/// travel in clear text.
+fn endpoint_allowed(endpoint: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(endpoint) else {
+        return false;
+    };
+    match url.scheme() {
+        "https" => true,
+        "http" => url.host_str().is_some_and(|h| {
+            h == "localhost"
+                || h.trim_matches(['[', ']'])
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        }),
+        _ => false,
+    }
 }
 
 async fn attempt(http: &reqwest::Client, cfg: &Jev, key: &str, payload: &Value) -> Attempt {
@@ -214,13 +251,20 @@ async fn attempt(http: &reqwest::Client, cfg: &Jev, key: &str, payload: &Value) 
     let resp = match sent {
         Ok(r) => r,
         Err(e) if e.is_timeout() || e.is_connect() => {
-            return Attempt::Transient("Jev request timed out or could not connect".into());
+            return Attempt::Transient(
+                "Jev request timed out or could not connect".into(),
+                BACKOFF,
+            );
         }
         Err(_) => return Attempt::Permanent("Jev request failed".into()),
     };
     let status = resp.status();
-    if status.is_server_error() {
-        return Attempt::Transient(format!("Jev request failed (HTTP {})", status.as_u16()));
+    // 408 and 429 say "try again": 429 may carry Retry-After.
+    if status.is_server_error() || status.as_u16() == 408 || status.as_u16() == 429 {
+        return Attempt::Transient(
+            format!("Jev request failed (HTTP {})", status.as_u16()),
+            retry_after(&resp),
+        );
     }
     if !status.is_success() {
         return Attempt::Permanent(format!("Jev request failed (HTTP {})", status.as_u16()));
@@ -233,7 +277,7 @@ async fn attempt(http: &reqwest::Client, cfg: &Jev, key: &str, payload: &Value) 
         Err(e) if e.contains("size limit") => {
             Attempt::Permanent("Jev response exceeds the size limit".into())
         }
-        Err(_) => Attempt::Transient("Jev response could not be read".into()),
+        Err(_) => Attempt::Transient("Jev response could not be read".into(), BACKOFF),
     }
 }
 
@@ -247,10 +291,15 @@ pub async fn decide(
     key: &str,
     req: &JevRequest<'_>,
 ) -> Result<JevDecision, JevFailure> {
+    if !endpoint_allowed(&cfg.endpoint) {
+        return Err(JevFailure::new(
+            "Jev endpoint must use https (http is allowed only for loopback)",
+        ));
+    }
     let payload = build_payload(cfg, req);
     let eligible: BTreeSet<&str> = req.criteria.keys().map(String::as_str).collect();
     let mut last = String::new();
-    for _ in 0..2 {
+    for n in 0..2 {
         match attempt(http, cfg, key, &payload).await {
             Attempt::Done(data) => {
                 let usage = parse_usage(&data);
@@ -269,7 +318,12 @@ pub async fn decide(
                 };
             }
             Attempt::Permanent(r) => return Err(JevFailure::new(r)),
-            Attempt::Transient(r) => last = r,
+            Attempt::Transient(r, wait) => {
+                last = r;
+                if n == 0 {
+                    tokio::time::sleep(wait).await;
+                }
+            }
         }
     }
     Err(JevFailure::new(last))
@@ -371,6 +425,19 @@ mod tests {
         assert!(gate(&v, &p(0.6, 0.1)).is_ok());
         assert!(gate(&v, &p(0.95, 0.1)).is_err());
         assert!(gate(&v, &p(0.6, 0.7)).is_err());
+    }
+
+    #[test]
+    fn endpoint_policy() {
+        assert!(endpoint_allowed(
+            "https://openrouter.ai/api/alpha/decisions"
+        ));
+        assert!(endpoint_allowed("http://127.0.0.1:9/x"));
+        assert!(endpoint_allowed("http://localhost/x"));
+        assert!(endpoint_allowed("http://[::1]:1/x"));
+        assert!(!endpoint_allowed("http://openrouter.ai/x"));
+        assert!(!endpoint_allowed("ftp://127.0.0.1/x"));
+        assert!(!endpoint_allowed("not a url"));
     }
 
     #[test]
