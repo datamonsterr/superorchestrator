@@ -151,7 +151,7 @@ async fn drive(child: &mut tokio::process::Child, req: &ProbeRequest) -> Result<
         .stdout
         .take()
         .ok_or_else(|| UsageError::Probe("no stdout".into()))?;
-    let capped = stdout.take(MAX_STDOUT);
+    let capped = stdout.take(MAX_STDOUT + 1);
     match req.wait_for {
         ResponseMatcher::Eof => {
             for l in &req.stdin_lines {
@@ -161,14 +161,13 @@ async fn drive(child: &mut tokio::process::Child, req: &ProbeRequest) -> Result<
             let mut buf = Vec::new();
             let mut r = capped;
             r.read_to_end(&mut buf).await?;
-            let truncated = buf.len() as u64 >= MAX_STDOUT;
-            let success = if truncated {
-                // Runaway output: stop it rather than wait for it.
-                let _ = child.start_kill();
-                false
-            } else {
-                child.wait().await?.success()
-            };
+            if buf.len() as u64 > MAX_STDOUT {
+                // Runaway output: stop the whole group before waiting, and do not parse it.
+                kill_group(child.id());
+                let _ = child.wait().await;
+                return Err(UsageError::Probe("output too large".into()));
+            }
+            let success = child.wait().await?.success();
             Ok(ProbeOutput {
                 stdout: String::from_utf8_lossy(&buf).into_owned(),
                 success,
@@ -260,9 +259,10 @@ impl UsageService {
                 return Err(UsageError::NotEligible);
             }
             let fresh = !existing.is_empty()
-                && existing
-                    .iter()
-                    .all(|h| h.as_ref().is_some_and(|h| now - h.observed_at < ttl));
+                && existing.iter().all(|h| {
+                    h.as_ref()
+                        .is_some_and(|h| h.observed_at <= now && now - h.observed_at < ttl)
+                });
             if fresh {
                 return Ok(existing
                     .iter()
@@ -764,6 +764,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn future_observed_at_is_not_fresh() {
+        let fake = Fake::new(codex_reply());
+        let (_d, svc, acct) = setup(fake.clone(), Harness::Codex, "codex");
+        let now = Utc::now();
+        svc.refresh_at(&acct, true, now + CDur::hours(2))
+            .await
+            .unwrap();
+        assert_eq!(fake.n(), 1);
+        svc.refresh_at(&acct, false, now).await.unwrap();
+        assert_eq!(fake.n(), 2);
+    }
+
+    #[tokio::test]
     async fn event_merges_per_window() {
         let (_d, svc, acct) = setup(Fake::new(codex_reply()), Harness::Codex, "codex");
         let now = Utc::now();
@@ -774,7 +787,18 @@ mod tests {
             remaining_pct: Some(5.0),
             resets_at: None,
         }];
-        let h = svc.ingest_event(&acct, ev, now).await.unwrap();
+        let later = now + CDur::minutes(4);
+        let h = svc.ingest_event(&acct, ev, later).await.unwrap();
+        // The probe's timestamp survives, so the TTL still counts from the probe.
+        assert_eq!(
+            h[0].observed_at,
+            svc.store
+                .get_headroom("codex-acc", "default")
+                .unwrap()
+                .unwrap()
+                .observed_at
+        );
+        assert!((later - h[0].observed_at) > CDur::minutes(3));
         assert_eq!(h[0].five_hour_remaining_pct, Some(5.0));
         assert_eq!(h[0].weekly_remaining_pct, Some(30.0));
         assert_eq!(
@@ -887,6 +911,19 @@ mod tests {
         let req = ProbeRequest {
             program: "sh".into(),
             args: vec!["-c".into(), "yes | head -c 5000000".into()],
+            env: vec![],
+            stdin_lines: vec![],
+            wait_for: ResponseMatcher::Eof,
+            timeout: Duration::from_secs(5),
+        };
+        match TokioProbeRunner.run(req).await {
+            Err(UsageError::Probe(m)) => assert_eq!(m, "output too large"),
+            other => panic!("{other:?}"),
+        }
+        // Exactly at the cap is still accepted.
+        let req = ProbeRequest {
+            program: "sh".into(),
+            args: vec!["-c".into(), "head -c 1048576 /dev/zero".into()],
             env: vec![],
             stdin_lines: vec![],
             wait_for: ResponseMatcher::Eof,

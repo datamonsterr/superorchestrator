@@ -8,6 +8,7 @@ use so_store::{FlagRow, Store};
 
 use crate::availability::availability;
 use crate::error::Result;
+use crate::headroom::DEFAULT_LOW_PCT;
 
 /// Flags (account, pool) until `reset` (when in the future) or `now + default_cooldown`.
 /// The flag is the source of truth; the stored status is set to `Exhausted` for display only
@@ -48,7 +49,7 @@ pub fn mark_exhausted(
 
 /// True when no flag is active and the effective headroom is not exhausted.
 pub fn is_available(store: &Store, account: &str, pool: &str, now: DateTime<Utc>) -> Result<bool> {
-    Ok(availability(store, account, pool, now)?.available)
+    Ok(availability(store, account, pool, DEFAULT_LOW_PCT, now)?.available)
 }
 
 #[cfg(test)]
@@ -69,7 +70,7 @@ mod tests {
         assert!(!is_available(&s, "a", "default", now + Duration::hours(4)).unwrap());
         let later = now + Duration::hours(5) + Duration::seconds(1);
         assert!(is_available(&s, "a", "default", later).unwrap());
-        let a = availability(&s, "a", "default", later).unwrap();
+        let a = availability(&s, "a", "default", 15.0, later).unwrap();
         assert_eq!(a.status, HeadroomStatus::Unknown);
     }
 
@@ -96,7 +97,7 @@ mod tests {
             s.get_headroom("a", "p").unwrap().unwrap().observed_at,
             h.observed_at
         );
-        let a = availability(&s, "a", "p", now).unwrap();
+        let a = availability(&s, "a", "p", 15.0, now).unwrap();
         assert_eq!(
             a,
             Availability {
@@ -108,7 +109,7 @@ mod tests {
         );
         // Expired flag, healthy windows: available again though the stored status says Exhausted.
         let later = now + Duration::hours(6);
-        let a = availability(&s, "a", "p", later).unwrap();
+        let a = availability(&s, "a", "p", 15.0, later).unwrap();
         assert!(a.available);
         assert_ne!(a.status, HeadroomStatus::Exhausted);
         // A fresh record made by mark_exhausted is stale for TTL purposes.
@@ -156,7 +157,10 @@ mod tests {
         h.weekly_remaining_pct = Some(5.0);
         h.status = HeadroomStatus::Low;
         s.upsert_headroom(&h).unwrap();
-        let a = availability(&s, "a", "p", now).unwrap();
+        // The threshold is the caller's: 5% is Ok when low_pct is 3.
+        let a = availability(&s, "a", "p", 3.0, now).unwrap();
+        assert_eq!(a.status, HeadroomStatus::Ok);
+        let a = availability(&s, "a", "p", 15.0, now).unwrap();
         assert_eq!(
             (a.available, a.status, a.score),
             (true, HeadroomStatus::Low, Some(5.0))

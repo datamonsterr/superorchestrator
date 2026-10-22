@@ -5,7 +5,7 @@ use so_core::HeadroomStatus;
 use so_store::Store;
 
 use crate::error::Result;
-use crate::headroom::{DEFAULT_LOW_PCT, effective_with, headroom_score};
+use crate::headroom::{effective_with, headroom_score};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Availability {
@@ -16,18 +16,19 @@ pub struct Availability {
     pub reason: Option<String>,
 }
 
-/// Combines the flag and the effective headroom. `Exhausted` is unavailable; `Low` is not.
+/// Combines the flag and the effective headroom (`low_pct` is `usage.low_pct`). `Exhausted` is unavailable; `Low` is not.
 pub fn availability(
     store: &Store,
     account: &str,
     pool: &str,
+    low_pct: f64,
     now: DateTime<Utc>,
 ) -> Result<Availability> {
     let flag = store.get_flag(account, pool)?.filter(|f| f.until > now);
     let record = store.get_headroom(account, pool)?;
     let eff = record
         .as_ref()
-        .map(|h| effective_with(h, DEFAULT_LOW_PCT, flag.is_some(), now));
+        .map(|h| effective_with(h, low_pct, flag.is_some(), now));
     let score = record.as_ref().and_then(|h| headroom_score(h, now));
     let status = match (&eff, &flag) {
         (Some(e), _) => e.status,

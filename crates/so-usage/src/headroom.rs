@@ -96,8 +96,12 @@ pub fn merge_partial(
             }
         }
     }
+    // Freshness for the probe TTL comes only from probes: an event keeps a probe's timestamp.
+    let keep_probe_time = existing.is_some_and(|e| e.source == HeadroomSource::Probe);
     h.source = source;
-    h.observed_at = now;
+    if !keep_probe_time {
+        h.observed_at = now;
+    }
     h.status = effective_with(&h, low_pct, false, now).status;
     h
 }
