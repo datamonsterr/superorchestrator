@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "logicalId": "f5078335cce6f5ee6090437d950d25613f4db958ade661c2be4f3d39af4faccd",
+  "source": "https://github.com/TerminalSkills/skills/tree/HEAD/skills/vite",
+  "ref": "HEAD",
+  "revision": "6edcf94159d9f46b0759d2e1b59dd545cfaca254",
+  "category": "frontend/react",
+  "installedAt": "2026-10-22T08:34:48.139Z"
+}

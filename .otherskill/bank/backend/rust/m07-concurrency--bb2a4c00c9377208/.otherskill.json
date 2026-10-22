@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "logicalId": "bb2a4c00c9377208389f170430da815839ee07958a53cc933f2a29eb46be2fc0",
+  "source": "https://github.com/actionbook/rust-skills/tree/HEAD/skills/m07-concurrency",
+  "ref": "HEAD",
+  "revision": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+  "category": "backend/rust",
+  "installedAt": "2026-10-22T08:34:33.685Z"
+}

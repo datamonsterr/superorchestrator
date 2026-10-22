@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "logicalId": "5b19cab66670391912ce31ece43835d6a16b3fe9e6268805ceff6b1a031d1ca2",
+  "source": "https://github.com/anthropics/skills/tree/HEAD/skills/webapp-testing",
+  "ref": "HEAD",
+  "revision": "dbd4588f9e1033efb41dad4bef2f7947c8993d44",
+  "category": "testing",
+  "installedAt": "2026-10-22T08:34:29.110Z"
+}
