@@ -11,7 +11,7 @@ use so_store::{ResumeClaim, RunRow};
 use std::path::Path;
 
 use super::lifecycle::excerpt;
-use super::{R, RunManager, lock, rpc, worktree};
+use super::{LockKind, R, RunManager, lock, rpc, worktree};
 
 /// Longest a resume waits for the run's wrap-up to finish.
 const WRAP_UP_WAIT: Duration = Duration::from_secs(15);
@@ -51,14 +51,23 @@ impl RunManager {
     /// Resumes `row`'s native session with `prompt`. The run claims a slot like any start:
     /// with room it is `running` at once, without it goes back to `queued` and the queue
     /// resumes it later. `msg_id` is the stored message that carries `prompt`, marked read
-    /// once the resume is committed. `reason` is recorded on the state change.
+    /// once the resume is committed. `reason` is recorded on the state change and `actor`
+    /// (see `ConnCtx::actor`) on `review_rejected`.
+    ///
+    /// The run's gate lock is taken first and held from the fresh read of the run through
+    /// the claim and the events, so a reject of a run that is just entering the review
+    /// gate waits until the gate has been announced, and two resumes cannot both claim.
+    /// It is released before the process is launched: nothing after that point orders
+    /// against the gate, and a launch can take long.
     pub(crate) async fn resume_finished(
         &self,
         row: &RunRow,
         prompt: &str,
         reason: &str,
         msg_id: Option<String>,
+        actor: &'static str,
     ) -> R<Resumed> {
+        let gate = self.lock_run(LockKind::Gate, &row.id).await;
         // The caller's snapshot may be stale: decide on the run as it is now.
         let id = row.id.clone();
         let fresh = self
@@ -77,6 +86,10 @@ impl RunManager {
         if row.state.is_terminal() {
             self.wait_wrapped_up(&row.id).await?;
         }
+        // Putting the worktree back, claiming, and undoing the former when the claim
+        // loses are one step under the run's worktree lock: no other resumer can be
+        // using the directory this call removes.
+        let wt = self.lock_run(LockKind::Worktree, &row.id).await;
         // Make sure the run can work where it left off before it changes state: a run
         // that cannot be resumed stays as it is and the caller gets the error.
         let (dir, recreated) = match self.resume_cwd_checked(row).await {
@@ -120,10 +133,11 @@ impl RunManager {
                 return Ok(Resumed::Skipped);
             }
         };
+        drop(wt);
         lock(&self.inner.runs).entry(row.id.clone()).or_default();
         if let Some(m) = msg_id {
             let _ = self
-                .db(move |s| s.mark_messages_read(&[m], chrono::Utc::now()))
+                .db(move |s| s.claim_messages(&[m], chrono::Utc::now()))
                 .await;
         }
         if from == RunState::PendingReview {
@@ -131,7 +145,7 @@ impl RunManager {
                 &row.session_id,
                 Some(&row.id),
                 EventType::ReviewRejected,
-                json!({"feedback": excerpt(prompt, 280), "via": reason}),
+                json!({"feedback": excerpt(prompt, 280), "via": reason, "actor": actor}),
             )
             .await;
         }
@@ -142,6 +156,7 @@ impl RunManager {
             json!({"from": from, "to": to, "reason": reason}),
         )
         .await;
+        drop(gate);
         if to == RunState::Queued {
             self.request_drain();
             return Ok(Resumed::Queued);
@@ -156,11 +171,12 @@ impl RunManager {
     /// Where a resumed run works: its own worktree (recreated from its branch when the
     /// directory is gone), or its original directory when it has no worktree.
     pub(crate) async fn resume_cwd(&self, row: &RunRow) -> Result<std::path::PathBuf, String> {
+        let _serial = self.lock_run(LockKind::Worktree, &row.id).await;
         self.resume_cwd_checked(row).await.map(|(dir, _)| dir)
     }
 
-    /// Like [`RunManager::resume_cwd`]; also says whether the worktree was recreated by
-    /// this call. Recreating is serialised, so two resumes of one run cannot both add it.
+    /// Like [`RunManager::resume_cwd`] but without taking the run's worktree lock (the
+    /// caller holds it); also says whether the worktree was recreated by this call.
     async fn resume_cwd_checked(&self, row: &RunRow) -> Result<(std::path::PathBuf, bool), String> {
         let worktree_run = row.isolation == so_core::Isolation::Worktree;
         if !worktree_run {
@@ -185,7 +201,6 @@ impl RunManager {
             row.worktree_repo.clone().map(std::path::PathBuf::from),
             row.branch.clone(),
         );
-        let _serial = self.inner.recreate.lock().await;
         let probe = path.clone();
         if self
             .blocking(move || probe.is_dir())
@@ -234,7 +249,10 @@ mod tests {
         assert!(lock(&m.inner.runs).contains_key(&row.id));
         let resume = {
             let (m, row) = (m.clone(), row.clone());
-            tokio::spawn(async move { m.resume_finished(&row, "go", "message", None).await })
+            tokio::spawn(async move {
+                m.resume_finished(&row, "go", "message", None, "orchestrator")
+                    .await
+            })
         };
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(

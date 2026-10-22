@@ -21,7 +21,7 @@ use tokio::process::Command;
 use super::lifecycle::{Outcome, excerpt};
 use super::resume::Resumed;
 use super::worktree;
-use super::{R, RunManager, SHUTDOWN_DEADLINE, lock, rpc};
+use super::{LockKind, R, RunManager, SHUTDOWN_DEADLINE, lock, rpc};
 use crate::dispatch::ConnCtx;
 
 /// Longest a single check may run.
@@ -471,12 +471,24 @@ impl RunManager {
             .flatten()
         };
         // From the state change to the message nothing may resume the run: a reject
-        // waits here, so its events come after these.
-        let _gate = self.inner.gate.lock().await;
+        // waits on this lock, so its events come after these.
+        let _gate = self.lock_run(LockKind::Gate, run_id).await;
         let id = run_id.to_string();
-        let loaded = self.db(move |s| s.get_run(&id)).await;
-        let Ok(Some(row)) = loaded else {
-            return Gate::Entered;
+        let row = match self.db(move |s| s.get_run(&id)).await {
+            Ok(Some(row)) => row,
+            other => {
+                // Without the row there is nothing to announce the gate with.
+                let why = match other {
+                    Err(e) => e.message,
+                    _ => "the run is gone".to_string(),
+                };
+                tracing::error!(%run_id, %why, "cannot read the run at the review gate");
+                self.relabel_attempt(attempt, "failed").await;
+                let reason = format!("could not read the run at the review gate: {why}");
+                self.fail_run(run_id, so_core::ErrorKind::Other, &reason)
+                    .await;
+                return Gate::Entered;
+            }
         };
         let id = run_id.to_string();
         let moved = self
@@ -488,20 +500,25 @@ impl RunManager {
                 so_store::StoreError::StateConflict { .. }
                 | so_store::StoreError::InvalidTransition { .. },
             ) => {
-                // Lost to a cancel (or a failure): the run did not reach the gate.
-                if let Some(aid) = attempt {
-                    let _ = self
-                        .db(move |s| s.finish_attempt(&aid, "cancelled", chrono::Utc::now()))
-                        .await;
-                }
+                // Someone moved the run first: a cancel, or a failure. Label the attempt
+                // with what the run is now.
+                let id = run_id.to_string();
+                let now = self.db(move |s| s.get_run(&id)).await.ok().flatten();
+                let label = now.map_or("lost", |r| r.state.as_str());
+                self.relabel_attempt(attempt, label).await;
                 return Gate::Entered;
             }
             Err(e) => {
+                self.relabel_attempt(attempt, "failed").await;
                 let reason = format!("could not record the review state: {e}");
                 self.fail_run(run_id, so_core::ErrorKind::Other, &reason)
                     .await;
                 return Gate::Entered;
             }
+        }
+        let delay = self.gate_delay();
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
         }
         // The state is committed: whatever else goes wrong, the run is at the gate and
         // must be announced.
@@ -510,7 +527,16 @@ impl RunManager {
             result_json: Some(result_json),
             ..RunPatch::default()
         };
-        if let Err(e) = self.db(move |s| s.patch_run(&id, &patch)).await {
+        let faulty = self
+            .inner
+            .fault_gate_result
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let stored = if faulty {
+            Err(rpc(so_core::proto::INTERNAL_ERROR, "injected store fault"))
+        } else {
+            self.db(move |s| s.patch_run(&id, &patch)).await
+        };
+        if let Err(e) = stored {
             tracing::error!(%run_id, error = %e.message, "could not store the result at the review gate");
         }
         let names: Vec<&str> = failed.iter().map(|f| f.name.as_str()).collect();
@@ -544,6 +570,16 @@ impl RunManager {
             )
             .await;
         Gate::Entered
+    }
+
+    /// Changes the outcome recorded on an attempt that `enter_review` already closed.
+    async fn relabel_attempt(&self, attempt: Option<String>, outcome: &str) {
+        if let Some(aid) = attempt {
+            let outcome = outcome.to_string();
+            let _ = self
+                .db(move |s| s.finish_attempt(&aid, &outcome, chrono::Utc::now()))
+                .await;
+        }
     }
 
     async fn pending_review_run(&self, ctx: &ConnCtx, run: &str) -> R<RunRow> {
@@ -610,7 +646,7 @@ impl RunManager {
             )
             .await;
         match self
-            .resume_finished(&row, &p.feedback, "review rejected", None)
+            .resume_finished(&row, &p.feedback, "review rejected", None, ctx.actor())
             .await?
         {
             Resumed::Skipped => Err(rpc(INVALID_REQUEST, "the run changed state; try again")),
@@ -740,7 +776,12 @@ mod tests {
         );
         let c = check_cmd("cmd:detached", &cmd, &dir, Duration::from_secs(20)).await;
         assert!(c.ok, "{c:?}");
-        tokio::time::sleep(Duration::from_millis(1800)).await;
+        for _ in 0..200 {
+            if marker.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         assert!(marker.exists(), "the detached process was killed");
         let _ = std::fs::remove_file(&marker);
     }
@@ -748,13 +789,26 @@ mod tests {
     #[tokio::test]
     async fn a_timeout_kills_the_whole_process_group() {
         let dir = std::env::temp_dir();
-        let marker = dir.join(format!("so-grandchild-{}", std::process::id()));
-        let _ = std::fs::remove_file(&marker);
-        let cmd = format!("(sleep 1; touch {}) & sleep 30", marker.display());
-        let t = check_cmd("cmd:slow", &cmd, &dir, Duration::from_millis(200)).await;
+        let pidfile = dir.join(format!("so-grandchild-{}", std::process::id()));
+        let _ = std::fs::remove_file(&pidfile);
+        let cmd = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
+        let t = check_cmd("cmd:slow", &cmd, &dir, Duration::from_millis(500)).await;
         assert!(!t.ok && t.detail.contains("timed out"));
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        assert!(!marker.exists(), "the grandchild survived the timeout");
+        let pid: u32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // The grandchild must go too; poll until it does.
+        let gone = || !Path::new(&format!("/proc/{pid}")).exists();
+        for _ in 0..200 {
+            if gone() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(gone(), "the grandchild survived the timeout");
+        let _ = std::fs::remove_file(&pidfile);
     }
 
     #[tokio::test]

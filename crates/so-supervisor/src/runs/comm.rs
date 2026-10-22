@@ -253,15 +253,15 @@ impl RunManager {
                 return Ok(AckResult { ok: true });
             }
         }
-        self.deliver(&row, &msg).await?;
+        self.deliver(&row, &msg, ctx.actor()).await?;
         Ok(AckResult { ok: true })
     }
 
-    async fn deliver(&self, row: &RunRow, msg: &MessageRow) -> R<()> {
+    async fn deliver(&self, row: &RunRow, msg: &MessageRow, actor: &'static str) -> R<()> {
         match row.state {
             RunState::Queued | RunState::Starting => Ok(()),
             RunState::Succeeded | RunState::Failed | RunState::PendingReview => {
-                self.resume_finished(row, &msg.body, "message", Some(msg.id.clone()))
+                self.resume_finished(row, &msg.body, "message", Some(msg.id.clone()), actor)
                     .await?;
                 Ok(())
             }
@@ -271,14 +271,46 @@ impl RunManager {
                     .and_then(|rt| rt.live.as_ref().map(|l| l.control.clone()));
                 // Without a live process the message stays unread; `go_live` hands it over.
                 if let Some(control) = control {
-                    control.send(&msg.body).await.map_err(|e| {
-                        rpc(UNAVAILABLE, format!("could not deliver the message: {e}"))
-                    })?;
-                    self.mark_read(vec![msg.id.clone()]).await;
+                    self.deliver_claimed(msg, |text| {
+                        let control = control.clone();
+                        async move { control.send(&text).await.map_err(|e| e.to_string()) }
+                    })
+                    .await?;
                 }
                 Ok(())
             }
         }
+    }
+
+    /// Delivers one message to a live run. The message is claimed first, so a flush that
+    /// races this call cannot send it too; if the send fails it goes back to unread.
+    pub(crate) async fn deliver_claimed<F, Fut>(&self, msg: &MessageRow, send: F) -> R<()>
+    where
+        F: FnOnce(String) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        let id = msg.id.clone();
+        let won = self
+            .db(move |s| s.claim_messages(&[id], Utc::now()))
+            .await?;
+        if won.is_empty() {
+            // Someone else (a flush) already took it.
+            return Ok(());
+        }
+        if let Err(e) = send(msg.body.clone()).await {
+            self.unclaim(won).await;
+            return Err(rpc(
+                UNAVAILABLE,
+                format!("could not deliver the message: {e}"),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Puts claimed messages back to unread and wakes whatever waits for messages.
+    pub(crate) async fn unclaim(&self, ids: Vec<String>) {
+        let _ = self.db(move |s| s.mark_messages_unread(&ids)).await;
+        self.inner.msg_tick.send_modify(|n| *n += 1);
     }
 
     /// Messages sent to or from a run, oldest first (not marked read).
@@ -451,28 +483,33 @@ impl RunManager {
         let _ = self
             .db(move |s| {
                 let ids: Vec<String> = s
-                    .unread_messages(&sid, Some(&id), MESSAGES_LIMIT)?
+                    .unread_messages_of_kinds(
+                        &sid,
+                        Some(&id),
+                        &[MessageKind::Answer],
+                        MESSAGES_LIMIT,
+                    )?
                     .into_iter()
-                    .filter(|m| m.kind == MessageKind::Answer)
                     .map(|m| m.id)
                     .collect();
-                s.mark_messages_read(&ids, Utc::now())
+                s.claim_messages(&ids, Utc::now())
             })
             .await;
     }
 
-    /// The oldest unread answer for the run, marked read.
+    /// The oldest unread answer for the run, claimed (so a flush cannot also take it).
     async fn take_answer(&self, row: &RunRow) -> R<Option<String>> {
         let (sid, id) = (row.session_id.clone(), row.id.clone());
         self.db(move |s| {
-            let first = s
-                .unread_messages(&sid, Some(&id), MESSAGES_LIMIT)?
-                .into_iter()
-                .find(|m| m.kind == MessageKind::Answer);
-            if let Some(m) = &first {
-                s.mark_messages_read(std::slice::from_ref(&m.id), Utc::now())?;
+            for m in s.unread_messages_of_kinds(&sid, Some(&id), &[MessageKind::Answer], 100)? {
+                if !s
+                    .claim_messages(std::slice::from_ref(&m.id), Utc::now())?
+                    .is_empty()
+                {
+                    return Ok(Some(m.body));
+                }
             }
-            Ok(first.map(|m| m.body))
+            Ok(None)
         })
         .await
     }
@@ -522,5 +559,72 @@ mod tests {
             RunState::Running
         );
         assert!(!m.is_waiting(&row.id));
+    }
+
+    #[tokio::test]
+    async fn deliver_racing_flush_sends_a_message_once() {
+        let (m, _dir) = manager();
+        let row = insert_run(&m, RunState::Running);
+        for round in 0..30 {
+            let msg = m
+                .store_message(
+                    &row.session_id,
+                    None,
+                    Some(&row.id),
+                    MessageKind::Message,
+                    &format!("note {round}"),
+                    false,
+                )
+                .await
+                .unwrap();
+            let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let (s1, s2) = (sent.clone(), sent.clone());
+            let (m1, m2, row2, msg2) = (m.clone(), m.clone(), row.clone(), msg.clone());
+            let deliver = tokio::spawn(async move {
+                m1.deliver_claimed(&msg2, |t| async move {
+                    s1.lock().unwrap().push(t);
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            });
+            let flush = tokio::spawn(async move {
+                let batch = m2.claim_input(&row2).await;
+                m2.hand_over(batch, |t| {
+                    let s2 = s2.clone();
+                    async move {
+                        s2.lock().unwrap().push(t);
+                        Ok(())
+                    }
+                })
+                .await;
+            });
+            deliver.await.unwrap();
+            flush.await.unwrap();
+            assert_eq!(*sent.lock().unwrap(), [format!("note {round}")]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_live_send_puts_the_message_back() {
+        let (m, _dir) = manager();
+        let row = insert_run(&m, RunState::Running);
+        let msg = m
+            .store_message(
+                &row.session_id,
+                None,
+                Some(&row.id),
+                MessageKind::Message,
+                "hello",
+                false,
+            )
+            .await
+            .unwrap();
+        let r = m
+            .deliver_claimed(&msg, |_| async { Err("closed".to_string()) })
+            .await;
+        assert!(r.is_err());
+        let again = m.claim_input(&row).await;
+        assert_eq!(again.len(), 1);
     }
 }
