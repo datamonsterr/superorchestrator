@@ -79,10 +79,12 @@ describe('TimelinePage', () => {
     expect(screen.getByTestId('where')).toHaveTextContent(/^\/sessions\/sess-1$/)
   })
 
-  it('renders a stub panel by default', async () => {
+  it('renders the run panel by default', async () => {
     renderPage('/sessions/sess-1/runs/run-1')
-    expect(await screen.findByText('The run panel is not loaded.')).toBeInTheDocument()
-  })
+    // The panel is a lazy chunk: the first transform is slow on a cold cache.
+    expect(await screen.findByRole('tab', { name: 'Brief' }, { timeout: 12000 })).toBeInTheDocument()
+    expect(await screen.findByRole('heading', { name: 'refactor-api' })).toBeInTheDocument()
+  }, 20000)
 
   it('appends live events from the events cache through the rAF buffer', async () => {
     const { queryClient } = renderPage('/sessions/sess-1')

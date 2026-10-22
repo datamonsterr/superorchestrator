@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowLeft, Maximize, Minus, Plus, Radio } from 'lucide-react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { EmptyState } from '@/components/common/EmptyState'
@@ -6,7 +6,6 @@ import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Slider } from '@/components/ui/slider'
 import { Toggle } from '@/components/ui/toggle'
@@ -19,24 +18,16 @@ import {
 } from './viewport'
 
 export interface TimelinePageProps {
-  /** Renders the panel for the selected run (design 4.9). The T2.6 run panel plugs in here. */
+  /** Renders the panel for the selected run (design 4.9). Defaults to the lazily loaded run panel. */
   renderRunPanel?: (runId: string, onClose: () => void) => ReactNode
 }
 
-function RunPanelStub({ runId, onClose }: { runId: string; onClose: () => void }) {
-  return (
-    // Non-modal: the timeline stays usable (and visible to assistive tech), so another lane can be clicked.
-    <Sheet open modal={false} onOpenChange={(open) => !open && onClose()}>
-      <SheetContent className="w-full sm:max-w-[560px]" onInteractOutside={(e) => e.preventDefault()}>
-        <SheetHeader>
-          <SheetTitle>Run {runId}</SheetTitle>
-          <SheetDescription>The run panel is not loaded.</SheetDescription>
-        </SheetHeader>
-      </SheetContent>
-    </Sheet>
-  )
-}
-const defaultRenderRunPanel = (runId: string, onClose: () => void) => <RunPanelStub runId={runId} onClose={onClose} />
+const RunPanel = lazy(() => import('./run-panel/RunPanel').then((m) => ({ default: m.RunPanel })))
+const defaultRenderRunPanel = (runId: string, onClose: () => void) => (
+  <Suspense fallback={null}>
+    <RunPanel runId={runId} onClose={onClose} />
+  </Suspense>
+)
 
 function usePrefersReducedMotion(): boolean {
   const [reduced] = useState(() => typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
