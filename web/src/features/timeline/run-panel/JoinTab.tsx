@@ -33,7 +33,7 @@ export function JoinTab({ runId }: { runId: string }) {
         </p>
       )}
       <div>
-        <Button type="button" variant="outline" size="sm" disabled={join.isPending} onClick={() => join.mutate({ id: runId })}>
+        <Button type="button" variant="outline" size="sm" title="Records a join_command_issued audit event each time" disabled={join.isPending} onClick={() => join.mutate({ id: runId })}>
           Issue again
         </Button>
       </div>

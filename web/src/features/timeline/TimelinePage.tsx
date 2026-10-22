@@ -25,7 +25,7 @@ export interface TimelinePageProps {
 const RunPanel = lazy(() => import('./run-panel/RunPanel').then((m) => ({ default: m.RunPanel })))
 const defaultRenderRunPanel = (runId: string, onClose: () => void) => (
   <Suspense fallback={null}>
-    <RunPanel runId={runId} onClose={onClose} />
+    <RunPanel key={runId} runId={runId} onClose={onClose} />
   </Suspense>
 )
 

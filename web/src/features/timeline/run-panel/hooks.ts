@@ -1,25 +1,53 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useParams } from 'react-router'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { endpoints } from '@/api/endpoints'
 import { qk, usePollingInterval, useRun } from '@/api/queries'
-import type { Event, TranscriptLine } from '@/api/types'
+import type { Event, Page, TranscriptLine } from '@/api/types'
+
+const isSessionEvents = (key: readonly unknown[], sid: string) => key[0] === 'session' && key[1] === sid && key[2] === 'events'
 
 /**
- * Every event of a run, following the cursor through pages of 1000. The key sits under `qk.runEvents(id)`, so the
- * join audit event and other invalidations of that prefix refetch it. It also refetches when the run view changes
- * (state and usage events invalidate `qk.run`), which is how new events show up while the stream is up.
+ * Every event of a run (design 4.9: shares the session cache). Inside a session route this reads the session events
+ * pages from the query cache (the timeline fills it, and `api/stream.ts` appends live events to it) and filters by
+ * run; if the cache is empty it pages the session events into that same cache. Without a session (panel opened
+ * elsewhere) it pages `/runs/:id/events`. The key sits under `qk.runEvents(id)`, so the join audit event and other
+ * invalidations of that prefix refetch it, as do run view changes and appends to the session cache.
  */
 export function useAllRunEvents(runId: string) {
   const qc = useQueryClient()
+  const { sessionId } = useParams()
   const run = useRun(runId)
   const refetchInterval = usePollingInterval()
+  const key = [...qk.runEvents(runId), 'all', sessionId ?? null]
   const q = useQuery({
-    queryKey: [...qk.runEvents(runId), 'all'],
+    queryKey: key,
     queryFn: async ({ signal }) => {
+      if (sessionId) {
+        const cached = () => qc.getQueriesData<Page<Event>>({ queryKey: qk.sessionEvents(sessionId) }).flatMap(([, d]) => d?.items ?? [])
+        let items = cached()
+        if (items.length === 0) {
+          let after: string | null = null
+          do {
+            const cursor: string | null = after
+            const page: Page<Event> = await qc.fetchQuery({
+              queryKey: [...qk.sessionEvents(sessionId), cursor],
+              queryFn: ({ signal: s }) => endpoints.listSessionEvents(sessionId, { after: cursor, limit: 1000 }, { signal: s }),
+              staleTime: 0,
+            })
+            after = page.next_cursor
+          } while (after)
+          items = cached()
+        }
+        const seen = new Set<string>()
+        return items
+          .filter((e) => e.run_id === runId && !seen.has(e.id) && seen.add(e.id))
+          .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts) || (a.id < b.id ? -1 : 1))
+      }
       const all: Event[] = []
       let after: string | null = null
       do {
-        const page: { items: Event[]; next_cursor: string | null } = await endpoints.listRunEvents(runId, { after, limit: 1000 }, { signal })
+        const page: Page<Event> = await endpoints.listRunEvents(runId, { after, limit: 1000 }, { signal })
         all.push(...page.items)
         after = page.next_cursor
       } while (after)
@@ -28,13 +56,24 @@ export function useAllRunEvents(runId: string) {
     enabled: !!runId,
     refetchInterval,
   })
+
+  const refetchAll = () => void qc.invalidateQueries({ queryKey: [...qk.runEvents(runId), 'all'] })
   const seenUpdate = useRef(run.dataUpdatedAt)
   useEffect(() => {
     if (run.dataUpdatedAt !== seenUpdate.current) {
       seenUpdate.current = run.dataUpdatedAt
-      void qc.invalidateQueries({ queryKey: [...qk.runEvents(runId), 'all'] })
+      refetchAll()
     }
-  }, [run.dataUpdatedAt, qc, runId])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [run.dataUpdatedAt])
+  // Live events land in the session cache: pick them up without re-paging.
+  useEffect(() => {
+    if (!sessionId) return
+    return qc.getQueryCache().subscribe((ev) => {
+      if (ev.type === 'updated' && ev.action.type === 'success' && isSessionEvents(ev.query.queryKey, sessionId)) refetchAll()
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qc, sessionId, runId])
   return q
 }
 

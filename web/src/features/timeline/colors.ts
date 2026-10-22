@@ -4,7 +4,7 @@ import { readableInk } from '@/lib/contrast'
 
 /**
  * Gantt colours (design 4.3). The hex values here are the single source of truth for the contrast test
- * and are mirrored as CSS variables in `timeline.css` (a test fails on drift). Colour is a pure function of
+ * and are emitted as CSS variables by `stateCss()` (injected by `GanttCanvas`). Colour is a pure function of
  * `RunState`; every state also has a pattern or glyph so it is never the only signal.
  */
 export type PatternKind = 'dots' | 'hatch' | 'solid' | 'stripe' | 'cross' | 'dashed' | 'strike'

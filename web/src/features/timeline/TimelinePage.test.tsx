@@ -149,3 +149,43 @@ describe('TimelinePage', () => {
     expect(within(screen.getAllByRole('list', { name: 'Markers' }).at(-1)!).getByText('Join')).toBeInTheDocument()
   })
 })
+
+describe('TimelinePage run switching', () => {
+  it('resets the panel when another run is selected: join POSTs for B, B data, only B transcript', async () => {
+    vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(340)
+    vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockReturnValue(34)
+    const posts: string[] = []
+    const line = (text: string) => ({ lines: [{ offset: 0, role: 'assistant', text }], next_offset: null, total_bytes: text.length + 1 })
+    server.use(
+      http.post('/api/v1/runs/:id/join', ({ params }) => {
+        posts.push(String(params.id))
+        return HttpResponse.json({ argv: ['tool', String(params.id)], cwd: `/wt/${String(params.id)}`, env_names: [] })
+      }),
+      http.get('/api/v1/runs/:id/transcript', ({ params }) => HttpResponse.json(line(`only ${String(params.id)}`))),
+    )
+    renderPage('/sessions/sess-1/runs/run-1')
+    await userEvent.click(await screen.findByRole('tab', { name: 'Join' }, { timeout: 12000 }))
+    expect(await screen.findByText('cd /wt/run-1 && tool run-1')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: 'Transcript' }))
+    expect(await screen.findByText('only run-1')).toBeInTheDocument()
+
+    await userEvent.click(screen.getByTestId('label-run-2'))
+    expect(await screen.findByRole('heading', { name: 'write-tests' })).toBeInTheDocument()
+    // Tabs reset to Brief; reopen Join and Transcript for B.
+    await userEvent.click(screen.getByRole('tab', { name: 'Join' }))
+    expect(await screen.findByText('cd /wt/run-2 && tool run-2')).toBeInTheDocument()
+    expect(posts).toEqual(['run-1', 'run-2'])
+    await userEvent.click(screen.getByRole('tab', { name: 'Transcript' }))
+    expect(await screen.findByText('only run-2')).toBeInTheDocument()
+    expect(screen.queryByText('only run-1')).toBeNull()
+  }, 25000)
+
+  it('Events tab reads the shared session cache filtered by run (no per-run request)', async () => {
+    let runEventFetches = 0
+    server.use(http.get('/api/v1/runs/:id/events', () => { runEventFetches++; return HttpResponse.json({ items: [], next_cursor: null }) }))
+    renderPage('/sessions/sess-1/runs/run-2')
+    await userEvent.click(await screen.findByRole('tab', { name: 'Events' }, { timeout: 12000 }))
+    expect(await screen.findByText('3 of 3 events')).toBeInTheDocument() // run-2: queued, stall, escalated
+    expect(runEventFetches).toBe(0)
+  }, 25000)
+})
