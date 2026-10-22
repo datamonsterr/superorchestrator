@@ -13,3 +13,12 @@ workspace = true
 
 [dependencies]
 so-core = { path = "../so-core" }
+serde.workspace = true
+serde_json.workspace = true
+# YAML: `serde_yaml` is archived and `serde_yml` is deprecated/unmaintained
+# (crates.io shim). `serde_norway` is the maintained serde_yaml fork.
+serde_norway = "0.9"
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

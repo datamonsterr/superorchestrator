@@ -1,6 +1,7 @@
 //! One module per command group.
 
 pub mod account;
+pub mod agent;
 pub mod config;
 pub mod daemon;
 pub mod doctor;
