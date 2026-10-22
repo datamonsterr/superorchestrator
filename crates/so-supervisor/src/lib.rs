@@ -7,6 +7,7 @@ pub mod error;
 pub mod handlers;
 mod lines;
 pub mod lock;
+pub mod notify;
 pub mod reconcile;
 pub mod runs;
 pub mod server;
@@ -33,7 +34,10 @@ pub async fn run_daemon(paths: Paths, config: Config, foreground: bool) -> Resul
     tracing::info!(foreground, socket = %socket_path.display(), "starting supervisor");
     let opts = SupervisorOptions::new(paths, config, socket_path)
         .with_signals()
-        .with_setup(default_handlers);
+        .with_setup(|state| {
+            default_handlers(state);
+            state.runs.enable_notifications();
+        });
     Supervisor::start(opts).await?.wait().await;
     Ok(())
 }
