@@ -13,6 +13,15 @@ First release. Pending the `v0.1.0` tag.
 
 ### Added
 
+- `superorchestrator setup`: a guided, idempotent first-run command (init, detect harnesses,
+  import existing logins, add accounts, sign in, install, doctor summary). `--yes`, per-harness
+  counts (`--codex N --claude N --opencode N --agy N`), `--no-login` and `--no-install` drive it
+  without prompts; without a terminal it prints the plan.
+- `account add <harness>` takes `--count K` and `--login`; without `--name` it names accounts
+  `<harness>-<n>` with the lowest free `n`.
+- `--help` hides the internal `exec`, `daemon` and `mcp` commands, lists the rest in order of
+  use and ends with "Get started: superorchestrator setup". `init` points to `setup` first, and
+  `install.sh` ends with the same hint.
 - Routing decider: `inception/mercury-decide:free` is the default model, with
   `~typesafe/jev-latest` as an automatic fallback when the primary is unusable (transport
   error, timeout, 429, 5xx or a missing model; never for a rejected answer). Both take any
