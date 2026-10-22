@@ -22,6 +22,9 @@ pub struct WebOptions {
     /// Mark the session cookie `Secure` when a trusted proxy says the request was HTTPS
     /// (`X-Forwarded-Proto: https`). Off by default: the header is client-controlled.
     pub trust_forwarded_proto: bool,
+    /// Where project-scoped agents (`.superorchestrator/agents`, `.claude/agents`) and
+    /// workflows are looked up. Default: the supervisor's working directory.
+    pub project_dir: Option<std::path::PathBuf>,
 }
 
 impl Default for WebOptions {
@@ -31,6 +34,7 @@ impl Default for WebOptions {
             port: 7878,
             token: None,
             trust_forwarded_proto: false,
+            project_dir: None,
         }
     }
 }
@@ -43,6 +47,7 @@ impl WebOptions {
             port: ui.port,
             token: ui.token.clone().filter(|t| !t.is_empty()),
             trust_forwarded_proto: false,
+            project_dir: None,
         }
     }
 
@@ -76,9 +81,20 @@ pub struct AppState {
     pub limiter: Arc<RateLimiter>,
     /// Set to `true` to stop the server; open SSE streams end when it is.
     pub stop: Arc<tokio::sync::watch::Sender<bool>>,
+    /// One model refresh at a time.
+    pub refresh_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl AppState {
+    /// The directory project-scoped agents and workflows resolve from.
+    pub fn project_cwd(&self) -> std::path::PathBuf {
+        self.opts
+            .project_dir
+            .clone()
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| std::path::PathBuf::from("/"))
+    }
+
     /// Runs a blocking closure (store, filesystem, git) off the async runtime.
     pub async fn blocking<T, F>(&self, f: F) -> ApiResult<T>
     where

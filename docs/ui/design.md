@@ -63,6 +63,9 @@ Conventions:
 - Auth: loopback needs nothing. Non-loopback requires the HttpOnly cookie set by `POST /api/v1/auth` (section 7.5).
 - Lists are paginated with `?limit=&cursor=`; response `{ items: T[], next_cursor: string | null }`.
 - The handlers call the same supervisor methods as the CLI and MCP tools, so each endpoint names its CLI twin.
+- Project-scoped agents (`.superorchestrator/agents`, `.claude/agents`) and workflows (`.superorchestrator/workflows`) resolve from the supervisor's working directory (or `WebOptions.project_dir`), not from the browser's.
+- Actions taken in the UI (messages, accept, reject) are recorded with `actor: "ui"` in the event data.
+- Error `code` is the JSON-RPC number for supervisor errors and a short string (`unauthorized`, `forbidden`, `rate_limited`, `not_implemented`) for web-layer errors; a model refresh that runs past 60 s returns 504 (`-32005`).
 
 ### 2.1 Endpoint list
 
@@ -87,6 +90,7 @@ CLI twin column lists only SPEC 15 commands; "UI-only" means no CLI command exis
 | `POST /runs/:id/cancel` | | `AckResult` | `runs cancel` |
 | `POST /runs/:id/accept` | | `AckResult` | UI-only |
 | `POST /runs/:id/reject` | `{ feedback: string }` | `AckResult` | UI-only |
+| `POST /runs/:id/fork` | `{ prompt?: string }` (defaults to a request to continue) | `SpawnResult`, 202; 409 unless the run is finished, 422 when the harness cannot fork | UI-only |
 | `POST /runs/:id/join` | | `JoinView` = `{ argv, cwd, env_names }`, secret values redacted from argv; records a `join_command_issued` audit event | `join` |
 | `POST /route` | `RouteParams` | `RouteResult` | `route` |
 | `GET /routing/records?limit=&cursor=` | `(ts,id)` cursor | `Page<RouteRecord>` (`{ ts, run_id?, prompt_excerpt, result: RouteResult }`), the Route log | UI-only |

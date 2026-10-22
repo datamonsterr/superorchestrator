@@ -53,12 +53,11 @@ fn list(ctx: &Ctx) -> Result<()> {
 }
 
 async fn refresh_cmd(ctx: &Ctx) -> Result<()> {
-    let config = ctx.config()?;
     let host = ctx.host()?;
     let http = reqwest::Client::new();
-    let (_, report) = refresh_and_save(&ctx.paths, &config, &host, &http)
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
+    // Tests point this at a local server; users never need it.
+    let url = std::env::var("SUPERORCHESTRATOR_MODELS_DEV_URL").ok();
+    let (_, report, _) = refresh_and_save(&ctx.paths, &host, &http, url.as_deref()).await?;
     ctx.emit(&report, |w| {
         for s in &report.sources {
             let st = match s.status {

@@ -1542,6 +1542,7 @@ async fn model_catalog_lists_models() {
     assert!(!models.is_empty());
     assert!(models[0]["harness"].is_string() && models[0]["id"].is_string());
     assert!(models[0]["tier"].is_string() && models[0]["cost"].is_string());
+    assert!(v["refreshed_at"].is_null(), "never refreshed");
 }
 
 const AGENT: &str =
@@ -1663,4 +1664,182 @@ async fn saved_workflows_are_listed() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(v[0]["name"], "demo");
     assert_eq!(v[0]["source"], "config");
+}
+
+fn app_in(f: &Fx, project: &std::path::Path) -> Router {
+    router(
+        f.handle.state().clone(),
+        WebOptions {
+            project_dir: Some(project.to_path_buf()),
+            ..WebOptions::default()
+        },
+    )
+}
+
+#[tokio::test]
+async fn agent_writes_are_exclusive_atomic_bounded_and_symlink_safe() {
+    let f = fx().await;
+    let (s, _) = post(
+        &f.app,
+        "/api/v1/agents",
+        Some(json!({"name": "reviewer", "source": AGENT})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, _) = post(
+        &f.app,
+        "/api/v1/agents",
+        Some(json!({"name": "reviewer", "source": AGENT})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    let leftovers: Vec<_> = std::fs::read_dir(f.path("cfg/agents/reviewer"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(leftovers, ["AGENT.md"], "no temp files stay behind");
+
+    // Oversize input is refused before anything is written.
+    let big = format!("{AGENT}{}", "x".repeat(600 * 1024));
+    let (s, _) = post(
+        &f.app,
+        "/api/v1/agents",
+        Some(json!({"name": "big", "source": big})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert!(!f.path("cfg/agents/big").exists());
+    let (s, _) = send_json(
+        &f.app,
+        "PUT",
+        "/api/v1/agents/reviewer",
+        json!({"source": big}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // A symlinked agent folder (pointing outside) is neither listed, read, edited nor removed.
+    let outside = f.path("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::write(
+        outside.join("AGENT.md"),
+        AGENT.replace("reviewer", "linked"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&outside, f.path("cfg/agents/linked")).unwrap();
+    let (_, list) = get(&f.app, "/api/v1/agents").await;
+    assert!(
+        list["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|a| a["name"] != "linked")
+    );
+    assert_eq!(
+        get(&f.app, "/api/v1/agents/linked").await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let (s, _) = send_json(
+        &f.app,
+        "PUT",
+        "/api/v1/agents/linked",
+        json!({"source": AGENT.replace("reviewer", "linked")}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        send_json_empty(&f.app, "DELETE", "/api/v1/agents/linked")
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert!(
+        outside.join("AGENT.md").is_file(),
+        "the target is untouched"
+    );
+}
+
+#[tokio::test]
+async fn read_only_imports_broken_agents_and_redaction() {
+    let f = fx().await;
+    let proj = f.path("project");
+    std::fs::create_dir_all(proj.join(".claude/agents")).unwrap();
+    std::fs::write(
+        proj.join(".claude/agents/ro.md"),
+        AGENT.replace("reviewer", "ro"),
+    )
+    .unwrap();
+    let app = app_in(&f, &proj);
+    let (s, v) = get(&app, "/api/v1/agents/ro").await;
+    assert_eq!(
+        (s, &v["read_only"], &v["origin"]),
+        (StatusCode::OK, &json!(true), &json!("claude"))
+    );
+    let (s, _) = send_json(
+        &app,
+        "PUT",
+        "/api/v1/agents/ro",
+        json!({"source": AGENT.replace("reviewer", "ro")}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        send_json_empty(&app, "DELETE", "/api/v1/agents/ro").await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert!(proj.join(".claude/agents/ro.md").is_file());
+
+    // An agent that no longer parses can still be read, fixed and removed.
+    std::fs::create_dir_all(f.path("cfg/agents/broken")).unwrap();
+    std::fs::write(
+        f.path("cfg/agents/broken/AGENT.md"),
+        format!("not frontmatter {SECRET}\n"),
+    )
+    .unwrap();
+    let (s, v) = get(&app, "/api/v1/agents/broken").await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(v["description"], "");
+    assert!(
+        !v["source"].as_str().unwrap().contains(SECRET),
+        "agent source is redacted"
+    );
+    let (s, v) = send_json(
+        &app,
+        "PUT",
+        "/api/v1/agents/broken",
+        json!({"source": AGENT.replace("reviewer", "broken")}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, list) = get(&app, "/api/v1/agents").await;
+    assert!(
+        list["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["name"] == "broken")
+    );
+
+    std::fs::create_dir_all(f.path("cfg/agents/broken2")).unwrap();
+    std::fs::write(f.path("cfg/agents/broken2/AGENT.md"), "nope").unwrap();
+    assert_eq!(
+        send_json_empty(&app, "DELETE", "/api/v1/agents/broken2")
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert!(!f.path("cfg/agents/broken2").exists());
+}
+
+#[tokio::test]
+async fn project_workflows_resolve_from_the_configured_project_dir() {
+    let f = fx().await;
+    let proj = f.path("project");
+    std::fs::create_dir_all(proj.join(".superorchestrator/workflows")).unwrap();
+    std::fs::write(proj.join(".superorchestrator/workflows/p.js"), "1").unwrap();
+    let (_, v) = get(&app_in(&f, &proj), "/api/v1/workflows").await;
+    assert_eq!(
+        (&v[0]["name"], &v[0]["source"]),
+        (&json!("p"), &json!("project"))
+    );
 }

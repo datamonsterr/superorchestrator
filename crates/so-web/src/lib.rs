@@ -64,6 +64,7 @@ fn make_app(state: Arc<SupervisorState>, opts: WebOptions) -> AppState {
         opts: Arc::new(opts),
         limiter: Arc::default(),
         stop: Arc::new(tokio::sync::watch::channel(false).0),
+        refresh_lock: Arc::default(),
     }
 }
 

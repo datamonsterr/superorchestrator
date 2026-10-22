@@ -211,7 +211,7 @@ impl RunManager {
             &row.session_id,
             Some(&row.id),
             EventType::MessageSent,
-            json!({"to": row.id, "from": ctx.run_id, "kind": kind}),
+            json!({"to": row.id, "from": ctx.run_id, "kind": kind, "actor": ctx.actor()}),
         )
         .await;
         if kind == MessageKind::Answer {

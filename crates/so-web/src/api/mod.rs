@@ -6,6 +6,7 @@ pub mod models;
 pub mod runs;
 pub mod sessions;
 pub mod system;
+pub mod workflows;
 
 use axum::Router;
 use axum::routing::{delete, get, patch, post, put};
@@ -77,7 +78,7 @@ pub fn routes() -> Router<AppState> {
             "/api/v1/agents/{name}",
             get(agents::get).put(agents::update).delete(agents::remove),
         )
-        .route("/api/v1/workflows", get(models::workflows))
+        .route("/api/v1/workflows", get(workflows::list))
         .route("/api/v1/routing/records", get(system::routing_records))
         .route("/api/v1/accounts", get(accounts::list).post(accounts::add))
         .route("/api/v1/accounts/import", post(accounts::import))

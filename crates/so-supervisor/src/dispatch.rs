@@ -68,6 +68,8 @@ pub struct ConnCtx {
     pub depth: u8,
     pub notifier: Notifier,
     closed: watch::Receiver<bool>,
+    /// The caller is the web UI, not an orchestrator or run (recorded in event data).
+    pub via_ui: bool,
     /// Keeps the `closed` channel open for contexts that have no connection.
     _keep: Option<Arc<watch::Sender<bool>>>,
 }
@@ -80,6 +82,7 @@ impl ConnCtx {
             depth: 0,
             notifier,
             closed,
+            via_ui: false,
             _keep: None,
         }
     }
@@ -87,6 +90,15 @@ impl ConnCtx {
     /// A context for a person acting through the web UI: it belongs to `session_id` and
     /// is the session's orchestrator (no run). It has no connection, so nothing is
     /// notified and `closed()` never resolves.
+    ///
+    /// Authorization is not checked here: whoever reaches the web API (loopback, or the
+    /// bearer token on other binds) may act in any session. The caller must have
+    /// authenticated the request.
+    /// Who is acting, for event data.
+    pub fn actor(&self) -> &'static str {
+        if self.via_ui { "ui" } else { "orchestrator" }
+    }
+
     pub fn acting_in(session_id: &str) -> Self {
         let (tx, _rx) = mpsc::channel(1);
         let (closed_tx, closed) = watch::channel(false);
@@ -96,6 +108,7 @@ impl ConnCtx {
             depth: 0,
             notifier: Notifier::new(tx),
             closed,
+            via_ui: true,
             _keep: Some(Arc::new(closed_tx)),
         }
     }

@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use so_core::proto::{
     AckResult, ForkParams, INVALID_REQUEST, MessageView, RejectParams, RouteResult, RpcError,
-    RunRef, SendMessageParams, SpawnResult, UNAVAILABLE,
+    RunRef, SendMessageParams, SpawnResult,
 };
 use so_core::redact::redact;
 use so_core::{Event, EventType};
@@ -262,12 +262,11 @@ fn acting(row: &so_store::RunRow) -> ConnCtx {
     ConnCtx::acting_in(&row.session_id)
 }
 
-/// A run in the wrong state is a 409; a harness that cannot fork is a 422 naming it.
+/// A run in the wrong state is a 409. Everything else keeps its code (a harness that
+/// cannot fork is INVALID_PARAMS, so 422).
 fn action_error(e: RpcError) -> ApiError {
     if e.code == INVALID_REQUEST {
         ApiError::state_conflict(e.message)
-    } else if e.code == UNAVAILABLE && e.message.contains("cannot fork") {
-        ApiError::invalid(e.message)
     } else {
         e.into()
     }

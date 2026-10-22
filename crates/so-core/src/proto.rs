@@ -21,6 +21,8 @@ pub const DEPTH_LIMIT: i64 = -32001;
 pub const CAP_EXCEEDED: i64 = -32002;
 pub const NOT_FOUND: i64 = -32003;
 pub const UNAVAILABLE: i64 = -32004;
+/// A call took longer than its deadline.
+pub const TIMEOUT: i64 = -32005;
 
 // Method names.
 pub const METHOD_HELLO: &str = "hello";

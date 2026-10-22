@@ -8,7 +8,7 @@ use so_accounts::AccountsError;
 use so_core::CoreError;
 use so_core::proto::{
     CAP_EXCEEDED, DEPTH_LIMIT, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
-    NOT_FOUND, PARSE_ERROR, RpcError, UNAVAILABLE,
+    NOT_FOUND, PARSE_ERROR, RpcError, TIMEOUT, UNAVAILABLE,
 };
 use so_store::StoreError;
 
@@ -95,6 +95,7 @@ impl ApiError {
             CAP_EXCEEDED | DEPTH_LIMIT => StatusCode::CONFLICT,
             INVALID_PARAMS => StatusCode::UNPROCESSABLE_ENTITY,
             UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
+            TIMEOUT => StatusCode::GATEWAY_TIMEOUT,
             INVALID_REQUEST | PARSE_ERROR => StatusCode::BAD_REQUEST,
             METHOD_NOT_FOUND => StatusCode::NOT_IMPLEMENTED,
             INTERNAL_ERROR => StatusCode::INTERNAL_SERVER_ERROR,
@@ -133,6 +134,10 @@ impl ApiError {
         Self::rpc(CAP_EXCEEDED, message)
     }
 
+    pub fn timeout(message: impl Into<String>) -> Self {
+        Self::rpc(TIMEOUT, message)
+    }
+
     pub fn unavailable(message: impl Into<String>) -> Self {
         Self::rpc(UNAVAILABLE, message)
     }
@@ -162,8 +167,17 @@ impl From<StoreError> for ApiError {
         match e {
             StoreError::NotFound { .. } => Self::not_found(e.to_string()),
             StoreError::AmbiguousPrefix { .. } => Self::invalid(e.to_string()),
+            StoreError::Io(ref source) => Self::io(std::path::Path::new("state.db"), source),
             other => Self::internal(other),
         }
+    }
+}
+
+impl ApiError {
+    /// A filesystem failure: the path stays in the log, not in the response.
+    fn io(path: &std::path::Path, source: &std::io::Error) -> Self {
+        tracing::warn!(path = %path.display(), "filesystem error: {source}");
+        Self::rpc(INTERNAL_ERROR, "a filesystem operation failed")
     }
 }
 
@@ -176,6 +190,7 @@ impl From<CoreError> for ApiError {
             | CoreError::InvalidDuration(_)
             | CoreError::UnknownValue { .. }
             | CoreError::UnknownHarness(_) => Self::invalid(e.to_string()),
+            CoreError::Io { path, source } => Self::io(&path, &source),
             other => Self::internal(other),
         }
     }
@@ -190,7 +205,7 @@ impl From<so_agents::AgentError> for ApiError {
             E::Parse { .. } | E::InvalidName(_) => {
                 Self::invalid(e.to_string().lines().next().unwrap_or_default())
             }
-            other @ E::Io { .. } => Self::internal(other),
+            E::Io { path, source } => Self::io(&path, &source),
         }
     }
 }
@@ -201,12 +216,12 @@ impl From<AccountsError> for ApiError {
             AccountsError::NotFound(_) => Self::not_found(e.to_string()),
             AccountsError::AlreadyExists(_) => Self::conflict(e.to_string()),
             AccountsError::Core(c) => c.into(),
+            AccountsError::Io { path, source } => Self::io(&path, &source),
             AccountsError::AgyMultiAccountUnsupported(_)
             | AccountsError::BinaryNotFound(_)
             | AccountsError::HomeMissing(_)
             | AccountsError::InvalidName(_)
             | AccountsError::UnsafePurge { .. } => Self::invalid(e.to_string()),
-            other => Self::internal(other),
         }
     }
 }
@@ -231,5 +246,35 @@ impl IntoResponse for ApiError {
             res.headers_mut().insert(header::RETRY_AFTER, v);
         }
         res
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filesystem_errors_do_not_carry_paths() {
+        let io = || std::io::Error::other("boom");
+        let errs = [
+            ApiError::from(so_agents::AgentError::Io {
+                path: "/secret/dir/AGENT.md".into(),
+                source: io(),
+            }),
+            ApiError::from(CoreError::io("/secret/dir/config.toml", io())),
+            ApiError::from(AccountsError::io("/secret/dir/acc.toml", io())),
+        ];
+        for e in errs {
+            assert_eq!(e.0.status, StatusCode::INTERNAL_SERVER_ERROR);
+            assert!(!format!("{e:?}").contains("secret"), "{e:?}");
+        }
+    }
+
+    #[test]
+    fn timeouts_are_504() {
+        assert_eq!(
+            ApiError::timeout("slow").0.status,
+            StatusCode::GATEWAY_TIMEOUT
+        );
     }
 }

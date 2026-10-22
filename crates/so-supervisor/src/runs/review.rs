@@ -446,7 +446,7 @@ impl RunManager {
             &row.session_id,
             Some(&row.id),
             EventType::ReviewAccepted,
-            json!({}),
+            json!({"actor": ctx.actor()}),
         )
         .await;
         let outcome = Outcome {
@@ -496,7 +496,7 @@ impl RunManager {
             &row.session_id,
             Some(&row.id),
             EventType::ReviewRejected,
-            json!({"feedback": excerpt(&p.feedback, 280)}),
+            json!({"feedback": excerpt(&p.feedback, 280), "actor": ctx.actor()}),
         )
         .await;
         self.emit(
