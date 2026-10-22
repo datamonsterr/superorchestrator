@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 80, 24)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs !1     4 Setup
+ ╭ Accounts ───────╮ ╭ Active runs ────╮ ╭ To review ─────╮ ╭ Setup ──────────╮
+ │ 4               │ │ 2               │ │ 1              │ │ 3 of 6          │
+ │ 2 signed in     │ │ supervisor up   │ │ open Runs (3)  │ │ see below       │
+ ╰╭ Help ────────────────────────────────────────────────────────────────────╮╯
+  │                                                                          │
+  │ Everywhere                                                               │
+  │ Tab  S-Tab  next / previous tab                                          │
+  │ 1 2 3 4     Overview, Accounts, Runs, Setup                              │
+  │ R  F5       refresh now (the screen refreshes every 2 s)                 │
+  │ ?           this help                                                    │
+  │ q  Esc      close a pane, or quit at the top level                       │
+  │ Ctrl-C      quit                                                         │
+  │                                                                          │
+  │ Overview shows what is set up and what to do next.                       │
+  │                                                                          │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+  ● running        codex-1            45s  Refactor the parser
+  ! pending_review codex-2            6m   Add retry to the HTTP client
+  ✓ succeeded      opencode-1         2h   Write the changelog entry for 0.1.0
+  ✗ failed         codex-1            1d   Migrate the schema
+ updated 3s ago
+ Esc close

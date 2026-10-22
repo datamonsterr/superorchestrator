@@ -191,6 +191,7 @@ fn help_hides_internal_commands_orders_the_rest_and_points_at_setup() {
             "route",
             "runs",
             "join",
+            "tui",
             "ui",
             "workflow",
             "agent",

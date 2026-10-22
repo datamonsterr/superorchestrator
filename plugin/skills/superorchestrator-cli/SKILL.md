@@ -9,7 +9,8 @@ The `superorchestrator` binary manages accounts, shows what is running and start
 
 ## Set up
 
-- `superorchestrator setup` is the first command a new user runs: it creates the config, finds the installed harnesses, adds and signs in accounts and runs `install`. It is safe to run again.
+- `superorchestrator setup` is the first command a new user runs: it creates the config, finds the installed harnesses, imports existing logins, adds and signs in accounts and runs `install`. It is safe to run again and adds nothing unless asked. Flags: `--yes` (take the defaults), `--codex N --claude N --opencode N --agy N` (accounts to add per harness; claude defaults to 0 because Claude limits are kept for the orchestrator), `--no-login`, `--no-install` and `--no-claude-md`. Without a terminal and without `--yes` it only prints the plan. `--yes --json` prints one summary object.
+- `superorchestrator` with no command on a terminal (or `superorchestrator tui`) opens a full-screen terminal UI: overview with a setup checklist, accounts (add, sign in, enable, flag, remove, import), runs (details and diff, cancel, open session, accept and merge, reject) and the setup steps. Without a terminal it prints the help.
 - `superorchestrator init` creates the config dir and seeds `config.toml`, choices and the model catalog.
 - `superorchestrator install [--force] [--dry-run] [--no-claude-md]` registers the MCP server with each harness, ships the two skills and adds a short managed block to `~/.claude/CLAUDE.md`. `superorchestrator uninstall [--dry-run]` removes what `install` added. Both back up every file they change.
 
@@ -17,7 +18,7 @@ The `superorchestrator` binary manages accounts, shows what is running and start
 
 An account is one signed-in credential home for one harness (codex, agy, opencode or claude).
 
-- `account add <harness> --name NAME [--home DIR]` creates a credential home, the account file and a wrapper.
+- `account add <harness> [--name NAME] [--count K] [--login]` creates a credential home, the account file and a wrapper. Without `--name`, accounts are named `<harness>-<n>` with the lowest free `n`; `--count K` creates K of them (not with `--name`). `--login` signs in to each new account in turn on a terminal. `--home DIR` needs `--name`.
 - `account import NAME --harness H --home DIR` links an existing credential home. `account import --scan` finds candidates and offers to import each.
 - `account login NAME` signs in.
 - `account list` shows sign-in state, load and headroom.

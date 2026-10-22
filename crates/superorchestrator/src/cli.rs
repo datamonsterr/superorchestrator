@@ -44,6 +44,8 @@ pub enum Command {
     Runs(RunsCmd),
     /// Attach to a run's native session
     Join(JoinArgs),
+    /// Open the terminal UI: overview, accounts, runs and setup
+    Tui,
     /// Start the web UI
     Ui(UiArgs),
     /// Run and inspect workflows

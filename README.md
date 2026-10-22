@@ -12,7 +12,7 @@ Each use case has a worked example in the [use cases guide](docs/guide/use-cases
 - **Claude Code as the orchestrator.** Claude Code plans and reviews. It delegates the bulk work to cheaper or different agents through MCP. See [custom agents](docs/guide/agents.md).
 - **Reviewed delegation.** Ask for a review gate, read the diff, reject with feedback or accept and land the branch with `merge: true`. See [reviewing and landing runs](docs/guide/review.md).
 - **Parallel runs and workflows.** Start many runs at once, or script them in JavaScript with `parallel()` and `pipeline()`. See [workflows](docs/guide/workflows.md).
-- **Watch runs.** Follow every run in the web UI, or from the shell with `runs watch`. See the [web UI guide](docs/guide/web-ui.md).
+- **Watch runs.** Follow every run in the web UI and the terminal UI (`superorchestrator`), or from the shell with `runs watch`. See the [web UI guide](docs/guide/web-ui.md) and the [terminal UI guide](docs/guide/tui.md).
 
 ## Install
 
@@ -82,6 +82,7 @@ Claude Code loads the `use-superorchestrator-mcp` skill, calls `spawn_agent`, wa
 - [Custom agents](docs/guide/agents.md)
 - [Workflows](docs/guide/workflows.md)
 - [Reviewing and landing runs](docs/guide/review.md)
+- [The terminal UI](docs/guide/tui.md)
 - [The web UI](docs/guide/web-ui.md)
 - [Notifications](docs/guide/notifications.md)
 - [Migrating from the old tooling](docs/guide/migrate.md)

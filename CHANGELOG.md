@@ -13,6 +13,12 @@ First release. Pending the `v0.1.0` tag.
 
 ### Added
 
+- A full-screen terminal UI, opened by `superorchestrator` on a terminal or by `superorchestrator tui`,
+  replaces the dialoguer menu. Tabs: Overview (setup checklist with fixes), Accounts (add, sign
+  in, enable, flag, remove, import), Runs (live list, details, cancel, join, accept, reject) and
+  Setup (the first-run steps with live status). It honors `NO_COLOR`, falls back to ASCII
+  without UTF-8 and restores the terminal on every exit. Without a terminal the bare command
+  still prints the help. See `docs/guide/tui.md`.
 - `superorchestrator setup`: a guided, idempotent first-run command (init, detect harnesses,
   import existing logins, add accounts, sign in, install, doctor summary). `--yes`, per-harness
   counts (`--codex N --claude N --opencode N --agy N`), `--no-login`, `--no-install` and `--no-claude-md` drive it
