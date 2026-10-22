@@ -1,27 +1,14 @@
 //! `daemon [--foreground]`.
 
-use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-use std::sync::Arc;
+use std::io;
+use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 
 use anyhow::{Context, Result};
 use tracing_subscriber::EnvFilter;
 
 use crate::ctx::Ctx;
+use crate::logfile::{KEEP, MAX_BYTES, RotatingLog};
 use crate::redact::MakeRedacting;
-
-/// Appends through a shared file handle.
-struct SharedFile(Arc<File>);
-
-impl Write for SharedFile {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        (&*self.0).write(buf)
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        (&*self.0).flush()
-    }
-}
 
 fn filter() -> EnvFilter {
     std::env::var("SUPERORCHESTRATOR_LOG")
@@ -46,17 +33,14 @@ fn init_tracing(ctx: &Ctx, foreground: bool) -> Result<()> {
             .mode(0o700)
             .create(&dir)
             .with_context(|| format!("could not create {}", dir.display()))?;
+        // `create` leaves an existing directory as it is: tighten it.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .with_context(|| format!("could not restrict {}", dir.display()))?;
         let path = dir.join("supervisor.log");
-        let file = Arc::new(
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .mode(0o600)
-                .open(&path)
-                .with_context(|| format!("could not open {}", path.display()))?,
-        );
+        let log = RotatingLog::open(&path, MAX_BYTES, KEEP)
+            .with_context(|| format!("could not open {}", path.display()))?;
         builder
-            .with_writer(MakeRedacting(move || SharedFile(file.clone())))
+            .with_writer(MakeRedacting(move || log.clone()))
             .try_init()
             .map_err(|e| anyhow::anyhow!("could not set up logging: {e}"))?;
     }
