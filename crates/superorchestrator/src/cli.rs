@@ -236,10 +236,20 @@ pub enum RunsCmd {
     },
     /// Show one run: state, recent events, result, usage and join command
     Show { run: String },
-    /// Follow a run's events until it finishes
-    Watch { run: String },
+    /// Follow a run's events (or a workflow's steps) until it finishes
+    Watch(WatchArgs),
     /// Cancel a run and its subtree
     Cancel { run: String },
+}
+
+#[derive(Args, Debug)]
+#[command(group(ArgGroup::new("target").required(true).args(["run", "workflow"])))]
+pub struct WatchArgs {
+    /// Run id or unique prefix
+    pub run: Option<String>,
+    /// Follow a workflow run's steps instead
+    #[arg(long, value_name = "ID")]
+    pub workflow: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -260,9 +270,39 @@ pub enum WorktreesCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum WorkflowCmd {
-    Run { name: String },
+    /// Run a saved workflow, or a script file, and print its result
+    Run(WorkflowRun),
+    /// List saved workflows and recent workflow runs
     List,
-    Status { id: String },
+    /// Show a workflow run: state, steps and result
+    Status {
+        /// Workflow run id or unique prefix
+        id: String,
+    },
+    /// Stop a running workflow and its steps
+    Cancel {
+        /// Workflow run id or unique prefix
+        id: String,
+    },
+}
+
+#[derive(Args, Debug)]
+#[command(group(ArgGroup::new("what").required(true).args(["name", "file"])))]
+pub struct WorkflowRun {
+    /// Saved workflow name (`<config>/workflows/<name>.js` or `.superorchestrator/workflows`)
+    pub name: Option<String>,
+    /// JavaScript file to run instead of a saved workflow
+    #[arg(long, value_name = "FILE")]
+    pub file: Option<PathBuf>,
+    /// JSON passed to the script as `args`
+    #[arg(long, value_name = "JSON")]
+    pub args: Option<String>,
+    /// Print the run id and return without waiting for the result
+    #[arg(long)]
+    pub detach: bool,
+    /// Run every step again instead of replaying cached results
+    #[arg(long)]
+    pub fresh: bool,
 }
 
 #[derive(Subcommand, Debug)]

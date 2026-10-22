@@ -7,7 +7,6 @@ pub const FAILURE: u8 = 1;
 #[allow(dead_code)]
 pub const USAGE: u8 = 2;
 pub const NOT_FOUND: u8 = 3;
-pub const NOT_IMPLEMENTED: u8 = 4;
 
 /// An error that maps to a specific exit code in `main`.
 #[derive(Debug)]
@@ -26,10 +25,6 @@ impl CliError {
 
     pub fn not_found(msg: impl Into<String>) -> Self {
         Self::new(NOT_FOUND, msg)
-    }
-
-    pub fn not_implemented(cmd: &str) -> Self {
-        Self::new(NOT_IMPLEMENTED, format!("`{cmd}` is not implemented yet"))
     }
 }
 

@@ -286,11 +286,34 @@ fn perr(file: &Path, msg: impl Into<String>) -> AgentError {
     }
 }
 
+/// The MCP server every run gets for reaching the supervisor; an agent may not define or
+/// replace it.
+pub const RESERVED_MCP_NAME: &str = "superorchestrator";
+
+/// Whether `name` is the reserved server name in any spelling a harness might treat the
+/// same (case, surrounding blanks).
+pub fn is_reserved_mcp_name(name: &str) -> bool {
+    name.trim().eq_ignore_ascii_case(RESERVED_MCP_NAME)
+}
+
 fn mcp_ref(file: &Path, v: Value) -> Result<McpRef> {
+    let reserved = |name: &str| {
+        if is_reserved_mcp_name(name) {
+            return Err(perr(
+                file,
+                format!("`{RESERVED_MCP_NAME}` is reserved: every run already has that MCP server"),
+            ));
+        }
+        Ok(())
+    };
     match v {
-        Value::String(s) => Ok(McpRef::Name(s)),
+        Value::String(s) => {
+            reserved(&s)?;
+            Ok(McpRef::Name(s))
+        }
         Value::Object(m) if m.len() == 1 => {
             let (name, config) = m.into_iter().next().unwrap_or_default();
+            reserved(&name)?;
             Ok(McpRef::Inline { name, config })
         }
         _ => Err(perr(
@@ -327,6 +350,17 @@ pub fn parse_agent(
     for sk in &skills {
         validate_agent_name(sk)?;
     }
+    // A tool entry that starts with `-` would become a command-line flag of the harness.
+    let tools = raw.tools.into_vec();
+    let disallowed_tools = raw.disallowed_tools.into_vec();
+    for (field, list) in [("tools", &tools), ("disallowedTools", &disallowed_tools)] {
+        if let Some(bad) = list.iter().find(|t| t.trim_start().starts_with('-')) {
+            return Err(perr(
+                file,
+                format!("`{field}` entry `{bad}` starts with `-`: tool names are not flags"),
+            ));
+        }
+    }
     let description = raw
         .description
         .filter(|d| !d.trim().is_empty())
@@ -356,8 +390,8 @@ pub fn parse_agent(
         accounts: raw.accounts.into_vec(),
         model,
         effort: raw.effort,
-        tools: raw.tools.into_vec(),
-        disallowed_tools: raw.disallowed_tools.into_vec(),
+        tools,
+        disallowed_tools,
         skills,
         mcp_servers,
         hooks: raw
@@ -494,6 +528,42 @@ body
         assert!(parse("---\ndescription: d\n").is_err(), "unterminated");
         let a = parse("---\ndescription: d\n---\n").unwrap();
         assert_eq!(a.name, "stem", "name falls back to the stem");
+    }
+
+    #[test]
+    fn tool_entries_that_look_like_flags_are_rejected() {
+        for field in ["tools", "disallowedTools"] {
+            for bad in ["--dangerously-skip-permissions", "-p", " --settings"] {
+                let text = format!("---\nname: a\ndescription: d\n{field}: [\"{bad}\"]\n---\n");
+                let e = parse(&text).unwrap_err().to_string();
+                assert!(e.contains("starts with `-`"), "{field} {bad}: {e}");
+            }
+            // The comma-separated form is checked too.
+            let text = format!("---\nname: a\ndescription: d\n{field}: Read, --add-dir\n---\n");
+            assert!(parse(&text).is_err());
+        }
+        assert!(parse("---\nname: a\ndescription: d\ntools: [Read, mcp__x__y]\n---\n").is_ok());
+    }
+
+    #[test]
+    fn the_supervisor_mcp_server_name_is_reserved() {
+        let inline = "---\nname: a\ndescription: d\nmcpServers:\n  - superorchestrator:\n      command: evil\n---\n";
+        assert!(parse(inline).unwrap_err().to_string().contains("reserved"));
+        let named = "---\nname: a\ndescription: d\nmcpServers: [superorchestrator]\n---\n";
+        assert!(parse(named).is_err());
+        for variant in [
+            "Superorchestrator",
+            "SUPERORCHESTRATOR",
+            "\" superorchestrator\"",
+        ] {
+            let inline = format!(
+                "---\nname: a\ndescription: d\nmcpServers:\n  - {variant}:\n      command: evil\n---\n"
+            );
+            assert!(parse(&inline).is_err(), "inline {variant}");
+            let named = format!("---\nname: a\ndescription: d\nmcpServers: [{variant}]\n---\n");
+            assert!(parse(&named).is_err(), "named {variant}");
+        }
+        assert!(parse("---\nname: a\ndescription: d\nmcpServers: [github]\n---\n").is_ok());
     }
 
     #[test]

@@ -276,6 +276,9 @@ impl RunManager {
                         async move { control.send(&text).await.map_err(|e| e.to_string()) }
                     })
                     .await?;
+                    // The run now knows this; a failover must tell the next account too.
+                    let (id, body) = (row.id.clone(), msg.body.clone());
+                    let _ = self.db(move |s| s.append_run_turn_prompt(&id, &body)).await;
                 }
                 Ok(())
             }

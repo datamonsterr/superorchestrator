@@ -12,6 +12,13 @@ pub trait ReconcileHook: Send + Sync {
 /// Marks every active run the hook does not take over as `failed` (`error_kind = other`).
 /// Returns the number of runs failed.
 pub(crate) fn reconcile(store: &Store, hook: Option<&dyn ReconcileHook>) -> crate::Result<usize> {
+    // Workflows run inside the supervisor: one left `running` died with it. Running it
+    // again replays its cached steps (SPEC 11).
+    match store.fail_orphaned_workflows(chrono::Utc::now()) {
+        Ok(0) => {}
+        Ok(n) => tracing::warn!(count = n, "orphaned workflow runs marked failed"),
+        Err(e) => tracing::warn!(error = %e, "could not fail orphaned workflow runs"),
+    }
     let mut failed = 0;
     for run in store.list_active_runs(100_000)? {
         if hook.is_some_and(|h| h.reconcile(store, &run)) {

@@ -14,7 +14,7 @@ use so_store::{RunRow, SessionFilter};
 use so_supervisor::runs::display_argv;
 use so_supervisor::{ClientError, SupervisorClient, spawn_daemon_process};
 
-use crate::cli::RunsCmd;
+use crate::cli::{RunsCmd, WatchArgs};
 use crate::ctx::Ctx;
 use crate::exit::CliError;
 use crate::output::write_table;
@@ -61,7 +61,13 @@ pub fn run(ctx: &Ctx, cmd: RunsCmd) -> Result<ExitCode> {
         RunsCmd::Show { run } => runtime()?
             .block_on(show(ctx, &run))
             .map(|()| ExitCode::SUCCESS),
-        RunsCmd::Watch { run } => runtime()?.block_on(watch(ctx, &run)),
+        RunsCmd::Watch(WatchArgs {
+            workflow: Some(id), ..
+        }) => runtime()?.block_on(super::workflow::watch(ctx, &id)),
+        RunsCmd::Watch(WatchArgs { run, .. }) => {
+            let run = run.unwrap_or_default();
+            runtime()?.block_on(watch(ctx, &run))
+        }
         RunsCmd::Cancel { run } => runtime()?
             .block_on(cancel(ctx, &run))
             .map(|()| ExitCode::SUCCESS),

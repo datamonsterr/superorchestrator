@@ -26,6 +26,13 @@ enum Step {
     Retry(String),
 }
 
+/// The pool of the account that hit a limit and the reset time the harness reported.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Limit {
+    pub pool: Option<String>,
+    pub reset: Option<chrono::DateTime<Utc>>,
+}
+
 /// How a run ends.
 pub(crate) struct Outcome {
     pub to: RunState,
@@ -35,6 +42,8 @@ pub(crate) struct Outcome {
     /// Flag the run's account (quota, rate limit, auth) if this call ends the run and it
     /// was not cancelled.
     pub flag_account: bool,
+    /// Which pool hit the limit and when the harness says it resets, for the flag.
+    pub limit: Option<Limit>,
     /// Harness to shut down once the state is committed, before the worktree is cleaned.
     pub control: Option<RunControl>,
 }
@@ -47,6 +56,7 @@ impl Outcome {
             result_json,
             reason: None,
             flag_account: false,
+            limit: None,
             control: Some(control),
         }
     }
@@ -61,6 +71,7 @@ impl Outcome {
                 kind,
                 ErrorKind::Quota | ErrorKind::RateLimit | ErrorKind::Auth
             ),
+            limit: None,
             control,
         }
     }
@@ -72,6 +83,7 @@ impl Outcome {
             result_json: None,
             reason: Some("cancelled".to_string()),
             flag_account: false,
+            limit: None,
             control: None,
         }
     }
@@ -141,7 +153,7 @@ impl RunManager {
             .output_schema
             .as_deref()
             .and_then(|s| serde_json::from_str::<Value>(s).ok());
-        Ok(LaunchSpec {
+        let mut spec = LaunchSpec {
             run_id: row.id.clone(),
             run_dir,
             cwd,
@@ -161,7 +173,12 @@ impl RunManager {
             max_turns: row.max_turns,
             resume,
             fork,
-        })
+            agent: Default::default(),
+        };
+        if let Some(name) = row.agent.clone() {
+            self.apply_agent(row, &name, &mut spec).await?;
+        }
+        Ok(spec)
     }
 
     /// Launches with a time limit, so a harness that never comes up fails the run.
@@ -217,7 +234,17 @@ impl RunManager {
                 .await
                 .map_err(|e| e.message)?
         };
-        let cwd = if resume_prompt.is_some() {
+        // A run that failed over while every other account was full starts on the account
+        // that freed a slot, in the working tree it already has.
+        let failover = {
+            let id = row.id.clone();
+            let pending = self
+                .db(move |s| s.take_failover_pending(&id))
+                .await
+                .map_err(|e| e.message)?;
+            pending.and_then(|j| serde_json::from_str::<super::failover::Pending>(&j).ok())
+        };
+        let cwd = if resume_prompt.is_some() || failover.is_some() {
             self.resume_cwd(row).await?
         } else {
             let cwd = PathBuf::from(row.cwd.clone().ok_or("run has no working directory")?);
@@ -230,6 +257,7 @@ impl RunManager {
         let fork_from = match &resume_prompt {
             // Continue the run's own session, not a copy.
             Some(_) => row.native_session_id.clone(),
+            None if failover.is_some() => None,
             None => {
                 let id = row.id.clone();
                 self.db(move |s| s.get_run_fork(&id))
@@ -237,16 +265,53 @@ impl RunManager {
                     .map_err(|e| e.message)?
             }
         };
-        let mut prompt = resume_prompt
-            .clone()
-            .or_else(|| row.prompt.clone())
-            .unwrap_or_default();
-        prompt.push_str(&self.start_messages(row).await);
+        let mut prompt = match (&resume_prompt, &failover) {
+            (Some(p), _) => p.clone(),
+            (None, Some(_)) => {
+                let mut p = self.turn_prompt(row).await;
+                p.push_str(super::failover::FAILOVER_NOTE);
+                p
+            }
+            (None, None) => row.prompt.clone().unwrap_or_default(),
+        };
+        let early = self.start_messages(row).await;
+        if !early.is_empty() {
+            // Part of what the run was told, so a failover keeps it.
+            let (id, t) = (row.id.clone(), early.trim_start().to_string());
+            let _ = self.db(move |s| s.append_run_turn_prompt(&id, &t)).await;
+        }
+        prompt.push_str(&early);
         let fork = fork_from.is_some() && resume_prompt.is_none();
         let spec = self
             .build_spec(row, &account, cwd, prompt, fork_from, fork)
             .await?;
         let handle = self.launch_harness(row, spec).await?;
+        // Announced once the harness is up; the row is as the queue left it. A move made
+        // while the run waited replaces the decision a pending failover carries.
+        let moved = {
+            let id = row.id.clone();
+            self.db(move |s| s.take_queued_route_event(&id))
+                .await
+                .ok()
+                .flatten()
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+        };
+        let id = row.id.clone();
+        if let Ok(Some(now)) = self.db(move |s| s.get_run(&id)).await {
+            match (failover, moved) {
+                (Some(mut p), moved) => {
+                    if let Some(d) = moved {
+                        p.set_decision(d);
+                    }
+                    self.announce_failover(&now, &p).await;
+                }
+                (None, Some(d)) => {
+                    self.emit(&now.session_id, Some(&now.id), EventType::RouteDecision, d)
+                        .await;
+                }
+                (None, None) => {}
+            }
+        }
         self.go_live(row, &account, handle, false).await;
         Ok(())
     }
@@ -543,7 +608,7 @@ impl RunManager {
             .await;
     }
 
-    async fn flag_account(&self, run_id: &str, reason: &str) {
+    pub(crate) async fn flag_account(&self, run_id: &str, reason: &str, limit: Option<&Limit>) {
         let id = run_id.to_string();
         let Ok(Some(row)) = self.db(move |s| s.get_run(&id)).await else {
             return;
@@ -553,16 +618,17 @@ impl RunManager {
             return;
         };
         let account_label = account.name.clone();
-        let pool = account
-            .pools
-            .first()
-            .cloned()
+        // The pool that failed, else the account's first.
+        let pool = limit
+            .and_then(|l| l.pool.clone())
+            .or_else(|| account.pools.first().cloned())
             .unwrap_or_else(|| "default".into());
+        let reset = limit.and_then(|l| l.reset);
         let cooldown = self.config().usage.default_cooldown.as_duration();
         let reason = format!("run {run_id}: {}", excerpt(reason, 200));
         let r = self
             .db(move |s| {
-                so_usage::mark_exhausted(s, &name, &pool, None, cooldown, &reason, Utc::now())
+                so_usage::mark_exhausted(s, &name, &pool, reset, cooldown, &reason, Utc::now())
                     .map(|_| ())
                     .map_err(|e| StoreError::Constraint(e.to_string()))
             })
@@ -629,6 +695,8 @@ impl RunManager {
         }
         self.inner.finished.send_modify(|n| *n += 1);
         if won {
+            // A slot may be free somewhere: queued runs may look for it again at once.
+            lock(&self.inner.reroute_at).clear();
             self.request_drain();
         }
         won
@@ -683,6 +751,11 @@ impl RunManager {
         let run_id = row.id.as_str();
         let to = o.to;
         let sid = row.session_id.clone();
+        // A queued failover or move that never started has nothing left to announce.
+        {
+            let id = run_id.to_string();
+            let _ = self.db(move |s| s.clear_queued_pending(&id)).await;
+        }
         self.emit(
             &sid,
             Some(run_id),
@@ -708,7 +781,7 @@ impl RunManager {
             let _ = control.shutdown(SHUTDOWN_DEADLINE).await;
         }
         if o.flag_account && !cancelled {
-            self.flag_account(run_id, o.reason.as_deref().unwrap_or(""))
+            self.flag_account(run_id, o.reason.as_deref().unwrap_or(""), o.limit.as_ref())
                 .await;
         }
         let id = run_id.to_string();
@@ -742,7 +815,7 @@ impl RunManager {
         matches!(self.db(move |s| s.get_run(&id)).await, Ok(Some(r)) if r.state.is_terminal())
     }
 
-    async fn maybe_end_session(&self, session_id: &str) {
+    pub(crate) async fn maybe_end_session(&self, session_id: &str) {
         if lock(&self.inner.connected).contains(session_id) {
             return;
         }
@@ -752,7 +825,8 @@ impl RunManager {
                 let busy = s
                     .list_runs_by_session(&sid, 100_000)?
                     .iter()
-                    .any(|r| r.state.is_active());
+                    .any(|r| r.state.is_active())
+                    || s.session_has_running_workflow(&sid)?;
                 if !busy {
                     s.end_session(&sid, "ended", Utc::now())?;
                 }

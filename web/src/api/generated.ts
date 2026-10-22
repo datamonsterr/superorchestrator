@@ -79,7 +79,7 @@ export interface AgentsView {
   agents?: AgentView[];
 }
 
-/** `{ "error": { code, message, data? } }`. `code` is the JSON-RPC code for errors that come from the supervisor, and a short string (`unauthorized`, `forbidden`, `rate_limited`, `not_implemented`, `not_found`) for errors the web layer raises itself. */
+/** `{ "error": { code, message, data? } }`. `code` is the JSON-RPC code for errors that come from the supervisor, and a short string (`unauthorized`, `forbidden`, `rate_limited`, `not_found`) for errors the web layer raises itself. */
 export interface ApiErrorBody {
   error: ApiErrorDetail;
 }
@@ -134,6 +134,7 @@ export interface Config {
   supervisor?: Supervisor;
   ui?: Ui;
   usage?: Usage;
+  workflows?: Workflows;
   worktrees?: Worktrees;
 }
 
@@ -429,6 +430,23 @@ export interface RunViewPublic {
   worktree?: string | null;
 }
 
+/** Body of `POST /workflows/:name/run`. */
+export interface RunWorkflowBody {
+  /** Passed to the script as `args`. */
+  args?: unknown;
+}
+
+export interface RunWorkflowResult {
+  /** Why it failed. */
+  error?: string | null;
+  id: string;
+  /** The script's return value, when it finished successfully. */
+  result?: unknown;
+  session_id?: string | null;
+  /** `running`, `succeeded`, `failed` or `cancelled`. */
+  state?: string | null;
+}
+
 export interface Runs {
   ask_timeout?: HumanDuration;
   stall_ms?: number;
@@ -601,11 +619,66 @@ export interface Weights {
   load?: number;
 }
 
+/** The payload of the `workflow` message on the web stream: a run changed state or one of its steps did. */
+export interface WorkflowEventData {
+  id: string;
+  name: string;
+  session_id?: string | null;
+  state: string;
+  step?: WorkflowStep | null;
+  ts: string;
+}
+
+/** A workflow run in a list. */
+export interface WorkflowRunView {
+  finished_at?: string | null;
+  id: string;
+  name: string;
+  session_id?: string | null;
+  started_at: string;
+  state: string;
+}
+
+/** State, steps and result of a workflow run (`workflow_status`). */
+export interface WorkflowStatusResult {
+  error?: string | null;
+  finished_at?: string | null;
+  id: string;
+  name?: string;
+  result?: unknown;
+  session_id?: string | null;
+  started_at?: string | null;
+  /** `running`, `succeeded`, `failed` or `cancelled`. */
+  state: string;
+  steps?: WorkflowStep[];
+}
+
+/** One `agent()` call of a workflow run. */
+export interface WorkflowStep {
+  finished_at?: string | null;
+  /** Order in which the script started the step. */
+  index: number;
+  /** The phase the step ran in, or `step N`. */
+  name: string;
+  phase?: string | null;
+  /** The run behind the step; none for a cached step. */
+  run_id?: string | null;
+  started_at?: string | null;
+  /** `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`. */
+  state: string;
+}
+
 export interface WorkflowSummary {
   name: string;
   path: string;
   /** `project` or `config`. */
   source: string;
+}
+
+/** Workflow limits (an extension of SPEC 11, which sets none). */
+export interface Workflows {
+  /** Longest one workflow run may take, waits for accounts included. It also interrupts a script that never yields (`while (true) {}`). */
+  max_duration?: HumanDuration;
 }
 
 export interface WorktreeView {

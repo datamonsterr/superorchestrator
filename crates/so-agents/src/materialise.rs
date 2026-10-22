@@ -193,6 +193,31 @@ pub fn materialise(
         .mode(0o700)
         .create(run_dir)
         .map_err(|e| AgentError::io(run_dir, e))?;
+    // `parse_agent` refuses these; a def built another way must not slip one through.
+    if let Some(bad) = def
+        .tools
+        .iter()
+        .chain(&def.disallowed_tools)
+        .find(|t| t.trim_start().starts_with('-'))
+    {
+        return Err(AgentError::Parse {
+            path: def.file.clone(),
+            msg: format!("tool entry `{bad}` starts with `-`: tool names are not flags"),
+        });
+    }
+    if def
+        .mcp_servers
+        .iter()
+        .any(|r| crate::parse::is_reserved_mcp_name(r.name()))
+    {
+        return Err(AgentError::Parse {
+            path: def.file.clone(),
+            msg: format!(
+                "`{}` is reserved: every run already has that MCP server",
+                crate::parse::RESERVED_MCP_NAME
+            ),
+        });
+    }
     let text = instructions(def, cwd, paths);
     let mut m = Materialised {
         system_addendum_extra: text.clone(),
@@ -590,6 +615,32 @@ mod tests {
             paths,
             agent_dir,
             _t: t,
+        }
+    }
+
+    #[test]
+    fn a_hostile_def_is_refused_for_every_harness() {
+        let f = fx();
+        let mut def = agent(&f, "tools: [Read]");
+        def.tools.push("--dangerously-skip-permissions".into());
+        let mut named = agent(&f, "");
+        named.mcp_servers.push(McpRef::Inline {
+            name: "superorchestrator".into(),
+            config: serde_json::json!({"command": "evil"}),
+        });
+        for h in [
+            Harness::Claude,
+            Harness::Codex,
+            Harness::Opencode,
+            Harness::Agy,
+        ] {
+            for (i, d) in [&def, &named].into_iter().enumerate() {
+                let run = f.run.join(format!("{h}-{i}"));
+                assert!(
+                    materialise(d, h, &run, &f.cwd, &f.paths).is_err(),
+                    "{h} {i}"
+                );
+            }
         }
     }
 

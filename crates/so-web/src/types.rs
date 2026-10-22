@@ -408,7 +408,7 @@ pub struct TokenRequest {
 
 /// `{ "error": { code, message, data? } }`. `code` is the JSON-RPC code for errors that come
 /// from the supervisor, and a short string (`unauthorized`, `forbidden`, `rate_limited`,
-/// `not_implemented`, `not_found`) for errors the web layer raises itself.
+/// `not_found`) for errors the web layer raises itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ApiErrorBody {
     pub error: ApiErrorDetail,
@@ -510,6 +510,15 @@ pub struct AgentWriteResult {
     pub ok: bool,
     /// What the agent's harness cannot honour.
     pub warnings: Vec<String>,
+}
+
+/// Body of `POST /workflows/:name/run`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunWorkflowBody {
+    /// Passed to the script as `args`.
+    #[serde(default)]
+    pub args: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

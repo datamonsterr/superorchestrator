@@ -40,6 +40,23 @@ impl Default for Runs {
     }
 }
 
+/// Workflow limits (an extension of SPEC 11, which sets none).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Workflows {
+    /// Longest one workflow run may take, waits for accounts included. It also interrupts a
+    /// script that never yields (`while (true) {}`).
+    pub max_duration: HumanDuration,
+}
+
+impl Default for Workflows {
+    fn default() -> Self {
+        Self {
+            max_duration: HumanDuration::from_secs(6 * 3600),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Usage {
@@ -253,6 +270,7 @@ pub struct Defaults {
 pub struct Config {
     pub limits: Limits,
     pub runs: Runs,
+    pub workflows: Workflows,
     pub usage: Usage,
     pub router: Router,
     pub worktrees: Worktrees,
@@ -593,6 +611,7 @@ mod tests {
         let c = Config::default();
         assert_eq!((c.limits.global_cap, c.limits.max_children), (16, 8));
         assert_eq!(c.runs.stall_ms, 300_000);
+        assert_eq!(c.workflows.max_duration, HumanDuration::from_secs(6 * 3600));
         assert_eq!(c.runs.ask_timeout.to_string(), "30m");
         assert_eq!(c.usage.probe_ttl.to_string(), "5m");
         assert_eq!(c.usage.low_pct, 15);

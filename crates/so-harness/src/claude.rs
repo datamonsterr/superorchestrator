@@ -77,6 +77,8 @@ pub fn build_args(spec: &LaunchSpec, session_id: &str) -> Vec<String> {
     if let Some(n) = spec.max_turns {
         a.extend(["--max-turns".into(), n.to_string()]);
     }
+    // The custom agent's tool lists and extra config; last because the lists are variadic.
+    a.extend(spec.agent.extra_args.iter().cloned());
     a
 }
 

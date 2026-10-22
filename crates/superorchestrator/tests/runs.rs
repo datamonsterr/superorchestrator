@@ -4,11 +4,9 @@
 mod common;
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
-use common::{Env, stdout};
+use common::{Env, add_account, cli, stdout};
 use serde_json::{Value, json};
 use so_accounts::HostEnv;
 use so_core::proto::{
@@ -16,93 +14,6 @@ use so_core::proto::{
 };
 use so_core::{Config, Platform};
 use so_supervisor::{Supervisor, SupervisorClient, SupervisorOptions, default_handlers};
-
-const TRANSCRIPT: &str = include_str!("../../so-harness/tests/fixtures/claude/transcript.jsonl");
-
-fn fake_harness() -> PathBuf {
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let st = Command::new(cargo)
-        .args([
-            "build",
-            "-p",
-            "so-harness",
-            "--features",
-            "test-support",
-            "--bin",
-            "fake-harness",
-        ])
-        .status()
-        .unwrap();
-    assert!(st.success());
-    common::sibling_bin("fake-harness")
-}
-
-/// Script replaying the first recorded claude turn.
-fn script() -> String {
-    let mut steps = vec![json!({"expect_stdin_contains": "go"})];
-    for l in TRANSCRIPT.lines() {
-        let v: Value = serde_json::from_str(l).unwrap();
-        if v["dir"] != "in" {
-            continue;
-        }
-        let last = v["msg"]["type"] == "result";
-        steps.push(json!({"stdout": v["msg"]}));
-        if last {
-            break;
-        }
-    }
-    steps.iter().map(|s| format!("{s}\n")).collect()
-}
-
-fn add_account(e: &Env) {
-    let script_path = e.tmp.path().join("script.jsonl");
-    std::fs::write(&script_path, script()).unwrap();
-    let wrapper = e.tmp.path().join("claude-acc1.sh");
-    std::fs::write(
-        &wrapper,
-        format!(
-            "#!/bin/sh\nexport FAKE_HARNESS_SCRIPT={}\nexec {} \"$@\"\n",
-            script_path.display(),
-            fake_harness().display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::fs::create_dir_all(e.cfg.join("accounts")).unwrap();
-    std::fs::write(
-        e.cfg.join("accounts/claude-acc1.toml"),
-        format!(
-            "name = \"claude-acc1\"\nharness = \"claude\"\nhome = \"{}\"\nbinary = \"{}\"\n",
-            e.home.join(".claude-acc1").display(),
-            wrapper.display()
-        ),
-    )
-    .unwrap();
-}
-
-async fn cli(e: &Env, args: &[&str]) -> (String, bool) {
-    let mut cmd = e.cmd();
-    cmd.args(args);
-    tokio::task::spawn_blocking(move || {
-        let out = cmd.output().unwrap();
-        if !out.status.success() {
-            // Without this a failed call only shows up as a bare `assert!(ok)`.
-            eprintln!(
-                "cli {:?} failed ({}):\nstdout: {}\nstderr: {}",
-                cmd.get_args().collect::<Vec<_>>(),
-                out.status,
-                String::from_utf8_lossy(&out.stdout),
-                String::from_utf8_lossy(&out.stderr)
-            );
-        }
-        (
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            out.status.success(),
-        )
-    })
-    .await
-    .unwrap()
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn runs_list_show_and_join_print() {

@@ -81,14 +81,6 @@ impl ApiError {
         Self::named(StatusCode::NOT_FOUND, "not_found", "no such API route")
     }
 
-    pub fn not_implemented(what: &str) -> Self {
-        Self::named(
-            StatusCode::NOT_IMPLEMENTED,
-            "not_implemented",
-            format!("{what} is not available yet"),
-        )
-    }
-
     pub fn from_rpc(e: RpcError) -> Self {
         let status = match e.code {
             NOT_FOUND => StatusCode::NOT_FOUND,

@@ -102,7 +102,13 @@ impl RunManager {
                     let mgr = self.clone();
                     tokio::spawn(async move { mgr.start_run(run).await });
                 }
-                Ok(false) => {}
+                // No room on this account: an auto-routed run that has not started may take
+                // a free slot on another one (within what the caller pinned).
+                Ok(false) => {
+                    if self.reroute_queued(&run).await {
+                        self.request_drain();
+                    }
+                }
                 // Cancelled while we were looking: nothing to start.
                 Err(StoreError::StateConflict { .. }) => {
                     tracing::debug!(run_id = %run.id, "queued run changed state before its claim");

@@ -4,12 +4,14 @@ use anyhow::Result;
 use dialoguer::{Input, Select, theme::ColorfulTheme};
 use so_core::Harness;
 
-use crate::cmd::{account, init, migrate, status};
+use crate::cli::{AgentCmd, UiArgs};
+use crate::cmd::{account, agent, init, install, migrate, status, ui};
 use crate::ctx::Ctx;
 
-const MAIN: [&str; 7] = [
+const MAIN: [&str; 8] = [
     "init",
     "accounts",
+    "agents",
     "status",
     "open web UI",
     "install into Claude Code",
@@ -28,10 +30,20 @@ pub fn run(ctx: &Ctx) -> Result<()> {
         match pick {
             Some(0) => init::run(ctx)?,
             Some(1) => accounts_menu(ctx, &theme)?,
-            Some(2) => status::run(ctx)?,
-            Some(3) => eprintln!("`ui` is not implemented yet"),
-            Some(4) => eprintln!("`install` is not implemented yet"),
-            Some(5) => {
+            Some(2) => agent::run(ctx, AgentCmd::List)?,
+            Some(3) => status::run(ctx)?,
+            Some(4) => ui::run(
+                ctx,
+                UiArgs {
+                    bind: None,
+                    port: None,
+                    token: None,
+                    install_service: false,
+                    no_open: false,
+                },
+            )?,
+            Some(5) => install::install(ctx, false, false)?,
+            Some(6) => {
                 migrate::run(ctx, false)?;
             }
             _ => return Ok(()),

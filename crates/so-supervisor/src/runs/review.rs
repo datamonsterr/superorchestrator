@@ -412,6 +412,8 @@ impl RunManager {
                 text.push_str(&format!("- {}: {}\n", f.name, f.detail));
             }
             if control.send(&text).await.is_ok() {
+                let (id, t) = (run_id.to_string(), text.clone());
+                let _ = self.db(move |s| s.set_run_turn_prompt(&id, &t)).await;
                 let _ = self
                     .store_message(
                         &row.session_id,
@@ -616,6 +618,7 @@ impl RunManager {
             result_json: None,
             reason: Some("review accepted".into()),
             flag_account: false,
+            limit: None,
             control: None,
         };
         if !self.finish(&row.id, outcome).await {

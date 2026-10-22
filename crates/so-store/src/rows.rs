@@ -90,6 +90,16 @@ pub struct RunPatch {
     pub finished_at: Option<Option<DateTime<Utc>>>,
 }
 
+/// Where a failed-over run goes (see `Store::reassign_run`).
+#[derive(Debug, Clone)]
+pub struct Reassign {
+    pub account: String,
+    pub harness: Harness,
+    pub choice_id: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
 /// Result of `Store::claim_resume`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResumeClaim {
@@ -177,6 +187,10 @@ pub struct WorkflowRunRow {
     pub args_json: String,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// The script's return value as JSON, once it succeeded.
+    pub result_json: Option<String>,
+    /// Why it failed or was cancelled.
+    pub error: Option<String>,
 }
 
 /// Filter for [`Store::query_events`]. Events come in `(ts, id)` order, or the reverse.

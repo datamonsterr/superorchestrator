@@ -51,7 +51,7 @@ pub(super) struct Bus {
 }
 
 impl Bus {
-    pub(super) fn publish(&self, ev: &Event) {
+    pub(super) fn publish(&self, ev: &Event) -> u64 {
         let mut st = lock(&self.state);
         let seq = {
             let n = st.seqs.entry(ev.session_id.clone()).or_default();
@@ -79,6 +79,7 @@ impl Bus {
                 }
             }
         }
+        seq
     }
 
     pub(super) fn forget_session(&self, id: &str) {
@@ -172,6 +173,19 @@ impl RunManager {
         event_type: EventType,
         data: Value,
     ) {
+        self.emit_delivered(session_id, run_id, event_type, data)
+            .await;
+    }
+
+    /// Like [`RunManager::emit`], and returns the event as subscribers got it (with its
+    /// sequence number), for a caller that also pushes it to a client.
+    pub async fn emit_delivered(
+        &self,
+        session_id: &str,
+        run_id: Option<&str>,
+        event_type: EventType,
+        data: Value,
+    ) -> Option<Delivered> {
         let ev = Event {
             id: new_id(),
             session_id: session_id.to_string(),
@@ -183,9 +197,10 @@ impl RunManager {
         let stored = ev.clone();
         if let Err(e) = self.db(move |s| s.append_event(&stored)).await {
             tracing::warn!(error = %e.message, "could not store event");
-            return;
+            return None;
         }
-        self.inner.bus.publish(&ev);
+        let seq = self.inner.bus.publish(&ev);
+        Some(Delivered { seq, event: ev })
     }
 
     pub(super) fn forget_session_seq(&self, id: &str) {

@@ -13,9 +13,9 @@ pub use agy::{AgyControl, AgyDriver};
 pub use claude::{ClaudeControl, ClaudeDriver};
 pub use codex::{CodexControl, CodexDriver};
 pub use driver::{
-    AnyDriver, Channel, Driver, DriverConfig, DriverError, Endpoint, HarnessEvent, JoinCommand,
-    JoinInfo, LaunchSpec, McpServerSpec, RateLimits, RunControl, RunHandle, ShutdownOutcome,
-    classify_common,
+    AgentLaunch, AnyDriver, Channel, Driver, DriverConfig, DriverError, Endpoint, HarnessEvent,
+    JoinCommand, JoinInfo, LaunchSpec, McpServerSpec, RateLimits, RunControl, RunHandle,
+    ShutdownOutcome, classify_common,
 };
 pub use opencode::{EventMapper, OpencodeControl, OpencodeDriver};
 pub use process::{

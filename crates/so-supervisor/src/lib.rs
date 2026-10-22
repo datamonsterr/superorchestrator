@@ -21,7 +21,7 @@ use so_core::{Config, Paths};
 pub use client::{ClientError, SupervisorClient, spawn_daemon_process};
 pub use dispatch::{ConnCtx, HandlerFuture, Notifier, Router, status_result};
 pub use error::{Result, SupervisorError};
-pub use handlers::{default_handlers, harnesses_view};
+pub use handlers::{agents_view, default_handlers, harnesses_view};
 pub use lock::SupervisorLock;
 pub use reconcile::ReconcileHook;
 pub use runs::RunManager;

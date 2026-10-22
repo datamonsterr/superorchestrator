@@ -135,14 +135,14 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "run_workflow",
-        "Run a workflow by name or inline script and return its result.",
+        "Run a JavaScript workflow (a saved one by name, or an inline script) whose agent() calls are runs on any harness. Streams progress and returns the result; with wait=false it returns the id at once, then follow it with workflow_status.",
         true,
         false,
         schema::<RunWorkflowParams>,
     ),
     spec(
         "workflow_status",
-        "Get the state and result of a workflow run.",
+        "Get a workflow run's state, its steps (with their runs) and its result. Accepts an id prefix.",
         false,
         true,
         schema::<WorkflowStatusParams>,

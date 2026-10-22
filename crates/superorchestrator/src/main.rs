@@ -13,11 +13,10 @@ mod views;
 use std::process::ExitCode;
 
 use anyhow::Result;
-use clap::{ArgMatches, CommandFactory, FromArgMatches};
+use clap::{CommandFactory, FromArgMatches};
 
 use cli::{Cli, Command};
 use ctx::{Ctx, interactive};
-use exit::CliError;
 
 fn main() -> ExitCode {
     let matches = Cli::command().get_matches();
@@ -25,7 +24,7 @@ fn main() -> ExitCode {
         Ok(c) => c,
         Err(e) => e.exit(),
     };
-    match dispatch(cli, &command_path(&matches)) {
+    match dispatch(cli) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e:#}");
@@ -34,18 +33,7 @@ fn main() -> ExitCode {
     }
 }
 
-/// The subcommand chain as typed, e.g. `route eval` or `runs list`.
-fn command_path(matches: &ArgMatches) -> String {
-    let mut parts = Vec::new();
-    let mut cur = matches;
-    while let Some((name, sub)) = cur.subcommand() {
-        parts.push(name);
-        cur = sub;
-    }
-    parts.join(" ")
-}
-
-fn dispatch(cli: Cli, path: &str) -> Result<ExitCode> {
+fn dispatch(cli: Cli) -> Result<ExitCode> {
     let Cli {
         config_dir,
         json,
@@ -81,11 +69,10 @@ fn dispatch(cli: Cli, path: &str) -> Result<ExitCode> {
         Command::Runs(c) => cmd::runs::run(&ctx, c),
         Command::Join(a) => cmd::runs::join(&ctx, &a.run, a.exec),
         Command::Worktrees(c) => cmd::worktrees::run(&ctx, c),
+        Command::Workflow(c) => cmd::workflow::run(&ctx, c),
         Command::Route(a) => cmd::route::run(&ctx, a),
         Command::Migrate(a) => cmd::migrate::run(&ctx, a.apply),
         Command::Models(c) => cmd::models::run(&ctx, c).map(|()| ExitCode::SUCCESS),
-        // Commands without an arm yet; later tasks add only their own arm above.
-        _ => Err(CliError::not_implemented(path).into()),
     }
 }
 
@@ -96,14 +83,5 @@ mod tests {
     #[test]
     fn cli_is_valid() {
         Cli::command().debug_assert();
-    }
-
-    #[test]
-    fn command_path_follows_subcommands() {
-        let path = |args: &[&str]| command_path(&Cli::command().get_matches_from(args));
-        assert_eq!(path(&["so", "route", "eval"]), "route eval");
-        assert_eq!(path(&["so", "route", "do it"]), "route");
-        assert_eq!(path(&["so", "runs", "list"]), "runs list");
-        assert_eq!(path(&["so", "migrate", "--apply"]), "migrate");
     }
 }

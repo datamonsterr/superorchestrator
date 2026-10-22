@@ -74,6 +74,20 @@ async fn fixture(subagent: bool) -> Fixture {
                     .await;
                 Ok(json!({"run_id": "abcdefgh1234", "state": "running"}))
             });
+            st.router.register("run_workflow", |ctx, _p| async move {
+                // The way the supervisor reports a workflow: session events with no run.
+                for (step, status) in [("build", "started"), ("build", "running")] {
+                    ctx.notifier
+                        .notify(
+                            "event",
+                            json!({"id":"e","session_id":"s","run_id":null,
+                                   "ts":"2026-01-01T00:00:00Z","type":"progress",
+                                   "data":{"step":step,"status":status}}),
+                        )
+                        .await;
+                }
+                Ok(json!({"id": "w1", "state": "succeeded", "result": 7}))
+            });
             st.router.register("wait_agent", |ctx, p| async move {
                 for step in ["a", "b"] {
                     ctx.notifier
@@ -293,6 +307,29 @@ async fn spawn_agent_progress_only_when_waiting() {
     assert!(f.collector.progress.lock().unwrap().is_empty());
     call_with_token(&f, "spawn_agent", json!({"prompt": "x", "wait": true})).await;
     assert!(!f.collector.progress.lock().unwrap().is_empty());
+    f.sup.shutdown().await;
+}
+
+#[tokio::test]
+async fn run_workflow_streams_the_workflows_progress() {
+    let f = fixture(false).await;
+    let v = call_with_token(&f, "run_workflow", json!({"script": "return 7;"})).await;
+    assert_eq!(v["structuredContent"]["result"], json!(7));
+    let got: Vec<String> = f
+        .collector
+        .progress
+        .lock()
+        .unwrap()
+        .iter()
+        .filter_map(|p| p.message.clone())
+        .collect();
+    assert_eq!(
+        got,
+        [
+            "progress step=build status=started",
+            "progress step=build status=running"
+        ]
+    );
     f.sup.shutdown().await;
 }
 

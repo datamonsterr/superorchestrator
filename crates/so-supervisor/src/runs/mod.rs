@@ -4,8 +4,10 @@
 //! `lifecycle` (start, finish, cancel, worktree cleanup), `view` (read models and waiting),
 //! `reconcile` (take over runs after a restart) and `events` (store and fan out events).
 
+mod agent;
 mod comm;
 mod events;
+mod failover;
 mod fork;
 mod handlers;
 mod instructions;
@@ -15,8 +17,10 @@ mod queue;
 mod reconcile;
 mod resume;
 mod review;
+mod routing;
 mod spawn;
 mod view;
+mod workflow;
 pub mod worktree;
 
 use std::collections::{HashMap, HashSet};
@@ -104,6 +108,8 @@ struct Inner {
     socket_path: PathBuf,
     mcp_exe: PathBuf,
     driver_cfg: DriverConfig,
+    /// For the route decider. Never follows redirects, so the bearer key cannot be forwarded.
+    http: reqwest::Client,
     /// The single place run state lives. Held only for short, non-awaiting sections.
     runs: Mutex<HashMap<String, RunRt>>,
     /// Orchestrator sessions with a connected client.
@@ -123,6 +129,17 @@ struct Inner {
     fault_gate_result: std::sync::atomic::AtomicBool,
     /// Runs whose process died, to be resumed by the resumer task.
     resume_tx: tokio::sync::mpsc::UnboundedSender<reconcile::ResumeRequest>,
+    /// When a queued run was last looked at for a free account elsewhere.
+    reroute_at: Mutex<HashMap<String, std::time::Instant>>,
+    /// Cancel tokens of the workflows running now, by workflow run id.
+    workflow_cancels: Mutex<HashMap<String, so_workflow::CancelToken>>,
+    /// Workflows running now: while there are any the supervisor is busy, even between two
+    /// steps when no run is active.
+    active_workflows: std::sync::atomic::AtomicUsize,
+    /// Workflow run and step changes, for the web stream.
+    workflow_bus: tokio::sync::broadcast::Sender<so_core::proto::WorkflowEventData>,
+    /// Runs to move to another account after a quota or auth error.
+    failover_tx: tokio::sync::mpsc::UnboundedSender<failover::FailoverRequest>,
     notifications: Notifications,
     /// Test hooks: hold `go_live`, shorten the launch limit, slow the launch down.
     go_live_open: watch::Sender<bool>,
@@ -160,6 +177,7 @@ impl RunManager {
             .unwrap_or_else(|| PathBuf::from("superorchestrator"));
         let drain_wake = Arc::new(Notify::new());
         let (resume_tx, resume_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (failover_tx, failover_rx) = tokio::sync::mpsc::unbounded_channel();
         let notifications = Notifications::new(&config.notifications.on);
         let inner = Arc::new(Inner {
             store,
@@ -169,6 +187,10 @@ impl RunManager {
             socket_path,
             mcp_exe,
             driver_cfg: DriverConfig::default(),
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_default(),
             runs: Mutex::default(),
             connected: Mutex::default(),
             bus: Arc::default(),
@@ -177,6 +199,11 @@ impl RunManager {
             finished: watch::channel(0).0,
             msg_tick: watch::channel(0).0,
             resume_tx,
+            failover_tx,
+            reroute_at: Mutex::default(),
+            workflow_cancels: Mutex::default(),
+            active_workflows: std::sync::atomic::AtomicUsize::new(0),
+            workflow_bus: tokio::sync::broadcast::channel(256).0,
             locks: Mutex::default(),
             gate_delay_ms: AtomicU64::new(0),
             fault_gate_result: std::sync::atomic::AtomicBool::new(false),
@@ -190,6 +217,7 @@ impl RunManager {
         });
         queue::spawn_drainer(&inner, drain_wake);
         reconcile::spawn_resumer(&inner, resume_rx);
+        failover::spawn_failover(&inner, failover_rx);
         Self { inner }
     }
 
@@ -332,7 +360,7 @@ impl RunManager {
 
     /// True while any run is queued, starting or live.
     pub(crate) fn busy(&self) -> bool {
-        !lock(&self.inner.runs).is_empty()
+        !lock(&self.inner.runs).is_empty() || self.inner.active_workflows.load(Ordering::SeqCst) > 0
     }
 
     // ------------------------------------------------------------ store helpers
@@ -388,6 +416,12 @@ impl RunManager {
 /// and reconcile hook.
 pub(crate) fn register(state: &Arc<SupervisorState>) {
     handlers::register(state);
+    // On shutdown the running workflows are cancelled, and with them their step runs.
+    let (runs, mut down) = (state.runs.clone(), state.shutdown_signal());
+    tokio::spawn(async move {
+        let _ = down.wait_for(|v| *v).await;
+        runs.cancel_all_workflows();
+    });
     state.set_probe(Arc::new(state.runs.clone()));
     state.set_reconcile_hook(Arc::new(state.runs.clone()));
 }

@@ -9,11 +9,10 @@ pub mod system;
 pub mod workflows;
 
 use axum::Router;
-use axum::routing::{delete, get, patch, post, put};
+use axum::routing::{get, patch, post};
 use so_core::Event;
 use so_core::redact::redact_json;
 
-use crate::error::ApiError;
 use crate::security::post_token;
 use crate::state::AppState;
 use crate::stream::get_stream;
@@ -33,20 +32,8 @@ pub fn redact_run(v: &mut RunViewPublic) {
     }
 }
 
-/// Endpoints of design 2.1 whose backend does not exist yet: `(method, path)`. The
-/// supervisor has no `run_workflow` handler yet.
-pub const NOT_IMPLEMENTED: &[(&str, &str)] = &[
-    ("GET", "/api/v1/workflows/runs"),
-    ("GET", "/api/v1/workflows/runs/{id}"),
-    ("POST", "/api/v1/workflows/{name}/run"),
-];
-
-async fn not_implemented() -> ApiError {
-    ApiError::not_implemented("this endpoint")
-}
-
 pub fn routes() -> Router<AppState> {
-    let mut r = Router::new()
+    Router::new()
         .route("/api/v1/token", post(post_token))
         .route("/api/v1/auth", post(post_token))
         .route("/api/v1/status", get(system::status))
@@ -79,6 +66,13 @@ pub fn routes() -> Router<AppState> {
             get(agents::get).put(agents::update).delete(agents::remove),
         )
         .route("/api/v1/workflows", get(workflows::list))
+        .route("/api/v1/workflows/runs", get(workflows::runs))
+        .route("/api/v1/workflows/runs/{id}", get(workflows::run_detail))
+        .route(
+            "/api/v1/workflows/runs/{id}/cancel",
+            post(workflows::cancel),
+        )
+        .route("/api/v1/workflows/{name}/run", post(workflows::run))
         .route("/api/v1/routing/records", get(system::routing_records))
         .route("/api/v1/accounts", get(accounts::list).post(accounts::add))
         .route("/api/v1/accounts/import", post(accounts::import))
@@ -102,15 +96,5 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/v1/worktrees", get(system::worktrees_list))
         .route("/api/v1/worktrees/prune", post(system::worktrees_prune))
-        .route("/api/v1/stream", get(get_stream));
-    for (method, path) in NOT_IMPLEMENTED {
-        let m = match *method {
-            "GET" => get(not_implemented),
-            "POST" => post(not_implemented),
-            "PUT" => put(not_implemented),
-            _ => delete(not_implemented),
-        };
-        r = r.route(path, m);
-    }
-    r
+        .route("/api/v1/stream", get(get_stream))
 }

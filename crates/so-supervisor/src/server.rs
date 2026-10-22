@@ -158,6 +158,11 @@ impl SupervisorState {
         self.clients.load(Ordering::SeqCst)
     }
 
+    /// A receiver that turns `true` when shutdown is requested.
+    pub fn shutdown_signal(&self) -> watch::Receiver<bool> {
+        self.shutdown.subscribe()
+    }
+
     /// Asks the supervisor to shut down gracefully.
     pub fn request_shutdown(&self) {
         self.shutdown.send_replace(true);
@@ -720,16 +725,20 @@ async fn serve_connection(
         writer.0.abort();
     }
     if let Some(session_id) = guard.session.take() {
+        // Not connected any more: a run (or workflow) that finishes later may end the session.
+        state.runs.session_disconnected(&session_id);
         end_orchestrator_session(&state, session_id).await;
     }
 }
 
 /// Ends the session unless it still has active runs (a later task ends it then).
 fn end_session_blocking(store: &Store, id: &str) -> so_store::Result<bool> {
+    // A workflow between two steps has no active run, but its session is still in use.
     let active = store
         .list_runs_by_session(id, 100_000)?
         .iter()
-        .any(|r| r.state.is_active());
+        .any(|r| r.state.is_active())
+        || store.session_has_running_workflow(id)?;
     if active {
         return Ok(false);
     }

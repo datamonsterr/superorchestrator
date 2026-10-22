@@ -107,8 +107,31 @@ const V3: &str = "
 ALTER TABLE run_meta ADD COLUMN resume_prompt TEXT;
 ";
 
+const V4: &str = "
+-- How a run was routed (the caller's pins), kept so a failover can route again within them.
+ALTER TABLE run_meta ADD COLUMN route_json TEXT;
+";
+
+const V5: &str = "
+-- A workflow run keeps its result (or why it failed) so `workflow_status` can report it later.
+ALTER TABLE workflow_runs ADD COLUMN result_json TEXT;
+ALTER TABLE workflow_runs ADD COLUMN error TEXT;
+";
+
+const V6: &str = "
+-- The prompt of a run's current turn (start, resume, review feedback), so a failover
+-- re-sends that and not the first prompt; and a failover that is waiting for a free slot.
+ALTER TABLE run_meta ADD COLUMN turn_prompt TEXT;
+ALTER TABLE run_meta ADD COLUMN failover_json TEXT;
+";
+
+const V7: &str = "
+-- A queued run moved to another account: its route_decision is announced once it starts.
+ALTER TABLE run_meta ADD COLUMN queued_route_json TEXT;
+";
+
 /// Ordered migrations; entry `i` brings the database to version `i + 1`.
-const MIGRATIONS: &[&str] = &[V1, V2, V3];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
 
 /// Latest schema version known to this build.
 pub fn latest_version() -> i64 {

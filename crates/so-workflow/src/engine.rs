@@ -145,6 +145,8 @@ impl WorkflowEngine {
             args_json: args.to_string(),
             started_at: Utc::now(),
             finished_at: None,
+            result_json: None,
+            error: None,
         };
         {
             let store = self.store.clone();
@@ -180,10 +182,22 @@ impl WorkflowEngine {
             Err(WorkflowError::Cancelled) => "cancelled",
             Err(_) => "failed",
         };
+        let (result_json, error) = match &result {
+            Ok(v) => (Some(v.to_string()), None),
+            Err(e) => (None, Some(e.to_string())),
+        };
         let store = self.store.clone();
         let id = run_id.clone();
-        blocking(move || store.update_workflow_run_state(&id, final_state, Some(Utc::now())))
-            .await?;
+        blocking(move || {
+            store.finish_workflow_run(
+                &id,
+                final_state,
+                Utc::now(),
+                result_json.as_deref(),
+                error.as_deref(),
+            )
+        })
+        .await?;
         if let Err(e) = finalized {
             return Err(WorkflowError::Engine(e.msg));
         }
