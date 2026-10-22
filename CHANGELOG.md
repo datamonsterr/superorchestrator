@@ -113,6 +113,14 @@ First release. Pending the `v0.1.0` tag.
 
 ### Fixed
 
+- Choice effort is validated per harness. The seeded `agy-sonnet-thinking` choice (`effort =
+  "thinking"`) made agy refuse to launch, because `agy --effort` takes only
+  `low|medium|high|xhigh|max`. `thinking` is now a router hint for a model that reasons by
+  itself: the agy driver launches without `--effort`, and the router still ranks it with the top
+  effort tier, so existing configs keep working. Any other effort a harness rejects (for
+  example `claude` with `thinking`) fails the launch before a process starts, makes routing skip
+  the choice with the reason in the route rationale, and is reported by `superorchestrator
+  doctor` ("choice efforts") with the values to use.
 - Routing against live Jev. `router.policy` defaults are now `min_confidence = 0.45` and
   `min_margin = 0.15`, and the seeded choice descriptions and routing instruction describe the
   tiers in general terms. Live results (one run each, 2026-10-23): tuning set 87% on

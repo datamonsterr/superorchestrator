@@ -809,3 +809,32 @@ async fn connection_refused_tries_the_fallback_and_names_both_models() {
     assert!(m.contains("`inception/mercury-decide:free`"), "{m}");
     assert!(m.contains("fallback model `fallback/model`"), "{m}");
 }
+
+#[tokio::test]
+async fn choice_with_invalid_effort_is_skipped_and_the_rationale_says_why() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    w.config.choices[0].effort = Some("bogus".into());
+    let out = route_detailed(&w.inputs(), &params("rename a variable"))
+        .await
+        .unwrap();
+    assert_ne!(out.result.choice_id, "agy-fast");
+    assert!(
+        out.result.rationale.contains(
+            "choice agy-fast: effort `bogus` is not valid for agy (low|medium|high|xhigh|max)"
+        ),
+        "{}",
+        out.result.rationale
+    );
+}
+
+#[tokio::test]
+async fn agy_thinking_hint_stays_routable() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    w.config.choices.retain(|c| c.id == "agy-fast");
+    w.config.choices[0].effort = Some("thinking".into());
+    let out = route_detailed(&w.inputs(), &params("rename a variable"))
+        .await
+        .unwrap();
+    assert_eq!(out.result.choice_id, "agy-fast");
+    assert!(!out.result.rationale.contains("Skipped"));
+}

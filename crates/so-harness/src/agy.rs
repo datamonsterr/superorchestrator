@@ -24,7 +24,7 @@ use tokio::sync::watch;
 
 use crate::driver::{
     Driver, DriverConfig, DriverError, HarnessEvent, JoinCommand, JoinInfo, LaunchSpec, RunControl,
-    RunHandle, ShutdownOutcome, classify_common,
+    RunHandle, ShutdownOutcome, check_effort, classify_common,
 };
 use crate::process::{
     LineParser, ProcessHandle, create_private_dir, exited, spawn_supervised, write_private,
@@ -78,8 +78,9 @@ pub fn build_args(spec: &LaunchSpec) -> Vec<String> {
     if let Some(m) = &spec.model {
         a.extend(["--model".into(), m.clone()]);
     }
-    if let Some(e) = &spec.effort {
-        a.extend(["--effort".into(), e.clone()]);
+    // `thinking` is the router hint for a model that reasons by itself: no flag.
+    if let Some(e) = Harness::Agy.launch_effort(spec.effort.as_deref()) {
+        a.extend(["--effort".into(), e.to_string()]);
     }
     if let Some(s) = &spec.output_schema {
         a.extend(["--json-schema".into(), s.to_string()]);
@@ -222,6 +223,7 @@ impl Driver for AgyDriver {
     }
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
+        check_effort(Harness::Agy, spec.effort.as_deref())?;
         if spec.fork {
             return Err(DriverError::Other("agy cannot fork a session".into()));
         }

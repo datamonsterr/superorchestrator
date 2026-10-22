@@ -241,3 +241,37 @@ fn doctor_warns_about_codex_choices_left_off_by_the_old_seed() {
     std::fs::write(&path, text).unwrap();
     assert!(!doctor_checks(&e).iter().any(|c| c["name"] == "choices"));
 }
+
+#[test]
+fn doctor_flags_a_choice_effort_its_harness_rejects() {
+    let e = Env::new();
+    e.init();
+    // The seed's agy `thinking` hint is valid.
+    assert!(
+        !doctor_checks(&e)
+            .iter()
+            .any(|c| c["name"] == "choice efforts")
+    );
+
+    let path = e.cfg.join("config.toml");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let at = text.find("id = \"codex-high\"").unwrap();
+    let eff = text[at..].find("effort = \"").unwrap() + at;
+    let end = text[eff..].find('\n').unwrap() + eff;
+    let mut edited = text.clone();
+    edited.replace_range(eff..end, "effort = \"thinking\"");
+    std::fs::write(&path, edited).unwrap();
+    let checks = doctor_checks(&e);
+    let w = checks
+        .iter()
+        .find(|c| c["name"] == "choice efforts")
+        .unwrap();
+    assert_eq!(w["status"], "warn");
+    let d = w["detail"].as_str().unwrap();
+    assert!(
+        d.contains(
+            "effort `thinking` is not valid for codex (minimal|low|medium|high|xhigh|max|ultra)"
+        ) && d.contains("config.toml"),
+        "{d}"
+    );
+}

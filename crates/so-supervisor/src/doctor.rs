@@ -242,6 +242,7 @@ fn check_config(c: &mut Checks, paths: &Paths) -> Option<Config> {
                 );
             }
             check_old_codex_choices(c, &cfg);
+            check_choice_efforts(c, &cfg);
             Some(cfg)
         }
         Err(e) => {
@@ -277,6 +278,29 @@ fn check_old_codex_choices(c: &mut Checks, cfg: &Config) {
                  `enabled = true` on {} in config.toml",
                 stale.join(", "),
                 if stale.len() == 1 { "it" } else { "each" }
+            ),
+        );
+    }
+}
+
+/// Enabled choices whose effort their harness CLI would refuse. Routing skips them, so they
+/// never run; the fix is in config.toml, which this never edits.
+fn check_choice_efforts(c: &mut Checks, cfg: &Config) {
+    let bad: Vec<String> = cfg
+        .choices
+        .iter()
+        .filter(|ch| ch.enabled)
+        .filter_map(|ch| {
+            ch.effort_problem()
+                .map(|p| format!("choice {}: {p}", ch.id))
+        })
+        .collect();
+    if !bad.is_empty() {
+        c.warn(
+            "choice efforts",
+            format!(
+                "{}. Routing skips these choices; change `effort` in config.toml to a listed value",
+                bad.join("; ")
             ),
         );
     }
