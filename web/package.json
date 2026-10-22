@@ -17,6 +17,7 @@
     "typecheck": "tsc -b --noEmit",
     "size": "node scripts/size.mjs",
     "e2e": "playwright test",
+    "e2e:real": "E2E_REAL=1 playwright test --project=real",
     "e2e:install": "playwright install chromium"
   },
   "dependencies": {

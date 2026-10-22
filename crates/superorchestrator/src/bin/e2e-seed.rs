@@ -4,7 +4,7 @@
 //! `e2e-seed --config-dir D --home H --cwd W --fake-harness F --daemon-exe E` writes three
 //! `claude` accounts whose binary is the scripted `fake-harness`, starts the supervisor (the
 //! socket comes from `SUPERORCHESTRATOR_SOCKET`), spawns a run per state worth drawing
-//! (succeeded, failed, running, cancelled, and a child of the running one), prints one JSON
+//! (succeeded, failed, running, cancelled), opens a second, empty session, prints one JSON
 //! line `{"ready":true,...}` and then stays connected until it is killed: the runs belong to
 //! this connection's session, and the running one keeps running only while it is open.
 //! No real harness is ever started.
@@ -170,6 +170,18 @@ async fn main() {
         )
         .await
         .unwrap();
+
+    // A second session with no runs: its timeline shows the empty state.
+    let (_idle, _) = SupervisorClient::connect_or_spawn_hello(
+        &socket,
+        || spawn_daemon_process(&exe, &cfg),
+        "e2e-empty",
+        &cwd.to_string_lossy(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
 
     println!(
         "{}",
