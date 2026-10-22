@@ -89,6 +89,12 @@ To test it by hand, flag an account: `superorchestrator account flag codex-acc1 
 
 ## Models catalog
 
+### Effort values
+
+The router checks each choice's `effort` against what its harness accepts: claude and agy take `low|medium|high|xhigh|max`, codex takes `minimal|low|medium|high|xhigh|max|ultra`, and opencode passes it on as a provider-specific variant without checking. A choice with any other value is skipped when routing (the route rationale names it) and `superorchestrator doctor` reports it under "choice efforts". Change the value in `config.toml` to fix it.
+
+`thinking` is a special value for agy. Some agy models are the thinking variant themselves (`claude-sonnet-4-6` is "Claude Sonnet 4.6 (Thinking)"), so there is no effort to pass. `effort = "thinking"` tells the router to rank the choice with the top effort tier, and the agy driver launches without `--effort`. Use it only on agy choices.
+
 `models.toml` lists known models per harness, with tier, efforts, pool and cost. A default ships in the binary. `superorchestrator models refresh` collects models from the harness CLIs and models.dev. `superorchestrator models list` prints them. The catalog is for discovery and validation. It never edits your choices, and `models refresh` tells you about models that no choice uses.
 
 ## Evaluating the router

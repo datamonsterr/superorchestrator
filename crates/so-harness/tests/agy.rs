@@ -561,3 +561,28 @@ async fn exit_before_init_fails_the_launch_with_the_classified_error() {
     );
     assert!(msg.contains("Auth"), "{msg}");
 }
+
+#[test]
+fn thinking_hint_adds_no_effort_flag() {
+    let rig = Rig::new();
+    let mut spec = rig.spec(&init_script());
+    spec.effort = Some("thinking".into());
+    let a = so_harness::agy::build_args(&spec);
+    assert!(!a.iter().any(|x| x == "--effort"), "{a:?}");
+    spec.effort = Some("xhigh".into());
+    let a = so_harness::agy::build_args(&spec);
+    assert!(a.windows(2).any(|w| w == ["--effort", "xhigh"]), "{a:?}");
+}
+
+#[tokio::test]
+async fn invalid_effort_fails_before_spawn() {
+    let rig = Rig::new();
+    let mut spec = rig.spec(&init_script());
+    spec.effort = Some("bogus".into());
+    let err = driver().launch(spec).await.err().unwrap();
+    assert!(
+        err.to_string()
+            .contains("effort `bogus` is not valid for agy (low|medium|high|xhigh|max)"),
+        "{err}"
+    );
+}

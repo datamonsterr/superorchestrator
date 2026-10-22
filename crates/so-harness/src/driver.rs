@@ -45,6 +45,15 @@ pub enum DriverError {
     Other(String),
 }
 
+/// Fails a launch whose effort the harness CLI would refuse, before anything is spawned
+/// (ADR-0004). The router hint `thinking` passes for agy and is dropped from its argv.
+pub fn check_effort(harness: Harness, effort: Option<&str>) -> Result<(), DriverError> {
+    match effort.and_then(|e| harness.effort_problem(e)) {
+        Some(problem) => Err(DriverError::Other(problem)),
+        None => Ok(()),
+    }
+}
+
 /// How the harness reaches the superorchestrator MCP server. The `env` goes
 /// into the harness's MCP config, never into argv or the harness process env.
 #[derive(Clone, Default, PartialEq, Eq)]

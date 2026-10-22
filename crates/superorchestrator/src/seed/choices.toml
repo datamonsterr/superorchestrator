@@ -29,6 +29,7 @@ enabled = true
 id = "agy-sonnet-thinking"
 harness = "agy"
 model = "claude-sonnet-4-6"
+# "thinking" is a router hint: the model is the thinking variant, so agy gets no --effort.
 effort = "thinking"
 roles = ["worker"]
 description = "Claude Sonnet 4.6 with extended thinking in Antigravity. The most careful worker, and slower. For tasks where correctness depends on long chains of reasoning, where the approach or cause is not yet known, or where mistakes are costly or hard to reverse. Choose it when depth of reasoning matters more than breadth or speed."

@@ -761,3 +761,16 @@ fn join_command_uses_wrapper_and_cwd() {
     assert!(c.env.is_empty());
     assert_eq!(c.cwd, PathBuf::from("/work"));
 }
+
+#[tokio::test]
+async fn effort_thinking_is_refused_before_spawn() {
+    let rig = Rig::new();
+    let mut spec = rig.spec(&script_from_fixture(TRANSCRIPT));
+    spec.effort = Some("thinking".into());
+    let err = driver().launch(spec).await.err().unwrap();
+    assert!(
+        err.to_string()
+            .contains("effort `thinking` is not valid for claude (low|medium|high|xhigh|max)"),
+        "{err}"
+    );
+}

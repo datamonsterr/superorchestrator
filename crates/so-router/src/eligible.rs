@@ -153,7 +153,18 @@ pub fn eligible<'a>(
     choices
         .iter()
         .filter(|c| c.enabled && c.roles.iter().any(|r| r == role) && !exclude.contains(&c.id))
+        .filter(|c| c.effort_problem().is_none())
         .filter_map(|c| candidate(c, catalog, snapshot))
+        .collect()
+}
+
+/// Enabled `role` choices that routing skips because their effort is not valid for their
+/// harness, each as `choice <id>: <problem>`. The run would fail at launch otherwise.
+pub fn effort_skips(choices: &[Choice], role: &str, exclude: &[String]) -> Vec<String> {
+    choices
+        .iter()
+        .filter(|c| c.enabled && c.roles.iter().any(|r| r == role) && !exclude.contains(&c.id))
+        .filter_map(|c| c.effort_problem().map(|p| format!("choice {}: {p}", c.id)))
         .collect()
 }
 
@@ -203,6 +214,29 @@ pub(crate) mod tests {
 
     fn ids(v: &[Candidate<'_>]) -> Vec<String> {
         v.iter().map(|c| c.choice.id.clone()).collect()
+    }
+
+    #[test]
+    fn choice_with_an_effort_its_harness_rejects_is_not_eligible() {
+        let mut bad = choice("cl", Harness::Claude, "sonnet", &["worker"]);
+        bad.effort = Some("thinking".into());
+        let mut agy = choice("ag", Harness::Agy, "claude-sonnet-4-6", &["worker"]);
+        agy.effort = Some("thinking".into());
+        let choices = vec![bad, agy];
+        let cat = Catalog::default_catalog();
+        let snap = Snapshot {
+            accounts: vec![
+                account("c1", Harness::Claude, 2, 0),
+                account("a1", Harness::Agy, 2, 0),
+            ],
+        };
+        let got = eligible(&choices, &cat, &snap, "worker", &[]);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].choice.id, "ag");
+        assert_eq!(
+            effort_skips(&choices, "worker", &[]),
+            ["choice cl: effort `thinking` is not valid for claude (low|medium|high|xhigh|max)"]
+        );
     }
 
     #[test]
