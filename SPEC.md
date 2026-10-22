@@ -278,6 +278,12 @@ A run with `review: true`:
 2. Enters `pending_review` when the checks pass. A failed check is sent back to the child as a message once, then the run is reported to the parent.
 3. Waits for the parent. `accept_run` marks it `succeeded`. `reject_run(feedback)` sends the feedback on the same native session and returns the run to `running`.
 
+Notes on the implementation:
+- `cmd:<shell>` runs with `sh -c` in the run's worktree (or cwd) with a 10 minute limit. The command comes from the `checks` the spawning caller supplied, which is operator configuration; it is never built from task text or run output.
+- `ci` and `pr_threads` use `gh` against the pull request of the run's branch. `ci` is green when every check is SUCCESS, SKIPPED or NEUTRAL.
+- At `pending_review` the harness process is stopped and its slot is freed; the native session stays so `reject_run` (or `send_message`) can resume it. The worktree is kept; `accept_run` applies the normal cleanup rule (removed only when untouched).
+- Failed checks are sent to the child once. If they fail again the run still goes to `pending_review`, and the parent gets a `result` message that lists the failed checks.
+
 ### 7.6 Stall handling
 
 When a run is `stalled`:
