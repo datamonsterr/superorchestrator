@@ -4,7 +4,7 @@ use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-use so_core::{AccountFile, Config, Harness, Paths};
+use so_core::{AccountFile, Config, Harness, Paths, Platform};
 
 use crate::env::build_launch_vars;
 use crate::error::{AccountsError, Result};
@@ -79,6 +79,27 @@ fn finish(
     Ok(account.clone())
 }
 
+/// On macOS only one agy account may be enabled (SPEC 6.4, ADR-0005): refuse making
+/// `name` an enabled agy account while another one is. The platform comes from the host,
+/// so tests can run this on Linux.
+pub fn check_single_agy(paths: &Paths, host: &HostEnv, name: &str, harness: Harness) -> Result<()> {
+    if host.platform != Platform::MacOs || harness != Harness::Agy {
+        return Ok(());
+    }
+    // A broken account file is reported elsewhere; it must not block this check.
+    let existing = AccountFile::list(paths).unwrap_or_default();
+    match existing
+        .iter()
+        .find(|a| a.enabled && a.harness == Harness::Agy && a.name != name)
+    {
+        Some(other) => Err(AccountsError::AgySecondAccount {
+            name: name.to_string(),
+            existing: other.name.clone(),
+        }),
+        None => Ok(()),
+    }
+}
+
 fn ensure_new(paths: &Paths, name: &str) -> Result<()> {
     if paths.account_file(name).exists() {
         return Err(AccountsError::AlreadyExists(name.to_string()));
@@ -99,6 +120,7 @@ pub fn add(
     let home_spec = home.map_or_else(|| format!("~/.{name}"), str::to_string);
     let account = AccountFile::new(name, harness, &home_spec, harness.as_str())?;
     ensure_new(paths, name)?;
+    check_single_agy(paths, host, name, harness)?;
     let dir = host.expand(&home_spec)?;
     create_private_dir(&if harness == Harness::Agy {
         dir.join(".gemini")
@@ -119,6 +141,7 @@ pub fn import(
 ) -> Result<AccountFile> {
     let account = AccountFile::new(name, harness, home, harness.as_str())?;
     ensure_new(paths, name)?;
+    check_single_agy(paths, host, name, harness)?;
     let dir = host.expand(home)?;
     let must_exist = if harness == Harness::Agy {
         dir.join(".gemini")
@@ -257,12 +280,20 @@ pub fn remove(paths: &Paths, cfg: &Config, host: &HostEnv, name: &str, purge: bo
     Ok(())
 }
 
-pub fn set_enabled(paths: &Paths, name: &str, enabled: bool) -> Result<AccountFile> {
+pub fn set_enabled(
+    paths: &Paths,
+    host: &HostEnv,
+    name: &str,
+    enabled: bool,
+) -> Result<AccountFile> {
     let file = paths.account_file(name);
     if !file.exists() {
         return Err(AccountsError::NotFound(name.to_string()));
     }
     let mut account = AccountFile::load(&file)?;
+    if enabled {
+        check_single_agy(paths, host, name, account.harness)?;
+    }
     account.enabled = enabled;
     account.save(paths)?;
     Ok(account)
@@ -338,6 +369,67 @@ mod tests {
             cfg,
             host,
         }
+    }
+
+    fn mac_fx() -> Fx {
+        let mut f = fx();
+        f.host = host(f.d.path(), Platform::MacOs);
+        f
+    }
+
+    #[test]
+    fn macos_refuses_a_second_enabled_agy_account() {
+        let f = mac_fx();
+        add(
+            &f.paths,
+            &f.cfg,
+            &f.host,
+            Harness::Agy,
+            "agy-acc1",
+            Some("~"),
+        )
+        .unwrap();
+        // add
+        let e = add(&f.paths, &f.cfg, &f.host, Harness::Agy, "agy-acc2", None).unwrap_err();
+        assert!(matches!(e, AccountsError::AgySecondAccount { .. }), "{e}");
+        assert!(!f.paths.account_file("agy-acc2").exists());
+        assert!(
+            !f.d.path().join(".agy-acc2").exists(),
+            "no home left behind"
+        );
+        // import
+        std::fs::create_dir_all(f.d.path().join("p/.gemini")).unwrap();
+        let e = import(&f.paths, &f.cfg, &f.host, "agy-acc3", Harness::Agy, "~/p").unwrap_err();
+        assert!(matches!(e, AccountsError::AgySecondAccount { .. }), "{e}");
+        // other harnesses are unaffected
+        add(
+            &f.paths,
+            &f.cfg,
+            &f.host,
+            Harness::Codex,
+            "codex-acc1",
+            None,
+        )
+        .unwrap();
+        // enable: a second account that exists but is disabled cannot be turned on
+        let linux = host(f.d.path(), Platform::Linux);
+        add(&f.paths, &f.cfg, &linux, Harness::Agy, "agy-acc4", None).unwrap();
+        set_enabled(&f.paths, &linux, "agy-acc4", false).unwrap();
+        let e = set_enabled(&f.paths, &f.host, "agy-acc4", true).unwrap_err();
+        assert!(matches!(e, AccountsError::AgySecondAccount { .. }), "{e}");
+        // disabling the first frees the slot; disabling is always allowed
+        set_enabled(&f.paths, &f.host, "agy-acc1", false).unwrap();
+        set_enabled(&f.paths, &f.host, "agy-acc4", true).unwrap();
+        // the same account may be re-enabled while it is the only one
+        set_enabled(&f.paths, &f.host, "agy-acc4", true).unwrap();
+    }
+
+    #[test]
+    fn linux_allows_several_agy_accounts() {
+        let f = fx();
+        add(&f.paths, &f.cfg, &f.host, Harness::Agy, "agy-acc1", None).unwrap();
+        add(&f.paths, &f.cfg, &f.host, Harness::Agy, "agy-acc2", None).unwrap();
+        set_enabled(&f.paths, &f.host, "agy-acc2", true).unwrap();
     }
 
     #[test]
@@ -634,13 +726,17 @@ mod tests {
             None,
         )
         .unwrap();
-        assert!(!set_enabled(&f.paths, "codex-acc7", false).unwrap().enabled);
+        assert!(
+            !set_enabled(&f.paths, &f.host, "codex-acc7", false)
+                .unwrap()
+                .enabled
+        );
         assert!(
             !AccountFile::load(&f.paths.account_file("codex-acc7"))
                 .unwrap()
                 .enabled
         );
-        assert!(set_enabled(&f.paths, "nope-x", true).is_err());
+        assert!(set_enabled(&f.paths, &f.host, "nope-x", true).is_err());
     }
 
     #[test]

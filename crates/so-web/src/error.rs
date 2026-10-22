@@ -210,6 +210,7 @@ impl From<AccountsError> for ApiError {
             AccountsError::Core(c) => c.into(),
             AccountsError::Io { path, source } => Self::io(&path, &source),
             AccountsError::AgyMultiAccountUnsupported(_)
+            | AccountsError::AgySecondAccount { .. }
             | AccountsError::BinaryNotFound(_)
             | AccountsError::HomeMissing(_)
             | AccountsError::InvalidName(_)

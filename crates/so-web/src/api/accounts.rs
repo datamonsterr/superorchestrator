@@ -143,6 +143,9 @@ pub async fn patch(
             a.priority = p;
         }
         if let Some(e) = b.enabled {
+            if e && !a.enabled {
+                manage::check_single_agy(&st.sup.paths, &host(&st)?, &a.name, a.harness)?;
+            }
             a.enabled = e;
         }
         if let Some(pools) = b.pools {

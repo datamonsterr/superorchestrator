@@ -18,6 +18,11 @@ pub enum AccountsError {
         "agy account `{0}` is not supported on macOS yet; only the default ~/.gemini works there"
     )]
     AgyMultiAccountUnsupported(String),
+    #[error(
+        "cannot use a second agy account `{name}` on macOS: `{existing}` is already enabled \
+         (agy multi-account is Linux-only, ADR-0005)"
+    )]
+    AgySecondAccount { name: String, existing: String },
     #[error("binary `{0}` not found on PATH")]
     BinaryNotFound(String),
     #[error("account `{0}` already exists")]
