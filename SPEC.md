@@ -491,7 +491,7 @@ Full transcripts are stored as files under `runs/<run_id>/transcript.jsonl`, in 
 
 **Subagents only:** `report_progress`, `ask_parent`.
 
-Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tasks when the client supports tasks. Otherwise they block, with progress notifications.
+Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tasks when the client declares the tasks extension. Progress goes to the task's status message, and `tasks/cancel` stops the wait without cancelling the runs. Otherwise the tools block, with progress notifications.
 
 ## 14. Web UI
 

@@ -1,13 +1,17 @@
 //! The `ServerHandler` that forwards tool calls to the supervisor.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ElicitRequestParams,
-    ElicitationAction, ElicitationSchema, Implementation, ListToolsResult, PaginatedRequestParams,
-    ProgressNotificationParam, ServerCapabilities, ServerConfig,
+    CallToolRequestParams, CallToolResponse, CallToolResult, CancelTaskParams, ContentBlock,
+    CreateTaskResult, ElicitRequestParams, ElicitationAction, ElicitationSchema, GetTaskParams,
+    GetTaskResult, Implementation, ListToolsResult, PaginatedRequestParams,
+    ProgressNotificationParam, ProgressToken, ServerCapabilities, ServerConfig, UpdateTaskParams,
 };
-use rmcp::service::{ElicitationMode, RequestContext};
+use rmcp::service::{ElicitationMode, Peer, RequestContext};
+use rmcp::task_manager::{TaskContext, TaskExit, TaskManager, TaskOptions};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{Value, json};
 use so_core::proto::{METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, Notification};
@@ -27,8 +31,25 @@ const PROGRESS_QUEUE: usize = 64;
 /// Most times one `wait_agent` call asks the person before it returns what it has.
 const MAX_ELICIT_ROUNDS: usize = 20;
 
+/// How often a client should poll `tasks/get`.
+const TASK_POLL_MS: u64 = 2_000;
+
+type Cancelled = Arc<dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
+
+/// What one forwarded call needs from the MCP request or the task that carries it.
+struct CallCx {
+    peer: Peer<RoleServer>,
+    /// Plain call: the client's progress token. Task call: none (tasks report status instead).
+    token: Option<ProgressToken>,
+    /// Task call: progress goes to the task's status message.
+    task: Option<TaskContext>,
+    /// Resolves when the request (or task) is cancelled. Called once per forwarded call.
+    cancelled: Cancelled,
+}
+
 struct Inner {
     client: SupervisorClient,
+    tasks: TaskManager,
     subagent: bool,
     events: broadcast::Sender<Arc<Notification>>,
     fan_out: tokio::task::JoinHandle<()>,
@@ -65,6 +86,7 @@ impl McpBridge {
         Self {
             inner: Arc::new(Inner {
                 client,
+                tasks: TaskManager::new(),
                 subagent,
                 events,
                 fan_out,
@@ -84,16 +106,16 @@ impl McpBridge {
         &self,
         spec: &ToolSpec,
         mut args: Value,
-        ctx: &RequestContext<RoleServer>,
+        cx: &CallCx,
     ) -> Result<Value, ClientError> {
         let started = std::time::Instant::now();
         let timeout_ms = args.get("timeout_ms").and_then(Value::as_u64);
         let mut result = Value::Null;
         for _ in 0..MAX_ELICIT_ROUNDS {
-            result = self.forward(spec, args.clone(), ctx).await?;
+            result = self.forward(spec, args.clone(), cx).await?;
             let questions = questions_in(&result);
             if questions.is_empty()
-                || !ctx
+                || !cx
                     .peer
                     .supported_elicitation_modes()
                     .contains(&ElicitationMode::Form)
@@ -102,7 +124,7 @@ impl McpBridge {
             }
             let mut answered = 0;
             for q in &questions {
-                let Some(text) = elicit(ctx, q).await else {
+                let Some(text) = elicit(&cx.peer, q).await else {
                     continue;
                 };
                 let sent = self
@@ -147,19 +169,16 @@ impl McpBridge {
         &self,
         spec: &ToolSpec,
         args: Value,
-        ctx: &RequestContext<RoleServer>,
+        cx: &CallCx,
     ) -> Result<Value, ClientError> {
-        let token = ctx.meta.get_progress_token();
-        let long = spec.long
-            && (spec.name != METHOD_SPAWN_AGENT
-                || args.get("wait").and_then(Value::as_bool) == Some(true));
+        let long = is_long(spec, &args);
         let call = self.inner.client.call::<_, Value>(spec.name, &args);
-        let (Some(token), true) = (token, long) else {
+        if !long || (cx.token.is_none() && cx.task.is_none()) {
             return tokio::select! {
                 r = call => r,
-                _ = ctx.ct.cancelled() => Err(ClientError::Disconnected),
+                _ = (cx.cancelled)() => Err(ClientError::Disconnected),
             };
-        };
+        }
         let runs: Option<Vec<String>> = (spec.name == METHOD_WAIT_AGENT)
             .then(|| serde_json::from_value(args["runs"].clone()).ok())
             .flatten();
@@ -167,7 +186,7 @@ impl McpBridge {
         // Progress goes through a per-call queue and sender task, so a slow client never
         // stalls the select below (which must keep polling the call and cancellation).
         let (ptx, mut prx) = mpsc::channel::<ProgressNotificationParam>(PROGRESS_QUEUE);
-        let peer = ctx.peer.clone();
+        let peer = cx.peer.clone();
         let sender = tokio::spawn(async move {
             while let Some(p) = prx.recv().await {
                 let _ = peer.notify_progress(p).await;
@@ -178,17 +197,22 @@ impl McpBridge {
             let Some(msg) = progress_message(n, runs.as_deref()) else {
                 return;
             };
-            counter += 1.0;
-            let p = ProgressNotificationParam::new(token.clone(), counter).with_message(msg);
-            if ptx.try_send(p).is_err() {
-                tracing::debug!("progress queue full; dropped an update");
+            if let Some(task) = &cx.task {
+                task.set_status_message(msg);
+            } else if let Some(token) = &cx.token {
+                counter += 1.0;
+                let p = ProgressNotificationParam::new(token.clone(), counter).with_message(msg);
+                if ptx.try_send(p).is_err() {
+                    tracing::debug!("progress queue full; dropped an update");
+                }
             }
         };
+        let mut cancelled = (cx.cancelled)();
         tokio::pin!(call);
         let result = loop {
             tokio::select! {
                 r = &mut call => break r,
-                _ = ctx.ct.cancelled() => {
+                _ = &mut cancelled => {
                     sender.abort();
                     return Err(ClientError::Disconnected);
                 }
@@ -249,7 +273,7 @@ fn questions_in(result: &Value) -> Vec<Question> {
 }
 
 /// Asks the person through the MCP client; `None` when they decline or it fails.
-async fn elicit(ctx: &RequestContext<RoleServer>, q: &Question) -> Option<String> {
+async fn elicit(peer: &Peer<RoleServer>, q: &Question) -> Option<String> {
     let mut answer = json!({"type": "string", "title": "Answer"});
     if !q.options.is_empty() {
         answer["enum"] = json!(q.options);
@@ -269,8 +293,7 @@ async fn elicit(ctx: &RequestContext<RoleServer>, q: &Question) -> Option<String
         q.run.chars().take(8).collect::<String>(),
         q.question
     );
-    let r = ctx
-        .peer
+    let r = peer
         .create_elicitation(ElicitRequestParams::FormElicitationParams {
             meta: None,
             message,
@@ -310,6 +333,14 @@ fn progress_message(n: &Notification, runs: Option<&[String]>) -> Option<String>
     Some(msg)
 }
 
+/// Tools that can run for a long time: they stream progress, and run as MCP tasks when the
+/// client supports tasks. `spawn_agent` is long only with `wait: true`.
+fn is_long(spec: &ToolSpec, args: &Value) -> bool {
+    spec.long
+        && (spec.name != METHOD_SPAWN_AGENT
+            || args.get("wait").and_then(Value::as_bool) == Some(true))
+}
+
 fn tool_error(text: String) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(text)])
 }
@@ -322,14 +353,75 @@ fn into_result(value: Value) -> CallToolResult {
     }
 }
 
+impl McpBridge {
+    /// Forwards one tool call, with the elicitation loop for `wait_agent`.
+    async fn run_tool(
+        &self,
+        spec: &ToolSpec,
+        args: Value,
+        cx: &CallCx,
+    ) -> Result<Value, ClientError> {
+        if spec.name == METHOD_WAIT_AGENT {
+            self.forward_wait(spec, args, cx).await
+        } else {
+            self.forward(spec, args, cx).await
+        }
+    }
+
+    /// Starts a long call as an MCP task (SEP-2663) and returns its handle. Progress goes to
+    /// the task's status message. `tasks/cancel` stops waiting; like cancelling a plain
+    /// call, it does not cancel the runs (use `cancel_agent`).
+    fn spawn_task(
+        &self,
+        spec: &'static ToolSpec,
+        args: Value,
+        peer: Peer<RoleServer>,
+    ) -> CreateTaskResult {
+        let bridge = self.clone();
+        let options = TaskOptions::new()
+            // A wait can last for hours. The bridge lives as long as one MCP connection,
+            // so keeping finished tasks until then is bounded.
+            .with_ttl_ms(None::<u64>)
+            .with_poll_interval_ms(TASK_POLL_MS)
+            .with_status_message(format!("{} started", spec.name));
+        let task = self.inner.tasks.spawn(options, move |task_cx| {
+            Box::pin(async move {
+                let watcher = task_cx.clone();
+                let cx = CallCx {
+                    peer,
+                    token: None,
+                    task: Some(task_cx.clone()),
+                    cancelled: Arc::new(move || {
+                        let t = watcher.clone();
+                        Box::pin(async move { t.cancelled().await })
+                    }),
+                };
+                match bridge.run_tool(spec, args, &cx).await {
+                    Err(ClientError::Disconnected) if task_cx.is_cancel_requested() => {
+                        Err(TaskExit::Cancelled)
+                    }
+                    Ok(v) => Ok(into_result(v)),
+                    Err(e) => Ok(tool_error(e.to_string())),
+                }
+            })
+        });
+        CreateTaskResult::new(task)
+    }
+}
+
 impl ServerHandler for McpBridge {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new(
-                "superorchestrator",
-                env!("CARGO_PKG_VERSION"),
-            ))
-            .with_instructions(INSTRUCTIONS)
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tasks()
+                .build(),
+        )
+        .with_server_info(Implementation::new(
+            "superorchestrator",
+            env!("CARGO_PKG_VERSION"),
+        ))
+        .with_instructions(INSTRUCTIONS)
     }
 
     async fn list_tools(
@@ -356,15 +448,60 @@ impl ServerHandler for McpBridge {
             ));
         };
         let args = request.arguments.map_or_else(|| json!({}), Value::Object);
-        let forwarded = if spec.name == METHOD_WAIT_AGENT {
-            self.forward_wait(spec, args, &context).await
-        } else {
-            self.forward(spec, args, &context).await
+        // Clients that declare the tasks extension get a task for the long tools; the others
+        // block and get MCP progress notifications.
+        let client_tasks = context
+            .client_capabilities()
+            .is_some_and(|caps| caps.supports_tasks());
+        if client_tasks && is_long(spec, &args) {
+            return Ok(CallToolResponse::Task(self.spawn_task(
+                spec,
+                args,
+                context.peer.clone(),
+            )));
+        }
+        let ct = context.ct.clone();
+        let cx = CallCx {
+            peer: context.peer.clone(),
+            token: context.meta.get_progress_token(),
+            task: None,
+            cancelled: Arc::new(move || {
+                let ct = ct.clone();
+                Box::pin(async move { ct.cancelled().await })
+            }),
         };
-        let result = match forwarded {
+        let result = match self.run_tool(spec, args, &cx).await {
             Ok(v) => into_result(v),
             Err(e) => tool_error(e.to_string()),
         };
         Ok(result.into())
+    }
+
+    async fn get_task(
+        &self,
+        request: GetTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetTaskResult, ErrorData> {
+        Ok(GetTaskResult::new(
+            self.inner.tasks.get_task(&request.task_id)?,
+        ))
+    }
+
+    async fn update_task(
+        &self,
+        request: UpdateTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        self.inner
+            .tasks
+            .update_task(&request.task_id, request.input_responses)
+    }
+
+    async fn cancel_task(
+        &self,
+        request: CancelTaskParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<(), ErrorData> {
+        self.inner.tasks.cancel_task(&request.task_id)
     }
 }

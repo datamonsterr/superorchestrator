@@ -4,10 +4,10 @@
 //! Logging: this crate only uses `tracing`; the caller must install a subscriber that writes
 //! to stderr, because stdout is the MCP channel.
 //!
-//! Tasks (SEP-2663): not exposed. rmcp 3.6 models tasks as an extension with a
-//! `tasks/get`/`tasks/update`/`tasks/cancel` polling protocol and `CreateTaskResult`, which
-//! needs a server-side task store; SPEC 13 allows the fallback, so the long tools block and
-//! stream MCP progress notifications instead.
+//! Tasks (SEP-2663): `spawn_agent` with `wait`, `wait_agent` and `run_workflow` return a task
+//! when the client declares the tasks extension. The bridge keeps them in rmcp's
+//! `TaskManager` and writes progress to the task's status message. Clients without tasks
+//! block on the call and get MCP progress notifications instead.
 //!
 //! TODO(M4): elicitation (`ask_parent` / questions from the supervisor) is out of scope for now.
 #![cfg_attr(test, allow(clippy::unwrap_used))]
