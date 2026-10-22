@@ -23,6 +23,7 @@ struct Inner {
     message: String,
     data: Option<Value>,
     retry_after: Option<u64>,
+    clear_cookie: bool,
 }
 
 pub type ApiResult<T> = Result<T, ApiError>;
@@ -35,6 +36,7 @@ impl ApiError {
             message: message.into(),
             data: None,
             retry_after: None,
+            clear_cookie: false,
         }))
     }
 
@@ -44,6 +46,13 @@ impl ApiError {
             "unauthorized",
             "a valid token is required",
         )
+    }
+
+    /// A 401 that also expires the session cookie (it no longer matches the token).
+    pub fn unauthorized_clearing_cookie() -> Self {
+        let mut e = Self::unauthorized();
+        e.0.clear_cookie = true;
+        e
     }
 
     pub fn forbidden(message: impl Into<String>) -> Self {
@@ -97,6 +106,7 @@ impl ApiError {
             message: e.message,
             data: e.data,
             retry_after: None,
+            clear_cookie: false,
         }))
     }
 
@@ -188,6 +198,12 @@ impl IntoResponse for ApiError {
             error["data"] = d;
         }
         let mut res = (i.status, Json(json!({ "error": error }))).into_response();
+        if i.clear_cookie {
+            res.headers_mut().insert(
+                header::SET_COOKIE,
+                HeaderValue::from_static("so_token=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"),
+            );
+        }
         if let Some(s) = i.retry_after
             && let Ok(v) = HeaderValue::from_str(&s.to_string())
         {

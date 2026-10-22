@@ -241,13 +241,15 @@ pub async fn guard(State(st): State<AppState>, mut req: Request, next: Next) -> 
             if let Some(token) = &st.opts.token
                 && !TOKEN_PATHS.contains(&path.as_str())
             {
-                st.limiter.check(ip).map_err(ApiError::rate_limited)?;
+                // Valid credentials always pass; the limiter only gates guessing.
                 if !authorized(req.headers(), token) {
-                    // Only guesses count: a request with no credentials at all is just a
-                    // client that has not logged in yet.
+                    st.limiter.check(ip).map_err(ApiError::rate_limited)?;
                     let h = req.headers();
-                    if h.contains_key(header::AUTHORIZATION) || cookie(h, COOKIE_NAME).is_some() {
+                    if h.contains_key(header::AUTHORIZATION) {
                         st.limiter.record_failure(ip);
+                    } else if cookie(h, COOKIE_NAME).is_some() {
+                        // A stale cookie (the token changed) is not a guess: drop it.
+                        return Err(ApiError::unauthorized_clearing_cookie());
                     }
                     return Err(ApiError::unauthorized());
                 }

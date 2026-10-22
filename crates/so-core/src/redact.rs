@@ -13,6 +13,8 @@ const PREFIXES: [&str; 8] = [
     "ghr_",
 ];
 const MIN_TOKEN: usize = 8;
+/// Longest JWT segment scanned, so a long run of `eyJ-` cannot make redaction quadratic.
+const MAX_JWT_SEGMENT: usize = 4096;
 
 fn is_token_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '=' | '+' | '/')
@@ -23,10 +25,11 @@ pub fn redact(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     let mut prev: Option<char> = None;
+    let mut jwt_dead_until = 0usize;
     while i < text.len() {
         let rest = &text[i..];
         let at_boundary = prev.is_none_or(|p| !p.is_ascii_alphanumeric());
-        if let Some(skip) = match_secret(rest, at_boundary) {
+        if let Some(skip) = match_secret(rest, at_boundary, i, &mut jwt_dead_until) {
             out.push_str(&skip.0);
             i += skip.1;
             prev = Some(']');
@@ -41,14 +44,19 @@ pub fn redact(text: &str) -> String {
 }
 
 /// Returns the replacement text and the number of bytes consumed.
-fn match_secret(rest: &str, at_boundary: bool) -> Option<(String, usize)> {
+fn match_secret(
+    rest: &str,
+    at_boundary: bool,
+    abs: usize,
+    jwt_dead_until: &mut usize,
+) -> Option<(String, usize)> {
     if !at_boundary {
         return None;
     }
     if let Some(bearer) = match_bearer(rest) {
         return Some(bearer);
     }
-    if let Some(n) = match_structured(rest) {
+    if let Some(n) = match_structured(rest, abs, jwt_dead_until) {
         return Some((MARK.to_string(), n));
     }
     PREFIXES.iter().find_map(|p| {
@@ -60,7 +68,7 @@ fn match_secret(rest: &str, at_boundary: bool) -> Option<(String, usize)> {
 
 /// Slack tokens (`xox[bpars]-...`), AWS access key ids (`AKIA` + 16 characters) and JWTs
 /// (`eyJ....eyJ....signature`). Returns the number of bytes matched.
-fn match_structured(rest: &str) -> Option<usize> {
+fn match_structured(rest: &str, abs: usize, jwt_dead_until: &mut usize) -> Option<usize> {
     let b = rest.as_bytes();
     if rest.starts_with("xox") && b.len() > 4 && b"bpars".contains(&b[3]) && b[4] == b'-' {
         let n = token_len(&rest[5..]);
@@ -71,15 +79,18 @@ fn match_structured(rest: &str) -> Option<usize> {
             .bytes()
             .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
             .count();
-        return (n >= 16).then_some(4 + 16);
+        return (n >= 16).then_some(4 + n);
     }
-    if rest.starts_with("eyJ") {
+    // After a failed attempt every start inside the same token run fails the same way.
+    if rest.starts_with("eyJ") && abs >= *jwt_dead_until {
         let seg = |s: &str| {
             s.bytes()
+                .take(MAX_JWT_SEGMENT)
                 .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
                 .count()
         };
         let first = seg(rest);
+        *jwt_dead_until = abs + first;
         let r = rest[first..].strip_prefix('.')?;
         if !r.starts_with("eyJ") {
             return None;
@@ -195,6 +206,17 @@ mod tests {
         for ok in ["AKIA short", "eyJnotajwt", "xoxz-123456789", "my xox-thing"] {
             assert_eq!(redact(ok), ok);
         }
+    }
+
+    #[test]
+    fn akia_redacts_the_whole_run_and_jwt_scan_is_bounded() {
+        let long = format!("id AKIA{} end", "A1".repeat(12));
+        assert_eq!(redact(&long), "id [REDACTED] end");
+        let adversarial = "eyJ-".repeat(16 * 1024);
+        let start = std::time::Instant::now();
+        let out = redact(&adversarial);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(out.len(), adversarial.len(), "not a JWT, left alone");
     }
 
     #[test]

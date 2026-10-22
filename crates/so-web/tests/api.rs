@@ -831,8 +831,7 @@ async fn token_flow_cookie_and_rate_limit() {
         .insert(header::COOKIE, "so_token=nope".parse().unwrap());
     assert_eq!(send(&f.app, bad).await.0, StatusCode::UNAUTHORIZED);
 
-    // The bad cookie above already counted as one failure.
-    for _ in 0..4 {
+    for _ in 0..5 {
         let (s, _, _) = send(
             &f.app,
             request("POST", "/api/v1/token", Some(json!({"token": "wrong"}))),
@@ -1152,10 +1151,11 @@ async fn wrong_credentials_count_toward_the_rate_limit() {
         assert_eq!(send(&f.app, bad()).await.0, StatusCode::UNAUTHORIZED);
     }
     assert_eq!(send(&f.app, bad()).await.0, StatusCode::TOO_MANY_REQUESTS);
+    // Valid credentials are never refused, whatever the limiter says.
     let mut good = request("GET", "/api/v1/status", None);
     good.headers_mut()
         .insert(header::AUTHORIZATION, "Bearer good-token".parse().unwrap());
-    assert_eq!(send(&f.app, good).await.0, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(send(&f.app, good).await.0, StatusCode::OK);
 }
 
 #[tokio::test]
@@ -1312,4 +1312,43 @@ async fn oversized_transcript_entries_are_skipped_not_loaded() {
         "the two normal lines survive"
     );
     assert_eq!(v["next_offset"], v["total_bytes"]);
+}
+
+#[tokio::test]
+async fn stale_cookies_are_cleared_and_never_lock_anyone_out() {
+    let f = fx_with(Some("good-token")).await;
+    for _ in 0..6 {
+        let mut r = request("GET", "/api/v1/status", None);
+        r.headers_mut()
+            .insert(header::COOKIE, "so_token=stale".parse().unwrap());
+        let (s, h, _) = send(&f.app, r).await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+        let set = h.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+        assert!(
+            set.starts_with("so_token=;") && set.contains("Max-Age=0"),
+            "{set}"
+        );
+    }
+    let mut good = request("GET", "/api/v1/status", None);
+    good.headers_mut()
+        .insert(header::AUTHORIZATION, "Bearer good-token".parse().unwrap());
+    assert_eq!(send(&f.app, good).await.0, StatusCode::OK);
+    let (s, _, _) = send(
+        &f.app,
+        request(
+            "POST",
+            "/api/v1/token",
+            Some(json!({"token": "good-token"})),
+        ),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::NO_CONTENT,
+        "login still works after stale cookies"
+    );
+    // No credentials at all: plain 401, no cookie to clear.
+    let (s, h, _) = send(&f.app, request("GET", "/api/v1/status", None)).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    assert!(h.get(header::SET_COOKIE).is_none());
 }
