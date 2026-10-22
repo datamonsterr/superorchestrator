@@ -46,3 +46,7 @@ rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 [[bin]]
 name = "superorchestrator"
 path = "src/main.rs"
+
+# `publish = false` hides this binary from dist; opt it back in for release archives.
+[package.metadata.dist]
+dist = true

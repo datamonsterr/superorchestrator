@@ -1,0 +1,49 @@
+name: Release smoke
+
+# Called by release.yml (dist `global-artifacts-jobs`) after every archive is built and before the release is
+# created. Each archive is installed with install.sh from a local copy of the release assets
+# (which verifies its sha256) and then smoke-tested on a native runner. A failure, including a
+# binary that embeds the placeholder UI, stops the release.
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        description: dist plan manifest (unused)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: smoke (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-gnu, runner: ubuntu-latest }
+          - { target: aarch64-unknown-linux-gnu, runner: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, runner: macos-15-intel }
+          - { target: aarch64-apple-darwin, runner: macos-latest }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: artifacts-*
+          path: release-assets
+          merge-multiple: true
+      - name: Install from the built archive and smoke-test it
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          ls -l release-assets
+          dest="$RUNNER_TEMP/bin"
+          SUPERORCHESTRATOR_RELEASE_URL="file://$PWD/release-assets" \
+            SUPERORCHESTRATOR_INSTALL_DIR="$dest" sh install.sh
+          scripts/smoke-ci.sh "$dest/superorchestrator"
