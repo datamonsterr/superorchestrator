@@ -63,7 +63,12 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Exec(e) => match cmd::exec::run(&ctx, &e.account, &e.args)? {},
         Command::Daemon(d) => ok(cmd::daemon::run(&ctx, d.foreground)),
         Command::Status => ok(cmd::status::run(&ctx)),
-        Command::Install(a) => ok(cmd::install::install(&ctx, a.force, a.dry_run)),
+        Command::Install(a) => ok(cmd::install::install(
+            &ctx,
+            a.force,
+            a.dry_run,
+            !a.no_claude_md,
+        )),
         Command::Uninstall(a) => ok(cmd::install::uninstall(&ctx, a.dry_run)),
         Command::Mcp(a) => ok(cmd::mcp::run(&ctx, &a.client)),
         Command::Doctor => cmd::doctor::run(&ctx),

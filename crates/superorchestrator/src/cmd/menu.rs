@@ -42,7 +42,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
                     no_open: false,
                 },
             )?,
-            Some(5) => install::install(ctx, false, false)?,
+            Some(5) => install::install(ctx, false, false, true)?,
             Some(6) => {
                 migrate::run(ctx, false)?;
             }

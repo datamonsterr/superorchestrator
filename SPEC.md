@@ -656,13 +656,19 @@ The supervisor sends notifications for the events listed in `notifications.on`, 
 
 ### 19.1 Skill
 
-`install` writes a `superorchestrator` skill to `~/.claude/skills/superorchestrator/` and `~/.agents/skills/superorchestrator/`. It is regenerated whenever accounts, choices or agents change. It explains:
+`install` writes two skills, each to `~/.claude/skills/<name>/` and `~/.agents/skills/<name>/`, both carrying the `<!-- superorchestrator:managed -->` marker. It removes the older single `superorchestrator` skill only when its `SKILL.md` carries the marker. `uninstall` removes both (marker-checked).
+
+`superorchestrator-cli` is static text: a guide to the command line for people and agents (setup, accounts, `status`, `doctor`, runs, `join`, `ui`, workflows, `route`, config and where troubleshooting is documented).
+
+`use-superorchestrator-mcp` is regenerated whenever accounts, choices or agents change (a refresh also writes the CLI skill when it is missing). It explains:
 - the accounts and choices that exist
 - when to call `route` versus `spawn_agent`
 - how to write a task brief with acceptance criteria and out-of-scope items
 - how to wait, message and review runs
 - how a subagent talks to its parent
 - how to check `superorchestrator status`
+
+`install` also adds a short managed block to `~/.claude/CLAUDE.md` (created if missing) between `<!-- superorchestrator:begin -->` and `<!-- superorchestrator:end -->`. It says to delegate implementation through superorchestrator, to load `use-superorchestrator-mcp` before the first delegation, and to use `superorchestrator-cli` for accounts, status and runs. Re-installing replaces the block in place, text outside it is never touched, `--no-claude-md` skips it, and `uninstall` removes only the block. The edit goes through the same backup, atomic write and `--dry-run` path as the other files.
 
 `install` also runs `claude mcp add superorchestrator -- superorchestrator mcp`. It adds the same MCP entry to the Codex, OpenCode and agy configs, without touching unrelated entries, and writes a backup of every file it changes.
 

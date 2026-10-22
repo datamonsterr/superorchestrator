@@ -60,7 +60,7 @@ pub enum Command {
     Config(ConfigCmd),
     /// Check binaries, config, database, socket, UI port and sign-ins
     Doctor,
-    /// Register the MCP server with Claude Code and other harnesses
+    /// Register the MCP server with harnesses and ship the skills
     Install(InstallArgs),
     /// Remove what `install` registered
     Uninstall(UninstallArgs),
@@ -100,6 +100,9 @@ pub struct SetupArgs {
     /// Do not register the MCP server and skill
     #[arg(long)]
     pub no_install: bool,
+    /// Do not add the delegation block to ~/.claude/CLAUDE.md
+    #[arg(long)]
+    pub no_claude_md: bool,
 }
 
 #[derive(Args, Debug)]
@@ -110,6 +113,9 @@ pub struct InstallArgs {
     /// Print what would change and write nothing.
     #[arg(long)]
     pub dry_run: bool,
+    /// Do not add the delegation block to ~/.claude/CLAUDE.md.
+    #[arg(long)]
+    pub no_claude_md: bool,
 }
 
 #[derive(Args, Debug)]

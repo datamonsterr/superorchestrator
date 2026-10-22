@@ -83,16 +83,27 @@ pub fn scan(home: &Path) -> Vec<ImportCandidate> {
     dedupe(out)
 }
 
-/// True when the claude home holds nothing but our own `skills/superorchestrator` (or
-/// nothing at all): installing the skill must not make it look like an account.
+/// Our own skill directories under `~/.claude/skills`.
+const OUR_SKILLS: [&str; 3] = [
+    so_agents::skill::MCP_NAME,
+    so_agents::skill::CLI_NAME,
+    so_agents::skill::OLD_NAME,
+];
+
+/// True when the claude home holds nothing but what `install` writes (our skill dirs under
+/// `skills/` and `CLAUDE.md`) or nothing at all: installing must not make it look like an
+/// account.
 fn only_our_skill(claude: &Path) -> bool {
     let Ok(rd) = std::fs::read_dir(claude) else {
         return false;
     };
     rd.flatten().all(|e| {
-        e.file_name() == "skills"
-            && std::fs::read_dir(e.path())
-                .is_ok_and(|s| s.flatten().all(|x| x.file_name() == "superorchestrator"))
+        e.file_name() == "CLAUDE.md"
+            || e.file_name() == "skills"
+                && std::fs::read_dir(e.path()).is_ok_and(|s| {
+                    s.flatten()
+                        .all(|x| OUR_SKILLS.iter().any(|n| x.file_name() == *n))
+                })
     })
 }
 
@@ -180,11 +191,29 @@ mod tests {
         assert!(scan(d.path()).is_empty());
         mk(d.path(), ".claude/skills/superorchestrator");
         assert!(scan(d.path()).is_empty());
+        for n in [
+            so_agents::skill::MCP_NAME,
+            so_agents::skill::CLI_NAME,
+            so_agents::skill::OLD_NAME,
+        ] {
+            mk(d.path(), &format!(".claude/skills/{n}"));
+        }
+        assert!(scan(d.path()).is_empty());
         mk(d.path(), ".claude/skills/other");
         assert_eq!(names(&scan(d.path())), ["claude-acc1"]);
         let e = tempfile::tempdir().unwrap();
         mk(e.path(), ".claude/projects");
         assert_eq!(names(&scan(e.path())), ["claude-acc1"]);
+    }
+
+    #[test]
+    fn claude_home_with_our_claude_md_is_not_an_account_but_other_files_are() {
+        let d = tempfile::tempdir().unwrap();
+        mk(d.path(), ".claude");
+        std::fs::write(d.path().join(".claude/CLAUDE.md"), "block").unwrap();
+        assert!(scan(d.path()).is_empty());
+        std::fs::write(d.path().join(".claude/.credentials.json"), "{}").unwrap();
+        assert_eq!(names(&scan(d.path())), ["claude-acc1"]);
     }
 
     #[test]
