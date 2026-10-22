@@ -20,3 +20,14 @@ so-usage = { path = "../so-usage" }
 so-router = { path = "../so-router" }
 so-agents = { path = "../so-agents" }
 so-workflow = { path = "../so-workflow" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+chrono.workspace = true
+rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true
