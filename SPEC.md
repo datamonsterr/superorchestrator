@@ -718,4 +718,3 @@ Each milestone is one or more PRs with `cargo test` coverage, and is usable by i
 
 - The section 4 driver spikes (agy MCP injection and conversation id, opencode per-run config, codex thread parameters, claude `--max-turns`).
 - Tune `min_confidence` and `min_margin` from live `route eval`.
-- Rename the local folder `~/dev/superochestrator` to `~/dev/superorchestrator`. The user does this outside a running session.

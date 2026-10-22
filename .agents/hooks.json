@@ -3,7 +3,7 @@
     "PreInvocation": [
       {
         "type": "command",
-        "command": "'/home/dat/.local/share/otherskill/bin/otherskill' 'find' '--agent' 'antigravity' '--home' '/home/dat' '--config' '/home/dat/dev/superochestrator/otherskill.config.json' '--model' 'inception/mercury-decide:free'",
+        "command": "'/home/dat/.local/share/otherskill/bin/otherskill' 'find' '--agent' 'antigravity' '--home' '/home/dat' '--config' '/home/dat/dev/superorchestrator/otherskill.config.json' '--model' 'inception/mercury-decide:free'",
         "timeout": 66
       }
     ]
