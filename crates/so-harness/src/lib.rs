@@ -1,10 +1,13 @@
-//! One driver per harness.
+//! One driver per harness behind a common, harness-neutral API.
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn dummy() {
-        assert_eq!(1 + 1, 2);
-    }
-}
+pub mod claude;
+pub mod driver;
+pub mod transcript;
+
+pub use claude::ClaudeDriver;
+pub use driver::{
+    AnyDriver, Driver, DriverError, HarnessEvent, JoinInfo, LaunchSpec, McpServerSpec, RateLimits,
+    RunControl, RunHandle, classify_common,
+};
+pub use transcript::{Dir, TranscriptWriter};

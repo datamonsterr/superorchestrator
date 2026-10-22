@@ -11,5 +11,26 @@ repository.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Builds the scripted `fake-harness` binary used by driver tests. Never shipped.
+test-support = []
+
+[[bin]]
+name = "fake-harness"
+path = "src/bin/fake-harness.rs"
+required-features = ["test-support"]
+
 [dependencies]
 so-core = { path = "../so-core" }
+so-accounts = { path = "../so-accounts" }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+# Self dev-dependency enables the feature (and so the fake-harness binary) for tests.
+so-harness = { path = ".", features = ["test-support"] }
+tempfile.workspace = true
