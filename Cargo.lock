@@ -3282,6 +3282,7 @@ dependencies = [
  "so-agents",
  "so-core",
  "so-harness",
+ "so-mcp",
  "so-router",
  "so-store",
  "so-usage",

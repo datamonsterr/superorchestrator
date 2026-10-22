@@ -35,3 +35,4 @@ rustix = { version = "1", default-features = false, features = ["std", "fs", "pr
 [dev-dependencies]
 tempfile.workspace = true
 serde_json.workspace = true
+so-mcp = { path = "../so-mcp" }
