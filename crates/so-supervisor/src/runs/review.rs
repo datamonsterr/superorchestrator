@@ -139,8 +139,14 @@ async fn run_capture(mut cmd: Command, limit: Duration) -> Result<Ran, String> {
         let _ = (&mut err_task).await;
     })
     .await;
+    // Both pipes closed: nothing is left holding them, so there is no group to clean up.
+    let pipes_closed = out_task.is_finished() && err_task.is_finished();
     out_task.abort();
     err_task.abort();
+    let mut guard = guard;
+    if pipes_closed {
+        guard.0 = None;
+    }
     drop(guard);
     let text = |b: &Mutex<Vec<u8>>| {
         String::from_utf8_lossy(&b.lock().unwrap_or_else(|e| e.into_inner())).into_owned()
@@ -437,6 +443,29 @@ impl RunManager {
         result_json: Option<String>,
         failed: &[CheckOutcome],
     ) -> Gate {
+        // Tear the process down first, while the run is still `running`: once the state
+        // reads `pending_review` a reject may resume it, and a teardown still in flight
+        // would then clear the new process's handle and attempt.
+        let _ = control.shutdown(SHUTDOWN_DEADLINE).await;
+        let ended = {
+            let id = run_id.to_string();
+            self.db(move |s| {
+                if let Some(a) = s
+                    .list_attempts(&id, 1000)?
+                    .into_iter()
+                    .rev()
+                    .find(|a| a.ended_at.is_none())
+                {
+                    s.finish_attempt(&a.id, "pending_review", chrono::Utc::now())?;
+                }
+                Ok(())
+            })
+            .await
+        };
+        drop(ended);
+        if let Some(rt) = lock(&self.inner.runs).get_mut(run_id) {
+            rt.live = None;
+        }
         let id = run_id.to_string();
         let patch = RunPatch {
             result_json: Some(result_json),
@@ -454,6 +483,9 @@ impl RunManager {
         let Ok(Some(row)) = moved else {
             return Gate::Entered;
         };
+        self.inner.finished.send_modify(|n| *n += 1);
+        // A pending review holds no slot: let the queue use it.
+        self.request_drain();
         let names: Vec<&str> = failed.iter().map(|f| f.name.as_str()).collect();
         self.emit(
             &row.session_id,
@@ -481,29 +513,6 @@ impl RunManager {
                 false,
             )
             .await;
-        let _ = control.shutdown(SHUTDOWN_DEADLINE).await;
-        let ended = {
-            let id = run_id.to_string();
-            self.db(move |s| {
-                if let Some(a) = s
-                    .list_attempts(&id, 1000)?
-                    .into_iter()
-                    .rev()
-                    .find(|a| a.ended_at.is_none())
-                {
-                    s.finish_attempt(&a.id, "pending_review", chrono::Utc::now())?;
-                }
-                Ok(())
-            })
-            .await
-        };
-        drop(ended);
-        if let Some(rt) = lock(&self.inner.runs).get_mut(run_id) {
-            rt.live = None;
-        }
-        self.inner.finished.send_modify(|n| *n += 1);
-        // A pending review holds no slot: let the queue use it.
-        self.request_drain();
         Gate::Entered
     }
 
@@ -586,6 +595,10 @@ impl RunManager {
         let Ok(Some(row)) = self.db(move |s| s.get_run(&id)).await else {
             return;
         };
+        // A message may have resumed the run already; its worktree is in use again.
+        if !row.state.is_terminal() {
+            return;
+        }
         let (Some(path), Some(branch), Some(base), Some(repo)) = (
             row.worktree_path.clone(),
             row.branch.clone(),

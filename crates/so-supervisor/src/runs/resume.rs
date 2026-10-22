@@ -57,6 +57,13 @@ impl RunManager {
         reason: &str,
         msg_id: Option<String>,
     ) -> R<Resumed> {
+        // The caller's snapshot may be stale: decide on the run as it is now.
+        let id = row.id.clone();
+        let fresh = self
+            .db(move |s| s.get_run(&id))
+            .await?
+            .ok_or_else(|| rpc(so_core::proto::NOT_FOUND, "run not found"))?;
+        let row = &fresh;
         if row.native_session_id.is_none() {
             return Err(rpc(UNAVAILABLE, "the run has no native session to resume"));
         }
@@ -68,6 +75,11 @@ impl RunManager {
         if row.state.is_terminal() {
             self.wait_wrapped_up(&row.id).await?;
         }
+        // Make sure the run can work where it left off before it changes state: a run
+        // that cannot be resumed stays as it is and the caller gets the error.
+        self.resume_cwd(row)
+            .await
+            .map_err(|e| rpc(UNAVAILABLE, e))?;
         let (id, name, prompt_owned) = (row.id.clone(), account_name, prompt.to_string());
         let caps = (
             i64::from(account.cap),
@@ -151,8 +163,8 @@ impl RunManager {
             return Err("the run's worktree is gone and its branch is unknown".into());
         };
         let target = path.clone();
-        let b = branch.clone();
-        self.blocking(move || worktree::recreate(&repo, &target, &b))
+        let (b, base) = (branch.clone(), row.worktree_base.clone());
+        self.blocking(move || worktree::recreate(&repo, &target, &b, base.as_deref()))
             .await
             .map_err(|e| e.message)??;
         self.emit(
@@ -176,8 +188,13 @@ mod tests {
     #[tokio::test]
     async fn resume_waits_for_the_wrap_up_of_a_finished_run() {
         let (m, _dir) = manager();
-        let mut row = insert_run(&m, RunState::Succeeded);
-        row.native_session_id = Some("native".into());
+        let row = insert_run(&m, RunState::Succeeded);
+        let patch = so_store::RunPatch {
+            native_session_id: Some(Some("native".into())),
+            ..so_store::RunPatch::default()
+        };
+        m.store().patch_run(&row.id, &patch).unwrap();
+        let row = m.store().get_run(&row.id).unwrap().unwrap();
         // `insert_run` leaves a registry entry: the run is still being wrapped up.
         assert!(lock(&m.inner.runs).contains_key(&row.id));
         let resume = {

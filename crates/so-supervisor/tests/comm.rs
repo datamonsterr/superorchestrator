@@ -109,14 +109,15 @@ struct Env {
     config: Config,
 }
 
-fn git(dir: &Path, args: &[&str]) {
-    let st = Command::new("git")
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
-        .status()
+        .output()
         .unwrap();
-    assert!(st.success());
+    assert!(out.status.success(), "git {args:?}");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 impl Env {
@@ -1287,25 +1288,73 @@ async fn a_resumed_worktree_run_gets_its_worktree_back_from_its_branch() {
 }
 
 #[tokio::test]
-async fn resuming_a_worktree_run_whose_branch_is_gone_is_an_error() {
+async fn an_auto_removed_worktree_is_recreated_at_its_base_for_a_resume() {
     let env = Env::new();
-    env.account("claude-a", 2, &ok_script(&[commit_step()]), None, None);
+    let marker = env.dir.path().join("untouched.cwd");
+    let resume = script(
+        &[
+            expect("again"),
+            json!({"shell": format!("pwd > {}", marker.display())}),
+        ]
+        .into_iter()
+        .chain(turn())
+        .collect::<Vec<_>>(),
+    );
+    // No commits: the worktree and its branch are removed when the run finishes.
+    env.account("claude-a", 2, &ok_script(&[]), Some(&resume), None);
     let h = env.start().await;
     let c = env.client(&h).await;
     let mut p = env.params("claude-a");
     p.isolation = Some(Isolation::Worktree);
     let id = spawn(&c, p).await;
     let v = wait_state(&c, &id, RunState::Succeeded).await;
-    git(
-        &env.repo,
-        &[
-            "worktree",
-            "remove",
-            "--force",
-            &v.worktree.clone().unwrap(),
-        ],
+    let (wt, branch) = (v.worktree.clone().unwrap(), v.branch.clone().unwrap());
+    // The state is visible a moment before the wrap-up removes the worktree.
+    for _ in 0..200 {
+        if !Path::new(&wt).exists() && git(&env.repo, &["branch", "--list", &branch]).is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        !Path::new(&wt).exists(),
+        "the untouched worktree was removed"
     );
-    git(&env.repo, &["branch", "-D", &v.branch.clone().unwrap()]);
+    assert!(git(&env.repo, &["branch", "--list", &branch]).is_empty());
+
+    send(&c, &id, "again", None).await;
+    for _ in 0..200 {
+        if marker.exists() && view(&c, &id).await.state == RunState::Succeeded {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let ran_in = std::fs::read_to_string(&marker).unwrap();
+    // (It is removed again once this untouched run finishes, so compare the text.)
+    assert_eq!(ran_in.trim(), wt);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_run_that_cannot_be_resumed_keeps_its_state() {
+    let env = Env::new();
+    env.account("claude-a", 2, &ok_script(&[]), None, None);
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = env.params("claude-a");
+    p.isolation = Some(Isolation::Worktree);
+    let id = spawn(&c, p).await;
+    wait_state(&c, &id, RunState::Succeeded).await;
+    // Worktree and branch are gone, and the base commit cannot be found.
+    env.store()
+        .patch_run(
+            &id,
+            &so_store::RunPatch {
+                worktree_base: Some(Some("0000000000000000000000000000000000000001".into())),
+                ..so_store::RunPatch::default()
+            },
+        )
+        .unwrap();
     let e = c
         .call::<_, AckResult>(
             METHOD_SEND_MESSAGE,
@@ -1321,6 +1370,57 @@ async fn resuming_a_worktree_run_whose_branch_is_gone_is_an_error() {
         ClientError::Rpc(r) => assert!(r.message.contains("no longer exists"), "{}", r.message),
         other => panic!("{other:?}"),
     }
+    // Not failed, not reopened.
+    let v = view(&c, &id).await;
+    assert_eq!(v.state, RunState::Succeeded);
+    assert_eq!(count(&v, EventType::AttemptStarted), 1);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_reject_right_after_the_gate_resumes_cleanly() {
+    let env = Env::new();
+    // The process lingers for a while after its input closes, so the teardown at the gate
+    // takes time.
+    let first = script(
+        &[expect(PROMPT)]
+            .into_iter()
+            .chain(turn())
+            .chain([json!({"sleep_ms": 800})])
+            .collect::<Vec<_>>(),
+    );
+    let resume = script(
+        &[expect("redo"), json!({"sleep_ms": 1500})]
+            .into_iter()
+            .chain(turn())
+            .collect::<Vec<_>>(),
+    );
+    env.account("claude-a", 2, &first, Some(&resume), None);
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = env.params("claude-a");
+    p.review = true;
+    let id = spawn(&c, p).await;
+    wait_state(&c, &id, RunState::PendingReview).await;
+    let _: AckResult = c
+        .call(
+            METHOD_REJECT_RUN,
+            RejectParams {
+                run: id.clone(),
+                feedback: "redo".into(),
+            },
+        )
+        .await
+        .unwrap();
+    // The new process is the run's live one and its attempt is open, not torn down by
+    // the old process's teardown.
+    assert_eq!(h.state().runs.live_count(), 1);
+    let attempts = env.store().list_attempts(&id, 10).unwrap();
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(attempts[0].outcome.as_deref(), Some("pending_review"));
+    assert!(attempts[1].ended_at.is_none());
+    // And it runs on to the gate again.
+    wait_state(&c, &id, RunState::PendingReview).await;
     h.shutdown().await;
 }
 

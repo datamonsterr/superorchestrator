@@ -380,7 +380,7 @@ pub(crate) mod testutil {
             account: Some("claude-t".into()),
             model: None,
             effort: None,
-            cwd: None,
+            cwd: Some("/tmp".into()),
             worktree_path: None,
             branch: None,
             native_session_id: None,

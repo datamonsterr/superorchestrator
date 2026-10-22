@@ -153,20 +153,35 @@ pub fn remove_if_unchanged(c: &Created) -> Result<(), Kept> {
     remove(c, false).map_err(Kept::Failed)
 }
 
-/// Puts a run's worktree back at `path` from its branch, e.g. after the directory was
-/// deleted. Fails with a clear message when the branch is gone.
-pub fn recreate(repo: &Path, path: &Path, branch: &str) -> Result<(), String> {
+/// Puts a run's worktree back at `path`. The branch is reused when it exists. A worktree
+/// that was removed as untouched took its branch with it; then the branch is created again
+/// at `base`, the commit the run started from. Fails with a clear message when neither is
+/// available.
+pub fn recreate(repo: &Path, path: &Path, branch: &str, base: Option<&str>) -> Result<(), String> {
     let _ = git(repo, &["worktree", "prune"]);
     let reference = format!("refs/heads/{branch}");
-    git(repo, &["rev-parse", "--verify", "--quiet", &reference]).map_err(|_| {
-        format!("branch {branch} no longer exists, so the run's worktree cannot be recreated")
-    })?;
+    let exists = git(repo, &["rev-parse", "--verify", "--quiet", &reference]).is_ok();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
     }
     let path_arg = path.to_string_lossy().into_owned();
-    git(repo, &["worktree", "add", &path_arg, branch])?;
+    if exists {
+        git(repo, &["worktree", "add", "--", &path_arg, branch])?;
+        return Ok(());
+    }
+    let Some(base) = base else {
+        return Err(format!(
+            "branch {branch} no longer exists and the run's base commit is unknown, so its worktree cannot be recreated"
+        ));
+    };
+    git(
+        repo,
+        &["worktree", "add", "-b", branch, "--", &path_arg, base],
+    )
+    .map_err(|e| {
+        format!("branch {branch} no longer exists and could not be recreated at {base}: {e}")
+    })?;
     Ok(())
 }
 

@@ -488,20 +488,24 @@ impl RunManager {
             .db(move |s| s.unread_messages(&sid, Some(&id), 100))
             .await
             .unwrap_or_default();
-        let mut sent = Vec::new();
-        for m in pending.iter().filter(|m| is_input(m)) {
-            // An answer to a blocked `ask_parent` goes to that call.
-            if m.kind == so_core::MessageKind::Answer && asking {
-                continue;
-            }
-            if control.send(&m.body).await.is_ok() {
-                sent.push(m.id.clone());
-            }
+        // An answer to a blocked `ask_parent` goes to that call.
+        let batch: Vec<_> = pending
+            .iter()
+            .filter(|m| is_input(m))
+            .filter(|m| !(m.kind == so_core::MessageKind::Answer && asking))
+            .collect();
+        if batch.is_empty() {
+            return;
         }
-        if !sent.is_empty() {
-            let _ = self
-                .db(move |s| s.mark_messages_read(&sent, Utc::now()))
-                .await;
+        // Marked read before sending, so a concurrent delivery cannot send them twice.
+        let ids: Vec<String> = batch.iter().map(|m| m.id.clone()).collect();
+        let _ = self
+            .db(move |s| s.mark_messages_read(&ids, Utc::now()))
+            .await;
+        for m in batch {
+            if let Err(e) = control.send(&m.body).await {
+                tracing::warn!(run_id = %row.id, error = %e, "could not hand over a message");
+            }
         }
     }
 
