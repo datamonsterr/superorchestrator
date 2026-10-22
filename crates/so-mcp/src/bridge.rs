@@ -1,7 +1,6 @@
 //! The `ServerHandler` that forwards tool calls to the supervisor.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
@@ -24,9 +23,7 @@ exchange messages, cancel_agent stops a run and its subtree, accept_run and reje
 fork_agent branches a finished run, list_agents lists custom agents, and run_workflow and workflow_status run \
 scripted workflows. Subagents also get report_progress and ask_parent. Tool failures are returned as errors you can read.";
 
-/// Grace period after a call returns for progress events still in flight to arrive.
-const DRAIN_GRACE: Duration = Duration::from_millis(20);
-const DRAIN_MAX: usize = 64;
+const PROGRESS_QUEUE: usize = 64;
 
 struct Inner {
     client: SupervisorClient,
@@ -52,9 +49,11 @@ impl McpBridge {
     /// `ask_parent` to the tool list.
     pub fn new(client: SupervisorClient, subagent: bool) -> Self {
         let (events, _) = broadcast::channel(256);
-        let mut rx: mpsc::UnboundedReceiver<Notification> = client.notifications().unwrap_or_else(
-            || mpsc::unbounded_channel().1, // already taken: no progress, tools still work
-        );
+        let mut rx: mpsc::UnboundedReceiver<Notification> =
+            client.notifications().unwrap_or_else(|| {
+                tracing::warn!("supervisor notifications already taken; progress is disabled");
+                mpsc::unbounded_channel().1
+            });
         let tx = events.clone();
         let fan_out = tokio::spawn(async move {
             while let Some(n) = rx.recv().await {
@@ -75,8 +74,11 @@ impl McpBridge {
         tool_specs(self.inner.subagent).find(|s| s.name == name)
     }
 
-    /// Forwards one call; for long tools with a progress token, relays supervisor `event`
-    /// notifications as MCP progress while the call is pending.
+    /// Forwards one call. Cancelling the MCP request drops the call but does not cancel the
+    /// run on the supervisor (use `cancel_agent`). Progress for `spawn_agent` (wait) and
+    /// `run_workflow` is connection-scoped: every event pushed to this session is relayed.
+    ///
+    /// For long tools with a progress token, relays supervisor `event` notifications as MCP progress while the call is pending.
     async fn forward(
         &self,
         spec: &ToolSpec,
@@ -98,40 +100,56 @@ impl McpBridge {
             .then(|| serde_json::from_value(args["runs"].clone()).ok())
             .flatten();
         let mut rx = self.inner.events.subscribe();
+        // Progress goes through a per-call queue and sender task, so a slow client never
+        // stalls the select below (which must keep polling the call and cancellation).
+        let (ptx, mut prx) = mpsc::channel::<ProgressNotificationParam>(PROGRESS_QUEUE);
+        let peer = ctx.peer.clone();
+        let sender = tokio::spawn(async move {
+            while let Some(p) = prx.recv().await {
+                let _ = peer.notify_progress(p).await;
+            }
+        });
         let mut counter = 0f64;
-        let relay = |n: &Notification, counter: &mut f64| {
-            let msg = progress_message(n, runs.as_deref())?;
-            *counter += 1.0;
-            Some(ProgressNotificationParam::new(token.clone(), *counter).with_message(msg))
+        let mut relay = |n: &Notification| {
+            let Some(msg) = progress_message(n, runs.as_deref()) else {
+                return;
+            };
+            counter += 1.0;
+            let p = ProgressNotificationParam::new(token.clone(), counter).with_message(msg);
+            if ptx.try_send(p).is_err() {
+                tracing::debug!("progress queue full; dropped an update");
+            }
         };
         tokio::pin!(call);
         let result = loop {
             tokio::select! {
                 r = &mut call => break r,
-                _ = ctx.ct.cancelled() => return Err(ClientError::Disconnected),
+                _ = ctx.ct.cancelled() => {
+                    sender.abort();
+                    return Err(ClientError::Disconnected);
+                }
                 ev = rx.recv() => match ev {
-                    Ok(n) => if let Some(p) = relay(&n, &mut counter) {
-                        let _ = ctx.peer.notify_progress(p).await;
-                    },
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => {
-                        break (&mut call).await;
-                    }
+                    Ok(n) => relay(&n),
+                    // The bridge owns a sender, so the channel cannot close while we run.
+                    Err(e) => tracing::debug!("skipped progress events: {e}"),
                 },
             }
         };
-        // Events travel through the fan-out task, so a few may land just after the response.
-        for _ in 0..DRAIN_MAX {
-            match tokio::time::timeout(DRAIN_GRACE, rx.recv()).await {
-                Ok(Ok(n)) => {
-                    if let Some(p) = relay(&n, &mut counter) {
-                        let _ = ctx.peer.notify_progress(p).await;
-                    }
+        // Events travel through the fan-out task and may land just after the response:
+        // yield so it can run, then drain until the channel is empty.
+        loop {
+            tokio::task::yield_now().await;
+            match rx.try_recv() {
+                Ok(n) => relay(&n),
+                Err(broadcast::error::TryRecvError::Lagged(n)) => {
+                    tracing::debug!("skipped {n} progress events");
                 }
-                Ok(Err(broadcast::error::RecvError::Lagged(_))) => {}
-                _ => break,
+                Err(_) => break,
             }
         }
+        drop(relay);
+        drop(ptx);
+        let _ = sender.await; // deliver queued progress before the result
         result
     }
 }
@@ -210,7 +228,6 @@ impl ServerHandler for McpBridge {
         let args = request.arguments.map_or_else(|| json!({}), Value::Object);
         let result = match self.forward(spec, args, &context).await {
             Ok(v) => into_result(v),
-            Err(ClientError::Rpc(e)) => tool_error(format!("{} (code {})", e.message, e.code)),
             Err(e) => tool_error(e.to_string()),
         };
         Ok(result.into())

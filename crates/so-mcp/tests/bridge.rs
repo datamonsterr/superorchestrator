@@ -59,6 +59,21 @@ async fn fixture(subagent: bool) -> Fixture {
             st.router.register("fork_agent", |_c, _p| async {
                 Err(RpcError::new(DEPTH_LIMIT, "depth limit reached"))
             });
+            st.router
+                .register("list_agents", |_c, _p| async { Ok(json!([1, 2])) });
+            st.router.register("workflow_status", |_c, _p| async {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                Ok(json!({}))
+            });
+            st.router.register("spawn_agent", |ctx, _p| async move {
+                ctx.notifier
+                    .notify(
+                        "event",
+                        json!({"type": "progress", "run_id": "abcdefgh1234"}),
+                    )
+                    .await;
+                Ok(json!({"run_id": "abcdefgh1234", "state": "running"}))
+            });
             st.router.register("wait_agent", |ctx, p| async move {
                 for step in ["a", "b"] {
                     ctx.notifier
@@ -217,5 +232,89 @@ async fn no_progress_without_token_and_calls_are_concurrent() {
     assert_eq!(a.unwrap().is_error, Some(false));
     assert_eq!(b.unwrap().is_error, Some(false));
     assert!(f.collector.progress.lock().unwrap().is_empty());
+    f.sup.shutdown().await;
+}
+
+async fn call_with_token(f: &Fixture, name: &'static str, args: serde_json::Value) -> Value {
+    let params = CallToolRequestParams::new(name).with_arguments(args.as_object().unwrap().clone());
+    let handle = f
+        .client
+        .send_cancellable_request(
+            ClientRequest::CallToolRequest(Request::new(params)),
+            PeerRequestOptions::no_options(),
+        )
+        .await
+        .unwrap();
+    serde_json::to_value(handle.await_response().await.unwrap()).unwrap()
+}
+
+use serde_json::Value;
+
+#[tokio::test]
+async fn every_schema_is_an_object_schema() {
+    let f = fixture(true).await;
+    for t in f.client.list_all_tools().await.unwrap() {
+        assert_eq!(
+            t.input_schema.get("type"),
+            Some(&json!("object")),
+            "{}",
+            t.name
+        );
+    }
+    f.sup.shutdown().await;
+}
+
+#[tokio::test]
+async fn wait_agent_ignores_events_of_other_runs() {
+    let f = fixture(false).await;
+    call_with_token(&f, "wait_agent", json!({"runs": ["zzzzzzzz"]})).await;
+    assert!(f.collector.progress.lock().unwrap().is_empty());
+    f.sup.shutdown().await;
+}
+
+#[tokio::test]
+async fn non_object_result_is_text_only() {
+    let f = fixture(false).await;
+    let r = f
+        .client
+        .call_tool(CallToolRequestParams::new("list_agents"))
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(false));
+    assert!(r.structured_content.is_none());
+    assert!(text(&r).contains("[1,2]"));
+    f.sup.shutdown().await;
+}
+
+#[tokio::test]
+async fn spawn_agent_progress_only_when_waiting() {
+    let f = fixture(false).await;
+    call_with_token(&f, "spawn_agent", json!({"prompt": "x"})).await;
+    assert!(f.collector.progress.lock().unwrap().is_empty());
+    call_with_token(&f, "spawn_agent", json!({"prompt": "x", "wait": true})).await;
+    assert!(!f.collector.progress.lock().unwrap().is_empty());
+    f.sup.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancelling_a_blocked_call_leaves_the_bridge_usable() {
+    let f = fixture(false).await;
+    let params = CallToolRequestParams::new("workflow_status")
+        .with_arguments(json!({"id": "w"}).as_object().unwrap().clone());
+    let handle = f
+        .client
+        .send_cancellable_request(
+            ClientRequest::CallToolRequest(Request::new(params)),
+            PeerRequestOptions::no_options(),
+        )
+        .await
+        .unwrap();
+    handle.cancel(Some("test".into())).await.unwrap();
+    let r = f
+        .client
+        .call_tool(CallToolRequestParams::new("list_harnesses"))
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(false));
     f.sup.shutdown().await;
 }

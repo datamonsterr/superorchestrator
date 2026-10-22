@@ -14,10 +14,9 @@ workspace = true
 [dependencies]
 so-core = { path = "../so-core" }
 so-supervisor = { path = "../so-supervisor" }
-rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
+rmcp = { workspace = true, features = ["server", "transport-io"] }
 schemars.workspace = true
 tokio.workspace = true
-serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
