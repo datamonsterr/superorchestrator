@@ -723,10 +723,16 @@ async fn spawned_server_gets_password_and_config_via_env_and_file() {
     assert!(p, "server process {pid} survived");
 }
 
+/// Gone = no such process. Linux also treats an unreaped zombie as gone;
+/// /proc is absent elsewhere, where kill(0) alone decides.
 fn rustix_gone(pid: u32) -> bool {
+    let p = rustix::process::Pid::from_raw(pid as i32).unwrap();
+    if rustix::process::test_kill_process(p).is_err() {
+        return true;
+    }
     std::fs::read_to_string(format!("/proc/{pid}/stat"))
         .map(|s| s.rsplit(") ").next().is_some_and(|r| r.starts_with('Z')))
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 #[tokio::test]

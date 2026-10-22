@@ -953,9 +953,14 @@ mod tests {
             TokioProbeRunner.run(req).await,
             Err(UsageError::Timeout(_))
         ));
-        let pid = std::fs::read_to_string(&pidfile).unwrap();
+        let pid: i32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(!std::path::Path::new(&format!("/proc/{}", pid.trim())).exists());
+        let p = rustix::process::Pid::from_raw(pid).unwrap();
+        assert!(rustix::process::test_kill_process(p).is_err());
     }
 
     /// Manual: probes the real logins named by `SO_PROBE_CODEX_HOME` / `SO_PROBE_AGY_HOME`
