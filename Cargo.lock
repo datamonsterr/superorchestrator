@@ -2413,9 +2413,20 @@ dependencies = [
 name = "so-router"
 version = "0.1.0"
 dependencies = [
+ "axum",
+ "chrono",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "so-accounts",
  "so-core",
  "so-store",
  "so-usage",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "toml",
 ]
 
 [[package]]
@@ -2436,6 +2447,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "jsonschema",
+ "reqwest",
  "rustix",
  "serde",
  "serde_json",
@@ -2564,6 +2576,7 @@ dependencies = [
  "clap",
  "dialoguer",
  "predicates",
+ "reqwest",
  "rmcp",
  "rustix",
  "serde",

@@ -178,6 +178,9 @@ pub struct RouteParams {
     /// Choice ids to drop from the eligible set.
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// Account names to skip (failover). A choice left with no account is ineligible.
+    #[serde(default)]
+    pub exclude_accounts: Vec<String>,
     #[serde(default)]
     pub harness: Option<String>,
     #[serde(default)]
@@ -211,6 +214,8 @@ pub struct RouteAlternative {
     pub choice_id: String,
     #[serde(default)]
     pub account: Option<String>,
+    /// Source-dependent, so scores are not comparable across results: for `jev` it is the
+    /// decider's probability for the choice, for `heuristic` and `pinned` the heuristic score.
     #[serde(default)]
     pub score: Option<f64>,
 }
@@ -236,6 +241,10 @@ pub struct RouteResult {
     pub alternatives: Vec<RouteAlternative>,
     #[serde(default)]
     pub config_fingerprint: String,
+    /// Usable accounts of the chosen choice, best first (`account` is the first). Failover
+    /// walks this list, then re-routes with `exclude_accounts`.
+    #[serde(default)]
+    pub ranked_accounts: Vec<String>,
 }
 
 /// Parameters of `spawn_agent` (SPEC 7.2).
@@ -666,6 +675,7 @@ mod tests {
             usage: RouteUsage::default(),
             alternatives: vec![],
             config_fingerprint: "f".into(),
+            ranked_accounts: vec![],
         };
         let j = serde_json::to_string(&r).unwrap();
         assert_eq!(serde_json::from_str::<RouteResult>(&j).unwrap(), r);
