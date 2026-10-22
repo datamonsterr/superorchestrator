@@ -464,15 +464,8 @@ async fn cancel_a_queued_run() {
 }
 
 #[tokio::test]
-async fn endpoints_without_a_backend_return_501() {
+async fn unknown_api_routes_are_json_404s() {
     let f = fx().await;
-    for (method, path) in so_web::api::NOT_IMPLEMENTED {
-        let uri = path.replace("{id}", "x").replace("{name}", "x");
-        let body = (*method != "GET" && *method != "DELETE").then(|| json!({}));
-        let (s, _, v) = send(&f.app, request(method, &uri, body)).await;
-        assert_eq!(s, StatusCode::NOT_IMPLEMENTED, "{method} {uri}");
-        assert_eq!(v["error"]["code"], "not_implemented", "{method} {uri}");
-    }
     let (s, v) = get(&f.app, "/api/v1/nope").await;
     assert_eq!(s, StatusCode::NOT_FOUND);
     assert_eq!(v["error"]["code"], "not_found");
@@ -1857,4 +1850,182 @@ async fn project_workflows_resolve_from_the_configured_project_dir() {
         (&v[0]["name"], &v[0]["source"]),
         (&json!("p"), &json!("project"))
     );
+}
+
+// --------------------------------------------------------------------------- workflows
+
+fn workflow_row(id: &str, name: &str, age_s: i64, state: &str) -> so_store::WorkflowRunRow {
+    so_store::WorkflowRunRow {
+        id: id.into(),
+        name: name.into(),
+        session_id: None,
+        state: state.into(),
+        args_json: "null".into(),
+        started_at: Utc::now() - Chrono::seconds(age_s),
+        finished_at: None,
+        result_json: None,
+        error: None,
+    }
+}
+
+#[tokio::test]
+async fn workflow_runs_list_is_paged_newest_first() {
+    let f = fx().await;
+    let store = f.handle.state().store.clone();
+    for (i, name) in ["old", "mid", "new"].into_iter().enumerate() {
+        store
+            .insert_workflow_run(&workflow_row(
+                &format!("wf-{i}"),
+                name,
+                300 - i as i64 * 100,
+                "succeeded",
+            ))
+            .unwrap();
+    }
+    let (s, v) = get(&f.app, "/api/v1/workflows/runs?limit=2").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let names: Vec<&str> = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["new", "mid"]);
+    let item = &v["items"][0];
+    assert!(
+        item["id"].is_string() && item["state"] == "succeeded" && item["started_at"].is_string()
+    );
+    let cursor = v["next_cursor"].as_str().unwrap();
+    let (_, v) = get(
+        &f.app,
+        &format!("/api/v1/workflows/runs?limit=2&cursor={cursor}"),
+    )
+    .await;
+    assert_eq!(v["items"].as_array().unwrap().len(), 1);
+    assert_eq!(v["items"][0]["name"], "old");
+    assert!(v["next_cursor"].is_null());
+    let (s, _) = get(&f.app, "/api/v1/workflows/runs?cursor=zz").await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn workflow_run_detail_has_steps_result_and_redaction() {
+    let f = fx().await;
+    let store = f.handle.state().store.clone();
+    store
+        .insert_workflow_run(&workflow_row("wf-detail-1", "build", 10, "running"))
+        .unwrap();
+    store
+        .insert_workflow_step(&so_store::WorkflowStepRow {
+            workflow_run_id: "wf-detail-1".into(),
+            step_index: 0,
+            phase: Some("plan".into()),
+            prompt_hash: "h".into(),
+            run_id: Some(f.run.clone()),
+            state: "succeeded".into(),
+            started_at: Utc::now(),
+            finished_at: Some(Utc::now()),
+        })
+        .unwrap();
+    store
+        .finish_workflow_run(
+            "wf-detail-1",
+            "failed",
+            Utc::now(),
+            None,
+            Some(&format!("it broke {SECRET}")),
+        )
+        .unwrap();
+    let (s, v) = get(&f.app, "/api/v1/workflows/runs/wf-detail").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["id"], "wf-detail-1");
+    assert_eq!(v["name"], "build");
+    assert_eq!(v["state"], "failed");
+    assert_eq!(v["steps"][0]["name"], "plan");
+    assert_eq!(v["steps"][0]["state"], "succeeded");
+    assert_eq!(v["steps"][0]["run_id"], f.run.as_str());
+    assert!(!v.to_string().contains(SECRET), "errors are redacted");
+    let (s, v) = get(&f.app, "/api/v1/workflows/runs/nope").await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    assert_eq!(v["error"]["code"], -32003);
+}
+
+#[tokio::test]
+async fn running_a_saved_workflow_returns_at_once_and_streams_its_state() {
+    let f = fx().await;
+    let project = f.path("project");
+    let wf_dir = project.join(".superorchestrator/workflows");
+    std::fs::create_dir_all(&wf_dir).unwrap();
+    std::fs::write(wf_dir.join("echo.js"), "log('hi'); return {got: args};").unwrap();
+    let app = router(
+        f.handle.state().clone(),
+        WebOptions {
+            project_dir: Some(project),
+            ..WebOptions::default()
+        },
+    );
+    let res = app.clone().oneshot(stream_request(None)).await.unwrap();
+    let mut stream = res.into_body();
+    let _ = read_until(&mut stream, "event: hello").await;
+
+    let (s, v) = post(
+        &app,
+        "/api/v1/workflows/echo/run",
+        Some(json!({"args": {"n": 1}})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::ACCEPTED, "{v}");
+    let id = v["id"].as_str().unwrap().to_string();
+    assert!(v["session_id"].is_string());
+    assert_eq!(v["state"], "running");
+
+    // It finishes on its own; the result is in the detail.
+    let mut detail = Value::Null;
+    for _ in 0..200 {
+        let (_, d) = get(&app, &format!("/api/v1/workflows/runs/{id}")).await;
+        if d["state"] != "running" {
+            detail = d;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(detail["state"], "succeeded", "{detail}");
+    assert_eq!(detail["result"], json!({"got": {"n": 1}}));
+    assert_eq!(detail["name"], "echo");
+
+    // The stream carried the `workflow` message for the run's states.
+    let got = read_until(&mut stream, "\"state\":\"succeeded\"").await;
+    let blocks: Vec<&str> = got
+        .split("\n\n")
+        .filter(|b| b.contains("event: workflow"))
+        .collect();
+    assert!(!blocks.is_empty(), "{got}");
+    assert!(
+        blocks
+            .iter()
+            .any(|b| b.contains(&id) && b.contains("\"name\":\"echo\"")),
+        "{got}"
+    );
+
+    // The session the workflow used is closed again.
+    let (_, sess) = get(
+        &app,
+        &format!(
+            "/api/v1/sessions/{}",
+            detail["session_id"].as_str().unwrap()
+        ),
+    )
+    .await;
+    assert_eq!(sess["status"], "done", "{sess}");
+
+    // Unknown workflows and unknown body fields are rejected.
+    let (s, v) = post(&app, "/api/v1/workflows/nope/run", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    let (s, _) = post(
+        &app,
+        "/api/v1/workflows/echo/run",
+        Some(json!({"bogus": 1})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }

@@ -69,6 +69,11 @@ fn roots(g: &mut SchemaGenerator) {
     add::<UpdateAgentRequest>(g);
     add::<AgentWriteResult>(g);
     add::<WorkflowSummary>(g);
+    add::<RunWorkflowBody>(g);
+    add::<so_core::proto::RunWorkflowResult>(g);
+    add::<so_core::proto::WorkflowRunView>(g);
+    add::<so_core::proto::WorkflowStatusResult>(g);
+    add::<so_core::proto::WorkflowEventData>(g);
 }
 
 fn literal(v: &Value) -> String {

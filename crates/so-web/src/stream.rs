@@ -130,6 +130,22 @@ impl Hub {
     /// `headroom` messages. Runs until the supervisor's bus closes.
     pub fn spawn_pump(self: &Arc<Self>, sup: Arc<SupervisorState>) {
         let hub = self.clone();
+        let mut workflows = sup.runs.subscribe_workflows();
+        let workflow_hub = self.clone();
+        tokio::spawn(async move {
+            loop {
+                match workflows.recv().await {
+                    Ok(update) => {
+                        let mut payload = serde_json::to_value(&update).unwrap_or_default();
+                        so_core::redact::redact_json(&mut payload);
+                        workflow_hub.publish("workflow", &payload, update.session_id.clone());
+                    }
+                    // Missed some: the client's next refetch catches up.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
         let mut sub = sup.runs.subscribe_all();
         tokio::spawn(async move {
             while let Some(d) = sub.recv().await {
