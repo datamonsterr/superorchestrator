@@ -13,8 +13,8 @@ pub use discover::{
 };
 pub use error::{AgentError, Result};
 pub use materialise::{Materialised, McpExtra, gaps, materialise};
-pub use parse::MAX_AGENT_FILE;
 pub use parse::{
     AgentDef, AgentSource, HarnessPref, McpRef, Memory, parse_agent, validate_agent_name,
 };
+pub use parse::{MAX_AGENT_FILE, RESERVED_MCP_NAME};
 pub use starter::{install_starters, starter_names};

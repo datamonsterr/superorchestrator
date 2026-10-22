@@ -86,11 +86,19 @@ impl AgentLaunch {
             .and_then(|m| m.get(protected.1))
             .cloned();
         merge_json(base, fragment);
-        if let (Some(keep), Some(map)) = (
-            keep,
-            base.get_mut(protected.0).and_then(|m| m.as_object_mut()),
-        ) {
-            map.insert(protected.1.to_string(), keep);
+        // The fragment may have replaced the whole map with something else.
+        if let Some(keep) = keep
+            && let Some(root) = base.as_object_mut()
+        {
+            let slot = root
+                .entry(protected.0.to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if !slot.is_object() {
+                *slot = serde_json::json!({});
+            }
+            if let Some(map) = slot.as_object_mut() {
+                map.insert(protected.1.to_string(), keep);
+            }
         }
     }
 }
@@ -572,6 +580,14 @@ mod tests {
         assert_eq!(base["mcp"]["docs"]["command"], "d");
         assert_eq!(base["agent"]["reviewer"]["prompt"], "p");
         assert_eq!(base["permission"]["*"], "ask");
+        // A fragment that replaces the map with a non-object cannot drop our server.
+        let mut odd = json!({"mcp": {"superorchestrator": {"command": "ours"}}});
+        AgentLaunch {
+            config_fragment: Some(json!({"mcp": "nope"})),
+            ..AgentLaunch::default()
+        }
+        .merge_into(&mut odd, ("mcp", "superorchestrator"));
+        assert_eq!(odd["mcp"]["superorchestrator"]["command"], "ours");
         // Nothing to merge: untouched.
         let mut same = base.clone();
         AgentLaunch::default().merge_into(&mut same, ("mcp", "superorchestrator"));

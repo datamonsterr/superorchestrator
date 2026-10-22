@@ -50,7 +50,7 @@ impl RunManager {
             spec.system_addendum.push('\n');
         }
         spec.agent = AgentLaunch {
-            extra_args: without_max_turns(m.extra_args),
+            extra_args: checked_args(m.extra_args)?,
             config_fragment: m.config_fragment,
             agent_name: (harness == Harness::Opencode).then(|| def.name.clone()),
         };
@@ -58,33 +58,81 @@ impl RunManager {
     }
 }
 
-/// The run's turn budget is on the row and goes to the harness through the driver, so the
-/// copy materialisation put in Claude's argv is dropped (the call may have overridden it).
-fn without_max_turns(args: Vec<String>) -> Vec<String> {
+/// The only flags an agent may add to Claude's argv (SPEC 10).
+const ALLOWED_FLAGS: [&str; 7] = [
+    "--tools",
+    "--allowedTools",
+    "--disallowedTools",
+    "--max-turns",
+    "--mcp-config",
+    "--settings",
+    "--add-dir",
+];
+
+/// Keeps `args` only if every flag is allowed and every value is not itself a flag. The run's
+/// turn budget is on the row and reaches the harness through the driver, so the copy
+/// materialisation put in Claude's argv is dropped (the call may have overridden it).
+fn checked_args(args: Vec<String>) -> Result<Vec<String>, String> {
     let mut out = Vec::with_capacity(args.len());
-    let mut it = args.into_iter();
-    while let Some(a) = it.next() {
-        if a == "--max-turns" {
-            it.next();
-        } else {
+    let mut dropping = false;
+    for a in args {
+        if a.starts_with('-') {
+            if !ALLOWED_FLAGS.contains(&a.as_str()) {
+                return Err(format!(
+                    "the agent would add the argument `{a}`, which is not allowed"
+                ));
+            }
+            dropping = a == "--max-turns";
+            if !dropping {
+                out.push(a);
+            }
+        } else if out.is_empty() && !dropping {
+            // A value with no flag before it.
+            return Err(format!("the agent would add a stray argument `{a}`"));
+        } else if !dropping {
             out.push(a);
         }
     }
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn v(a: &[&str]) -> Vec<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
     #[test]
     fn max_turns_pair_is_dropped_and_the_rest_kept() {
-        let args = ["--tools", "Read", "--max-turns", "9", "--add-dir", "/x"]
-            .map(String::from)
-            .to_vec();
         assert_eq!(
-            without_max_turns(args),
-            ["--tools", "Read", "--add-dir", "/x"].map(String::from)
+            checked_args(v(&[
+                "--tools",
+                "Read",
+                "--max-turns",
+                "9",
+                "--add-dir",
+                "/x"
+            ]))
+            .unwrap(),
+            v(&["--tools", "Read", "--add-dir", "/x"])
         );
+        assert_eq!(
+            checked_args(v(&["--tools", ""])).unwrap(),
+            v(&["--tools", ""])
+        );
+    }
+
+    #[test]
+    fn other_flags_and_stray_values_are_refused() {
+        for bad in [
+            &["--dangerously-skip-permissions"][..],
+            &["--tools", "Read", "--model", "x"],
+            &["--tools", "-p"],
+            &["Read"],
+        ] {
+            assert!(checked_args(v(bad)).is_err(), "{bad:?}");
+        }
     }
 }

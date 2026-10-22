@@ -132,6 +132,14 @@ pub fn remove_files(def: &AgentDef) -> Result<()> {
 pub fn resolve_for_spawn(cwd: &Path, paths: &Paths, name: &str) -> Result<AgentDef> {
     let d = discover(cwd, paths);
     if let Some(a) = d.agents.into_iter().find(|a| a.name == name) {
+        // Like the listings: a symlinked agent may point outside the agents directories.
+        let link = |p: &Path| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_symlink());
+        if link(&a.file) || a.dir.as_deref().is_some_and(link) {
+            return Err(AgentError::Parse {
+                path: a.file,
+                msg: "symlinked agents cannot be spawned".into(),
+            });
+        }
         return Ok(a);
     }
     // A broken file named like the request: report why it failed, not "not found".
@@ -219,6 +227,23 @@ mod tests {
                 other => panic!("{n}: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn a_symlinked_agent_is_not_spawnable() {
+        let t = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(t.path().join("cfg"));
+        write(&t.path().join("elsewhere.md"), &agent_md("linked", "x"));
+        std::fs::create_dir_all(paths.agents_dir()).unwrap();
+        std::os::unix::fs::symlink(
+            t.path().join("elsewhere.md"),
+            paths.agents_dir().join("linked.md"),
+        )
+        .unwrap();
+        assert!(matches!(
+            resolve_for_spawn(t.path(), &paths, "linked"),
+            Err(AgentError::Parse { .. })
+        ));
     }
 
     #[test]

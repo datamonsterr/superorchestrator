@@ -181,6 +181,8 @@ impl RunManager {
                 h.parse::<Harness>()
                     .map_err(|e| rpc(INVALID_PARAMS, e.to_string()))?,
             ),
+            // An account named by the call decides the harness, over the agent's own.
+            None if p.account.is_some() => None,
             None => match agent.as_ref().map(|a| a.harness) {
                 Some(HarnessPref::Fixed(h)) => Some(h),
                 Some(HarnessPref::Auto) => None,
