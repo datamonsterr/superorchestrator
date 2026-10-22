@@ -428,7 +428,8 @@ impl AgyControl {
     }
 }
 
-/// A direct child of `parent`, found by scanning `/proc` (Linux).
+/// Lowest-pid direct child of `parent`, found by scanning `/proc`.
+#[cfg(target_os = "linux")]
 fn first_child(parent: u32) -> Option<u32> {
     std::fs::read_dir("/proc")
         .ok()?
@@ -444,6 +445,27 @@ fn first_child(parent: u32) -> Option<u32> {
                 })
                 == Some(parent)
         })
+        .min()
+}
+
+/// Lowest-pid direct child of `parent` on platforms without `/proc`.
+#[cfg(not(target_os = "linux"))]
+fn first_child(parent: u32) -> Option<u32> {
+    pgrep_child(parent)
+}
+
+/// Lowest-pid direct child of `parent` via `pgrep -P`. Argv only, no shell.
+/// `pgrep` exits 1 when nothing matches, which leaves no output and yields `None`.
+#[cfg(any(test, not(target_os = "linux")))]
+fn pgrep_child(parent: u32) -> Option<u32> {
+    let out = std::process::Command::new("pgrep")
+        .arg("-P")
+        .arg(parent.to_string())
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.trim().parse::<u32>().ok())
         .min()
 }
 
@@ -808,15 +830,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn first_child_finds_a_child() {
+    fn assert_finds_child(find: fn(u32) -> Option<u32>) {
         let mut c = std::process::Command::new("sh")
             .args(["-c", "sleep 5 & wait"])
             .spawn()
             .unwrap();
         let mut found = None;
         for _ in 0..50 {
-            found = first_child(c.id());
+            found = find(c.id());
             if found.is_some() {
                 break;
             }
@@ -825,5 +846,16 @@ mod tests {
         let _ = c.kill();
         let _ = c.wait();
         assert!(found.is_some());
+    }
+
+    #[test]
+    fn first_child_finds_a_child() {
+        assert_finds_child(first_child);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pgrep_child_finds_a_child() {
+        assert_finds_child(pgrep_child);
     }
 }
