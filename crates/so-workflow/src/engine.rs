@@ -1,7 +1,9 @@
 //! The QuickJS workflow engine.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use rquickjs::function::Async;
@@ -25,6 +27,9 @@ pub struct EngineOptions {
     pub stack_limit: usize,
     /// Agents running at once (default 16, as in Claude Code).
     pub max_concurrent_agents: usize,
+    /// Wall-clock limit for a whole run, waits for accounts included. `None` (default) means
+    /// no limit. Enforced both by the JS interrupt handler and while awaiting the host.
+    pub max_duration: Option<Duration>,
 }
 
 impl Default for EngineOptions {
@@ -33,6 +38,7 @@ impl Default for EngineOptions {
             memory_limit: 64 * 1024 * 1024,
             stack_limit: 1024 * 1024,
             max_concurrent_agents: 16,
+            max_duration: None,
         }
     }
 }
@@ -76,6 +82,12 @@ pub struct RunOptions {
     /// Id for the `workflow_runs` row; generated when `None`. An existing row is reused.
     pub run_id: Option<String>,
     pub cancel: CancelToken,
+    /// Directory the run's agents work in and that scopes the result cache: the same prompt
+    /// and options in another directory are a different step. Relative `cwd` options of
+    /// `agent()` resolve against it. Defaults to the process's current directory.
+    pub cwd: Option<PathBuf>,
+    /// Ignore cached results and run every step again (new results are still cached).
+    pub fresh: bool,
 }
 
 /// Runs workflow scripts. Cheap to clone.
@@ -121,6 +133,10 @@ impl WorkflowEngine {
         host: Arc<dyn WorkflowHost>,
     ) -> Result<(String, Value)> {
         let run_id = opts.run_id.unwrap_or_else(new_id);
+        let cwd = opts
+            .cwd
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_default();
         let row = WorkflowRunRow {
             id: run_id.clone(),
             name: name.to_string(),
@@ -137,7 +153,7 @@ impl WorkflowEngine {
                 if store.get_workflow_run(&id)?.is_none() {
                     store.insert_workflow_run(&row)?;
                 } else {
-                    store.update_workflow_run_state(&id, "running", None)?;
+                    store.reset_workflow_run(&id, &row.args_json)?;
                 }
                 Ok(())
             })
@@ -150,20 +166,27 @@ impl WorkflowEngine {
             name.to_string(),
             run_id.clone(),
             self.options.max_concurrent_agents,
+            cwd,
+            opts.fresh,
         ));
         let result = self
-            .execute(state, script_source, &args, &opts.cancel)
+            .execute(state.clone(), script_source, &args, &opts.cancel)
             .await;
+        // The runtime (and with it every in-flight host future) is gone by now.
+        let finalized = state.finalize().await;
 
-        let final_state = if result.is_ok() {
-            "succeeded"
-        } else {
-            "failed"
+        let final_state = match &result {
+            Ok(_) => "succeeded",
+            Err(WorkflowError::Cancelled) => "cancelled",
+            Err(_) => "failed",
         };
         let store = self.store.clone();
         let id = run_id.clone();
         blocking(move || store.update_workflow_run_state(&id, final_state, Some(Utc::now())))
             .await?;
+        if let Err(e) = finalized {
+            return Err(WorkflowError::Engine(e.msg));
+        }
         result.map(|v| (run_id, v))
     }
 
@@ -179,22 +202,42 @@ impl WorkflowEngine {
         rt.set_memory_limit(self.options.memory_limit).await;
         rt.set_max_stack_size(self.options.stack_limit).await;
         let flag = cancel.flag.clone();
-        rt.set_interrupt_handler(Some(Box::new(move || flag.load(Ordering::SeqCst))))
-            .await;
+        let timed_out = Arc::new(AtomicBool::new(false));
+        let deadline = self.options.max_duration.map(|d| Instant::now() + d);
+        let to = timed_out.clone();
+        rt.set_interrupt_handler(Some(Box::new(move || {
+            if flag.load(Ordering::SeqCst) {
+                return true;
+            }
+            if deadline.is_some_and(|d| Instant::now() >= d) {
+                to.store(true, Ordering::SeqCst);
+                return true;
+            }
+            false
+        })))
+        .await;
         // `full` adds only the language intrinsics; QuickJS has no fs, network or process
         // APIs, and no module loader is installed.
         let ctx = AsyncContext::full(&rt).await.map_err(engine_err)?;
 
-        let wrapped = wrap(source);
+        let wrapped = wrap(source).map_err(WorkflowError::Script)?;
         let args_json = args.to_string();
         let work = ctx.async_with(async move |ctx| drive(ctx, state, args_json, wrapped).await);
+        let max = self.options.max_duration;
         let out = tokio::select! {
             r = work => r,
             () = cancel.cancelled() => return Err(WorkflowError::Cancelled),
+            () = async {
+                match max {
+                    Some(d) => tokio::time::sleep(d).await,
+                    None => std::future::pending().await,
+                }
+            } => return Err(WorkflowError::Timeout),
         };
         match out {
             Ok(v) => Ok(v),
             Err(_) if cancel.is_cancelled() => Err(WorkflowError::Cancelled),
+            Err(_) if timed_out.load(Ordering::SeqCst) => Err(WorkflowError::Timeout),
             Err(msg) => Err(WorkflowError::Script(msg)),
         }
     }

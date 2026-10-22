@@ -1,6 +1,7 @@
 //! One `agent()` step: cache lookup, host call, failover waits, stall restarts.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -9,9 +10,9 @@ use chrono::Utc;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use so_store::{Store, WorkflowCacheRow, WorkflowStepRow};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, SemaphorePermit};
 
-use crate::host::{StepEvent, StepOutcome, StepRequest, WorkflowHost};
+use crate::host::{HostError, StepEvent, StepOutcome, StepRequest, WorkflowHost};
 
 /// Longest single wait for an account to come back.
 const MAX_WAIT: Duration = Duration::from_secs(24 * 60 * 60);
@@ -26,6 +27,13 @@ pub(crate) struct StepError {
     pub msg: String,
     /// Infrastructure failure: the script must not treat it as a failed agent.
     pub fatal: bool,
+}
+
+fn host_err(e: HostError) -> StepError {
+    match e {
+        HostError::Failed(m) => StepError::agent(m),
+        HostError::Fatal(m) => StepError::fatal(m),
+    }
 }
 
 impl StepError {
@@ -56,6 +64,10 @@ pub(crate) struct RunState {
     pub store: Store,
     pub name: String,
     pub run_id: String,
+    /// Directory relative `cwd` options resolve against; part of every cache key.
+    base_cwd: PathBuf,
+    /// Skip cache reads (results are still written).
+    fresh: bool,
     started: AtomicUsize,
     occurrences: Mutex<HashMap<String, usize>>,
     tickets: Mutex<HashMap<usize, Ticket>>,
@@ -65,8 +77,9 @@ pub(crate) struct RunState {
 fn sha_hex(parts: &[&str]) -> String {
     let mut h = Sha256::new();
     for p in parts {
+        // Length prefix: ("ab", "c") and ("a", "bc") must not collide.
+        h.update((p.len() as u64).to_le_bytes());
         h.update(p.as_bytes());
-        h.update([0]);
     }
     h.finalize().iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -91,6 +104,16 @@ fn canonical(v: &Value) -> String {
     }
 }
 
+/// Canonical working directory of a step: the `cwd` option (relative to the run's cwd) or
+/// the run's cwd. Falls back to the unresolved path when it does not exist.
+fn resolve_cwd(base: &Path, opt: Option<&str>) -> String {
+    let p = match opt {
+        Some(o) => base.join(o),
+        None => base.to_path_buf(),
+    };
+    p.canonicalize().unwrap_or(p).to_string_lossy().into_owned()
+}
+
 async fn db<T: Send + 'static>(
     store: &Store,
     f: impl FnOnce(&Store) -> so_store::Result<T> + Send + 'static,
@@ -109,12 +132,16 @@ impl RunState {
         name: String,
         run_id: String,
         max_concurrent: usize,
+        base_cwd: PathBuf,
+        fresh: bool,
     ) -> Self {
         Self {
             host,
             store,
             name,
             run_id,
+            base_cwd,
+            fresh,
             started: AtomicUsize::new(0),
             occurrences: Mutex::new(HashMap::new()),
             tickets: Mutex::new(HashMap::new()),
@@ -131,7 +158,8 @@ impl RunState {
         if step >= MAX_AGENTS {
             return Err(format!("a workflow may start at most {MAX_AGENTS} agents"));
         }
-        let base = sha_hex(&[&self.name, prompt, &canonical(&opts)]);
+        let cwd = resolve_cwd(&self.base_cwd, opts.get("cwd").and_then(Value::as_str));
+        let base = sha_hex(&[&self.name, prompt, &canonical(&opts), &cwd]);
         let n = {
             let mut occ = self.occurrences.lock().map_err(|e| e.to_string())?;
             let n = occ.entry(base.clone()).or_insert(0);
@@ -196,36 +224,24 @@ impl RunState {
             .map_err(|e| StepError::fatal(e.to_string()))?
             .remove(&step)
             .ok_or_else(|| StepError::fatal(format!("unknown step {step}")))?;
-        let _permit = self
-            .permits
-            .acquire()
-            .await
-            .map_err(|e| StepError::fatal(e.to_string()))?;
-
         let key = t.hash.clone();
-        let cached = db(&self.store, move |s| s.get_workflow_cache(&key)).await?;
-        let now = Utc::now();
-        let row = WorkflowStepRow {
-            workflow_run_id: self.run_id.clone(),
-            step_index: step as i64,
-            phase: t.phase.clone(),
-            prompt_hash: t.hash.clone(),
-            run_id: None,
-            state: if cached.is_some() {
-                "cached"
-            } else {
-                "running"
-            }
-            .into(),
-            started_at: now,
-            finished_at: cached.is_some().then_some(now),
+        let cached = if self.fresh {
+            None
+        } else {
+            db(&self.store, move |s| s.get_workflow_cache(&key)).await?
         };
-        db(&self.store, move |s| s.insert_workflow_step(&row)).await?;
         if let Some(c) = cached {
+            let now = Utc::now();
+            let row = self.step_row(&t, step, "cached", Some(now));
+            db(&self.store, move |s| s.insert_workflow_step(&row)).await?;
             self.emit(&t, step, None, "cached").await;
             return serde_json::from_str(&c.result_json)
                 .map_err(|e| StepError::fatal(format!("corrupt cache entry: {e}")));
         }
+
+        let mut permit = Some(self.acquire().await?);
+        let row = self.step_row(&t, step, "running", None);
+        db(&self.store, move |s| s.insert_workflow_step(&row)).await?;
         self.emit(&t, step, None, "running").await;
 
         let req = StepRequest {
@@ -236,7 +252,7 @@ impl RunState {
             opts: t.opts.clone(),
             stall_ms: t.opts.get("stall_ms").and_then(Value::as_u64),
         };
-        match self.drive(&req, &t, step).await {
+        match self.drive(&req, &t, step, &mut permit).await {
             Ok((result, run_id)) => {
                 let row = WorkflowCacheRow {
                     key_hash: t.hash.clone(),
@@ -256,25 +272,55 @@ impl RunState {
         }
     }
 
-    /// Host calls with failover waits and stall restarts.
-    async fn drive(
+    async fn acquire(&self) -> Result<SemaphorePermit<'_>, StepError> {
+        self.permits
+            .acquire()
+            .await
+            .map_err(|e| StepError::fatal(e.to_string()))
+    }
+
+    fn step_row(
         &self,
+        t: &Ticket,
+        step: usize,
+        state: &str,
+        finished_at: Option<chrono::DateTime<Utc>>,
+    ) -> WorkflowStepRow {
+        WorkflowStepRow {
+            workflow_run_id: self.run_id.clone(),
+            step_index: step as i64,
+            phase: t.phase.clone(),
+            prompt_hash: t.hash.clone(),
+            run_id: None,
+            state: state.into(),
+            started_at: Utc::now(),
+            finished_at,
+        }
+    }
+
+    /// Host calls with failover waits and stall restarts. The concurrency permit is given
+    /// up while waiting for an account.
+    async fn drive<'a>(
+        &'a self,
         req: &StepRequest,
         t: &Ticket,
         step: usize,
+        permit: &mut Option<SemaphorePermit<'a>>,
     ) -> Result<(Value, Option<String>), StepError> {
         let mut restarts = 0u32;
         let mut outcome = self.host.spawn_and_wait(req).await;
         loop {
-            match outcome.map_err(|e| StepError::agent(e.0))? {
+            match outcome.map_err(host_err)? {
                 StepOutcome::Done { result, run_id } => return Ok((result, run_id)),
                 StepOutcome::Unavailable { retry_at } => {
                     self.set_state(t, step, None, "waiting", false).await?;
+                    *permit = None;
                     let wait = (retry_at - Utc::now())
                         .to_std()
                         .unwrap_or_default()
                         .clamp(MIN_WAIT, MAX_WAIT);
                     tokio::time::sleep(wait).await;
+                    *permit = Some(self.acquire().await?);
                     self.set_state(t, step, None, "running", false).await?;
                     outcome = self.host.spawn_and_wait(req).await;
                 }
@@ -288,10 +334,36 @@ impl RunState {
                     restarts += 1;
                     self.set_state(t, step, run_id.clone(), "stalled", false)
                         .await?;
-                    outcome = self.host.restart(req, run_id.as_deref(), restarts).await;
                     self.set_state(t, step, None, "running", false).await?;
+                    outcome = self.host.restart(req, run_id.as_deref(), restarts).await;
                 }
             }
         }
+    }
+
+    /// Called once the script is over (returned, threw, cancelled or timed out), after the
+    /// runtime dropped any in-flight host futures: marks steps that never finished as
+    /// `cancelled` and removes rows left by a longer earlier run with the same id.
+    pub async fn finalize(&self) -> Result<(), StepError> {
+        let (wf, started) = (self.run_id.clone(), self.started.load(Ordering::SeqCst));
+        let open = db(&self.store, move |s| {
+            let open = s.cancel_open_workflow_steps(&wf, Utc::now())?;
+            s.delete_workflow_steps_from(&wf, started as i64)?;
+            Ok(open)
+        })
+        .await?;
+        for row in open {
+            self.host
+                .step_status(&StepEvent {
+                    workflow_run_id: self.run_id.clone(),
+                    step_index: row.step_index as usize,
+                    phase: row.phase,
+                    prompt_hash: row.prompt_hash,
+                    run_id: row.run_id,
+                    state: "cancelled".into(),
+                })
+                .await;
+        }
+        Ok(())
     }
 }

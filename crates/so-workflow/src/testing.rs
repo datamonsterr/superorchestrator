@@ -28,6 +28,8 @@ pub struct FakeHost {
     events: Mutex<Vec<String>>,
     statuses: Mutex<Vec<(usize, String)>>,
     n: AtomicUsize,
+    hang: Mutex<Vec<String>>,
+    dropped: Arc<AtomicUsize>,
 }
 
 impl FakeHost {
@@ -49,6 +51,8 @@ impl FakeHost {
             events: Mutex::default(),
             statuses: Mutex::default(),
             n: AtomicUsize::new(0),
+            hang: Mutex::default(),
+            dropped: Arc::default(),
         })
     }
 
@@ -57,6 +61,14 @@ impl FakeHost {
         Self::new(|r, _| Ok(done(json!(format!("done:{}", r.prompt)))))
     }
 
+    /// Makes `spawn_and_wait` for this prompt never finish (until its future is dropped).
+    pub fn hang_on(&self, prompt: &str) {
+        self.hang.lock().unwrap().push(prompt.to_string());
+    }
+    /// How many hung `spawn_and_wait` futures were dropped (cancelled) so far.
+    pub fn dropped(&self) -> usize {
+        self.dropped.load(Ordering::SeqCst)
+    }
     pub fn calls(&self) -> Vec<Call> {
         self.calls.lock().unwrap().clone()
     }
@@ -88,6 +100,10 @@ impl WorkflowHost for FakeHost {
         Box::pin(async move {
             let start = Instant::now();
             let n = self.n.fetch_add(1, Ordering::SeqCst);
+            if self.hang.lock().unwrap().contains(&req.prompt) {
+                let _guard = DropCount(self.dropped.clone());
+                std::future::pending::<()>().await;
+            }
             tokio::time::sleep(self.delay).await;
             self.calls.lock().unwrap().push(Call {
                 prompt: req.prompt.clone(),
@@ -128,5 +144,13 @@ impl WorkflowHost for FakeHost {
                 .unwrap()
                 .push((e.step_index, e.state.clone()))
         })
+    }
+}
+
+struct DropCount(Arc<AtomicUsize>);
+
+impl Drop for DropCount {
+    fn drop(&mut self) {
+        self.0.fetch_add(1, Ordering::SeqCst);
     }
 }

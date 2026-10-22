@@ -7,6 +7,7 @@ use std::time::Duration;
 use chrono::Utc;
 use serde_json::{Value, json};
 use so_store::Store;
+use so_workflow::EngineOptions;
 use so_workflow::testing::{FakeHost, done};
 use so_workflow::{CancelToken, HostError, RunOptions, StepOutcome, WorkflowEngine, WorkflowError};
 use tokio::time::Instant;
@@ -130,7 +131,7 @@ async fn agent_outside_parallel_has_no_isolation_default() {
 async fn parallel_nulls_failed_agents_but_propagates_script_errors() {
     let host = FakeHost::new(|r, _| {
         if r.prompt == "bad" {
-            Err(HostError("boom".into()))
+            Err(HostError::Failed("boom".into()))
         } else {
             Ok(done(json!(r.prompt.clone())))
         }
@@ -226,7 +227,7 @@ async fn resume_replays_cache_and_continues() {
                const c = await agent('three'); return [a, b, c];";
     let failing = FakeHost::new(|r, _| {
         if r.prompt == "three" {
-            Err(HostError("quota".into()))
+            Err(HostError::Failed("quota".into()))
         } else {
             Ok(done(json!(format!("r:{}", r.prompt))))
         }
@@ -451,6 +452,7 @@ async fn cancel_interrupts_infinite_loop() {
     let opts = RunOptions {
         run_id: Some("wfr".into()),
         cancel,
+        ..Default::default()
     };
     let e = eng
         .run_with(opts, "while (true) {}", "wf", Value::Null, host)
@@ -459,7 +461,7 @@ async fn cancel_interrupts_infinite_loop() {
     assert!(matches!(e, WorkflowError::Cancelled), "{e}");
     assert_eq!(
         store.get_workflow_run("wfr").unwrap().unwrap().state,
-        "failed"
+        "cancelled"
     );
 }
 
@@ -475,6 +477,7 @@ async fn cancel_interrupts_host_wait() {
     let opts = RunOptions {
         run_id: None,
         cancel,
+        ..Default::default()
     };
     let e = engine()
         .0
@@ -490,11 +493,11 @@ async fn rerun_with_same_run_id_resets_state_and_upserts_steps() {
     let src = "await agent('a'); await agent('b');";
     let mk = || RunOptions {
         run_id: Some("same".into()),
-        cancel: CancelToken::new(),
+        ..Default::default()
     };
     let bad = FakeHost::new(|r, _| {
         if r.prompt == "b" {
-            Err(HostError("no".into()))
+            Err(HostError::Failed("no".into()))
         } else {
             Ok(done(json!(1)))
         }
@@ -540,4 +543,248 @@ async fn date_without_args_throws_but_explicit_dates_work() {
         out,
         json!(["1970-01-01T00:00:00.000Z", 86_400_000, 5, true, "string"])
     );
+}
+
+fn dirs() -> (tempfile::TempDir, tempfile::TempDir) {
+    (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap())
+}
+
+async fn run_in(
+    eng: &WorkflowEngine,
+    host: &Arc<FakeHost>,
+    src: &str,
+    cwd: &std::path::Path,
+    fresh: bool,
+) -> Result<Value, WorkflowError> {
+    let opts = RunOptions {
+        cwd: Some(cwd.to_path_buf()),
+        fresh,
+        ..Default::default()
+    };
+    eng.run_with(opts, src, "wf", Value::Null, host.clone())
+        .await
+        .map(|(_, v)| v)
+}
+
+#[tokio::test]
+async fn cache_is_scoped_by_cwd_and_fresh_bypasses_it() {
+    let (eng, _) = engine();
+    let (a, b) = dirs();
+    let src = "return await agent('p');";
+    let h = FakeHost::echo();
+    run_in(&eng, &h, src, a.path(), false).await.unwrap();
+    run_in(&eng, &h, src, a.path(), false).await.unwrap();
+    assert_eq!(h.calls().len(), 1, "same cwd replays");
+    run_in(&eng, &h, src, b.path(), false).await.unwrap();
+    assert_eq!(h.calls().len(), 2, "other cwd is another step");
+    run_in(&eng, &h, src, a.path(), true).await.unwrap();
+    assert_eq!(h.calls().len(), 3, "fresh runs again");
+    run_in(&eng, &h, src, a.path(), false).await.unwrap();
+    assert_eq!(h.calls().len(), 3, "fresh results are cached");
+    let with_opt = format!("return await agent('p', {{cwd: {:?}}});", b.path());
+    run_in(&eng, &h, &with_opt, a.path(), false).await.unwrap();
+    assert_eq!(h.calls().len(), 4, "cwd option is part of the key");
+}
+
+#[tokio::test(start_paused = true)]
+async fn unfinished_steps_are_cancelled_when_the_script_returns() {
+    let host = FakeHost::echo();
+    host.hang_on("slow");
+    let (eng, store) = engine();
+    let src = "agent('slow'); await agent('fast'); return 'out';";
+    let (id, out) = eng
+        .run_with(RunOptions::default(), src, "wf", Value::Null, host.clone())
+        .await
+        .unwrap();
+    assert_eq!(out, json!("out"));
+    let states: Vec<_> = store
+        .list_workflow_steps(&id)
+        .unwrap()
+        .into_iter()
+        .map(|s| s.state)
+        .collect();
+    assert_eq!(states, ["cancelled", "succeeded"]);
+    assert!(host.statuses().contains(&(0, "cancelled".to_string())));
+    assert_eq!(
+        host.dropped(),
+        1,
+        "the host future was dropped, cancelling the run"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn unfinished_steps_are_cancelled_when_the_script_throws() {
+    let host = FakeHost::echo();
+    host.hang_on("slow");
+    let (eng, store) = engine();
+    let src = "agent('slow'); await agent('fast'); throw new Error('late');";
+    let opts = RunOptions {
+        run_id: Some("t".into()),
+        ..Default::default()
+    };
+    eng.run_with(opts, src, "wf", Value::Null, host)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        store.list_workflow_steps("t").unwrap()[0].state,
+        "cancelled"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn permit_is_released_while_waiting_for_an_account() {
+    let host = FakeHost::new(|r, n| {
+        if r.prompt == "a" && n == 0 {
+            Ok(StepOutcome::Unavailable {
+                retry_at: Utc::now() + chrono::Duration::minutes(10),
+            })
+        } else {
+            Ok(done(json!(r.prompt.clone())))
+        }
+    });
+    let opts = EngineOptions {
+        max_concurrent_agents: 1,
+        ..Default::default()
+    };
+    let eng = WorkflowEngine::with_options(Store::open_in_memory().unwrap(), opts);
+    let t0 = Instant::now();
+    let out = eng
+        .run(
+            "return await parallel([() => agent('a'), () => agent('b')]);",
+            "wf",
+            Value::Null,
+            host.clone(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out, json!(["a", "b"]));
+    let b_end = host.calls().iter().find(|c| c.prompt == "b").unwrap().end;
+    assert!(
+        b_end - t0 < Duration::from_secs(60),
+        "b did not wait for a's account"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn parallel_isolation_default_only_covers_the_injected_agent_and_sync_calls() {
+    let host = FakeHost::echo();
+    let src = "return await parallel([\
+        async () => { await Promise.resolve(); return await agent('late'); },\
+        async () => await agent('sync'),\
+        async (ag) => { await Promise.resolve(); return await ag('scoped'); }]);";
+    run(&host, src).await.unwrap();
+    let iso = |p: &str| {
+        host.calls()
+            .iter()
+            .find(|c| c.prompt == p)
+            .unwrap()
+            .opts
+            .get("isolation")
+            .cloned()
+    };
+    assert_eq!(iso("late"), None);
+    assert_eq!(iso("sync"), Some(json!("worktree")));
+    assert_eq!(iso("scoped"), Some(json!("worktree")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn run_future_is_send() {
+    let (eng, _) = engine();
+    let host = FakeHost::echo();
+    let handle = tokio::spawn(async move {
+        eng.run("return await agent('x');", "wf", Value::Null, host)
+            .await
+    });
+    assert_eq!(handle.await.unwrap().unwrap(), json!("done:x"));
+}
+
+#[test]
+fn max_duration_interrupts_a_spinning_script() {
+    let opts = EngineOptions {
+        max_duration: Some(Duration::from_millis(150)),
+        ..Default::default()
+    };
+    let eng = WorkflowEngine::with_options(Store::open_in_memory().unwrap(), opts);
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let e = rt
+        .block_on(eng.run("while (true) {}", "wf", Value::Null, FakeHost::echo()))
+        .unwrap_err();
+    assert!(matches!(e, WorkflowError::Timeout), "{e}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn max_duration_covers_host_waits() {
+    let opts = EngineOptions {
+        max_duration: Some(Duration::from_secs(10)),
+        ..Default::default()
+    };
+    let (_, store) = engine();
+    let eng = WorkflowEngine::with_options(store, opts);
+    let host = FakeHost::with_delay(Duration::from_secs(3600), |_, _| Ok(done(json!(1))));
+    let e = eng
+        .run("await agent('x');", "wf", Value::Null, host)
+        .await
+        .unwrap_err();
+    assert!(matches!(e, WorkflowError::Timeout), "{e}");
+}
+
+#[tokio::test]
+async fn module_syntax_fails_loudly() {
+    let host = FakeHost::echo();
+    for src in ["import x from 'y';", "export { a };", "export * from 'z';"] {
+        let e = run(&host, src).await.unwrap_err();
+        assert!(matches!(e, WorkflowError::Script(_)), "{e}");
+        assert!(e.to_string().contains("cannot use"), "{e}");
+    }
+    assert!(host.calls().is_empty());
+}
+
+#[tokio::test]
+async fn fatal_host_errors_abort_even_inside_parallel() {
+    let host = FakeHost::new(|_, _| Err(HostError::Fatal("db gone".into())));
+    let e = run(&host, "return await parallel([() => agent('x')]);")
+        .await
+        .unwrap_err();
+    assert!(e.to_string().contains("db gone"), "{e}");
+}
+
+#[tokio::test]
+async fn rerun_removes_stale_steps_and_resets_args() {
+    let (eng, store) = engine();
+    let mk = |args: Value| {
+        (
+            RunOptions {
+                run_id: Some("r".into()),
+                ..Default::default()
+            },
+            args,
+        )
+    };
+    let (o, a) = mk(json!(1));
+    eng.run_with(
+        o,
+        "await agent('a'); await agent('b');",
+        "wf",
+        a,
+        FakeHost::echo(),
+    )
+    .await
+    .unwrap();
+    let (o, a) = mk(json!(2));
+    eng.run_with(o, "await agent('a');", "wf", a, FakeHost::echo())
+        .await
+        .unwrap();
+    assert_eq!(store.list_workflow_steps("r").unwrap().len(), 1);
+    assert_eq!(store.get_workflow_run("r").unwrap().unwrap().args_json, "2");
+}
+
+#[tokio::test]
+async fn stall_restart_reports_running_before_the_host_restarts() {
+    let host = stalls(1);
+    run(&host, "await agent('x');").await.unwrap();
+    let st: Vec<_> = host.statuses().into_iter().map(|(_, s)| s).collect();
+    assert_eq!(st, ["running", "stalled", "running", "succeeded"]);
 }

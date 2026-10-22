@@ -9,10 +9,18 @@ use serde_json::Value;
 /// Boxed future returned by [`WorkflowHost`] methods (keeps the trait object-safe).
 pub type BoxFut<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-/// A host-side failure of one step (spawn error, run failed, ...).
+/// A host-side failure of one step.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{0}")]
-pub struct HostError(pub String);
+pub enum HostError {
+    /// This step failed (spawn error, run failed, ...). `agent()` rejects; inside
+    /// `parallel()` / `pipeline(items, fn)` the slot becomes `null`.
+    #[error("{0}")]
+    Failed(String),
+    /// The host is broken (store gone, shutting down, ...). Always aborts the script,
+    /// even inside `parallel()`.
+    #[error("{0}")]
+    Fatal(String),
+}
 
 /// One `agent()` call, as handed to the host.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,6 +64,14 @@ pub struct StepEvent {
 
 /// What the engine needs from the supervisor. All methods are called from the engine's
 /// task; implementations must be cheap to call concurrently.
+///
+/// # Cancellation contract
+///
+/// The engine cancels a step by **dropping** the future returned by `spawn_and_wait` or
+/// `restart`. That happens when the script finishes (returns or throws) with agents still
+/// in flight, when the run is cancelled, and when `max_duration` passes. Dropping the
+/// future must cancel the underlying run (kill the process, release the account lease);
+/// the engine marks such steps `cancelled` in `workflow_steps`.
 pub trait WorkflowHost: Send + Sync {
     /// Spawns a run for the step and waits for its final result.
     fn spawn_and_wait<'a>(

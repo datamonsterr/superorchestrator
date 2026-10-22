@@ -7,6 +7,8 @@ pub enum WorkflowError {
     Script(String),
     #[error("workflow cancelled")]
     Cancelled,
+    #[error("workflow exceeded its maximum duration")]
+    Timeout,
     #[error("saved workflow not found: {0}")]
     NotFound(String),
     #[error("{0}")]

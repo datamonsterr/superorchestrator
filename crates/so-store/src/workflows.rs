@@ -100,6 +100,22 @@ impl Store {
         Ok(())
     }
 
+    /// Puts a finished run back to `running` for a re-run: new args, no finish time.
+    pub fn reset_workflow_run(&self, id: &str, args_json: &str) -> Result<()> {
+        let n = self.conn().execute(
+            "UPDATE workflow_runs SET state = 'running', args_json = ?2, finished_at = NULL \
+             WHERE id = ?1",
+            params![id, args_json],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound {
+                entity: "workflow run",
+                id: id.into(),
+            });
+        }
+        Ok(())
+    }
+
     pub fn get_workflow_run(&self, id: &str) -> Result<Option<WorkflowRunRow>> {
         let conn = self.conn();
         let mut st = conn.prepare(&format!("SELECT {COLS} FROM workflow_runs WHERE id = ?1"))?;
@@ -182,6 +198,34 @@ impl Store {
             });
         }
         Ok(())
+    }
+
+    /// Marks steps still `running`, `waiting` or `stalled` as `cancelled`; returns them
+    /// (as they were before) so callers can report the change.
+    pub fn cancel_open_workflow_steps(
+        &self,
+        workflow_run_id: &str,
+        finished_at: DateTime<Utc>,
+    ) -> Result<Vec<WorkflowStepRow>> {
+        let open: Vec<WorkflowStepRow> = self
+            .list_workflow_steps(workflow_run_id)?
+            .into_iter()
+            .filter(|s| matches!(s.state.as_str(), "running" | "waiting" | "stalled"))
+            .collect();
+        self.conn().execute(
+            "UPDATE workflow_steps SET state = 'cancelled', finished_at = ?2 \
+             WHERE workflow_run_id = ?1 AND state IN ('running','waiting','stalled')",
+            params![workflow_run_id, ts_to_sql(&finished_at)],
+        )?;
+        Ok(open)
+    }
+
+    /// Removes steps with `step_index >= from` (leftovers of an earlier, longer run).
+    pub fn delete_workflow_steps_from(&self, workflow_run_id: &str, from: i64) -> Result<usize> {
+        Ok(self.conn().execute(
+            "DELETE FROM workflow_steps WHERE workflow_run_id = ?1 AND step_index >= ?2",
+            params![workflow_run_id, from],
+        )?)
     }
 
     /// Ordered by step index.
@@ -282,6 +326,28 @@ mod tests {
         assert_eq!(steps[0].phase.as_deref(), Some("plan"));
         assert!(steps[0].finished_at.is_some());
         assert_eq!(steps[1].state, "running");
+        s.insert_workflow_step(&mk(2)).unwrap();
+        let open = s
+            .cancel_open_workflow_steps(&w.id, crate::codec::now())
+            .unwrap();
+        assert_eq!(open.len(), 2);
+        let steps = s.list_workflow_steps(&w.id).unwrap();
+        assert_eq!(steps[0].state, "succeeded");
+        assert!(
+            steps[1..]
+                .iter()
+                .all(|x| x.state == "cancelled" && x.finished_at.is_some())
+        );
+        assert_eq!(s.delete_workflow_steps_from(&w.id, 1).unwrap(), 2);
+        assert_eq!(s.list_workflow_steps(&w.id).unwrap().len(), 1);
+        s.update_workflow_run_state(&w.id, "failed", Some(crate::codec::now()))
+            .unwrap();
+        s.reset_workflow_run(&w.id, "[1]").unwrap();
+        let r = s.get_workflow_run(&w.id).unwrap().unwrap();
+        assert_eq!(
+            (r.state.as_str(), r.args_json.as_str(), r.finished_at),
+            ("running", "[1]", None)
+        );
         assert!(matches!(
             s.update_workflow_step(&w.id, 9, "x", None, None),
             Err(StoreError::NotFound { .. })

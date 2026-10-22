@@ -159,6 +159,7 @@ pub struct WorkflowCacheRow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+/// `state` is `running`, `succeeded`, `failed` or `cancelled`.
 pub struct WorkflowRunRow {
     pub id: String,
     pub name: String,
@@ -177,7 +178,7 @@ pub struct WorkflowStepRow {
     pub phase: Option<String>,
     pub prompt_hash: String,
     pub run_id: Option<String>,
-    /// `running`, `waiting`, `succeeded`, `failed` or `cached`.
+    /// `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`.
     pub state: String,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
