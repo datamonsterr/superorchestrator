@@ -40,3 +40,14 @@ unsafe_code = "forbid"
 [workspace.lints.clippy]
 unwrap_used = "warn"
 dbg_macro = "warn"
+
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false
