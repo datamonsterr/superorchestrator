@@ -126,7 +126,7 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
 
 /// The login command for an account as `{ command, cli, note }`; `cli` is the
 /// `superorchestrator account login` form.
-fn login_json(account: &AccountFile, host: &HostEnv) -> Result<Value> {
+pub(crate) fn login_json(account: &AccountFile, host: &HostEnv) -> Result<Value> {
     let plan = manage::login_command(account, host, stdin_is_tty())?;
     let env: Vec<String> = plan.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
     let command = if env.is_empty() {
@@ -141,7 +141,11 @@ fn login_json(account: &AccountFile, host: &HostEnv) -> Result<Value> {
     }))
 }
 
-fn write_login_hint(w: &mut dyn Write, login: &Value, via_cli: bool) -> std::io::Result<()> {
+pub(crate) fn write_login_hint(
+    w: &mut dyn Write,
+    login: &Value,
+    via_cli: bool,
+) -> std::io::Result<()> {
     let key = if via_cli { "cli" } else { "command" };
     if let Some(c) = login[key].as_str() {
         writeln!(w, "to sign in, run: {c}")?;

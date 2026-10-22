@@ -53,6 +53,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     };
     let ok = |r: Result<()>| r.map(|()| ExitCode::SUCCESS);
     match command {
+        Command::Setup(a) => cmd::setup::run(&ctx, a),
         Command::Init => ok(cmd::init::run(&ctx)),
         Command::Config(c) => cmd::config::run(&ctx, c),
         Command::Account(a) => cmd::account::run(&ctx, a),

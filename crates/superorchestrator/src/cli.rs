@@ -9,7 +9,8 @@ use clap::{ArgGroup, Args, Parser, Subcommand};
 #[command(
     name = "superorchestrator",
     version,
-    about = "Delegate coding work across harnesses and accounts"
+    about = "Delegate coding work across harnesses and accounts",
+    after_help = "Get started: superorchestrator setup"
 )]
 pub struct Cli {
     /// Config directory (default: $SUPERORCHESTRATOR_CONFIG_DIR, else the XDG config dir).
@@ -27,25 +28,15 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
+    /// Guided first-run setup: config, accounts, sign-in and install
+    Setup(SetupArgs),
     /// Create the config dir, seed config, choices and catalog
     Init,
-    /// Register the MCP server with Claude Code and other harnesses
-    Install(InstallArgs),
-    /// Remove what `install` registered
-    Uninstall(UninstallArgs),
-    /// Check binaries, config, database, socket, UI port and sign-ins
-    Doctor,
     /// Show accounts, headroom and supervisor state
     Status,
     /// Manage accounts
     #[command(subcommand)]
     Account(AccountCmd),
-    /// Manage custom agents
-    #[command(subcommand)]
-    Agent(AgentCmd),
-    /// Manage the model catalog
-    #[command(subcommand)]
-    Models(ModelsCmd),
     /// Route a task to a choice, or evaluate the router
     Route(RouteArgs),
     /// Inspect and control runs
@@ -53,25 +44,62 @@ pub enum Command {
     Runs(RunsCmd),
     /// Attach to a run's native session
     Join(JoinArgs),
-    /// Manage run worktrees
-    #[command(subcommand)]
-    Worktrees(WorktreesCmd),
+    /// Start the web UI
+    Ui(UiArgs),
     /// Run and inspect workflows
     #[command(subcommand)]
     Workflow(WorkflowCmd),
+    /// Manage custom agents
+    #[command(subcommand)]
+    Agent(AgentCmd),
+    /// Manage the model catalog
+    #[command(subcommand)]
+    Models(ModelsCmd),
     /// Read and write config.toml
     #[command(subcommand)]
     Config(ConfigCmd),
-    /// Start the web UI
-    Ui(UiArgs),
-    /// Run the supervisor
-    Daemon(DaemonArgs),
-    /// Launch an account's harness (used by wrappers)
-    Exec(ExecArgs),
-    /// Run the MCP server on stdio
-    Mcp(McpArgs),
+    /// Check binaries, config, database, socket, UI port and sign-ins
+    Doctor,
+    /// Register the MCP server with Claude Code and other harnesses
+    Install(InstallArgs),
+    /// Remove what `install` registered
+    Uninstall(UninstallArgs),
     /// Move from the legacy setup
     Migrate(MigrateArgs),
+    /// Manage run worktrees
+    #[command(subcommand)]
+    Worktrees(WorktreesCmd),
+    /// Run the supervisor
+    #[command(hide = true)]
+    Daemon(DaemonArgs),
+    /// Launch an account's harness (used by wrappers)
+    #[command(hide = true)]
+    Exec(ExecArgs),
+    /// Run the MCP server on stdio
+    #[command(hide = true)]
+    Mcp(McpArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct SetupArgs {
+    /// Codex accounts to add (default: 1 when there is none yet)
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
+    pub codex: Option<u32>,
+    /// Claude accounts to add (default: 0; claude is kept for the orchestrator)
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
+    pub claude: Option<u32>,
+    /// OpenCode accounts to add (default: 1 when there is none yet)
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
+    pub opencode: Option<u32>,
+    /// Antigravity accounts to add (default: 1 when there is none yet)
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
+    pub agy: Option<u32>,
+    /// Do not sign in to the new accounts
+    #[arg(long)]
+    pub no_login: bool,
+    /// Do not register the MCP server and skill
+    #[arg(long)]
+    pub no_install: bool,
 }
 
 #[derive(Args, Debug)]
