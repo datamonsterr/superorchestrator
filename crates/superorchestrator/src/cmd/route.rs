@@ -26,9 +26,10 @@ pub fn run(ctx: &Ctx, args: RouteArgs) -> Result<ExitCode> {
             min_accuracy,
         }) => runtime()?.block_on(run_eval(ctx, cases, require_live, min_accuracy)),
         None => {
-            let task = args
-                .task
-                .ok_or_else(|| CliError::new(USAGE, "route needs a task: route \"<task>\""))?;
+            if args.task.is_empty() {
+                return Err(CliError::new(USAGE, "route needs a task: route <task>").into());
+            }
+            let task = args.task.join(" ");
             runtime()?
                 .block_on(route(ctx, task, args.role, args.explain))
                 .map(|()| ExitCode::SUCCESS)

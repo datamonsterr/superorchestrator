@@ -65,13 +65,18 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
                 "added account {} ({}) at {}",
                 account.name, account.harness, account.home
             )?;
-            write_login_hint(w, &login)
+            // codex and opencode sign in through `account login`; claude and agy
+            // sign in inside their wrapper, which `account login` cannot drive
+            // without a terminal.
+            let via_cli = matches!(account.harness, Harness::Codex | Harness::Opencode);
+            write_login_hint(w, &login, via_cli)
         },
     )?;
     Ok(ExitCode::SUCCESS)
 }
 
-/// The login command for an account as `{ command, note }`.
+/// The login command for an account as `{ command, cli, note }`; `cli` is the
+/// `superorchestrator account login` form.
 fn login_json(account: &AccountFile, host: &HostEnv) -> Result<Value> {
     let plan = manage::login_command(account, host, stdin_is_tty())?;
     let env: Vec<String> = plan.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
@@ -80,11 +85,16 @@ fn login_json(account: &AccountFile, host: &HostEnv) -> Result<Value> {
     } else {
         format!("{} {}", env.join(" "), plan.argv.join(" "))
     };
-    Ok(json!({ "command": command, "note": plan.note }))
+    Ok(json!({
+        "command": command,
+        "cli": format!("superorchestrator account login {}", account.name),
+        "note": plan.note,
+    }))
 }
 
-fn write_login_hint(w: &mut dyn Write, login: &Value) -> std::io::Result<()> {
-    if let Some(c) = login["command"].as_str() {
+fn write_login_hint(w: &mut dyn Write, login: &Value, via_cli: bool) -> std::io::Result<()> {
+    let key = if via_cli { "cli" } else { "command" };
+    if let Some(c) = login[key].as_str() {
         writeln!(w, "to sign in, run: {c}")?;
     }
     if let Some(n) = login["note"].as_str() {
@@ -197,7 +207,7 @@ fn login(ctx: &Ctx, name: &str) -> Result<ExitCode> {
     if !runnable {
         let login = login_json(&account, &host)?;
         ctx.emit(&json!({ "ok": true, "name": name, "login": login }), |w| {
-            write_login_hint(w, &login)
+            write_login_hint(w, &login, false)
         })?;
         return Ok(ExitCode::SUCCESS);
     }

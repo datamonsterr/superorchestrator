@@ -34,6 +34,42 @@ fn setup() -> Env {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn route_accepts_an_unquoted_multi_word_task() {
+    let e = setup();
+    let host = HostEnv {
+        home: e.home.clone(),
+        path_var: Some("/usr/bin:/bin".into()),
+        platform: Platform::current(),
+    };
+    let config = Config::load(&e.paths()).unwrap();
+    let opts = SupervisorOptions::new(e.paths(), config, e.tmp.path().join("so.sock"))
+        .with_host(host)
+        .with_idle_exit(Duration::from_secs(600))
+        .with_setup(default_handlers);
+    let sup = Supervisor::start(opts).await.unwrap();
+
+    let mut cmd = e.cmd();
+    cmd.args(["route", "--json", "fix", "a", "typo", "in", "README"]);
+    let out = tokio::task::spawn_blocking(move || cmd.output().unwrap())
+        .await
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["choice_id"].is_string(), "{v}");
+    sup.shutdown().await;
+}
+
+#[test]
+fn route_without_a_task_is_a_usage_error() {
+    let e = setup();
+    e.cmd().arg("route").assert().code(2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn route_json_goes_through_the_supervisor() {
     let e = setup();
     let host = HostEnv {

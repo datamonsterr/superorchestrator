@@ -31,7 +31,10 @@ fn account_add_writes_files_and_prints_login_command() {
         .success();
     let s = stdout(&out);
     assert!(s.contains("login"), "{s}");
-    assert!(s.contains("CODEX_HOME="), "{s}");
+    assert!(
+        s.contains("superorchestrator account login codex-acc2"),
+        "{s}"
+    );
     assert!(e.cfg.join("accounts/codex-acc2.toml").is_file());
     assert!(e.home.join(".codex-acc2").is_dir());
     assert!(e.home.join(".local/bin/codex-acc2").is_file());
@@ -39,6 +42,49 @@ fn account_add_writes_files_and_prints_login_command() {
         .args(["account", "add", "nope", "--name", "x-acc"])
         .assert()
         .failure();
+}
+
+#[test]
+fn account_add_hints_account_login_for_codex_and_wrapper_for_claude() {
+    let e = Env::new();
+    e.init();
+    e.script("codex", "exit 0");
+    e.script("claude", "exit 0");
+    let out = e
+        .cmd()
+        .args(["account", "add", "codex", "--name", "codex-acc2"])
+        .assert()
+        .success();
+    let s = stdout(&out);
+    assert!(
+        s.contains("to sign in, run: superorchestrator account login codex-acc2"),
+        "{s}"
+    );
+    let out = e
+        .cmd()
+        .args(["--json", "account", "add", "codex", "--name", "codex-acc3"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(
+        v["login"]["cli"],
+        "superorchestrator account login codex-acc3"
+    );
+    assert!(
+        v["login"]["command"]
+            .as_str()
+            .unwrap()
+            .contains("CODEX_HOME="),
+        "{v}"
+    );
+    let out = e
+        .cmd()
+        .args(["account", "add", "claude", "--name", "claude-acc2"])
+        .assert()
+        .success();
+    let s = stdout(&out);
+    assert!(s.contains("to sign in, run: claude-acc2"), "{s}");
+    assert!(s.contains("note: run `/login`"), "{s}");
 }
 
 #[test]

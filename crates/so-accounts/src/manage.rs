@@ -6,10 +6,10 @@ use std::path::{Path, PathBuf};
 
 use so_core::{AccountFile, Config, Harness, Paths, Platform};
 
-use crate::env::build_launch_vars;
+use crate::env::{build_launch_vars, resolve_binary};
 use crate::error::{AccountsError, Result};
 use crate::host::{HostEnv, canon};
-use crate::wrapper::{remove_wrapper, write_wrapper};
+use crate::wrapper::{is_managed, remove_wrapper, write_wrapper};
 
 /// Command name wrappers `exec` into.
 pub const SELF_EXE: &str = "superorchestrator";
@@ -107,6 +107,18 @@ fn ensure_new(paths: &Paths, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Refuses a name that resolves on the host's PATH to a file that is not one of
+/// our wrappers: the new wrapper would shadow that command.
+fn ensure_no_shadow(host: &HostEnv, name: &str) -> Result<()> {
+    match resolve_binary(name, host.path_var.as_deref()) {
+        Ok(path) if !is_managed(&path) => Err(AccountsError::ShadowsCommand {
+            name: name.to_string(),
+            path,
+        }),
+        _ => Ok(()),
+    }
+}
+
 /// Creates the credential home (agy: with `.gemini/`, mode 0700), the account
 /// file and the wrapper. The home defaults to `~/.<name>`.
 pub fn add(
@@ -120,6 +132,7 @@ pub fn add(
     let home_spec = home.map_or_else(|| format!("~/.{name}"), str::to_string);
     let account = AccountFile::new(name, harness, &home_spec, harness.as_str())?;
     ensure_new(paths, name)?;
+    ensure_no_shadow(host, name)?;
     check_single_agy(paths, host, name, harness)?;
     let dir = host.expand(&home_spec)?;
     create_private_dir(&if harness == Harness::Agy {
@@ -141,6 +154,7 @@ pub fn import(
 ) -> Result<AccountFile> {
     let account = AccountFile::new(name, harness, home, harness.as_str())?;
     ensure_new(paths, name)?;
+    ensure_no_shadow(host, name)?;
     check_single_agy(paths, host, name, harness)?;
     let dir = host.expand(home)?;
     let must_exist = if harness == Harness::Agy {
@@ -375,6 +389,32 @@ mod tests {
         let mut f = fx();
         f.host = host(f.d.path(), Platform::MacOs);
         f
+    }
+
+    #[test]
+    fn add_and_import_refuse_a_name_that_shadows_a_command() {
+        let f = fx();
+        let real = crate::testutil::stub_bin(f.d.path(), "ls");
+        let err = add(&f.paths, &f.cfg, &f.host, Harness::Codex, "ls", None).unwrap_err();
+        let msg = err.to_string();
+        assert!(matches!(err, AccountsError::ShadowsCommand { .. }), "{msg}");
+        assert!(msg.contains(&real.display().to_string()), "{msg}");
+        assert!(msg.contains("pick another name"), "{msg}");
+        assert!(!f.paths.account_file("ls").exists());
+        std::fs::create_dir_all(f.d.path().join("h")).unwrap();
+        let err = import(&f.paths, &f.cfg, &f.host, "ls", Harness::Codex, "~/h").unwrap_err();
+        assert!(matches!(err, AccountsError::ShadowsCommand { .. }));
+    }
+
+    #[test]
+    fn our_own_wrapper_on_path_is_not_a_shadow() {
+        let mut f = fx();
+        f.cfg.accounts.wrapper_dir = "~/bin".into();
+        add(&f.paths, &f.cfg, &f.host, Harness::Codex, "work", None).unwrap();
+        assert!(is_managed(&f.d.path().join("bin/work")));
+        // Re-adding after removing only the toml must not trip the check.
+        std::fs::remove_file(f.paths.account_file("work")).unwrap();
+        add(&f.paths, &f.cfg, &f.host, Harness::Codex, "work", None).unwrap();
     }
 
     #[test]

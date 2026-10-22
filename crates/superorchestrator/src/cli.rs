@@ -203,8 +203,9 @@ pub enum ModelsCmd {
 #[derive(Args, Debug)]
 #[command(args_conflicts_with_subcommands = true)]
 pub struct RouteArgs {
-    /// Task text to route
-    pub task: Option<String>,
+    /// Task text to route (several words need no quotes)
+    #[arg(num_args = 1.., value_name = "TASK")]
+    pub task: Vec<String>,
     #[arg(long)]
     pub role: Option<String>,
     #[arg(long)]

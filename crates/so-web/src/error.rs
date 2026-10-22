@@ -215,7 +215,8 @@ impl From<AccountsError> for ApiError {
             | AccountsError::BinaryNotFound(_)
             | AccountsError::HomeMissing(_)
             | AccountsError::InvalidName(_)
-            | AccountsError::UnsafePurge { .. } => Self::invalid(e.to_string()),
+            | AccountsError::UnsafePurge { .. }
+            | AccountsError::ShadowsCommand { .. } => Self::invalid(e.to_string()),
         }
     }
 }
