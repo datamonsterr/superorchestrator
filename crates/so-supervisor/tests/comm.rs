@@ -13,11 +13,12 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use so_accounts::HostEnv;
 use so_core::proto::{
-    AckResult, AskParentParams, AskParentResult, ForkParams, METHOD_ACCEPT_RUN, METHOD_ASK_PARENT,
-    METHOD_CANCEL_AGENT, METHOD_FORK_AGENT, METHOD_GET_RUN, METHOD_READ_MESSAGES,
-    METHOD_REJECT_RUN, METHOD_REPORT_PROGRESS, METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT,
-    METHOD_WAIT_AGENT, ReadMessagesResult, RejectParams, ReportProgressParams, RunRef, RunView,
-    SendMessageParams, SpawnParams, SpawnResult, WaitParams, WaitResult,
+    AcceptParams, AcceptResult, AckResult, AskParentParams, AskParentResult, ForkParams,
+    GetRunParams, INVALID_REQUEST, METHOD_ACCEPT_RUN, METHOD_ASK_PARENT, METHOD_CANCEL_AGENT,
+    METHOD_FORK_AGENT, METHOD_GET_RUN, METHOD_READ_MESSAGES, METHOD_REJECT_RUN,
+    METHOD_REPORT_PROGRESS, METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT,
+    ReadMessagesResult, RejectParams, ReportProgressParams, RunRef, RunView, SendMessageParams,
+    SpawnParams, SpawnResult, WaitParams, WaitResult,
 };
 use so_core::{
     Config, EventType, Harness, Isolation, MessageKind, Paths, Platform, RunState, new_id,
@@ -1860,5 +1861,585 @@ async fn a_cancel_during_the_gate_teardown_leaves_a_cancelled_attempt() {
     assert_eq!(attempts.len(), 1);
     assert_eq!(attempts[0].outcome.as_deref(), Some("cancelled"));
     assert_eq!(view(&c, &id).await.state, RunState::Cancelled);
+    h.shutdown().await;
+}
+
+// ------------------------------------------------------------ landing (accept merge)
+
+/// A fake-harness step that writes `content` to `file` in the run's directory and commits it.
+fn write_step(file: &str, content: &str, commit: bool) -> Value {
+    let mut cmd = format!("printf '%s' '{content}' > {file}");
+    if commit {
+        cmd.push_str(&format!(
+            " && git add {file} && git -c user.name=t -c user.email=t@e commit -q -m work"
+        ));
+    }
+    json!({"shell": cmd})
+}
+
+fn commit_in(dir: &Path, file: &str, content: &str) {
+    std::fs::write(dir.join(file), content).unwrap();
+    git(dir, &["add", file]);
+    git(
+        dir,
+        &[
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@e",
+            "commit",
+            "-q",
+            "-m",
+            file,
+        ],
+    );
+}
+
+/// A worktree run that executed `steps` and waits at the review gate.
+async fn gated(env: &Env, c: &SupervisorClient, steps: &[Value], name: &str) -> RunView {
+    env.simple("claude-a", 2, &ok_script(steps));
+    let mut p = env.params("claude-a");
+    p.review = true;
+    p.name = Some(name.into());
+    p.isolation = Some(Isolation::Worktree);
+    let id = spawn(c, p).await;
+    wait_state(c, &id, RunState::PendingReview).await
+}
+
+async fn accept(c: &SupervisorClient, run: &str, merge: bool) -> Result<AcceptResult, ClientError> {
+    c.call(
+        METHOD_ACCEPT_RUN,
+        AcceptParams {
+            run: run.into(),
+            merge,
+        },
+    )
+    .await
+}
+
+fn rpc_message(e: ClientError) -> String {
+    match e {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, INVALID_REQUEST);
+            r.message
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn accept_merge_fast_forwards_and_removes_the_worktree() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "feature").await;
+    let (wt, branch) = (v.worktree.clone().unwrap(), v.branch.clone().unwrap());
+    // Untracked files in the base checkout do not block a merge.
+    std::fs::write(env.repo.join("scratch.txt"), "x").unwrap();
+    let before = git(&env.repo, &["rev-parse", "HEAD"]);
+    let r = accept(&c, &v.run_id, true).await.unwrap();
+    assert!(r.ok && r.merged && r.branch.is_none() && r.merge_command.is_none());
+    let v = wait_state(&c, &v.run_id, RunState::Succeeded).await;
+    assert_eq!(
+        std::fs::read_to_string(env.repo.join("b.txt")).unwrap(),
+        "b"
+    );
+    // Fast-forward: no merge commit.
+    assert_eq!(git(&env.repo, &["rev-parse", "HEAD~1"]), before);
+    assert!(!Path::new(&wt).exists());
+    assert!(git(&env.repo, &["branch", "--list", &branch]).is_empty());
+    assert_eq!(count(&v, EventType::WorktreeRemoved), 1);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_makes_a_merge_commit_when_the_base_moved() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "Add b").await;
+    commit_in(&env.repo, "c.txt", "c");
+    accept(&c, &v.run_id, true).await.unwrap();
+    wait_state(&c, &v.run_id, RunState::Succeeded).await;
+    let short = so_supervisor::runs::worktree::short_id(&v.run_id);
+    assert_eq!(
+        git(&env.repo, &["log", "-1", "--format=%s"]),
+        format!("merge: Add b ({short})")
+    );
+    assert_eq!(
+        git(&env.repo, &["rev-list", "--parents", "-n", "1", "HEAD"])
+            .split(' ')
+            .count(),
+        3
+    );
+    assert!(env.repo.join("b.txt").is_file() && env.repo.join("c.txt").is_file());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_conflict_is_aborted_and_the_run_stays_at_the_gate() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("a.txt", "from run", true)], "clash").await;
+    commit_in(&env.repo, "a.txt", "from main");
+    let head = git(&env.repo, &["rev-parse", "HEAD"]);
+    let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
+    assert!(
+        msg.contains(v.branch.as_deref().unwrap()) && msg.contains("a.txt"),
+        "{msg}"
+    );
+    assert_eq!(git(&env.repo, &["rev-parse", "HEAD"]), head);
+    assert!(git(&env.repo, &["status", "--porcelain"]).is_empty());
+    assert!(!env.repo.join(".git/MERGE_HEAD").exists());
+    assert_eq!(
+        std::fs::read_to_string(env.repo.join("a.txt")).unwrap(),
+        "from main"
+    );
+    assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
+    assert!(Path::new(v.worktree.as_deref().unwrap()).is_dir());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_refuses_a_dirty_base_checkout() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "dirty").await;
+    std::fs::write(env.repo.join("a.txt"), "edited").unwrap();
+    let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
+    assert!(msg.contains("uncommitted"), "{msg}");
+    assert!(!env.repo.join("b.txt").exists());
+    assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_refuses_another_branch() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "elsewhere").await;
+    git(&env.repo, &["checkout", "-q", "-b", "other"]);
+    let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
+    assert!(msg.contains("other") && msg.contains("main"), "{msg}");
+    assert!(!env.repo.join("b.txt").exists());
+    assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_refuses_uncommitted_work_in_the_run_worktree() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let steps = [
+        write_step("b.txt", "b", true),
+        write_step("loose.txt", "l", false),
+    ];
+    let v = gated(&env, &c, &steps, "loose").await;
+    let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
+    assert!(msg.contains("uncommitted"), "{msg}");
+    assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_is_a_noop_without_a_worktree() {
+    let env = Env::new();
+    env.simple("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = env.params("claude-a");
+    p.review = true;
+    let id = spawn(&c, p).await;
+    wait_state(&c, &id, RunState::PendingReview).await;
+    let r = accept(&c, &id, true).await.unwrap();
+    assert!(r.ok && !r.merged && r.branch.is_none());
+    assert!(r.note.unwrap().contains("nothing to merge"));
+    wait_state(&c, &id, RunState::Succeeded).await;
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_without_merge_says_how_to_merge_the_branch() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "manual").await;
+    let r = accept(&c, &v.run_id, false).await.unwrap();
+    let branch = v.branch.unwrap();
+    assert!(!r.merged);
+    assert_eq!(r.branch.as_deref(), Some(branch.as_str()));
+    let cmd = r.merge_command.unwrap();
+    assert!(
+        cmd.contains("merge") && cmd.contains(&branch) && cmd.contains(env.repo.to_str().unwrap()),
+        "{cmd}"
+    );
+    assert!(!env.repo.join("b.txt").exists());
+    h.shutdown().await;
+}
+
+async fn view_diff(c: &SupervisorClient, run: &str) -> RunView {
+    c.call(
+        METHOD_GET_RUN,
+        GetRunParams {
+            run: run.into(),
+            diff: true,
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn get_run_diff_shows_committed_uncommitted_and_untracked_changes() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let steps = [
+        write_step("b.txt", "committed", true),
+        write_step("a.txt", "edited", false),
+        write_step("new.txt", "fresh", false),
+    ];
+    let v = gated(&env, &c, &steps, "diffed").await;
+    assert!(v.diff.is_none(), "diff is opt-in");
+    let d = view_diff(&c, &v.run_id).await.diff.unwrap();
+    assert_eq!(d.branch, v.branch.unwrap());
+    assert_eq!(d.base, git(&env.repo, &["rev-parse", "HEAD"]));
+    assert!(!d.truncated);
+    for want in ["+committed", "+edited", "+fresh", "b.txt", "new.txt"] {
+        assert!(d.patch.contains(want), "{want} in {}", d.patch);
+    }
+    assert!(
+        d.stat.contains("b.txt") && d.stat.contains("new.txt (untracked)"),
+        "{}",
+        d.stat
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn get_run_diff_truncates_a_large_patch_at_64_kib() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let big = json!({"shell": "head -c 200000 /dev/zero | tr '\\0' a > big.txt && git add big.txt && git -c user.name=t -c user.email=t@e commit -q -m big"});
+    let v = gated(&env, &c, &[big], "big").await;
+    let d = view_diff(&c, &v.run_id).await.diff.unwrap();
+    assert!(d.truncated);
+    assert_eq!(d.patch.len(), 64 * 1024);
+    assert!(d.stat.contains("big.txt"));
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn get_run_diff_is_absent_without_a_worktree() {
+    let env = Env::new();
+    env.simple("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let id = spawn(&c, env.params("claude-a")).await;
+    wait_state(&c, &id, RunState::Succeeded).await;
+    assert!(view_diff(&c, &id).await.diff.is_none());
+    h.shutdown().await;
+}
+
+fn git_ignoring_status(dir: &Path, args: &[&str]) {
+    let _ = so_supervisor::runs::worktree::git_command(dir)
+        .args(args)
+        .output()
+        .unwrap();
+}
+
+#[tokio::test]
+async fn accept_merge_leaves_a_users_staged_merge_alone() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "inprogress").await;
+    git(&env.repo, &["checkout", "-q", "-b", "x"]);
+    commit_in(&env.repo, "a.txt", "from x");
+    git(&env.repo, &["checkout", "-q", "main"]);
+    commit_in(&env.repo, "a.txt", "from main");
+    git_ignoring_status(&env.repo, &["merge", "--no-edit", "x"]);
+    std::fs::write(env.repo.join("a.txt"), "resolved").unwrap();
+    git(&env.repo, &["add", "a.txt"]);
+    assert!(env.repo.join(".git/MERGE_HEAD").exists());
+    let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
+    assert!(
+        msg.contains("merge in progress") && msg.contains("first"),
+        "{msg}"
+    );
+    assert!(
+        env.repo.join(".git/MERGE_HEAD").exists(),
+        "the user's merge was aborted"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.repo.join("a.txt")).unwrap(),
+        "resolved"
+    );
+    assert_eq!(
+        git(&env.repo, &["diff", "--cached", "--name-only"]),
+        "a.txt"
+    );
+    assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_reports_a_failing_hook_and_leaves_the_base_clean() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "hooked").await;
+    commit_in(&env.repo, "c.txt", "c"); // forces a merge commit
+    let hook = env.repo.join(".git/hooks/pre-merge-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\necho 'no merges today' >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let head = git(&env.repo, &["rev-parse", "HEAD"]);
+    let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
+    assert!(
+        msg.contains("no merges today") && msg.contains("hook"),
+        "{msg}"
+    );
+    assert_eq!(git(&env.repo, &["rev-parse", "HEAD"]), head);
+    assert!(git(&env.repo, &["status", "--porcelain"]).is_empty());
+    assert!(!env.repo.join(".git/MERGE_HEAD").exists());
+    assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_maps_a_held_index_lock_to_a_retry_message() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "locked").await;
+    let lock = env.repo.join(".git/index.lock");
+    std::fs::write(&lock, "").unwrap();
+    let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
+    assert!(
+        msg.contains("another git operation is running") && msg.contains("try again"),
+        "{msg}"
+    );
+    assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
+    std::fs::remove_file(&lock).unwrap();
+    assert!(accept(&c, &v.run_id, true).await.unwrap().merged);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_of_a_run_started_on_a_detached_head_says_to_merge_by_hand() {
+    let env = Env::new();
+    git(&env.repo, &["checkout", "-q", "--detach"]);
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "detached").await;
+    let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
+    assert!(
+        msg.contains("started on a detached HEAD")
+            && msg.contains("merge")
+            && msg.contains(v.branch.as_deref().unwrap()),
+        "{msg}"
+    );
+    assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_and_reject_of_one_run_take_turns() {
+    let env = Env::new();
+    let resume = script(
+        &[expect("redo it")]
+            .into_iter()
+            .chain(turn())
+            .collect::<Vec<_>>(),
+    );
+    env.account(
+        "claude-a",
+        2,
+        &ok_script(&[write_step("b.txt", "b", true)]),
+        Some(&resume),
+        None,
+    );
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = env.params("claude-a");
+    p.review = true;
+    p.isolation = Some(Isolation::Worktree);
+    let id = spawn(&c, p).await;
+    wait_state(&c, &id, RunState::PendingReview).await;
+    let reject = c.call::<_, AckResult>(
+        METHOD_REJECT_RUN,
+        RejectParams {
+            run: id.clone(),
+            feedback: "redo it".into(),
+        },
+    );
+    let (r, a) = tokio::join!(reject, accept(&c, &id, true));
+    assert!(
+        r.is_ok() != a.is_ok(),
+        "exactly one wins: reject {r:?}, accept {a:?}"
+    );
+    if a.is_ok() {
+        wait_state(&c, &id, RunState::Succeeded).await;
+        assert!(env.repo.join("b.txt").is_file());
+    } else {
+        // The rejected run resumes and reaches the gate again, unmerged.
+        let v = loop {
+            let v = view(&c, &id).await;
+            if v.state == RunState::PendingReview && count(&v, EventType::AttemptStarted) == 2 {
+                break v;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        };
+        assert_eq!(count(&v, EventType::ReviewAccepted), 0);
+        assert!(!env.repo.join("b.txt").exists());
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn two_runs_accepted_into_one_repo_both_land() {
+    let env = Env::new();
+    env.simple(
+        "claude-a",
+        4,
+        &ok_script(&[write_step("one.txt", "1", true)]),
+    );
+    env.simple(
+        "claude-b",
+        4,
+        &ok_script(&[write_step("two.txt", "2", true)]),
+    );
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut ids = Vec::new();
+    for acct in ["claude-a", "claude-b"] {
+        let mut p = env.params(acct);
+        p.review = true;
+        p.isolation = Some(Isolation::Worktree);
+        ids.push(spawn(&c, p).await);
+    }
+    for id in &ids {
+        wait_state(&c, id, RunState::PendingReview).await;
+    }
+    let (a, b) = tokio::join!(accept(&c, &ids[0], true), accept(&c, &ids[1], true));
+    assert!(a.unwrap().merged && b.unwrap().merged);
+    assert!(env.repo.join("one.txt").is_file() && env.repo.join("two.txt").is_file());
+    assert!(git(&env.repo, &["status", "--porcelain"]).is_empty());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn get_run_diff_handles_binary_files_and_many_untracked_files() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let steps = [
+        json!({"shell": "printf 'a\\000b\\377' > blob.bin"}),
+        json!({"shell": "for i in $(seq 1 105); do echo x > u$i.txt; done"}),
+    ];
+    let v = gated(&env, &c, &steps, "many").await;
+    let d = view_diff(&c, &v.run_id).await.diff.unwrap();
+    assert!(d.error.is_none(), "{:?}", d.error);
+    assert!(d.stat.contains("(+6 more files)"), "{}", d.stat);
+    // blob.bin sorts before the u*.txt files, so its patch is within the first untracked ones.
+    assert!(d.patch.contains("Binary files"), "{}", d.patch);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn get_run_survives_a_diff_that_cannot_be_made() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("b.txt", "b", true)], "gone").await;
+    git(
+        &env.repo,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            v.worktree.as_deref().unwrap(),
+        ],
+    );
+    git(&env.repo, &["branch", "-D", v.branch.as_deref().unwrap()]);
+    let d = view_diff(&c, &v.run_id).await.diff.unwrap();
+    assert!(d.error.unwrap().contains("no longer exists"));
+    assert!(d.patch.is_empty());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn send_message_during_an_accept_merge_waits_for_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let resume = script(
+        &[expect("one more thing")]
+            .into_iter()
+            .chain(turn())
+            .collect::<Vec<_>>(),
+    );
+    env.account(
+        "claude-a",
+        2,
+        &ok_script(&[write_step("b.txt", "b", true)]),
+        Some(&resume),
+        None,
+    );
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = env.params("claude-a");
+    p.review = true;
+    p.isolation = Some(Isolation::Worktree);
+    let id = spawn(&c, p).await;
+    wait_state(&c, &id, RunState::PendingReview).await;
+    // A merge commit with a slow hook keeps the accept in flight for a moment.
+    commit_in(&env.repo, "c.txt", "c");
+    let hook = env.repo.join(".git/hooks/pre-merge-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\nsleep 2\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let acc = accept(&c, &id, true);
+    let msg = async {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        c.call::<_, AckResult>(
+            METHOD_SEND_MESSAGE,
+            SendMessageParams {
+                run: id.clone(),
+                text: "one more thing".into(),
+                kind: None,
+            },
+        )
+        .await
+    };
+    let (a, m) = tokio::join!(acc, msg);
+    assert!(
+        a.unwrap().merged,
+        "the accept must not lose its run to the message"
+    );
+    m.unwrap();
+    assert!(env.repo.join("b.txt").is_file());
+    // The message was handled after the accept: the resume comes after `review_accepted`.
+    let v = loop {
+        let v = view(&c, &id).await;
+        if count(&v, EventType::AttemptStarted) == 2 {
+            break v;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(count(&v, EventType::ReviewAccepted), 1);
+    let pos = |t: EventType| {
+        v.recent_events
+            .iter()
+            .rposition(|e| e.event_type == t)
+            .unwrap()
+    };
+    assert!(pos(EventType::ReviewAccepted) < pos(EventType::AttemptStarted));
     h.shutdown().await;
 }

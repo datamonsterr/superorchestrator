@@ -11,7 +11,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use so_core::proto::{AckResult, INVALID_REQUEST, RejectParams, RunRef};
+use so_core::proto::{AcceptParams, AcceptResult, AckResult, INVALID_REQUEST, RejectParams};
 use so_core::{EventType, MessageKind, RunState};
 use so_harness::RunControl;
 use so_store::{RunPatch, RunRow};
@@ -601,15 +601,41 @@ impl RunManager {
         Ok(row)
     }
 
-    /// `accept_run`: `pending_review -> succeeded`. The worktree is kept when the run made
-    /// changes (see `cleanup_worktree`); `worktrees prune` removes it later.
-    pub async fn accept_run(&self, ctx: &ConnCtx, r: RunRef) -> R<AckResult> {
-        let row = self.pending_review_run(ctx, &r.run).await?;
+    /// `accept_run`: `pending_review -> succeeded`. With `merge`, the run's branch is first
+    /// merged into the base checkout; a refused or conflicting merge leaves the run at the
+    /// gate. The worktree is kept when the run made changes that are not merged or pushed
+    /// (see `remove_accepted_worktree`); `worktrees prune` removes it later.
+    ///
+    /// The work runs in its own task, so a dropped request cannot leave a merge done and the
+    /// run still at the gate.
+    pub async fn accept_run(&self, ctx: &ConnCtx, p: AcceptParams) -> R<AcceptResult> {
+        let (this, ctx) = (self.clone(), ctx.clone());
+        tokio::spawn(async move { this.accept_run_inner(&ctx, p).await })
+            .await
+            .map_err(crate::dispatch::internal)?
+    }
+
+    async fn accept_run_inner(&self, ctx: &ConnCtx, p: AcceptParams) -> R<AcceptResult> {
+        let id = self.resolve_run(&p.run).await?.id;
+        // Accept and reject of one run take turns; whoever comes second sees the new state.
+        let _turn = self.lock_run(LockKind::Review, &id).await;
+        let row = self.pending_review_run(ctx, &id).await?;
+        let mut merged = None;
+        let mut note = None;
+        if p.merge {
+            merged = self.merge_run_branch(&row).await?;
+            note = Some(match merged {
+                Some(worktree::Merged::FastForward) => "merged by fast-forward".to_string(),
+                Some(worktree::Merged::MergeCommit) => "merged with a merge commit".to_string(),
+                None => "merge was requested but the run has no worktree branch (isolation none, or its untouched worktree was removed); nothing to merge".to_string(),
+            });
+        }
+        let merged = merged.is_some();
         self.emit(
             &row.session_id,
             Some(&row.id),
             EventType::ReviewAccepted,
-            json!({"actor": ctx.actor()}),
+            json!({"actor": ctx.actor(), "merged": merged}),
         )
         .await;
         let outcome = Outcome {
@@ -625,7 +651,82 @@ impl RunManager {
             return Err(rpc(INVALID_REQUEST, "the run changed state; try again"));
         }
         self.remove_accepted_worktree(&row.id).await;
-        Ok(AckResult { ok: true })
+        let mut result = AcceptResult {
+            ok: true,
+            merged,
+            branch: None,
+            merge_command: None,
+            note,
+        };
+        if !merged
+            && let (Some(branch), Some(repo)) = (row.branch.clone(), row.worktree_repo.clone())
+        {
+            let (r, b) = (std::path::PathBuf::from(&repo), branch.clone());
+            if self
+                .blocking(move || worktree::branch_exists(&r, &b))
+                .await
+                .unwrap_or(false)
+            {
+                result.merge_command = Some(worktree::merge_command(
+                    std::path::Path::new(&repo),
+                    &branch,
+                ));
+                result.branch = Some(branch);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Merges the run's branch into its base checkout, one merge per repository at a time.
+    /// `Ok(None)` when the run has no branch to merge; an error means nothing changed.
+    async fn merge_run_branch(&self, row: &RunRow) -> R<Option<worktree::Merged>> {
+        let (Some(branch), Some(repo), Some(base)) = (
+            row.branch.clone(),
+            row.worktree_repo.clone(),
+            row.worktree_base.clone(),
+        ) else {
+            return Ok(None);
+        };
+        let rid = row.id.clone();
+        let created = self
+            .db(move |s| s.first_event_of_type(&rid, &EventType::WorktreeCreated))
+            .await?;
+        let base_branch = match created.as_ref().and_then(|e| e.data.get("base_branch")) {
+            Some(Value::String(b)) => worktree::BaseBranch::Named(b.clone()),
+            Some(Value::Null) => worktree::BaseBranch::Detached,
+            _ => worktree::BaseBranch::Unknown,
+        };
+        let message = format!(
+            "merge: {} ({})",
+            commit_title(row.name.as_deref(), row.prompt.as_deref()),
+            worktree::short_id(&row.id)
+        );
+        let wt = row.worktree_path.clone().map(std::path::PathBuf::from);
+        let repo = std::path::PathBuf::from(repo);
+        let key = std::fs::canonicalize(&repo).unwrap_or_else(|_| repo.clone());
+        let _repo_turn = self.lock_run(LockKind::Repo, &key.to_string_lossy()).await;
+        if !self
+            .blocking({
+                let (repo, branch) = (repo.clone(), branch.clone());
+                move || worktree::branch_exists(&repo, &branch)
+            })
+            .await?
+        {
+            return Ok(None);
+        }
+        self.blocking(move || {
+            if let Some(wt) = wt.filter(|w| w.is_dir())
+                && let Some(dirty) = worktree::uncommitted(&wt)
+            {
+                return Err(format!(
+                    "the run's worktree {} has uncommitted changes (untracked files count): {dirty}; they would not be merged. Reject the run with feedback to commit them, then accept again",
+                    wt.display()
+                ));
+            }
+            worktree::merge_branch(&repo, &branch, &base_branch, &base, &message).map(Some)
+        })
+        .await?
+        .map_err(|e| rpc(INVALID_REQUEST, e))
     }
 
     /// `reject_run`: sends `feedback` on the run's native session (resuming it) and moves
@@ -637,7 +738,9 @@ impl RunManager {
                 "feedback must not be empty",
             ));
         }
-        let row = self.pending_review_run(ctx, &p.run).await?;
+        let id = self.resolve_run(&p.run).await?.id;
+        let _turn = self.lock_run(LockKind::Review, &id).await;
+        let row = self.pending_review_run(ctx, &id).await?;
         let _ = self
             .store_message(
                 &row.session_id,
@@ -704,9 +807,36 @@ impl RunManager {
     }
 }
 
+/// The run's name (or the first line of its prompt) for a merge commit: no control
+/// characters, at most 60 characters.
+fn commit_title(name: Option<&str>, prompt: Option<&str>) -> String {
+    let raw = name
+        .or_else(|| prompt.and_then(|p| p.lines().find(|l| !l.trim().is_empty())))
+        .unwrap_or_default();
+    let clean: String = raw.chars().filter(|c| !c.is_control()).take(60).collect();
+    let clean = clean.trim();
+    if clean.is_empty() {
+        "run".into()
+    } else {
+        clean.into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commit_titles_are_one_clean_short_line() {
+        assert_eq!(commit_title(Some("a\x1b[31mb\nc\td"), None), "a[31mbcd");
+        assert_eq!(commit_title(Some(&"x".repeat(100)), None).len(), 60);
+        assert_eq!(
+            commit_title(None, Some("\n  first line\nsecond")),
+            "first line"
+        );
+        assert_eq!(commit_title(Some("\x07"), None), "run");
+        assert_eq!(commit_title(None, None), "run");
+    }
 
     #[test]
     fn ci_green_only_when_every_check_is_ok() {

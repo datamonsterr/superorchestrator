@@ -81,6 +81,10 @@ async fn runs_list_show_and_join_print() {
         "{out}"
     );
 
+    // `--diff` is accepted; a run without a worktree has nothing to show.
+    let (out, ok) = cli(&e, &["runs", "show", prefix, "--diff"]).await;
+    assert!(ok && !out.contains("diff:"), "{out}");
+
     let (out, ok) = cli(&e, &["join", prefix]).await;
     assert!(ok);
     assert!(out.contains("claude-acc1 --resume "), "{out}");

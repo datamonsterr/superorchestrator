@@ -28,6 +28,16 @@ First release. Pending the `v0.1.0` tag.
 - `--help` hides the internal `exec`, `daemon` and `mcp` commands, lists the rest in order of
   use and ends with "Get started: superorchestrator setup". `init` points to `setup` first, and
   `install.sh` ends with the same hint.
+- Landing finished work: `accept_run` takes `merge: true` to merge the run's branch into the
+  checkout it was started from (fast-forward, else a `merge: <title> (<id>)` commit) and remove
+  the worktree. A dirty or different-branch base checkout, uncommitted work in the run's
+  worktree, or a conflict (aborted) fails the call and leaves the run at the review gate. The
+  result reports `merged`, and `branch` with the merge command when the work is not merged.
+- `get_run` takes `diff: true` to return a run's changes (`base`, `branch`, `stat`, `patch`, cut
+  at 64 KiB); `superorchestrator runs show <id> --diff` prints them.
+- The `run_workflow` tool description documents the script API (`agent` and its options,
+  `parallel`, `pipeline`, `phase`, `log`, `args`) with an example, and the MCP skill tells
+  orchestrators to review with `diff: true` and land with `merge: true`.
 - Two skills replace the single generated one: `use-superorchestrator-mcp` (delegation through
   the MCP tools, with the accounts, choices and agents lists) and `superorchestrator-cli` (a
   static guide to the command line). `install` writes both to `~/.claude/skills` and

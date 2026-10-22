@@ -77,6 +77,7 @@ impl From<RunView> for RunViewPublic {
             usage,
             worktree,
             branch,
+            diff: _,
             join_command: _,
             join_cwd: _,
             join_env: _,

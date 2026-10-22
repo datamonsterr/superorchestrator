@@ -280,7 +280,12 @@ pub enum RunsCmd {
         all: bool,
     },
     /// Show one run: state, recent events, result, usage and join command
-    Show { run: String },
+    Show {
+        run: String,
+        /// Also print what the run changed in its worktree (stat and patch)
+        #[arg(long)]
+        diff: bool,
+    },
     /// Follow a run's events (or a workflow's steps) until it finishes
     Watch(WatchArgs),
     /// Cancel a run and its subtree
