@@ -4,6 +4,7 @@
 pub mod client;
 pub mod dispatch;
 pub mod error;
+pub mod handlers;
 mod lines;
 pub mod lock;
 pub mod reconcile;
@@ -14,6 +15,7 @@ use so_core::{Config, Paths};
 pub use client::{ClientError, SupervisorClient, spawn_daemon_process};
 pub use dispatch::{ConnCtx, HandlerFuture, Notifier, Router};
 pub use error::{Result, SupervisorError};
+pub use handlers::{build_harnesses_view, default_handlers, register_harnesses};
 pub use lock::SupervisorLock;
 pub use reconcile::ReconcileHook;
 pub use server::{
@@ -27,7 +29,9 @@ pub use server::{
 pub async fn run_daemon(paths: Paths, config: Config, foreground: bool) -> Result<()> {
     let socket_path = Paths::socket_path()?;
     tracing::info!(foreground, socket = %socket_path.display(), "starting supervisor");
-    let opts = SupervisorOptions::new(paths, config, socket_path).with_signals();
+    let opts = SupervisorOptions::new(paths, config, socket_path)
+        .with_signals()
+        .with_setup(default_handlers);
     Supervisor::start(opts).await?.wait().await;
     Ok(())
 }

@@ -403,9 +403,11 @@ pub struct ForkParams {
 pub struct AccountView {
     pub name: String,
     pub harness: Harness,
-    pub signed_in: bool,
+    /// "signed_in", "signed_out" or "unknown" (auth-file check only).
+    pub signed_in: String,
     pub enabled: bool,
     pub cap: u32,
+    /// Slot-holding runs plus active interactive sessions.
     pub active_runs: u32,
     #[serde(default)]
     pub headroom: Vec<Headroom>,

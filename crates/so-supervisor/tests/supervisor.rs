@@ -701,3 +701,83 @@ async fn oversized_request_is_rejected_by_client() {
     assert_eq!(c.pending_calls(), 0);
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn list_harnesses_reports_accounts_load_and_choices() {
+    use so_core::proto::HarnessesView;
+    use so_core::{AccountFile, Choice};
+
+    let env = Env::new();
+    let home = env.dir.path().join("homes");
+    let mut a = AccountFile::new(
+        "alpha",
+        Harness::Codex,
+        &home.join("a").to_string_lossy(),
+        "codex",
+    )
+    .unwrap();
+    a.cap = 3;
+    a.save(&env.paths).unwrap();
+    std::fs::create_dir_all(home.join("a")).unwrap();
+    std::fs::write(home.join("a/auth.json"), "{}").unwrap();
+    let mut b = AccountFile::new(
+        "beta",
+        Harness::Codex,
+        &home.join("b").to_string_lossy(),
+        "codex",
+    )
+    .unwrap();
+    b.enabled = false;
+    b.save(&env.paths).unwrap();
+
+    let store = env.store();
+    let session = session_row();
+    store.insert_session(&session).unwrap();
+    let mut inter = session_row();
+    inter.kind = SessionKind::Interactive;
+    inter.account = Some("alpha".into());
+    store.insert_session(&inter).unwrap();
+
+    let mut config = Config::default();
+    for (id, enabled) in [("c1", true), ("c2", false)] {
+        config.choices.push(Choice {
+            id: id.into(),
+            harness: Harness::Codex,
+            model: "m".into(),
+            effort: None,
+            roles: vec!["code".into()],
+            description: String::new(),
+            enabled,
+        });
+    }
+    let opts = SupervisorOptions::new(env.paths.clone(), config, env.sock.clone())
+        .with_idle_exit(Duration::from_secs(600))
+        .with_lock_wait(Duration::ZERO)
+        .with_setup(so_supervisor::default_handlers);
+    let h = Supervisor::start(opts).await.unwrap();
+    let c = connect(&h).await;
+    hello(&c).await;
+    // After start: reconcile would otherwise end the orphaned running run.
+    let mut run = run_row(&session.id, RunState::Running, 0);
+    run.account = Some("alpha".into());
+    store.insert_run(&run).unwrap();
+    let v: HarnessesView = c.call("list_harnesses", json!({})).await.unwrap();
+
+    assert_eq!(v.accounts.len(), 2);
+    let alpha = &v.accounts[0];
+    assert_eq!(alpha.name, "alpha");
+    assert_eq!(alpha.cap, 3);
+    assert_eq!(alpha.signed_in, "signed_in");
+    assert_eq!(alpha.active_runs, 2);
+    assert!(alpha.enabled);
+    assert!(!alpha.headroom.is_empty());
+    assert_eq!(alpha.headroom[0].status, so_core::HeadroomStatus::Unknown);
+    let beta = &v.accounts[1];
+    assert_eq!(beta.name, "beta");
+    assert_eq!(beta.signed_in, "signed_out");
+    assert!(!beta.enabled);
+    assert_eq!(beta.active_runs, 0);
+    assert_eq!(v.choices.len(), 2);
+    assert!(v.choices.iter().any(|c| c.id == "c2" && !c.enabled));
+    h.shutdown().await;
+}
