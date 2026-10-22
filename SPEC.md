@@ -622,6 +622,7 @@ The default `min_confidence` and `min_margin` values are placeholders until `rou
 | `flags` | account, pool, until, reason |
 | `workflow_cache` | key_hash, workflow, result_json, created_at |
 | `workflow_runs` | id, name, session_id, state, args_json, started_at, finished_at |
+| `workflow_steps` | id, workflow_run_id, step_index, phase, prompt_hash, run_id, state, started_at, finished_at |
 
 Migrations are embedded and run on open. Each table has a schema version.
 
