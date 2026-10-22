@@ -695,6 +695,8 @@ impl RunManager {
         }
         self.inner.finished.send_modify(|n| *n += 1);
         if won {
+            // A slot may be free somewhere: queued runs may look for it again at once.
+            lock(&self.inner.reroute_at).clear();
             self.request_drain();
         }
         won

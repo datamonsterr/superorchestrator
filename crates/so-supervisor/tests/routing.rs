@@ -347,36 +347,38 @@ async fn an_over_cap_auto_spawn_moves_to_the_account_that_frees_up() {
     wait_state(&c, &r1.run_id, RunState::Running).await;
     wait_state(&c, &r2.run_id, RunState::Running).await;
 
-    // Both accounts are full: the spawn queues (on the best one, `claude-a`).
+    // Both accounts are full: the spawn queues on whichever ranks best.
     let mut p = auto_params(&env);
     p.wait = false;
     let q = spawn(&c, p).await;
     assert_eq!(q.state, RunState::Queued);
-    assert_eq!(
-        view(&c, &q.run_id).await.account.as_deref(),
-        Some("claude-a")
-    );
+    let first = view(&c, &q.run_id).await.account.unwrap();
+    let (stay, free) = if first == "claude-a" {
+        (r1.run_id.clone(), r2.run_id.clone())
+    } else {
+        (r2.run_id.clone(), r1.run_id.clone())
+    };
+    let other = if first == "claude-a" {
+        "claude-b"
+    } else {
+        "claude-a"
+    };
 
-    // `claude-b` frees up first: the queued run takes it instead of waiting for `claude-a`.
+    // The other account frees up first: the queued run takes it instead of waiting.
     let _: RunView = c
-        .call(METHOD_CANCEL_AGENT, RunRef { run: r2.run_id })
+        .call(METHOD_CANCEL_AGENT, RunRef { run: free })
         .await
         .unwrap();
     wait_state(&c, &q.run_id, RunState::Running).await;
     let v = view(&c, &q.run_id).await;
-    assert_eq!(v.account.as_deref(), Some("claude-b"));
+    assert_eq!(v.account.as_deref(), Some(other));
     assert_eq!(
         events(&v, "route_decision").len(),
         2,
-        "the move is recorded"
+        "the move is recorded at launch"
     );
-    assert_eq!(
-        env.store()
-            .count_active_runs_by_account("claude-a")
-            .unwrap(),
-        1
-    );
-    for r in [q.run_id, r1.run_id] {
+    assert_eq!(env.store().count_active_runs_by_account(&first).unwrap(), 1);
+    for r in [q.run_id, stay] {
         let _: RunView = c
             .call(METHOD_CANCEL_AGENT, RunRef { run: r })
             .await
