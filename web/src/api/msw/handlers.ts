@@ -136,24 +136,29 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
     http.post(`${B}/models/refresh`, () => HttpResponse.json(fx.models)),
 
     http.get(`${B}/worktrees`, () => HttpResponse.json(fx.worktrees)),
-    http.post(`${B}/worktrees/prune`, async ({ request }) => {
-      const b = (await request.json().catch(() => ({}))) as { dry_run?: boolean }
-      void b
-      return HttpResponse.json({ removed: fx.worktrees.filter((w) => w.orphaned).map((w) => w.path) })
-    }),
+    http.post(`${B}/worktrees/prune`, () => HttpResponse.json({ removed: fx.worktrees.filter((w) => w.orphaned).map((w) => w.run_id) })),
 
-    http.get(`${B}/agents`, () => HttpResponse.json({ agents: fx.agents.map(({ name, description }) => ({ name, description })) })),
+    http.get(`${B}/agents`, () => HttpResponse.json({ agents: fx.agentViews })),
     http.post(`${B}/agents`, async ({ request }) => {
-      const b = (await request.json()) as { name: string }
-      if (fx.agents.some((a) => a.name === b.name)) return apiError(409, -32602, `agent ${b.name} already exists`)
-      return HttpResponse.json({ ok: true, warnings: [] }, { status: 201 })
+      const b = (await request.json()) as { name: string; source: string }
+      if (fx.agents.some((a) => a.name === b.name)) return apiError(409, -32002, `agent \`${b.name}\` already exists`)
+      return agentWrite(b.source, 201)
     }),
     http.get(`${B}/agents/:name`, ({ params }) => {
       const a = fx.agents.find((x) => x.name === params.name)
-      return a ? HttpResponse.json(a) : apiError(404, -32003, `agent ${String(params.name)} not found`)
+      return a ? HttpResponse.json(a) : apiError(404, -32003, `no agent named \`${String(params.name)}\``)
     }),
-    http.put(`${B}/agents/:name`, () => HttpResponse.json({ ok: true, warnings: [] })),
-    http.delete(`${B}/agents/:name`, () => HttpResponse.json(ok)),
+    http.put(`${B}/agents/:name`, async ({ params, request }) => {
+      const a = fx.agents.find((x) => x.name === params.name)
+      if (!a) return apiError(404, -32003, `no agent named \`${String(params.name)}\``)
+      if (a.read_only) return apiError(422, -32602, `\`${a.name}\` is a read-only import; copy it to the config agents dir to edit it`)
+      return agentWrite(((await request.json()) as { source: string }).source)
+    }),
+    http.delete(`${B}/agents/:name`, ({ params }) => {
+      const a = fx.agents.find((x) => x.name === params.name)
+      if (a?.read_only) return apiError(422, -32602, `\`${a.name}\` is a read-only import; copy it to the config agents dir to remove it`)
+      return HttpResponse.json(ok)
+    }),
 
     http.get(`${B}/workflows`, () => HttpResponse.json(fx.workflows)),
     http.get(`${B}/workflows/runs`, ({ request }) => HttpResponse.json(paginate(fx.workflowRuns, new URL(request.url), 200))),
@@ -165,11 +170,20 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
 
     http.get(`${B}/config`, () => HttpResponse.json(fx.config)),
     http.patch(`${B}/config`, async ({ request }) => {
-      const p = (await request.json()) as Record<string, unknown>
-      return HttpResponse.json({ ...fx.config, ...p })
+      const p = (await request.json()) as Record<string, Record<string, unknown>>
+      const config: Record<string, unknown> = { ...fx.config.config }
+      for (const [k, v] of Object.entries(p)) config[k] = { ...(config[k] as object), ...v }
+      return HttpResponse.json({ ...fx.config, config, restart_required: 'ui' in p })
     }),
     http.post(`${B}/auth`, () => new HttpResponse(null, { status: 204 })),
   ]
+}
+
+/** Mirrors the server: the source needs frontmatter with a name and description. */
+function agentWrite(source: string, status = 200) {
+  if (!source.startsWith('---')) return apiError(422, -32602, 'the agent file must start with a `---` frontmatter block')
+  if (!/^description:/m.test(source)) return apiError(422, -32602, 'the frontmatter needs a `description`')
+  return HttpResponse.json({ ok: true, warnings: [] }, { status })
 }
 
 export const handlers = createHandlers()
