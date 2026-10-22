@@ -18,7 +18,11 @@ const str = (d: Record<string, unknown>, k: string): string | undefined => asStr
 
 /** Compares `(ts, id)` keys. */
 export function compareKeys(a: { ts: number; id: string }, b: { ts: number; id: string }): number {
-  return a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+  const byId = a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+  const an = Number.isNaN(a.ts)
+  const bn = Number.isNaN(b.ts)
+  if (an || bn) return an && bn ? byId : an ? -1 : 1 // an unparseable time sorts first, keeping the order total
+  return a.ts - b.ts || byId
 }
 
 export const eventMs = (ev: Event): number => Date.parse(ev.ts)

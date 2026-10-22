@@ -84,7 +84,9 @@ const SAFE = /^[A-Za-z0-9_@%+=:,./-]+$/
 /** POSIX single-quote escaping for display; `***` redactions stay readable. */
 export function shellQuote(arg: string): string {
   if (arg === '') return "''"
-  if (SAFE.test(arg)) return arg
+  // A leading dash would be read as an option (`cd -P`), so it is quoted; flags in argv keep their plain form.
+  if (SAFE.test(arg) && !arg.startsWith('-')) return arg
   return `'${arg.replace(/'/g, `'\\''`)}'`
 }
-export const joinCommand = (argv: readonly string[]) => argv.map(shellQuote).join(' ')
+const FLAG = /^--?[A-Za-z0-9][A-Za-z0-9_.-]*(=[A-Za-z0-9_@%+=:,./-]*)?$/
+export const joinCommand = (argv: readonly string[]) => argv.map((a) => (FLAG.test(a) ? a : shellQuote(a))).join(' ')

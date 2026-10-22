@@ -5,6 +5,7 @@ import { endpoints } from '@/api/endpoints'
 import { qk, usePollingInterval, useRun } from '@/api/queries'
 import type { Event, Page, TranscriptLine } from '@/api/types'
 import { compareKeys } from '../applyEvent'
+import { useTabActive } from './tabActive'
 
 const isSessionEvents = (key: readonly unknown[], sid: string) => key[0] === 'session' && key[1] === sid && key[2] === 'events'
 
@@ -33,7 +34,9 @@ export function useAllRunEvents(runId: string) {
   const qc = useQueryClient()
   const { sessionId } = useParams()
   const run = useRun(runId)
-  const refetchInterval = usePollingInterval()
+  const tabActive = useTabActive()
+  const polling = usePollingInterval()
+  const refetchInterval = tabActive ? polling : false
   const q = useQuery({
     queryKey: [...qk.runEvents(runId), 'all', sessionId ?? null],
     queryFn: async ({ signal }) => {
@@ -48,7 +51,6 @@ export function useAllRunEvents(runId: string) {
               queryKey: [...qk.sessionEvents(sessionId), cursor],
               queryFn: ({ signal: s }) => endpoints.listSessionEvents(sessionId, { after: cursor, limit: 1000 }, { signal: s }),
               staleTime: 0,
-              gcTime: Infinity,
             })
             signal.throwIfAborted()
             after = page.next_cursor
@@ -86,14 +88,24 @@ export function useAllRunEvents(runId: string) {
   // The run view changed (state and usage events invalidate it): new events probably exist.
   const seenUpdate = useRef(run.dataUpdatedAt)
   useEffect(() => {
-    if (run.dataUpdatedAt === seenUpdate.current) return
+    if (!tabActive || run.dataUpdatedAt === seenUpdate.current) return
     seenUpdate.current = run.dataUpdatedAt
     refresh()
-  }, [run.dataUpdatedAt, refresh])
+  }, [run.dataUpdatedAt, tabActive, refresh])
+
+  // Back on this tab after being away: events may have arrived meanwhile, so refresh once.
+  const wasActive = useRef(tabActive)
+  useEffect(() => {
+    if (tabActive && !wasActive.current) {
+      seenUpdate.current = run.dataUpdatedAt
+      refresh()
+    }
+    wasActive.current = tabActive
+  }, [tabActive, refresh, run.dataUpdatedAt])
 
   // Live events land in the session cache: refresh only when one of them belongs to this run.
   useEffect(() => {
-    if (!sessionId) return
+    if (!sessionId || !tabActive) return
     // Baseline: how many items each cached page already had, so only appended ones count.
     const counts = new Map<string, number>(
       qc.getQueriesData<Page<Event>>({ queryKey: qk.sessionEvents(sessionId) }).map(([k, d]) => [JSON.stringify(k), d?.items.length ?? 0]),
@@ -107,7 +119,7 @@ export function useAllRunEvents(runId: string) {
       counts.set(key, items.length)
       if (items.slice(prev).some((e) => e.run_id === runId)) refresh()
     })
-  }, [qc, sessionId, runId, refresh])
+  }, [qc, sessionId, runId, tabActive, refresh])
   return q
 }
 

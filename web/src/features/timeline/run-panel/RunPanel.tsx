@@ -15,6 +15,7 @@ import { JoinTab } from './JoinTab'
 import { ResultTab } from './ResultTab'
 import { RouteTab } from './RouteTab'
 import { RunActions } from './RunActions'
+import { TabActiveContext } from './tabActive'
 import { TranscriptTab } from './TranscriptTab'
 import { WorktreeTab } from './WorktreeTab'
 
@@ -55,11 +56,12 @@ function RunPanelBody({ runId }: { runId: string }) {
   const r = run.data
   // A tab mounts when first opened and then stays mounted (hidden), so Events and Transcript keep their filter,
   // search and scroll position. The join command is requested by the Join tab once and kept here.
+  const [selected, setSelected] = useState<TabId>('brief')
   const [visited, setVisited] = useState<ReadonlySet<TabId>>(new Set<TabId>(['brief']))
   const join = useJoinRun()
   const body = (id: TabId, node: ReactNode) => (
     <TabsContent key={id} value={id} forceMount className="h-full data-[state=inactive]:hidden">
-      {visited.has(id) && node}
+      {visited.has(id) && <TabActiveContext.Provider value={selected === id}>{node}</TabActiveContext.Provider>}
     </TabsContent>
   )
   return (
@@ -97,7 +99,14 @@ function RunPanelBody({ runId }: { runId: string }) {
       )}
       {r && (
         <>
-          <Tabs defaultValue="brief" onValueChange={(v) => setVisited((s) => (s.has(v as TabId) ? s : new Set(s).add(v as TabId)))} className="min-h-0 flex-1 gap-0">
+          <Tabs
+            value={selected}
+            onValueChange={(v) => {
+              setSelected(v as TabId)
+              setVisited((s) => (s.has(v as TabId) ? s : new Set(s).add(v as TabId)))
+            }}
+            className="min-h-0 flex-1 gap-0"
+          >
             <TabsList className="mx-4 mt-3 h-auto w-auto flex-wrap justify-start">
               {TABS.map(([id, label]) => (
                 <TabsTrigger key={id} value={id}>

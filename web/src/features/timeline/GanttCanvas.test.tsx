@@ -134,10 +134,10 @@ describe('GanttCanvas', () => {
     const capture = vi.fn()
     plot.setPointerCapture = capture
     fireEvent.pointerDown(plot, { button: 0, clientX: 400, pointerId: 1 })
-    fireEvent.pointerMove(plot, { clientX: 402, pointerId: 1 })
+    fireEvent.pointerMove(plot, { clientX: 402, pointerId: 1, buttons: 1 })
     expect(onViewportChange).not.toHaveBeenCalled() // below the 4 px threshold
     expect(capture).not.toHaveBeenCalled()
-    fireEvent.pointerMove(plot, { clientX: 300, pointerId: 1 })
+    fireEvent.pointerMove(plot, { clientX: 300, pointerId: 1, buttons: 1 })
     expect(capture).toHaveBeenCalledWith(1)
     fireEvent.pointerUp(plot, { pointerId: 1 })
     const v = onViewportChange.mock.calls.at(-1)![0] as Viewport
@@ -148,7 +148,7 @@ describe('GanttCanvas', () => {
     const { onViewportChange, onSelect } = setup()
     const plot = screen.getByTestId('gantt-plot')
     fireEvent.pointerDown(plot, { button: 0, clientX: 400, pointerId: 1 })
-    fireEvent.pointerMove(plot, { clientX: 300, pointerId: 1 })
+    fireEvent.pointerMove(plot, { clientX: 300, pointerId: 1, buttons: 1 })
     const calls = onViewportChange.mock.calls.length
     fireEvent[ending](plot, { pointerId: 1 })
     fireEvent.pointerMove(plot, { clientX: 200, pointerId: 1 }) // no button down any more
@@ -157,12 +157,23 @@ describe('GanttCanvas', () => {
     expect(onSelect).not.toHaveBeenCalled()
   })
 
+  it('ends the drag when a move arrives with no button pressed (released outside the window)', () => {
+    const { onViewportChange } = setup()
+    const plot = screen.getByTestId('gantt-plot')
+    fireEvent.pointerDown(plot, { button: 0, clientX: 400, pointerId: 1 })
+    fireEvent.pointerMove(plot, { clientX: 300, pointerId: 1, buttons: 1 })
+    const calls = onViewportChange.mock.calls.length
+    fireEvent.pointerMove(plot, { clientX: 200, pointerId: 1, buttons: 0 })
+    fireEvent.pointerMove(plot, { clientX: 100, pointerId: 1, buttons: 1 })
+    expect(onViewportChange.mock.calls.length).toBe(calls)
+  })
+
   it('a minimap drag also ends on pointercancel', () => {
     const { onViewportChange } = setup()
     const map = screen.getByTestId('minimap')
     map.getBoundingClientRect = () => ({ left: 0, top: 0, width: 952, height: 36, right: 952, bottom: 36, x: 0, y: 0, toJSON() {} })
     fireEvent.pointerDown(map, { button: 0, clientX: 100, pointerId: 2 })
-    fireEvent.pointerMove(map, { clientX: 200, pointerId: 2 })
+    fireEvent.pointerMove(map, { clientX: 200, pointerId: 2, buttons: 1 })
     const calls = onViewportChange.mock.calls.length
     expect(calls).toBeGreaterThan(0)
     fireEvent.pointerCancel(map, { pointerId: 2 })

@@ -312,3 +312,40 @@ describe('TimelinePage live data and robustness', () => {
     expect(screen.getByTestId('where')).toHaveTextContent(/^\/sessions\/sess-1$/)
   })
 })
+
+describe('TimelinePage cache lifetime and hidden tabs', () => {
+  const live = (id: string, run: string): Event => ({ id, session_id: 'sess-1', run_id: run, ts: new Date(Date.UTC(2026, 0, 1, 12, 25)).toISOString(), type: 'nudge_sent', data: {} })
+  const pages = (qc: QueryClient) => qc.getQueryCache().findAll({ queryKey: qk.sessionEvents('sess-1') })
+
+  it('drops the session event pages when the timeline unmounts; later appends create nothing', async () => {
+    const { queryClient, unmount } = renderPage('/sessions/sess-1')
+    await screen.findByRole('group', { name: 'Session timeline' })
+    await waitFor(() => expect(pages(queryClient)).toHaveLength(1))
+    unmount()
+    expect(pages(queryClient)).toHaveLength(0)
+    act(() => applyToCache(queryClient, { event: 'event', data: live('ev-late', 'run-1') }))
+    expect(pages(queryClient)).toHaveLength(0)
+  })
+
+  it('does not keep pages the run panel loaded alive either', async () => {
+    const { queryClient, unmount } = renderPage('/sessions/sess-1/runs/run-2')
+    await userEvent.click(await screen.findByRole('tab', { name: 'Events' }))
+    expect(await screen.findByText('3 of 3 events')).toBeInTheDocument()
+    unmount()
+    expect(pages(queryClient)).toHaveLength(0)
+  })
+
+  it('the Events tab does not listen for refreshes while another tab is shown, and catches up when shown again', async () => {
+    const { queryClient } = renderPage('/sessions/sess-1/runs/run-2')
+    await userEvent.click(await screen.findByRole('tab', { name: 'Events' }))
+    expect(await screen.findByText('3 of 3 events')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: 'Route' })) // shows no events, so nothing should listen
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const ours = () => invalidate.mock.calls.filter(([f]) => JSON.stringify((f as { queryKey: unknown }).queryKey).includes('"all"'))
+    act(() => applyToCache(queryClient, { event: 'event', data: live('ev-hidden', 'run-2') }))
+    await new Promise((r) => setTimeout(r, 80))
+    expect(ours()).toHaveLength(0)
+    await userEvent.click(screen.getByRole('tab', { name: 'Events' }))
+    expect(await screen.findByText('4 of 4 events')).toBeInTheDocument()
+  })
+})

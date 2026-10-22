@@ -2,7 +2,7 @@ import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { toast } from 'sonner'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { paginate } from '@/api/msw/handlers'
 import { runs } from '@/api/msw/fixtures'
 import { qk } from '@/api/keys'
@@ -11,6 +11,10 @@ import { renderWithProviders } from '@/test/render'
 import { server } from '@/test/server'
 import { makeLargeSession } from '@/test/fixtures/large'
 import { RunPanel } from './RunPanel'
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 const B = '/api/v1'
 const withState = (id: string, over: Partial<RunViewPublic>) =>
@@ -160,6 +164,33 @@ describe('RunPanel behaviour', () => {
     expect(screen.getByRole('heading', { name: 'write-tests' })).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Reject' }))
     expect(await screen.findByRole('textbox', { name: 'Feedback' })).toHaveValue('keep me')
+  })
+})
+
+describe('Transcript polling follows tab visibility', () => {
+  it('polls the tail only while the Transcript tab is shown', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    let polls = 0
+    server.use(
+      http.get(`${B}/runs/run-1/transcript`, ({ request }) => {
+        if (Number(new URL(request.url).searchParams.get('offset')) > 0) polls++
+        return HttpResponse.json({ lines: [{ offset: 0, role: 'assistant', text: 'hello' }], next_offset: null, total_bytes: 6 })
+      }),
+    )
+    layout()
+    panel('run-1') // run-1 is running
+    await userEvent.click(await tab('Transcript'), { advanceTimers: vi.advanceTimersByTime })
+    await screen.findByText('hello')
+    await vi.advanceTimersByTimeAsync(6500)
+    expect(polls).toBeGreaterThanOrEqual(2)
+    await userEvent.click(screen.getByRole('tab', { name: 'Brief' }), { advanceTimers: vi.advanceTimersByTime })
+    const hiddenAt = polls
+    await vi.advanceTimersByTimeAsync(8000)
+    expect(polls).toBe(hiddenAt)
+    await userEvent.click(screen.getByRole('tab', { name: 'Transcript' }), { advanceTimers: vi.advanceTimersByTime })
+    await vi.advanceTimersByTimeAsync(4500)
+    expect(polls).toBeGreaterThan(hiddenAt)
+    vi.useRealTimers()
   })
 })
 

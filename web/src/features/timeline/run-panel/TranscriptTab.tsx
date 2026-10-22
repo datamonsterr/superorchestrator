@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 import { useTranscriptLines } from './hooks'
+import { useTabActive } from './tabActive'
 
 const ROLE_STYLE: Record<TranscriptLine['role'], string> = {
   user: 'border-l-primary bg-primary/5',
@@ -42,7 +43,8 @@ function Line({ line }: { line: TranscriptLine }) {
 
 /** Virtualised, variable-height transcript with client-side search and bottom-follow while the run is active. */
 export function TranscriptTab({ runId, active }: { runId: string; active: boolean }) {
-  const t = useTranscriptLines(runId, active)
+  const tabActive = useTabActive()
+  const t = useTranscriptLines(runId, active && tabActive)
   const [query, setQuery] = useState('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
@@ -55,9 +57,10 @@ export function TranscriptTab({ runId, active }: { runId: string; active: boolea
   const virtualizer = useVirtualizer({ count: rows.length, getScrollElement: () => scrollRef.current, estimateSize: () => 36, overscan: 10 })
 
   const last = rows.length - 1
+  // Follow the bottom only while this tab is shown; on becoming visible again, restore the bottom if it was there.
   useEffect(() => {
-    if (active && atBottom.current && last >= 0) virtualizer.scrollToIndex(last, { align: 'end' })
-  }, [active, last, virtualizer])
+    if (tabActive && active && atBottom.current && last >= 0) virtualizer.scrollToIndex(last, { align: 'end' })
+  }, [tabActive, active, last, virtualizer])
 
   if (t.loading && t.lines.length === 0) return <Skeleton className="h-40" />
   if (t.error && t.lines.length === 0) return <ErrorAlert error={t.error} title="Could not load the transcript" onRetry={t.retry} />

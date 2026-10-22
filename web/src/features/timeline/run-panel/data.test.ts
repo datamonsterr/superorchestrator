@@ -28,11 +28,13 @@ describe('run panel data helpers', () => {
     expect(briefFrom([ev('nudge_sent')])).toBeNull()
   })
   it('quotes shell arguments', () => {
-    expect(shellQuote('--flag')).toBe('--flag')
+    expect(shellQuote('--flag')).toBe("'--flag'")
     expect(shellQuote('a b')).toBe("'a b'")
     expect(shellQuote("it's")).toBe(`'it'\\''s'`)
     expect(shellQuote('')).toBe("''")
     expect(shellQuote('***')).toBe("'***'")
-    expect(joinCommand(['codex', '--resume', 'abc 1'])).toBe("codex --resume 'abc 1'")
+    expect(shellQuote('-P')).toBe("'-P'") // would be read as an option
+    expect(shellQuote('/a-b')).toBe('/a-b')
+    expect(joinCommand(['codex', '--resume', 'abc 1', '-v', '--k=v'])).toBe("codex --resume 'abc 1' -v --k=v")
   })
 })

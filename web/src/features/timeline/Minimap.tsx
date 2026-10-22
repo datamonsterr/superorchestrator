@@ -50,6 +50,7 @@ export const Minimap = memo(function Minimap({ model, viewport, width, onViewpor
   }
   function onPointerMove(e: React.PointerEvent<SVGSVGElement>) {
     const d = drag.current
+    if (d && e.buttons === 0) return end()
     if (d) onViewportChange(panBy(d.start, at(e.clientX) - d.grab, bounds))
   }
   const end = () => {

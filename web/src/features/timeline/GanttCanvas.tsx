@@ -117,6 +117,7 @@ export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, 
   function onPointerMove(e: React.PointerEvent<HTMLDivElement>) {
     const d = drag.current
     if (!d) return
+    if (e.buttons === 0) return endDrag() // the button was released outside the window
     const dx = e.clientX - d.x0
     if (!d.moved) {
       if (Math.abs(dx) < 4) return
@@ -195,8 +196,13 @@ export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, 
     }
   }
 
-  const laneY = new Map<string, number>()
-  for (const i of rendered) laneY.set(lanes[i].runId, i * LANE_H)
+  // Memoised on the rendered range, so the arrow layer only redraws when lanes or the visible window change.
+  const renderedKey = rendered.join(',')
+  const laneY = useMemo(() => {
+    const m = new Map<string, number>()
+    if (renderedKey) for (const k of renderedKey.split(',')) m.set(lanes[Number(k)].runId, Number(k) * LANE_H)
+    return m
+  }, [lanes, renderedKey])
 
   const stopId = rendered.some((i) => lanes[i].runId === tabLane)
     ? tabLane

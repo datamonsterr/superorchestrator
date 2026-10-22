@@ -206,6 +206,10 @@ export function useTimelineModel(sessionId: string) {
     [],
   )
 
+  // The event pages were fetched with gcTime Infinity (they have no observer): drop them when the timeline goes away,
+  // so a session that is no longer open stops accumulating live events in the cache.
+  useEffect(() => () => qc.removeQueries({ queryKey: qk.sessionEvents(sessionId) }), [qc, sessionId])
+
   // Open segments and the axis advance once a second (the reducer ignores ticks that change nothing).
   const active = state.model?.active ?? false
   useEffect(() => {

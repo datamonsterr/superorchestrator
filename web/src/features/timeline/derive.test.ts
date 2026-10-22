@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Event, EventType, RunViewPublic } from '@/api/types'
 import { makeLargeSession } from '@/test/fixtures/large'
-import { applyEvent, applyEvents } from './applyEvent'
+import { applyEvent, applyEvents, compareKeys } from './applyEvent'
 import { deriveTimeline } from './derive'
 import { ORCHESTRATOR_LANE, type RunLane, type TimelineModel } from './model'
 
@@ -233,6 +233,19 @@ describe('applyEvent', () => {
     const later = applyEvent(m, ev('assistant_message', 'a', 60), NOW + 7000)
     expect(lane(later, 'a').segments.at(-1)!.end).toBe(NOW + 7000)
     expect(later.tMax).toBe(NOW + 7000)
+  })
+})
+
+describe('compareKeys', () => {
+  it('is a consistent order: NaN sorts lowest, ties fall back to id', () => {
+    expect(compareKeys({ ts: 1, id: 'a' }, { ts: 2, id: 'a' })).toBeLessThan(0)
+    expect(compareKeys({ ts: 1, id: 'a' }, { ts: 1, id: 'b' })).toBeLessThan(0)
+    expect(compareKeys({ ts: 1, id: 'a' }, { ts: 1, id: 'a' })).toBe(0)
+    expect(compareKeys({ ts: NaN, id: 'z' }, { ts: -5, id: 'a' })).toBeLessThan(0)
+    expect(compareKeys({ ts: 3, id: 'a' }, { ts: NaN, id: 'z' })).toBeGreaterThan(0)
+    expect(compareKeys({ ts: NaN, id: 'a' }, { ts: NaN, id: 'b' })).toBeLessThan(0)
+    const xs = [{ ts: 3, id: 'a' }, { ts: NaN, id: 'b' }, { ts: 1, id: 'c' }, { ts: NaN, id: 'a' }]
+    expect(xs.sort(compareKeys).map((k) => `${k.ts}${k.id}`)).toEqual(['NaNa', 'NaNb', '1c', '3a'])
   })
 })
 
