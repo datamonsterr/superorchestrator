@@ -11,7 +11,8 @@ use crate::error::{AccountsError, Result};
 use crate::host::{HostEnv, canon};
 use crate::wrapper::{remove_wrapper, write_wrapper};
 
-const SELF_EXE: &str = "superorchestrator";
+/// Command name wrappers `exec` into.
+pub const SELF_EXE: &str = "superorchestrator";
 
 fn wrapper_dir(cfg: &Config, host: &HostEnv) -> Result<PathBuf> {
     host.expand(&cfg.accounts.wrapper_dir)

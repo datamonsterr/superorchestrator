@@ -10,6 +10,7 @@ pub mod init;
 pub mod install;
 pub mod mcp;
 pub mod menu;
+pub mod migrate;
 pub mod models;
 pub mod route;
 pub mod runs;

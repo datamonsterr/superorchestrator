@@ -312,21 +312,24 @@ impl Config {
         Ok(())
     }
 
+    /// Parses and validates `config.toml` text; `path` only names it in errors.
+    pub fn parse(text: &str, path: &std::path::Path) -> Result<Self> {
+        let cfg: Config = toml::from_str(text).map_err(|source| CoreError::TomlDe {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        cfg.validate().map_err(|reason| CoreError::InvalidValue {
+            key: path.display().to_string(),
+            reason,
+        })?;
+        Ok(cfg)
+    }
+
     /// Loads `config.toml`; a missing file yields the defaults.
     pub fn load(paths: &Paths) -> Result<Self> {
         let path = paths.config_toml();
         match std::fs::read_to_string(&path) {
-            Ok(text) => {
-                let cfg: Config = toml::from_str(&text).map_err(|source| CoreError::TomlDe {
-                    path: path.clone(),
-                    source,
-                })?;
-                cfg.validate().map_err(|reason| CoreError::InvalidValue {
-                    key: path.display().to_string(),
-                    reason,
-                })?;
-                Ok(cfg)
-            }
+            Ok(text) => Self::parse(&text, &path),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(CoreError::io(path, e)),
         }

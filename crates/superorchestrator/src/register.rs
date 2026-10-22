@@ -42,11 +42,16 @@ pub fn codex_add(old: &str, exe: &str) -> Result<Option<String>> {
 }
 
 pub fn codex_remove(old: &str) -> Result<Option<String>> {
+    codex_remove_key(old, NAME)
+}
+
+/// Removes `[mcp_servers.<key>]`, leaving every other server alone.
+pub fn codex_remove_key(old: &str, key: &str) -> Result<Option<String>> {
     let mut doc: DocumentMut = old.parse().context("not valid TOML")?;
     let Some(servers) = doc.get_mut("mcp_servers").and_then(Item::as_table_mut) else {
         return Ok(None);
     };
-    if servers.remove(NAME).is_none() {
+    if servers.remove(key).is_none() {
         return Ok(None);
     }
     Ok(Some(doc.to_string()))
@@ -126,11 +131,16 @@ pub fn json_add(old: &str, kind: JsonKind, exe: &str) -> Result<Option<String>> 
 }
 
 pub fn json_remove(old: &str, kind: JsonKind) -> Result<Option<String>> {
+    json_remove_key(old, kind, NAME)
+}
+
+/// Removes the server entry `key`, leaving every other server alone.
+pub fn json_remove_key(old: &str, kind: JsonKind, key: &str) -> Result<Option<String>> {
     let mut root = parse_object(old)?;
     let Some(parent) = root.get_mut(kind.parent()).and_then(Value::as_object_mut) else {
         return Ok(None);
     };
-    if parent.shift_remove(NAME).is_none() {
+    if parent.shift_remove(key).is_none() {
         return Ok(None);
     }
     if parent.is_empty() {

@@ -4,7 +4,7 @@ use anyhow::Result;
 use dialoguer::{Input, Select, theme::ColorfulTheme};
 use so_core::Harness;
 
-use crate::cmd::{account, init, status};
+use crate::cmd::{account, init, migrate, status};
 use crate::ctx::Ctx;
 
 const MAIN: [&str; 7] = [
@@ -31,7 +31,9 @@ pub fn run(ctx: &Ctx) -> Result<()> {
             Some(2) => status::run(ctx)?,
             Some(3) => eprintln!("`ui` is not implemented yet"),
             Some(4) => eprintln!("`install` is not implemented yet"),
-            Some(5) => eprintln!("`migrate` is not implemented yet"),
+            Some(5) => {
+                migrate::run(ctx, false)?;
+            }
             _ => return Ok(()),
         }
         println!();
