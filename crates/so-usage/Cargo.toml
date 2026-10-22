@@ -14,3 +14,12 @@ workspace = true
 [dependencies]
 so-core = { path = "../so-core" }
 so-store = { path = "../so-store" }
+so-accounts = { path = "../so-accounts" }
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
