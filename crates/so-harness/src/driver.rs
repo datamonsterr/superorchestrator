@@ -16,6 +16,7 @@ use so_accounts::Launch;
 use so_core::{AccountFile, ErrorKind, Harness};
 use tokio::sync::mpsc;
 
+use crate::agy::{AgyControl, AgyDriver};
 use crate::claude::{ClaudeControl, ClaudeDriver};
 
 /// Errors from starting or controlling a harness.
@@ -265,6 +266,7 @@ pub enum ShutdownOutcome {
 #[derive(Debug, Clone)]
 pub enum RunControl {
     Claude(ClaudeControl),
+    Agy(AgyControl),
 }
 
 impl RunControl {
@@ -272,6 +274,7 @@ impl RunControl {
     pub async fn send(&self, text: &str) -> Result<(), DriverError> {
         match self {
             RunControl::Claude(c) => c.send(text).await,
+            RunControl::Agy(c) => c.send(text).await,
         }
     }
 
@@ -280,6 +283,7 @@ impl RunControl {
     pub async fn interrupt(&self) -> Result<(), DriverError> {
         match self {
             RunControl::Claude(c) => c.interrupt().await,
+            RunControl::Agy(c) => c.interrupt().await,
         }
     }
 
@@ -288,12 +292,14 @@ impl RunControl {
     pub async fn shutdown(&self, deadline: Duration) -> Result<ShutdownOutcome, DriverError> {
         match self {
             RunControl::Claude(c) => c.shutdown(deadline).await,
+            RunControl::Agy(c) => c.shutdown(deadline).await,
         }
     }
 
     pub fn pid(&self) -> Option<u32> {
         match self {
             RunControl::Claude(c) => c.pid(),
+            RunControl::Agy(c) => c.pid(),
         }
     }
 }
@@ -332,6 +338,7 @@ pub trait Driver {
 #[derive(Debug, Clone)]
 pub enum AnyDriver {
     Claude(ClaudeDriver),
+    Agy(AgyDriver),
 }
 
 impl AnyDriver {
@@ -340,6 +347,7 @@ impl AnyDriver {
     pub fn for_harness(h: Harness, config: DriverConfig) -> Result<Self, DriverError> {
         match h {
             Harness::Claude => Ok(AnyDriver::Claude(ClaudeDriver::new(config))),
+            Harness::Agy => Ok(AnyDriver::Agy(AgyDriver::new(config))),
             other => Err(DriverError::Unsupported(other)),
         }
     }
@@ -349,24 +357,28 @@ impl Driver for AnyDriver {
     fn harness(&self) -> Harness {
         match self {
             AnyDriver::Claude(d) => d.harness(),
+            AnyDriver::Agy(d) => d.harness(),
         }
     }
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
         match self {
             AnyDriver::Claude(d) => d.launch(spec).await,
+            AnyDriver::Agy(d) => d.launch(spec).await,
         }
     }
 
     fn join_command(&self, j: &JoinInfo) -> JoinCommand {
         match self {
             AnyDriver::Claude(d) => d.join_command(j),
+            AnyDriver::Agy(d) => d.join_command(j),
         }
     }
 
     fn classify_error(&self, text: &str) -> ErrorKind {
         match self {
             AnyDriver::Claude(d) => d.classify_error(text),
+            AnyDriver::Agy(d) => d.classify_error(text),
         }
     }
 }
