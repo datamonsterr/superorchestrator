@@ -119,13 +119,8 @@ pub fn infer_agy_pool(model: &str) -> &'static str {
     }
 }
 
-/// Whether a model id names itself free: a `-free` or `:free` suffix.
-fn named_free(model: &str) -> bool {
-    model.ends_with("-free") || model.ends_with(":free")
-}
-
 fn infer_cost(harness: Harness, model: &str) -> Cost {
-    if named_free(model) {
+    if so_core::model_name_is_free(model) {
         Cost::Free
     } else if harness == Harness::Opencode {
         Cost::Paid
@@ -212,10 +207,11 @@ impl Catalog {
             .map_or_else(|| infer_cost(harness, model), |m| m.cost)
     }
 
-    /// Whether a model costs nothing: a free catalog entry, or an id that ends in `-free` or
-    /// `:free`.
+    /// Whether a model costs nothing. A catalog entry decides by its `cost`; a model the
+    /// catalog does not list is free when its id ends in `-free` or `:free`. This is the one
+    /// free predicate: `list_harnesses` and the generated skill both use it.
     pub fn is_free(&self, harness: Harness, model: &str) -> bool {
-        self.cost(harness, model) == Cost::Free || named_free(model)
+        self.cost(harness, model) == Cost::Free
     }
 
     /// Ids of the free models of `harness`, in catalog order.
@@ -757,6 +753,19 @@ mod tests {
         assert!(c.is_free(Harness::Opencode, "vendor/unlisted-free"));
         assert!(!c.is_free(Harness::Opencode, "opencode/claude-opus-5-5"));
         assert!(!c.is_free(Harness::Claude, "claude-sonnet-5-5"));
+        // An explicit catalog cost beats the name.
+        let mut paid = Catalog::default();
+        paid.insert(
+            Harness::Opencode,
+            ModelEntry {
+                id: "x/odd-free".into(),
+                tier: Tier::Mid,
+                efforts: vec![],
+                pool: None,
+                cost: Cost::Paid,
+            },
+        );
+        assert!(!paid.is_free(Harness::Opencode, "x/odd-free"));
         let free = c.free_models(Harness::Opencode);
         assert!(free.contains(&"opencode/beam-free"));
         assert!(!free.contains(&"opencode/claude-opus-5-5"));

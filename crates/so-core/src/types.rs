@@ -223,6 +223,13 @@ pub struct Choice {
     pub enabled: bool,
 }
 
+/// Whether a model id names itself free: a `-free` or `:free` suffix. The one name rule behind
+/// the catalog's cost inference and the generated skill; a catalog entry with an explicit cost
+/// overrides it (see `Catalog::is_free`).
+pub fn model_name_is_free(model: &str) -> bool {
+    model.ends_with("-free") || model.ends_with(":free")
+}
+
 /// Health of an (account, pool) headroom record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

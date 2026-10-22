@@ -25,8 +25,12 @@ const SIGNIFICANT: &[&str] = &[
     "run_finished",
     "progress",
 ];
+/// Progress events shown by default (the latest ones; the rest is noise).
+const PROGRESS_EVENTS: usize = 2;
 /// Longest string kept inside an event's data.
 const EVENT_TEXT: usize = 300;
+/// Longest string kept in a check result: it holds the failing command's output.
+const CHECK_TEXT: usize = 2000;
 const BASE_CHARS: usize = 10;
 
 /// `ts` without the fractional seconds: `2026-10-22T22:29:18.048969Z` becomes
@@ -79,21 +83,23 @@ fn items<'a>(m: &'a Map<String, Value>, key: &str) -> std::slice::Iter<'a, Value
         .iter()
 }
 
-fn cut(s: &str) -> String {
-    if s.chars().count() <= EVENT_TEXT {
+fn cut(s: &str, limit: usize) -> String {
+    if s.chars().count() <= limit {
         return s.to_string();
     }
-    let head: String = s.chars().take(EVENT_TEXT).collect();
+    let head: String = s.chars().take(limit).collect();
     format!("{head}...")
 }
 
-fn short_strings(v: Value) -> Value {
+fn short_strings(v: Value, limit: usize) -> Value {
     match v {
-        Value::String(s) => Value::String(cut(&s)),
-        Value::Object(m) => {
-            Value::Object(m.into_iter().map(|(k, v)| (k, short_strings(v))).collect())
-        }
-        Value::Array(a) => Value::Array(a.into_iter().map(short_strings).collect()),
+        Value::String(s) => Value::String(cut(&s, limit)),
+        Value::Object(m) => Value::Object(
+            m.into_iter()
+                .map(|(k, v)| (k, short_strings(v, limit)))
+                .collect(),
+        ),
+        Value::Array(a) => Value::Array(a.into_iter().map(|v| short_strings(v, limit)).collect()),
         other => other,
     }
 }
@@ -122,7 +128,32 @@ pub fn run_view(raw: Value, brief: bool) -> Value {
         out.insert("result".into(), r);
     }
     out.extend(pick(&mut run, &["error_kind", "branch"]));
+    // A waiting run's question, so the caller can answer without reading messages.
+    if matches!(state.as_str(), "waiting" | "escalated")
+        && let Some(q) = items(&run, "messages")
+            .rev()
+            .find(|m| m["kind"] == "question" && Some(&m["from_run"]) == out.get("run_id"))
+            .and_then(|m| m["body"].as_str())
+    {
+        out.insert("question".into(), json!(q));
+    }
     if brief {
+        // What a caller needs to act on a run it waited for: which checks failed, and
+        // that the run moved to another account.
+        if let Some(names) =
+            latest(&run, is_failed_checks).map(|e| e["data"]["failed_checks"].clone())
+        {
+            out.insert("failed_checks".into(), names);
+        }
+        if let Some(e) = latest(&run, |e| e["type"] == "failover") {
+            let d = &e["data"];
+            let side = |k: &str| d[k].as_str().unwrap_or("?").to_string();
+            let mut note = format!("{} -> {}", side("from"), side("to"));
+            if let Some(r) = d["reason"].as_str() {
+                note.push_str(&format!(": {r}"));
+            }
+            out.insert("failover".into(), json!(note));
+        }
         return prune_keep_result(out);
     }
     out.extend(pick(&mut run, &["worktree", "parent_run"]));
@@ -155,34 +186,66 @@ pub fn run_view(raw: Value, brief: bool) -> Value {
         }
         out.insert("diff".into(), prune(Value::Object(d)));
     }
-    // A waiting run's question, so the caller can answer without reading messages.
-    if matches!(state.as_str(), "waiting" | "escalated")
-        && let Some(q) = items(&run, "messages")
-            .rev()
-            .find(|m| m["kind"] == "question" && Some(&m["from_run"]) == out.get("run_id"))
-            .and_then(|m| m["body"].as_str())
-    {
-        out.insert("question".into(), json!(q));
-    }
-    let events: Vec<Value> = items(&run, "recent_events")
-        .filter(|e| is_key_event(e))
-        .map(key_event)
-        .collect();
-    let skip = events.len().saturating_sub(KEY_EVENTS);
-    out.insert(
-        "events".into(),
-        Value::Array(events.into_iter().skip(skip).collect()),
-    );
+    out.insert("events".into(), Value::Array(select_events(&run)));
     prune_keep_result(out)
+}
+
+fn is_failed_checks(e: &Value) -> bool {
+    e["type"] == "state_changed"
+        && e["data"]["failed_checks"]
+            .as_array()
+            .is_some_and(|f| !f.is_empty())
 }
 
 fn is_key_event(e: &Value) -> bool {
     let kind = e["type"].as_str().unwrap_or("");
-    SIGNIFICANT.contains(&kind)
-        || (kind == "state_changed"
-            && e["data"]["failed_checks"]
-                .as_array()
-                .is_some_and(|f| !f.is_empty()))
+    SIGNIFICANT.contains(&kind) || is_failed_checks(e)
+}
+
+/// The latest `recent_events` entry for which `pick` holds.
+fn latest(run: &Map<String, Value>, pick: impl Fn(&Value) -> bool) -> Option<&Value> {
+    items(run, "recent_events").rev().find(|e| pick(e))
+}
+
+/// The events `get_run` shows: the last [`KEY_EVENTS`] key events with at most
+/// [`PROGRESS_EVENTS`] progress ones, plus the latest check result, failed-check gate,
+/// failover, escalation and stall even when older than that window.
+fn select_events(run: &Map<String, Value>) -> Vec<Value> {
+    let all: Vec<&Value> = items(run, "recent_events").collect();
+    let key: Vec<usize> = (0..all.len()).filter(|&i| is_key_event(all[i])).collect();
+    let progress: Vec<usize> = key
+        .iter()
+        .copied()
+        .filter(|&i| all[i]["type"] == "progress")
+        .collect();
+    let old_progress = progress.len().saturating_sub(PROGRESS_EVENTS);
+    let dropped = &progress[..old_progress];
+    let candidates: Vec<usize> = key
+        .iter()
+        .copied()
+        .filter(|i| !dropped.contains(i))
+        .collect();
+    let mut shown: Vec<usize> = candidates
+        .iter()
+        .copied()
+        .skip(candidates.len().saturating_sub(KEY_EVENTS))
+        .collect();
+    // The latest of each sticky kind: check results, the failed-check gate, failover, ...
+    for kind_of in [
+        |e: &Value| e["type"] == "check_result",
+        |e: &Value| is_failed_checks(e),
+        |e: &Value| e["type"] == "failover",
+        |e: &Value| e["type"] == "escalated",
+        |e: &Value| e["type"] == "stall_detected",
+    ] {
+        if let Some(i) = key.iter().copied().rev().find(|&i| kind_of(all[i]))
+            && !shown.contains(&i)
+        {
+            shown.push(i);
+        }
+    }
+    shown.sort_unstable();
+    shown.into_iter().map(|i| key_event(all[i])).collect()
 }
 
 fn key_event(e: &Value) -> Value {
@@ -190,10 +253,15 @@ fn key_event(e: &Value) -> Value {
     if let Value::Object(m) = &mut data {
         m.remove("transcript_offset");
     }
+    let limit = if e["type"] == "check_result" {
+        CHECK_TEXT
+    } else {
+        EVENT_TEXT
+    };
     json!({
         "ts": seconds(e["ts"].as_str().unwrap_or("")),
         "type": e["type"],
-        "data": short_strings(prune(data)),
+        "data": short_strings(prune(data), limit),
     })
 }
 
@@ -243,23 +311,27 @@ fn update_view(e: &Value) -> Value {
 /// `wait_agent`: `finished` holds one short view per run (see [`run_view`], `brief`), which
 /// the caller supplies; `updates` are flattened events; `timed_out` only when true.
 pub fn wait_view(raw: &Value, finished: Vec<Value>) -> Value {
+    // Not pruned as a whole: a finished run's `result` is the agent's own data.
     let mut out = Map::new();
-    out.insert("finished".into(), Value::Array(finished));
-    out.insert(
-        "updates".into(),
-        Value::Array(
-            raw["updates"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .map(update_view)
-                .collect(),
-        ),
-    );
+    if !finished.is_empty() {
+        out.insert("finished".into(), Value::Array(finished));
+    }
+    let updates: Vec<Value> = items_of(raw, "updates").map(update_view).collect();
+    if !updates.is_empty() {
+        out.insert("updates".into(), Value::Array(updates));
+    }
     if raw["timed_out"] == json!(true) {
         out.insert("timed_out".into(), json!(true));
     }
-    prune_keep_result(out)
+    Value::Object(out)
+}
+
+/// The elements of the array at `key` of `v`, none when missing.
+fn items_of<'a>(v: &'a Value, key: &str) -> std::slice::Iter<'a, Value> {
+    v.get(key)
+        .and_then(Value::as_array)
+        .map_or(&[][..], Vec::as_slice)
+        .iter()
 }
 
 /// `route`: the pick and why. Scores, token usage, fingerprints and decider details are
@@ -323,7 +395,18 @@ pub fn messages_view(raw: Value) -> Value {
                     o.insert("created_at".into(), json!(t));
                 }
             }
-            prune(m)
+            // The body is the sender's text: only the envelope is pruned.
+            match m {
+                Value::Object(mut o) => {
+                    let body = o.remove("body");
+                    let mut v = prune(Value::Object(o));
+                    if let (Some(b), Value::Object(o)) = (body, &mut v) {
+                        o.insert("body".into(), b);
+                    }
+                    v
+                }
+                other => other,
+            }
         })
         .collect();
     json!({ "messages": messages })
@@ -387,12 +470,23 @@ pub fn workflow_status_view(raw: Value) -> Value {
                 for k in ["index", "started_at", "finished_at"] {
                     o.remove(k);
                 }
+                // A step's `result` is the agent's own data: only the envelope is pruned.
+                let result = o.remove("result");
+                let mut v = prune(Value::Object(std::mem::take(o)));
+                if let (Some(r), Value::Object(o)) = (result, &mut v) {
+                    o.insert("result".into(), r);
+                }
+                return v;
             }
             prune(s)
         })
         .collect();
-    out.insert("steps".into(), Value::Array(steps));
-    prune_keep_result(out)
+    let mut v = prune_keep_result(out);
+    if let (false, Value::Object(o)) = (steps.is_empty(), &mut v) {
+        // Added after pruning, so a step's `result` stays as the agent wrote it.
+        o.insert("steps".into(), Value::Array(steps));
+    }
+    v
 }
 
 /// The short view of `tool`'s reply. Tools not listed are returned as they are.
@@ -491,7 +585,11 @@ mod tests {
             .iter()
             .map(|e| e["data"]["step"].clone())
             .collect();
-        assert_eq!(steps, [4, 5, 6, 7, 8].map(Value::from));
+        assert_eq!(
+            steps,
+            [7, 8].map(Value::from),
+            "progress is capped to the last two"
+        );
     }
 
     #[test]
@@ -609,5 +707,90 @@ mod tests {
             json!({"messages": []})
         );
         assert_eq!(agents_view(json!({"agents": []})), json!({"agents": []}));
+    }
+
+    #[test]
+    fn wait_view_passes_a_finished_runs_result_through_untouched() {
+        let result = json!({"a": null, "b": []});
+        let finished = vec![run_view(
+            json!({"run_id": "r", "state": "succeeded", "result": result}),
+            true,
+        )];
+        let v = wait_view(&json!({"updates": []}), finished);
+        assert_eq!(v["finished"][0]["result"], result);
+    }
+
+    #[test]
+    fn workflow_steps_and_message_bodies_are_not_pruned() {
+        let v = workflow_status_view(json!({"id": "w", "name": "n", "state": "succeeded",
+            "steps": [{"name": "s", "state": "succeeded", "result": {"a": null, "b": []}}]}));
+        assert_eq!(v["steps"][0]["result"], json!({"a": null, "b": []}));
+        let m = messages_view(
+            json!({"messages": [{"id": "1", "to_run": null, "kind": "message", "body": "", "created_at": "2026-01-01T00:00:00.5Z"}]}),
+        );
+        assert_eq!(m["messages"][0]["body"], "");
+        assert_eq!(m["messages"][0]["created_at"], "2026-01-01T00:00:00Z");
+    }
+
+    fn ev(kind: &str, data: Value) -> Value {
+        json!({"type": kind, "ts": "2026-01-01T00:00:00Z", "data": data})
+    }
+
+    #[test]
+    fn old_check_results_and_failovers_stay_visible() {
+        let mut events = vec![
+            ev(
+                "failover",
+                json!({"from": "a", "to": "b", "reason": "quota"}),
+            ),
+            ev(
+                "check_result",
+                json!({"name": "cmd:test", "ok": false, "detail": "x".repeat(2500)}),
+            ),
+            ev(
+                "state_changed",
+                json!({"to": "running", "failed_checks": ["cmd:test"]}),
+            ),
+        ];
+        events.extend((0..8).map(|i| ev("question_answered", json!({"n": i}))));
+        let mut r = run();
+        r["recent_events"] = Value::Array(events);
+        let v = run_view(r, false);
+        let types: Vec<_> = v["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["type"].as_str().unwrap())
+            .collect();
+        assert_eq!(&types[..3], ["failover", "check_result", "state_changed"]);
+        assert_eq!(types.len(), 8);
+        let detail = v["events"][1]["data"]["detail"].as_str().unwrap();
+        assert!(
+            detail.chars().count() > 2000 && detail.chars().count() <= 2003,
+            "{}",
+            detail.len()
+        );
+    }
+
+    #[test]
+    fn a_waited_for_run_reports_failed_checks_failover_and_its_question() {
+        let mut r = run();
+        r["state"] = json!("waiting");
+        r["messages"] = json!([{"kind": "question", "body": "which?", "from_run": "r1"}]);
+        r["recent_events"] = json!([
+            ev(
+                "failover",
+                json!({"from": "a", "to": "b", "reason": "quota"})
+            ),
+            ev(
+                "state_changed",
+                json!({"to": "running", "failed_checks": ["cmd:test", "ci"]})
+            ),
+        ]);
+        let v = run_view(r, true);
+        assert_eq!(v["failed_checks"], json!(["cmd:test", "ci"]));
+        assert_eq!(v["failover"], "a -> b: quota");
+        assert_eq!(v["question"], "which?");
+        assert!(v.get("events").is_none());
     }
 }

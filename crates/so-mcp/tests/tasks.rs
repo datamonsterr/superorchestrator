@@ -157,10 +157,11 @@ async fn long_tools_become_tasks_for_a_task_client() {
 
     let t = task_of(call(&f, "wait_agent", json!({"runs": ["abcdefgh1234"]})).await);
     let r = completed(settle(&f, &t.task.task_id).await);
-    assert_eq!(
-        r.structured_content.unwrap()["finished"],
-        json!([{"run_id": "abcdefgh1234"}])
-    );
+    // This fixture has no get_run: the run still reports, as unreadable, with the error.
+    let finished = &r.structured_content.unwrap()["finished"];
+    assert_eq!(finished[0]["run_id"], "abcdefgh1234");
+    assert_eq!(finished[0]["state"], "unknown");
+    assert!(finished[0]["error"].as_str().unwrap().contains("get_run"));
 
     // A tool error is a completed task whose result has isError, as for a plain call.
     let t = task_of(call(&f, "run_workflow", json!({"script": "x"})).await);

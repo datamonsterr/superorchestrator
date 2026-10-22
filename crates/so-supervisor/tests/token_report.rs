@@ -28,25 +28,19 @@ struct Report {
 }
 
 impl Report {
-    /// Calls `method`, records the size of the raw reply and of the MCP view, and returns the
-    /// raw reply. The MCP view is built the way the bridge builds it.
+    /// Calls `method` and records the size of the raw reply and of what the MCP bridge hands
+    /// the orchestrator for it (`so_mcp::rpc_args` and `so_mcp::mcp_reply`, the bridge's own
+    /// code). Returns the raw reply.
     async fn call(&mut self, label: &str, c: &SupervisorClient, method: &str, p: Value) -> Value {
         let raw: Value = c.call(method, &p).await.unwrap();
-        let mcp = match method {
-            METHOD_LIST_HARNESSES => c
-                .call::<_, Value>(method, &json!({"brief": true}))
-                .await
-                .unwrap(),
-            METHOD_WAIT_AGENT => {
-                let mut finished = Vec::new();
-                for id in raw["finished"].as_array().unwrap() {
-                    let run: Value = c.call(METHOD_GET_RUN, &json!({"run": id})).await.unwrap();
-                    finished.push(so_mcp::compact::run_view(run, true));
-                }
-                so_mcp::compact::wait_view(&raw, finished)
-            }
-            _ => so_mcp::compact::project(method, &p, raw.clone()),
+        // list_harnesses is asked for its short view; the raw column is the full reply.
+        let sent = so_mcp::rpc_args(method, &p);
+        let reply = if sent == p {
+            raw.clone()
+        } else {
+            c.call::<_, Value>(method, &sent).await.unwrap()
         };
+        let mcp = so_mcp::mcp_reply(c, method, &p, reply).await;
         if std::env::var("SHOW").is_ok() {
             println!(
                 "== {label}\n{}",
@@ -223,7 +217,9 @@ async fn canonical_flow_report() {
         }
     }
     println!("{:<28}{:>8}{:>8}", "responses total", rpc, mcp);
-    // Budgets: at least 40% under the sizes measured before token tuning (9712 and 11997).
+    // Budgets: at least 40% under the sizes measured before token tuning. 9712 and 11997 are
+    // this report's "rpc" totals at commit f763e0e, before any of the MCP changes (see
+    // docs/plans/2026-10-23-token-tuning.md).
     let list = r.rows[0].mcp;
     assert!(list <= 9712 * 60 / 100, "tools/list is {list} bytes");
     assert!(mcp <= 11997 * 60 / 100, "responses total {mcp} bytes");

@@ -250,6 +250,39 @@ impl McpBridge {
     }
 }
 
+/// The params sent to the supervisor for a tool call. `list_harnesses` asks for the short view,
+/// which the supervisor builds because it has the catalog and the load.
+pub fn rpc_args(tool: &str, args: &Value) -> Value {
+    if tool == METHOD_LIST_HARNESSES {
+        json!({"brief": true})
+    } else {
+        args.clone()
+    }
+}
+
+/// What the orchestrator receives for the supervisor's `raw` reply to `tool`: the short view
+/// of [`compact`], with each finished run of a `wait_agent` read from the supervisor so the
+/// caller can act without a `get_run`.
+pub async fn mcp_reply(client: &SupervisorClient, tool: &str, args: &Value, raw: Value) -> Value {
+    if tool != METHOD_WAIT_AGENT {
+        return compact::project(tool, args, raw);
+    }
+    let mut finished = Vec::new();
+    for id in raw["finished"].as_array().into_iter().flatten() {
+        let Some(id) = id.as_str() else { continue };
+        let run = match client
+            .call::<_, Value>(METHOD_GET_RUN, &json!({"run": id}))
+            .await
+        {
+            Ok(v) => compact::run_view(v, true),
+            // The run finished, but its record could not be read: say so.
+            Err(e) => json!({"run_id": id, "state": "unknown", "error": e.to_string()}),
+        };
+        finished.push(run);
+    }
+    compact::wait_view(&raw, finished)
+}
+
 /// A `question_asked` update of a `wait_agent` result.
 struct Question {
     run: String,
@@ -379,41 +412,13 @@ impl McpBridge {
         args: Value,
         cx: &CallCx,
     ) -> Result<Value, ClientError> {
+        let sent = rpc_args(spec.name, &args);
         let raw = if spec.name == METHOD_WAIT_AGENT {
-            self.forward_wait(spec, args.clone(), cx).await?
-        } else if spec.name == METHOD_LIST_HARNESSES {
-            // The short view is built by the supervisor: it has the catalog and the load.
-            self.forward(spec, json!({"brief": true}), cx).await?
+            self.forward_wait(spec, sent, cx).await?
         } else {
-            self.forward(spec, args.clone(), cx).await?
+            self.forward(spec, sent, cx).await?
         };
-        Ok(if spec.name == METHOD_WAIT_AGENT {
-            self.wait_view(&raw).await
-        } else {
-            compact::project(spec.name, &args, raw)
-        })
-    }
-
-    /// `wait_agent`'s reply with each finished run as a short view (state, result), so the
-    /// caller can act without a `get_run`.
-    async fn wait_view(&self, raw: &Value) -> Value {
-        let mut finished = Vec::new();
-        for id in raw["finished"].as_array().into_iter().flatten() {
-            let Some(id) = id.as_str() else { continue };
-            let run = self
-                .inner
-                .client
-                .call::<_, Value>(METHOD_GET_RUN, &json!({"run": id}))
-                .await
-                .map_or(Value::Null, |v| compact::run_view(v, true));
-            // A run that cannot be read still reports as finished.
-            finished.push(if run.get("run_id").is_some() {
-                run
-            } else {
-                json!({"run_id": id})
-            });
-        }
-        compact::wait_view(raw, finished)
+        Ok(mcp_reply(&self.inner.client, spec.name, &args, raw).await)
     }
 
     /// Starts a long call as an MCP task (SEP-2663) and returns its handle. Progress goes to

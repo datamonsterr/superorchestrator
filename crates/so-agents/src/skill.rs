@@ -74,7 +74,7 @@ pub fn render_skill(accounts: &[AccountFile], choices: &[Choice], agents: &[Agen
             if let Some(e) = &c.effort {
                 let _ = write!(out, " ({e})");
             }
-            if c.model.ends_with("-free") || c.model.ends_with(":free") {
+            if so_core::model_name_is_free(&c.model) {
                 out.push_str(" free");
             }
             if !c.roles.is_empty() && c.roles != ["worker"] {

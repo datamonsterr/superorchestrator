@@ -186,8 +186,17 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
                     .all(|a| a.flags.as_ref().is_some_and(|f| !f.is_empty()))
                 {
                     "cooldown"
-                } else {
+                } else if open.iter().any(|a| {
+                    snapshot
+                        .accounts
+                        .iter()
+                        .find(|s| s.file.name == a.name)
+                        .is_some_and(|s| s.pools.values().any(|p| !p.available))
+                }) {
                     "no headroom"
+                } else {
+                    // The router found no usable account for a reason this view cannot name.
+                    "not eligible"
                 })
             };
             if let Some(why) = why {

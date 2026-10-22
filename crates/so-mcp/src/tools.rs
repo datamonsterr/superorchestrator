@@ -81,21 +81,33 @@ fn schema_of<T: JsonSchema + 'static>(tool: &str) -> Arc<JsonObject> {
 
 fn trim(node: &mut Value, defs: &Value, tool: &str) {
     let Value::Object(map) = node else { return };
-    // `$ref` and `anyOf: [X, null]` become X.
-    let inline = match map.get("$ref") {
-        Some(Value::String(r)) => r
+    if let Some(Value::String(r)) = map.get("$ref") {
+        let def = r
             .strip_prefix("#/$defs/")
             .and_then(|n| defs.get(n))
-            .cloned(),
-        _ => match map.get("anyOf") {
-            Some(Value::Array(any)) => any.iter().find(|v| v["type"] != "null").cloned(),
-            _ => None,
-        },
-    };
-    if let Some(inner) = inline {
-        *node = inner;
-        trim(node, defs, tool);
-        return;
+            .cloned();
+        if let Some(mut inner) = def {
+            trim(&mut inner, defs, tool);
+            *node = inner;
+            return;
+        }
+    }
+    // A union loses its null arm; with one arm left it becomes that arm, with more it stays
+    // a union of trimmed arms.
+    for key in ["anyOf", "oneOf"] {
+        if let Some(Value::Array(arms)) = map.get_mut(key) {
+            arms.retain(|a| a["type"] != "null");
+            arms.iter_mut().for_each(|a| trim(a, defs, tool));
+            if arms.len() == 1 {
+                let mut only = arms.remove(0);
+                trim(&mut only, defs, tool);
+                *node = only;
+                return;
+            }
+        }
+    }
+    if let Some(Value::Array(arms)) = map.get_mut("allOf") {
+        arms.iter_mut().for_each(|a| trim(a, defs, tool));
     }
     for key in [
         "$schema",
@@ -180,7 +192,7 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "get_run",
-        "Run state, result, branch, worktree, key events, usage. diff=true adds what the worktree changed (stat, patch cut at 64 KiB): review with this, not by reading files. verbose=true returns the full record.",
+        "Run state, result, branch, worktree, key events, usage. diff=true adds what the worktree changed (stat, patch cut at 64 KiB): review with this, not by reading files. verbose=true: full record, every event.",
         false,
         true,
         schema_of::<GetRunParams>,
@@ -344,6 +356,56 @@ mod tests {
         let get = Value::Object((*tool("get_run")).clone());
         assert_eq!(get["required"], serde_json::json!(["run"]));
         assert!(get["properties"]["verbose"].is_object());
+    }
+
+    #[test]
+    fn every_tool_schema_is_self_contained() {
+        fn walk(v: &Value, tool: &str) {
+            match v {
+                Value::Object(m) => {
+                    assert!(!m.contains_key("$ref"), "{tool}: $ref");
+                    assert!(!m.contains_key("$defs"), "{tool}: $defs");
+                    m.values().for_each(|c| walk(c, tool));
+                }
+                Value::Array(a) => a.iter().for_each(|c| walk(c, tool)),
+                _ => {}
+            }
+        }
+        for spec in tool_specs(true) {
+            let schema = Value::Object((*spec.tool().input_schema).clone());
+            walk(&schema, spec.name);
+            assert_eq!(schema["type"], "object", "{}", spec.name);
+        }
+        // Tools with required parameters keep them.
+        for (tool, required) in [
+            ("route", "prompt"),
+            ("wait_agent", "runs"),
+            ("get_run", "run"),
+            ("send_message", "text"),
+            ("accept_run", "run"),
+            ("reject_run", "feedback"),
+            ("fork_agent", "prompt"),
+            ("workflow_status", "id"),
+            ("ask_parent", "question"),
+        ] {
+            let t = tool_specs(true).find(|t| t.name == tool).unwrap().tool();
+            let req = t.input_schema["required"].as_array().unwrap();
+            assert!(req.contains(&Value::from(required)), "{tool}.{required}");
+        }
+    }
+
+    #[test]
+    fn a_union_with_several_arms_is_kept_and_a_nullable_one_is_narrowed() {
+        let defs = serde_json::json!({"X": {"type": "string", "enum": ["a"]}});
+        let mut one = serde_json::json!({"anyOf": [{"$ref": "#/$defs/X"}, {"type": "null"}]});
+        trim(&mut one, &defs, "t");
+        assert_eq!(one, serde_json::json!({"type": "string", "enum": ["a"]}));
+        let mut many = serde_json::json!({"anyOf": [{"type": "string"}, {"type": "integer", "minimum": 0}, {"type": "null"}]});
+        trim(&mut many, &defs, "t");
+        assert_eq!(
+            many,
+            serde_json::json!({"anyOf": [{"type": "string"}, {"type": "integer"}]})
+        );
     }
 
     #[test]

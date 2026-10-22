@@ -39,7 +39,7 @@ Skills: use-superorchestrator-mcp 3349 B (static plugin copy), superorchestrator
 
 | call | before | after | change |
 | --- | ---: | ---: | ---: |
-| tools/list (14 tools) | 9712 | 5720 | -41% |
+| tools/list (14 tools) | 9712 | 5722 | -41% |
 | list_harnesses | 1968 | 1345 | -32% |
 | route | 630 | 249 | -60% |
 | spawn_agent (wait, review) | 90 | 90 | 0% |
@@ -88,3 +88,12 @@ orchestrator needs to pick a free model without another call.
 - `eligible` is left out when true and `why` appears only for ineligible choices.
 - `get_run` takes `verbose` in `GetRunParams` (the supervisor ignores it) so that the schema
   documents it; `verbose` returns the supervisor's reply untouched.
+
+## Review fixes
+
+Results of finished runs, workflow steps and message bodies are never pruned; `get_run` keeps
+the latest check result, failed-check gate, failover, escalation and stall beyond its window and
+caps progress at 2; `wait_agent` entries carry `failed_checks`, `failover` and `question`, and an
+unreadable run is `state: unknown` with the error. Schemas keep multi-arm unions. One free rule
+(`so_core::model_name_is_free`, explicit catalog cost wins). `token_report` calls the bridge's
+own `rpc_args` and `mcp_reply`. Numbers stay in budget: tools/list 5722, responses 3107.
