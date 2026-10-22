@@ -125,8 +125,11 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
     }),
     http.delete(`${B}/accounts/:name`, () => HttpResponse.json(ok)),
     http.post(`${B}/accounts/:name/flag`, ({ params }) => HttpResponse.json(fx.accounts.find((a) => a.name === params.name) ?? fx.accounts[0])),
-    http.post(`${B}/accounts/:name/login`, () =>
-      HttpResponse.json({ mode: 'device_auth', url: 'https://example.test/device', code: 'ABCD-1234', expires_at: new Date(Date.UTC(2026, 0, 1, 12, 15)).toISOString() }),
+    http.post(`${B}/accounts/:name/login`, ({ params }) =>
+      // Claude accounts sign in with a command; the others use a device code.
+      String(params.name).startsWith('claude')
+        ? HttpResponse.json({ mode: 'manual', command: `${String(params.name).split('-')[0]} login`, cwd: '/home/me' })
+        : HttpResponse.json({ mode: 'device_auth', url: 'https://example.test/device', code: 'ABCD-1234', expires_at: new Date(Date.UTC(2026, 0, 1, 12, 15)).toISOString() }),
     ),
     http.get(`${B}/accounts/:name/login`, () => HttpResponse.json({ signed_in: 'signed_out', mode: 'device_auth', state: 'pending' })),
 

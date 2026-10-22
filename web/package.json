@@ -15,7 +15,9 @@
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc -b --noEmit",
-    "size": "node scripts/size.mjs"
+    "size": "node scripts/size.mjs",
+    "e2e": "playwright test",
+    "e2e:install": "playwright install chromium"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",

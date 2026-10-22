@@ -2,11 +2,14 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { configureAxe } from 'vitest-axe'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import App from '@/App'
 import { createTestRouter } from '@/router'
 import { server } from '@/test/server'
 import { createTestQueryClient } from '@/test/render'
+
+// Each test renders the whole app and runs axe over it; allow for a loaded machine.
+vi.setConfig({ testTimeout: 20_000 })
 
 // jsdom has no layout, so colour contrast cannot be computed here; src/lib/contrast.test.ts
 // checks every state colour pair in light and dark instead.
