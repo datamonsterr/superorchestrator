@@ -28,9 +28,6 @@ pub const PROMPT: &str = "do the task";
 
 pub fn fake_harness() -> PathBuf {
     static BUILD: Once = Once::new();
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(target_dir_of_this_test);
     BUILD.call_once(|| {
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let st = Command::new(cargo)
@@ -47,7 +44,7 @@ pub fn fake_harness() -> PathBuf {
             .unwrap();
         assert!(st.success());
     });
-    let p = target.join("debug/fake-harness");
+    let p = sibling_bin("fake-harness");
     assert!(p.exists(), "{} missing", p.display());
     p
 }
@@ -298,15 +295,6 @@ pub fn rpc_code(e: ClientError) -> i64 {
     }
 }
 
-/// `<target>/debug/deps/<this test>` gives the target directory when `CARGO_TARGET_DIR` is
-/// not set (a `build.target-dir` in cargo's config is invisible to the test).
-fn target_dir_of_this_test() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| Some(p.parent()?.parent()?.parent()?.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"))
-}
-
 /// A session with one run of the given depth and state, written straight to the store.
 pub fn insert_session_and_run(store: &Store, depth: i64, state: RunState) -> RunRow {
     let session = SessionRow {
@@ -354,4 +342,12 @@ pub fn insert_session_and_run(store: &Store, depth: i64, state: RunState) -> Run
     };
     store.insert_run(&row).unwrap();
     row
+}
+
+/// A binary of this workspace's `debug` profile, found next to the running test (test
+/// executables live in `<target>/debug/deps`). Works for any target directory.
+pub fn sibling_bin(name: &str) -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let debug = exe.parent().unwrap().parent().unwrap();
+    debug.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }

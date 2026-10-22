@@ -18,6 +18,7 @@ import type {
   MessageView,
   ModelCatalog,
   Page,
+  PruneRequest,
   PruneResult,
   RouteParams,
   RouteRecord,
@@ -107,7 +108,7 @@ export const endpoints = {
 
   // worktrees
   listWorktrees: (o?: Opt) => request<WorktreeView[]>('/worktrees', o),
-  pruneWorktrees: (body: { dry_run?: boolean } = {}) =>
+  pruneWorktrees: (body: PruneRequest = {}) =>
     request<PruneResult>('/worktrees/prune', { method: 'POST', body }),
 
   // agents

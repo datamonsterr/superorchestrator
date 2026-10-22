@@ -1,7 +1,10 @@
 import '@testing-library/jest-dom/vitest'
+import * as axeMatchers from 'vitest-axe/matchers'
 import { cleanup, configure } from '@testing-library/react'
-import { afterAll, afterEach, beforeAll, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, expect, vi } from 'vitest'
 import { server } from './server'
+
+expect.extend(axeMatchers)
 
 // First lazy import of the shell is slow on a cold transform cache.
 configure({ asyncUtilTimeout: 4000 })

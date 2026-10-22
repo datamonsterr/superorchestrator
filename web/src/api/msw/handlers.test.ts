@@ -4,6 +4,7 @@ import { server } from '@/test/server'
 import { LARGE_SESSION_ID } from '@/test/fixtures/large'
 import { endpoints } from '../endpoints'
 import { createHandlers, paginate } from './handlers'
+const GOOD = '---\nname: new-agent\ndescription: d\n---\nbody\n'
 
 describe('base handlers cover every endpoint in design 2.1', () => {
   const calls: [string, () => Promise<unknown>][] = [
@@ -43,16 +44,16 @@ describe('base handlers cover every endpoint in design 2.1', () => {
     ['listWorktrees', () => endpoints.listWorktrees()],
     ['pruneWorktrees', () => endpoints.pruneWorktrees({ dry_run: true })],
     ['listAgents', () => endpoints.listAgents()],
-    ['createAgent', () => endpoints.createAgent({ name: 'new-agent', source: '' })],
+    ['createAgent', () => endpoints.createAgent({ name: 'new-agent', source: GOOD })],
     ['getAgent', () => endpoints.getAgent('reviewer')],
-    ['putAgent', () => endpoints.putAgent('reviewer', { source: '' })],
+    ['putAgent', () => endpoints.putAgent('reviewer', { source: GOOD })],
     ['deleteAgent', () => endpoints.deleteAgent('reviewer')],
     ['listWorkflows', () => endpoints.listWorkflows()],
     ['listWorkflowRuns', () => endpoints.listWorkflowRuns()],
     ['getWorkflowRun', () => endpoints.getWorkflowRun('wf-1')],
     ['runWorkflow', () => endpoints.runWorkflow('ship-feature', { a: 1 })],
     ['getConfig', () => endpoints.getConfig()],
-    ['patchConfig', () => endpoints.patchConfig({ stall_ms: 1 })],
+    ['patchConfig', () => endpoints.patchConfig({ runs: { stall_ms: 1 } })],
     ['postAuth', () => endpoints.postAuth('t')],
   ]
 
@@ -71,7 +72,7 @@ describe('behaviour', () => {
   })
   it('returns 404 and 409 error bodies', async () => {
     await expect(endpoints.getRun('missing')).rejects.toMatchObject({ status: 404, code: -32003 })
-    await expect(endpoints.createAgent({ name: 'reviewer', source: '' })).rejects.toMatchObject({ status: 409 })
+    await expect(endpoints.createAgent({ name: 'reviewer', source: GOOD })).rejects.toMatchObject({ status: 409 })
   })
   it('clamps and pages with an opaque cursor', () => {
     const all = Array.from({ length: 2500 }, (_, i) => i)
@@ -79,6 +80,15 @@ describe('behaviour', () => {
     expect(p1.items).toHaveLength(1000)
     expect(p1.next_cursor).toBe('1000')
     expect(paginate(all, new URL('http://x/?cursor=2000&limit=1000')).next_cursor).toBeNull()
+  })
+})
+
+describe('mock sign-in mode follows the harness the account was created with', () => {
+  it('returns a command for a claude account whatever its name, and a device code for the others', async () => {
+    await endpoints.createAccount({ harness: 'claude', name: 'work-a' })
+    await endpoints.createAccount({ harness: 'codex', name: 'claude-lookalike' })
+    expect(await endpoints.startLogin('work-a')).toMatchObject({ mode: 'manual', command: 'claude login' })
+    expect(await endpoints.startLogin('claude-lookalike')).toMatchObject({ mode: 'device_auth' })
   })
 })
 

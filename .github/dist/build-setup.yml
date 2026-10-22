@@ -1,0 +1,16 @@
+# Steps that dist inserts into every build job of release.yml, before `cargo build`.
+# They build web/dist so crates/so-web/build.rs embeds the real UI instead of the placeholder.
+- name: Install pnpm
+  uses: pnpm/action-setup@v6
+  with:
+    package_json_file: web/package.json
+- name: Install Node
+  uses: actions/setup-node@v7
+  with:
+    node-version: 24
+    cache: pnpm
+    cache-dependency-path: web/pnpm-lock.yaml
+- name: Build the web UI
+  run: |
+    pnpm -C web install --frozen-lockfile
+    pnpm -C web build

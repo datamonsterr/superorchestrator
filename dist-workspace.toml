@@ -1,0 +1,34 @@
+[workspace]
+members = ["cargo:."]
+
+# Config for 'dist' (cargo-dist). Regenerate .github/workflows/release.yml with `dist generate`
+# after editing this file. Releases are cut by pushing a `vX.Y.Z` tag (dist matches `**[0-9]+.[0-9]+.[0-9]+*`; release-check requires exactly v + the Cargo version); see docs/release.md.
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+cargo-dist-version = "0.32.0"
+# CI backends to support
+ci = "github"
+# Release archives. install.sh (repository root) is the installer; dist's own installers are off.
+installers = []
+# Target platforms to build apps for (Rust target-triple syntax)
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu"]
+# Archives: tar.xz with a .sha256 file next to each
+unix-archive = ".tar.xz"
+checksum = "sha256"
+# Pull requests do not run the release workflow at all
+pr-run-mode = "skip"
+# Build web/dist before cargo so the binary embeds the real UI (crates/so-web/build.rs)
+github-build-setup = "../dist/build-setup.yml"
+# Publish artifacts as a GitHub Release
+hosting = "github"
+# Custom jobs (reusable workflows in .github/workflows, see docs/release.md).
+#
+# All gates are global-artifacts-jobs, and plan-jobs is deliberately empty. dist's generated
+# `host` job (which creates the GitHub Release) runs when its needs are `success` OR `skipped`.
+# A failing plan-job would make every later job skip and `host` would still run with no
+# artifacts. A failing global-artifacts-job has result `failure`, which blocks `host`.
+# They run in parallel after every archive is built and before `host`:
+# - ./ci: the full CI workflow must pass.
+# - ./release-check: the tag must be v + the Cargo version and CHANGELOG must have its section.
+# - ./release-smoke: install and smoke-test each archive on a native runner.
+global-artifacts-jobs = ["./ci", "./release-check", "./release-smoke"]

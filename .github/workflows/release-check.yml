@@ -1,0 +1,25 @@
+name: Release check
+
+# Gate called by release.yml (dist `global-artifacts-jobs`, so a failure blocks the release): the pushed tag must be `v` plus the
+# Cargo workspace version, and CHANGELOG.md must have a section for that version.
+
+on:
+  workflow_call:
+    inputs:
+      plan:
+        description: dist plan manifest (unused)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - run: scripts/check-release-tag.sh "$GITHUB_REF_NAME"

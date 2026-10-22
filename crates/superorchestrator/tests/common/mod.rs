@@ -80,9 +80,6 @@ pub const TRANSCRIPT: &str =
     include_str!("../../../so-harness/tests/fixtures/claude/transcript.jsonl");
 
 pub fn fake_harness() -> PathBuf {
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(target_dir_of_this_test);
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let st = StdCommand::new(cargo)
         .args([
@@ -97,7 +94,7 @@ pub fn fake_harness() -> PathBuf {
         .status()
         .unwrap();
     assert!(st.success());
-    target.join("debug/fake-harness")
+    sibling_bin("fake-harness")
 }
 
 /// Script replaying the first recorded claude turn.
@@ -167,15 +164,6 @@ pub async fn cli(e: &Env, args: &[&str]) -> (String, bool) {
     .unwrap()
 }
 
-/// `<target>/debug/deps/<this test>` gives the target directory when `CARGO_TARGET_DIR` is
-/// not set (a `build.target-dir` in cargo's config is invisible to the test).
-fn target_dir_of_this_test() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| Some(p.parent()?.parent()?.parent()?.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"))
-}
-
 /// An in-process supervisor for the CLI to talk to (it finds the socket through
 /// `SUPERORCHESTRATOR_SOCKET`, which `Env::cmd` sets).
 pub async fn start_supervisor(e: &Env) -> so_supervisor::SupervisorHandle {
@@ -195,4 +183,12 @@ pub async fn start_supervisor(e: &Env) -> so_supervisor::SupervisorHandle {
     .with_idle_exit(std::time::Duration::from_secs(600))
     .with_setup(so_supervisor::default_handlers);
     so_supervisor::Supervisor::start(opts).await.unwrap()
+}
+
+/// A binary of this workspace's `debug` profile, found next to the running test (test
+/// executables live in `<target>/debug/deps`). Works for any target directory.
+pub fn sibling_bin(name: &str) -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let debug = exe.parent().unwrap().parent().unwrap();
+    debug.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }

@@ -325,11 +325,15 @@ export interface Policy {
 
 export interface PruneRequest {
   dry_run?: boolean;
+  /** Prune only these runs, and only those that are still prunable; the rest are reported in `skipped`. Without it every prunable worktree goes. */
+  ids?: string[] | null;
 }
 
 export interface PruneResult {
   /** Ids of the runs whose worktrees were (or, with `dry_run`, would be) removed. */
   removed: string[];
+  /** Requested `ids` that were not pruned: unknown, not finished, no worktree on disk, or failed. */
+  skipped: string[];
 }
 
 export interface RejectBody {

@@ -258,12 +258,18 @@ pub struct WorktreeView {
 pub struct PruneRequest {
     #[serde(default)]
     pub dry_run: bool,
+    /// Prune only these runs, and only those that are still prunable; the rest are reported in
+    /// `skipped`. Without it every prunable worktree goes.
+    #[serde(default)]
+    pub ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct PruneResult {
     /// Ids of the runs whose worktrees were (or, with `dry_run`, would be) removed.
     pub removed: Vec<String>,
+    /// Requested `ids` that were not pruned: unknown, not finished, no worktree on disk, or failed.
+    pub skipped: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

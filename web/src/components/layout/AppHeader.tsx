@@ -7,7 +7,8 @@ import { ThemeToggle } from './ThemeToggle'
 
 export function AppHeader() {
   return (
-    <header className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background px-3 md:px-4">
+    <header data-slot="app-header"
+      className="sticky top-0 z-10 flex h-14 shrink-0 items-center gap-2 border-b bg-background px-3 max-md:[&_button]:min-h-10 max-md:[&_button]:min-w-10 md:px-4">
       <SidebarTrigger aria-label="Toggle navigation" />
       <Separator orientation="vertical" className="h-5" />
       <SupervisorPill />

@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
-import { defineConfig, type Plugin } from 'vitest/config'
+import { configDefaults, defineConfig, type Plugin } from 'vitest/config'
 
 const require = createRequire(import.meta.url)
 
@@ -60,5 +60,7 @@ export default defineConfig({
     globals: false,
     setupFiles: ['./src/test/setup.ts'],
     css: false,
+    // Playwright specs run with `pnpm e2e`.
+    exclude: [...configDefaults.exclude, 'e2e/**'],
   },
 })

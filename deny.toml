@@ -1,0 +1,52 @@
+# cargo-deny policy (CI job `cargo-deny`). Run locally with `cargo deny check`.
+
+[graph]
+all-features = true
+
+[advisories]
+# RustSec advisories. Yanked crates are errors. Add an `ignore` entry (with a reason) only for
+# an advisory that cannot be fixed by an update and does not affect us.
+yanked = "deny"
+
+[licenses]
+confidence-threshold = 0.9
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+  # Permissive: borrow-or-share (via jsonschema).
+  "MIT-0",
+  # Permissive data licence: webpki-root-certs (the Mozilla root store, via rustls).
+  "CDLA-Permissive-2.0",
+]
+
+# MPL-2.0 is file-level copyleft. option-ext is linked unmodified, only reaches us through the
+# rust-embed-impl proc macro (dirs -> shellexpand), and its source files stay MPL; no other
+# crate may use MPL-2.0 without a new reviewed entry here.
+exceptions = [
+  { allow = ["MPL-2.0"], crate = "option-ext" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Workspace crates depend on each other by path, without versions.
+allow-wildcard-paths = true
+# This crate set must not pull in a second TLS stack or OpenSSL: reqwest uses rustls.
+deny = [
+  { crate = "openssl" },
+  { crate = "openssl-sys" },
+  { crate = "native-tls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

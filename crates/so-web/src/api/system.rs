@@ -393,7 +393,17 @@ pub async fn worktrees_prune(
 ) -> ApiResult<Json<PruneResult>> {
     let store = st.sup.store.clone();
     st.blocking(move || {
-        let targets = wt::prune_targets(wt::runs_with_worktree(&store)?);
+        let mut targets = wt::prune_targets(wt::runs_with_worktree(&store)?);
+        let mut skipped = Vec::new();
+        if let Some(ids) = &b.ids {
+            // Only what the caller confirmed, and only if it is still prunable now.
+            targets.retain(|(run, _)| ids.contains(&run.id));
+            skipped = ids
+                .iter()
+                .filter(|id| !targets.iter().any(|(r, _)| &r.id == *id))
+                .cloned()
+                .collect();
+        }
         let mut removed = Vec::new();
         for (run, c) in &targets {
             if b.dry_run {
@@ -401,11 +411,16 @@ pub async fn worktrees_prune(
             } else {
                 match wt::prune_one(&store, run, c) {
                     Ok(()) => removed.push(run.id.clone()),
-                    Err(e) => tracing::warn!(path = %c.path.display(), "could not prune: {e}"),
+                    Err(e) => {
+                        tracing::warn!(path = %c.path.display(), "could not prune: {e}");
+                        if b.ids.is_some() {
+                            skipped.push(run.id.clone());
+                        }
+                    }
                 }
             }
         }
-        Ok(Json(PruneResult { removed }))
+        Ok(Json(PruneResult { removed, skipped }))
     })
     .await
 }

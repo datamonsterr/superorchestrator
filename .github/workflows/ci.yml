@@ -7,10 +7,17 @@ on:
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
+  # Called by release.yml (a dist global-artifacts job) so a tag cannot publish unless CI passes.
+  workflow_call:
+    inputs:
+      plan:
+        description: dist plan manifest (passed by release.yml, unused here)
+        required: false
+        type: string
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -24,12 +31,56 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # rust-toolchain.toml pins the Rust version and its components; `rustup show` installs it.
+      - run: rustup show
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # taiki-e/install-action does not list actionlint, and its cargo-binstall fallback fails.
+      # actionlint is pinned to 1.7.12 and its tarball is checked against the sha256 below.
+      # shellcheck comes from apt.
+      - name: Install actionlint and shellcheck
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/actionlint.tar.gz" -C "$RUNNER_TEMP" actionlint
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+      - name: actionlint
+        run: actionlint
+      - name: shellcheck
+        run: shellcheck install.sh scripts/*.sh
+      - name: release job graph (host must not run unless every gate passed)
+        run: |
+          python3 -m pip install --quiet pyyaml==6.0.3
+          python3 scripts/test-release-gate.py
+
+  deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
+  scripts:
+    name: installer test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - name: install.sh against a fake local release
+        run: sh scripts/test-install.sh
 
   test:
     name: test (${{ matrix.os }})
@@ -41,7 +92,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - run: rustup show
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
 
@@ -79,13 +130,93 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
       - run: pnpm -C web install --frozen-lockfile
+      - run: pnpm -C web audit --prod --audit-level high
       - run: pnpm -C web lint
       - run: pnpm -C web typecheck
       - run: pnpm -C web test
       - run: pnpm -C web build
+      - run: pnpm -C web size
       - uses: actions/upload-artifact@v7
         with:
           name: web-dist
           path: web/dist
           if-no-files-found: error
+          retention-days: 7
+
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Informational: a coverage failure never blocks a merge.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup show
+      - run: rustup component add llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - run: cargo llvm-cov --workspace --locked --lcov --output-path lcov.info
+      - uses: actions/upload-artifact@v7
+        with:
+          name: lcov
+          path: lcov.info
+          if-no-files-found: error
+          retention-days: 14
+
+  e2e:
+    name: e2e smoke
+    needs: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      # The release binary embeds web/dist, so the smoke test checks the real UI is served.
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: web/dist
+      - run: cargo build --release --locked -p superorchestrator
+      - name: Release binary size budget
+        run: scripts/check-binary-size.sh target/release/superorchestrator
+      # Fake harnesses only: no real harness CLI is installed or run here.
+      - run: scripts/smoke-ci.sh target/release/superorchestrator
+
+  browser-e2e:
+    name: browser e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # The Playwright scaffold may not exist yet; every step below skips until it does.
+      - name: Detect Playwright
+        id: pw
+        run: |
+          if [ -f web/playwright.config.ts ]; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; echo "No web/playwright.config.ts; skipping browser e2e."; fi
+      - if: steps.pw.outputs.present == 'true'
+        uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - if: steps.pw.outputs.present == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - if: steps.pw.outputs.present == 'true'
+        run: pnpm -C web install --frozen-lockfile
+      - if: steps.pw.outputs.present == 'true'
+        run: pnpm -C web e2e:install
+      - if: steps.pw.outputs.present == 'true'
+        run: pnpm -C web e2e
+      - if: failure() && steps.pw.outputs.present == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          if-no-files-found: ignore
           retention-days: 7

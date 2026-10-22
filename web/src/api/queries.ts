@@ -11,7 +11,7 @@ import { qk, type SessionFilter } from './keys'
 import { useStreamState } from './stream'
 
 export { qk, type SessionFilter }
-import type { ChoicesView, ConfigPatch, ModelCatalog, EventType, Harness, RouteParams, SendMessageParams } from './types'
+import type { ChoicesView, ConfigPatch, PruneRequest, ModelCatalog, EventType, Harness, RouteParams, SendMessageParams } from './types'
 
 /** 5 s polling while the SSE stream is down (design 2.3), otherwise false. */
 export function usePollingInterval(ms = 5000): number | false {
@@ -190,7 +190,7 @@ export const useFlagAccount = () =>
   )
 export const useStartLogin = () => useApiMutation(({ name }: Name) => endpoints.startLogin(name), ({ name }) => [qk.signin(name)])
 export const usePruneWorktrees = () =>
-  useApiMutation((v: { dry_run?: boolean } | void) => endpoints.pruneWorktrees(v ?? {}), () => [qk.worktrees()])
+  useApiMutation((v: PruneRequest | void) => endpoints.pruneWorktrees(v ?? {}), () => [qk.worktrees()])
 export const useCreateAgent = () => useApiMutation((v: { name: string; source: string }) => endpoints.createAgent(v), () => [qk.agents()])
 export const usePutAgent = () =>
   useApiMutation(({ name, source }: Name & { source: string }) => endpoints.putAgent(name, { source }), ({ name }) => [qk.agents(), qk.agent(name)])

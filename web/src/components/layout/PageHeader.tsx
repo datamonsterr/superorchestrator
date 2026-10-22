@@ -14,7 +14,9 @@ export function PageHeader({ title, description, actions }: Props) {
         <h1 className="text-2xl font-semibold tracking-tight">{title}</h1>
         {description && <p className="text-sm text-muted-foreground">{description}</p>}
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      {actions && <div data-slot="page-actions" className="flex items-center gap-2 max-md:[&_a]:min-h-10 max-md:[&_button]:min-h-10">
+          {actions}
+        </div>}
     </div>
   )
 }

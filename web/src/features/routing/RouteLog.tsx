@@ -7,6 +7,7 @@ import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { RelativeTime } from '@/components/common/RelativeTime'
 import { TableSkeleton } from '@/components/common/TableSkeleton'
+import { ScrollTable } from '@/components/common/ScrollTable'
 import { useRouteRecords } from '@/api/queries'
 
 export const LOG_PAGE_SIZE = 10
@@ -29,7 +30,7 @@ export function RouteLog() {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="overflow-x-auto rounded-md border">
+      <ScrollTable>
         <Table>
           <TableHeader>
             <TableRow>
@@ -64,7 +65,7 @@ export function RouteLog() {
             ))}
           </TableBody>
         </Table>
-      </div>
+      </ScrollTable>
       <nav aria-label="Route log pages" className="flex items-center justify-end gap-3">
         <span className="text-sm text-muted-foreground" aria-live="polite">
           Page {index + 1}

@@ -28,7 +28,7 @@ describe('routes', () => {
     ['/accounts', 'Accounts'],
     ['/choices', 'Choices and routing'],
     ['/agents', 'Agents'],
-    ['/agents/reviewer', 'Agent editor'],
+    ['/agents/reviewer', 'reviewer'],
     ['/workflows', 'Workflows'],
     ['/workflows/wf-1', 'Workflow run'],
     ['/settings', 'Settings'],
