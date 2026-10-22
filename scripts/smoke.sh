@@ -5,7 +5,7 @@
 # runs it. Use accounts you can afford to spend a few small turns on.
 #
 # What it does, in order:
-#   1. Creates an isolated config dir, socket, HOME and wrapper dir under a temp directory.
+#   1. Creates an isolated config dir, socket and wrapper dir under a temp directory.
 #   2. Imports one account per harness you name (see the options below).
 #   3. Asks `claude -p` to delegate one trivial task to each harness through
 #      `superorchestrator mcp` (a strict MCP config; only mcp__superorchestrator__* tools).
@@ -15,12 +15,12 @@
 #   7. Prints a summary table and exits non-zero if any step failed.
 #
 # Isolation: every superorchestrator command runs with SUPERORCHESTRATOR_CONFIG_DIR, the
-# socket, HOME and the wrapper dir (accounts.wrapper_dir) set to throwaway paths. Your real
-# config dir, your real wrappers (for example ~/.local/bin/codex-acc2) and your installed
-# skill and MCP registrations are never read or written. The credential homes you pass are
-# linked, not copied, and the harnesses read and write them as they always do. Only the
-# `claude -p` orchestrator runs with your real HOME, so it can use your Claude login.
-# The script never runs `install`.
+# socket and the wrapper dir (accounts.wrapper_dir) set to throwaway paths, and with
+# SUPERORCHESTRATOR_SKIP_SKILL_REFRESH set. Your real config dir, your real wrappers (for
+# example ~/.local/bin/codex-acc2) and your installed skill and MCP registrations are never
+# read or written. HOME stays real, because agy needs it for the system keyring. The
+# credential homes you pass are linked, not copied, and the harnesses read and write them
+# as they always do. The script never runs `install`.
 #
 # Usage: scripts/smoke.sh [options]
 #   --binary PATH         superorchestrator binary (default: the one on PATH)
@@ -70,17 +70,16 @@ command -v claude >/dev/null 2>&1 || die "the claude CLI is needed as the orches
 bin=$(command -v "$bin" 2>/dev/null) || die "superorchestrator not found; pass --binary"
 case $bin in /*) ;; *) bin=$PWD/$bin ;; esac
 
-real_home=$HOME
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/so-smoke.XXXXXX")
 # Unix socket paths are short on macOS, so the socket gets its own short directory.
 sockdir=$(mktemp -d /tmp/so.XXXXXX)
-mkdir -p "$tmp/home" "$tmp/wrappers" "$tmp/work" "$tmp/logs"
+mkdir -p "$tmp/wrappers" "$tmp/work" "$tmp/logs"
 
-# Isolation. Nothing below may point at the real config dir, socket, HOME or wrappers.
+# Isolation. Nothing below may point at the real config dir, socket or wrappers.
 export SUPERORCHESTRATOR_CONFIG_DIR=$tmp/config
 export SUPERORCHESTRATOR_SOCKET=$sockdir/s.sock
-export HOME=$tmp/home
-unset XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME SUPERORCHESTRATOR_RUN_ID
+export SUPERORCHESTRATOR_SKIP_SKILL_REFRESH=1
+unset XDG_RUNTIME_DIR SUPERORCHESTRATOR_RUN_ID
 case $SUPERORCHESTRATOR_CONFIG_DIR in "$tmp"/*) ;; *) die "isolation check failed" ;; esac
 
 names=()
@@ -137,7 +136,7 @@ new_run_id() { # new_run_id BEFORE_FILE HARNESS ACCOUNT STATE -> newest id not i
 }
 
 echo "smoke: this spends real quota on the accounts you named"
-echo "smoke: config $SUPERORCHESTRATOR_CONFIG_DIR, wrappers $tmp/wrappers, home $HOME"
+echo "smoke: config $SUPERORCHESTRATOR_CONFIG_DIR, wrappers $tmp/wrappers"
 
 if so init --yes >"$tmp/logs/init.log" 2>&1 &&
   so config set accounts.wrapper_dir "$tmp/wrappers" >>"$tmp/logs/init.log" 2>&1; then
@@ -148,19 +147,16 @@ else
 fi
 
 # MCP config for the orchestrator. The server runs with the isolated environment.
-git_cfg=
-[ -f "$real_home/.gitconfig" ] && git_cfg=$real_home/.gitconfig
-python3 -I - "$tmp/mcp.json" "$bin" "$PATH" "$git_cfg" <<'PY'
+python3 -I - "$tmp/mcp.json" "$bin" "$PATH" <<'PY'
 import json, os, sys
-out, binary, path, git_cfg = sys.argv[1:5]
+out, binary, path = sys.argv[1:4]
 env = {
     "HOME": os.environ["HOME"],
     "PATH": path,
     "SUPERORCHESTRATOR_CONFIG_DIR": os.environ["SUPERORCHESTRATOR_CONFIG_DIR"],
     "SUPERORCHESTRATOR_SOCKET": os.environ["SUPERORCHESTRATOR_SOCKET"],
+    "SUPERORCHESTRATOR_SKIP_SKILL_REFRESH": "1",
 }
-if git_cfg:
-    env["GIT_CONFIG_GLOBAL"] = git_cfg
 cfg = {"mcpServers": {"superorchestrator": {"command": binary, "args": ["mcp"], "env": env}}}
 json.dump(cfg, open(out, "w"))
 PY
@@ -193,7 +189,7 @@ if [ -n "$agy_home" ] && import_account agy smoke-agy "$agy_home"; then harnesse
 
 # Runs `claude -p` as the orchestrator with only the superorchestrator tools.
 orchestrate() { # orchestrate LOGNAME PROMPT
-  HOME=$real_home bounded "$timeout_s" claude -p "$2" \
+  bounded "$timeout_s" claude -p "$2" \
     --mcp-config "$tmp/mcp.json" --strict-mcp-config \
     --allowedTools 'mcp__superorchestrator__*' \
     --output-format json >"$tmp/logs/$1.json" 2>"$tmp/logs/$1.err"

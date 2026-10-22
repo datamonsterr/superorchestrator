@@ -17,6 +17,9 @@ const FRONT_MATTER: &str = "---\nname: superorchestrator\ndescription: Delegate 
 harnesses and accounts (claude, codex, opencode, agy) through the superorchestrator MCP \
 server. Use it to route, spawn, wait on, message and review subagent runs.\n---\n";
 
+/// Environment variable that disables [`refresh`].
+pub const SKIP_ENV: &str = "SUPERORCHESTRATOR_SKIP_SKILL_REFRESH";
+
 /// Longest agent description kept in the skill, in characters.
 const DESCRIPTION_MAX: usize = 160;
 
@@ -155,8 +158,14 @@ pub struct Refresh {
 /// [`MARKER`] and differs from the new text, so nothing happens before `install` ran and a
 /// hand-written skill of the same name is never replaced. No backup is made: the file is
 /// generated.
+///
+/// Setting `SUPERORCHESTRATOR_SKIP_SKILL_REFRESH` (to any non-empty value) turns this off, for
+/// runs that use a throwaway config dir against a real `HOME`, such as `scripts/smoke.sh`.
 pub fn refresh(paths: &Paths, home: &Path) -> Refresh {
     let mut out = Refresh::default();
+    if std::env::var_os(SKIP_ENV).is_some_and(|v| !v.is_empty()) {
+        return out;
+    }
     let existing: Vec<(PathBuf, String)> = skill_files(home)
         .into_iter()
         .filter_map(|p| {

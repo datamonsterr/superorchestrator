@@ -105,3 +105,17 @@ fn setting_choices_refreshes_the_skill() {
         "{s}"
     );
 }
+
+#[test]
+fn the_skip_variable_turns_the_refresh_off() {
+    let e = Env::new();
+    e.init();
+    install_skill(&e);
+    e.cmd()
+        .env("SUPERORCHESTRATOR_SKIP_SKILL_REFRESH", "1")
+        .current_dir(e.tmp.path())
+        .args(["agent", "create", "helper"])
+        .assert()
+        .success();
+    assert!(skill(&e).starts_with("stale"));
+}
