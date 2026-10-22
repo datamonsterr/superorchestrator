@@ -185,6 +185,13 @@ pub fn recreate(repo: &Path, path: &Path, branch: &str, base: Option<&str>) -> R
     Ok(())
 }
 
+/// Removes the worktree directory only; its branch stays (it may hold the run's work).
+pub fn remove_dir(repo: &Path, path: &Path) -> Result<(), String> {
+    let path_arg = path.to_string_lossy().into_owned();
+    git(repo, &["worktree", "remove", "--force", "--", &path_arg])?;
+    Ok(())
+}
+
 /// True when the branch's tip is contained in `base` (merged) or in any remote branch
 /// (pushed).
 pub fn merged_or_pushed(c: &Created) -> bool {

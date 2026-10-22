@@ -85,15 +85,6 @@ fn create_private_dir(path: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
 }
 
-/// Messages meant as input to the run itself. The others (a child's progress, question or
-/// result) are for the run to read with `read_messages`.
-pub(crate) fn is_input(m: &so_store::MessageRow) -> bool {
-    matches!(
-        m.kind,
-        so_core::MessageKind::Message | so_core::MessageKind::Answer
-    )
-}
-
 /// At most `max` characters, ending in an ellipsis when cut.
 pub(crate) fn excerpt(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
@@ -263,20 +254,7 @@ impl RunManager {
     /// Messages sent to the run while it was queued, ready to append to its prompt. They
     /// are marked read.
     async fn start_messages(&self, row: &RunRow) -> String {
-        let (sid, id) = (row.session_id.clone(), row.id.clone());
-        let msgs = self
-            .db(move |s| {
-                let msgs: Vec<_> = s
-                    .unread_messages(&sid, Some(&id), 100)?
-                    .into_iter()
-                    .filter(is_input)
-                    .collect();
-                let ids: Vec<String> = msgs.iter().map(|m| m.id.clone()).collect();
-                s.mark_messages_read(&ids, Utc::now())?;
-                Ok(msgs)
-            })
-            .await
-            .unwrap_or_default();
+        let msgs = self.claim_input(row).await;
         if msgs.is_empty() {
             return String::new();
         }
@@ -482,29 +460,66 @@ impl RunManager {
     }
 
     async fn flush_unread(&self, row: &RunRow, control: &RunControl) {
+        let batch = self.claim_input(row).await;
+        self.hand_over(batch, |text| {
+            let control = control.clone();
+            async move { control.send(&text).await.map_err(|e| e.to_string()) }
+        })
+        .await;
+    }
+
+    /// Claims the run's unread input messages. The claim is atomic, so two flushes racing
+    /// over the same messages each get a different share and none is delivered twice.
+    pub(crate) async fn claim_input(&self, row: &RunRow) -> Vec<so_store::MessageRow> {
         let (sid, id) = (row.session_id.clone(), row.id.clone());
-        let asking = self.is_asking(&row.id);
-        let pending = self
-            .db(move |s| s.unread_messages(&sid, Some(&id), 100))
+        // Only the kinds meant as input are read (in SQL, so the limit cannot cut them
+        // off behind a child's progress messages), and all are claimed in one step.
+        let kinds = [so_core::MessageKind::Message, so_core::MessageKind::Answer];
+        let mut claimed = self
+            .db(move |s| {
+                let pending = s.unread_messages_of_kinds(&sid, Some(&id), &kinds, 100)?;
+                let ids: Vec<String> = pending.iter().map(|m| m.id.clone()).collect();
+                let won = s.claim_messages(&ids, Utc::now())?;
+                Ok(pending
+                    .into_iter()
+                    .filter(|m| won.contains(&m.id))
+                    .collect::<Vec<_>>())
+            })
             .await
             .unwrap_or_default();
-        // An answer to a blocked `ask_parent` goes to that call.
-        let batch: Vec<_> = pending
-            .iter()
-            .filter(|m| is_input(m))
-            .filter(|m| !(m.kind == so_core::MessageKind::Answer && asking))
-            .collect();
-        if batch.is_empty() {
-            return;
+        // An answer to a blocked `ask_parent` belongs to that call. Checked after the
+        // claim, so an `ask_parent` that began in between still gets it back.
+        if self.is_asking(&row.id) {
+            let back: Vec<String> = claimed
+                .iter()
+                .filter(|m| m.kind == so_core::MessageKind::Answer)
+                .map(|m| m.id.clone())
+                .collect();
+            if !back.is_empty() {
+                claimed.retain(|m| m.kind != so_core::MessageKind::Answer);
+                self.unclaim(back).await;
+            }
         }
-        // Marked read before sending, so a concurrent delivery cannot send them twice.
-        let ids: Vec<String> = batch.iter().map(|m| m.id.clone()).collect();
-        let _ = self
-            .db(move |s| s.mark_messages_read(&ids, Utc::now()))
-            .await;
-        for m in batch {
-            if let Err(e) = control.send(&m.body).await {
-                tracing::warn!(run_id = %row.id, error = %e, "could not hand over a message");
+        claimed
+    }
+
+    /// Sends claimed messages in order. At the first failure that message and the rest go
+    /// back to unread, for the next flush.
+    ///
+    /// Two flushes running at once each hold a different share of the messages, so the
+    /// order across them is not guaranteed; within one flush it is. In practice flushes
+    /// are rare (a process start) and the messages are independent notes.
+    pub(crate) async fn hand_over<F, Fut>(&self, batch: Vec<so_store::MessageRow>, mut send: F)
+    where
+        F: FnMut(String) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        for (i, m) in batch.iter().enumerate() {
+            if let Err(e) = send(m.body.clone()).await {
+                tracing::warn!(error = %e, "could not hand over a message; keeping it unread");
+                let rest: Vec<String> = batch[i..].iter().map(|m| m.id.clone()).collect();
+                let _ = self.db(move |s| s.mark_messages_unread(&rest)).await;
+                return;
             }
         }
     }
@@ -898,6 +913,88 @@ mod tests {
         assert!(m.store().get_flag("claude-t", "default").unwrap().is_some());
         assert_eq!(m.live_count(), 0);
         assert!(!m.busy());
+    }
+
+    async fn queue_messages(m: &RunManager, row: &RunRow, bodies: &[&str]) {
+        for b in bodies {
+            m.store_message(
+                &row.session_id,
+                None,
+                Some(&row.id),
+                so_core::MessageKind::Message,
+                b,
+                false,
+            )
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_flushes_deliver_each_message_once() {
+        use super::super::testutil::{insert_run, manager};
+        let (m, _dir) = manager();
+        let row = insert_run(&m, RunState::Running);
+        let bodies: Vec<String> = (0..20).map(|i| format!("note {i}")).collect();
+        queue_messages(
+            &m,
+            &row,
+            &bodies.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+        .await;
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let (m, row, sent) = (m.clone(), row.clone(), sent.clone());
+            tasks.push(tokio::spawn(async move {
+                let batch = m.claim_input(&row).await;
+                m.hand_over(batch, |text| {
+                    let sent = sent.clone();
+                    async move {
+                        sent.lock().unwrap().push(text);
+                        Ok(())
+                    }
+                })
+                .await;
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        let mut got = sent.lock().unwrap().clone();
+        got.sort();
+        let mut want = bodies;
+        want.sort();
+        assert_eq!(got, want, "every message exactly once");
+    }
+
+    #[tokio::test]
+    async fn a_failed_send_leaves_the_message_unread_for_the_next_flush() {
+        use super::super::testutil::{insert_run, manager};
+        let (m, _dir) = manager();
+        let row = insert_run(&m, RunState::Running);
+        queue_messages(&m, &row, &["first", "second", "third"]).await;
+        let batch = m.claim_input(&row).await;
+        assert_eq!(batch.len(), 3);
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s2 = sent.clone();
+        m.hand_over(batch, move |text| {
+            let sent = s2.clone();
+            async move {
+                if text == "second" {
+                    return Err("pipe closed".to_string());
+                }
+                sent.lock().unwrap().push(text);
+                Ok(())
+            }
+        })
+        .await;
+        assert_eq!(*sent.lock().unwrap(), ["first"]);
+        // The failed one and the rest are unread again, in order.
+        let again = m.claim_input(&row).await;
+        let bodies: Vec<&str> = again.iter().map(|m| m.body.as_str()).collect();
+        assert_eq!(bodies, ["second", "third"]);
+        assert!(m.claim_input(&row).await.is_empty());
     }
 
     #[tokio::test]

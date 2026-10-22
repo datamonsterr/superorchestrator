@@ -21,7 +21,7 @@ use tokio::process::Command;
 use super::lifecycle::{Outcome, excerpt};
 use super::resume::Resumed;
 use super::worktree;
-use super::{R, RunManager, SHUTDOWN_DEADLINE, lock, rpc};
+use super::{LockKind, R, RunManager, SHUTDOWN_DEADLINE, lock, rpc};
 use crate::dispatch::ConnCtx;
 
 /// Longest a single check may run.
@@ -67,8 +67,10 @@ const OUTPUT_CAP: usize = 64 * 1024;
 /// How long output may keep arriving after the child itself has exited.
 const PIPE_GRACE: Duration = Duration::from_millis(250);
 
-/// Kills the child's whole process group when dropped: on a time limit, a cancelled
-/// check, and after a normal exit (for background processes it left behind).
+/// Kills the child's whole process group when dropped: on a time limit and on a cancelled
+/// check. After a clean exit it is disarmed when both pipes closed, so a background process
+/// that detached itself (output redirected away) is left running; one that still holds
+/// the pipes is killed.
 struct GroupGuard(Option<u32>);
 
 impl GroupGuard {
@@ -443,49 +445,100 @@ impl RunManager {
         result_json: Option<String>,
         failed: &[CheckOutcome],
     ) -> Gate {
-        // Tear the process down first, while the run is still `running`: once the state
-        // reads `pending_review` a reject may resume it, and a teardown still in flight
-        // would then clear the new process's handle and attempt.
-        let _ = control.shutdown(SHUTDOWN_DEADLINE).await;
-        let ended = {
-            let id = run_id.to_string();
-            self.db(move |s| {
-                if let Some(a) = s
-                    .list_attempts(&id, 1000)?
-                    .into_iter()
-                    .rev()
-                    .find(|a| a.ended_at.is_none())
-                {
-                    s.finish_attempt(&a.id, "pending_review", chrono::Utc::now())?;
-                }
-                Ok(())
-            })
-            .await
-        };
-        drop(ended);
+        // Take the process out of service first, while the run is still `running`. With no
+        // live handle a message that arrives now stays unread and is handed to the next
+        // process; once the state reads `pending_review` a reject may resume the run, and
+        // a teardown still in flight would clear the new process's handle and attempt.
         if let Some(rt) = lock(&self.inner.runs).get_mut(run_id) {
             rt.live = None;
         }
+        let _ = control.shutdown(SHUTDOWN_DEADLINE).await;
+        let attempt = {
+            let id = run_id.to_string();
+            self.db(move |s| {
+                let open = s
+                    .list_attempts(&id, 1000)?
+                    .into_iter()
+                    .rev()
+                    .find(|a| a.ended_at.is_none());
+                if let Some(a) = &open {
+                    s.finish_attempt(&a.id, "pending_review", chrono::Utc::now())?;
+                }
+                Ok(open.map(|a| a.id))
+            })
+            .await
+            .ok()
+            .flatten()
+        };
+        // From the state change to the message nothing may resume the run: a reject
+        // waits on this lock, so its events come after these.
+        let _gate = self.lock_run(LockKind::Gate, run_id).await;
+        let id = run_id.to_string();
+        let row = match self.db(move |s| s.get_run(&id)).await {
+            Ok(Some(row)) => row,
+            other => {
+                // Without the row there is nothing to announce the gate with.
+                let why = match other {
+                    Err(e) => e.message,
+                    _ => "the run is gone".to_string(),
+                };
+                tracing::error!(%run_id, %why, "cannot read the run at the review gate");
+                self.relabel_attempt(attempt, "failed").await;
+                let reason = format!("could not read the run at the review gate: {why}");
+                self.fail_run(run_id, so_core::ErrorKind::Other, &reason)
+                    .await;
+                return Gate::Entered;
+            }
+        };
+        let id = run_id.to_string();
+        let moved = self
+            .db_raw(move |s| s.update_run_state(&id, RunState::Running, RunState::PendingReview))
+            .await;
+        match moved {
+            Ok(()) => {}
+            Err(
+                so_store::StoreError::StateConflict { .. }
+                | so_store::StoreError::InvalidTransition { .. },
+            ) => {
+                // Someone moved the run first: a cancel, or a failure. Label the attempt
+                // with what the run is now.
+                let id = run_id.to_string();
+                let now = self.db(move |s| s.get_run(&id)).await.ok().flatten();
+                let label = now.map_or("lost", |r| r.state.as_str());
+                self.relabel_attempt(attempt, label).await;
+                return Gate::Entered;
+            }
+            Err(e) => {
+                self.relabel_attempt(attempt, "failed").await;
+                let reason = format!("could not record the review state: {e}");
+                self.fail_run(run_id, so_core::ErrorKind::Other, &reason)
+                    .await;
+                return Gate::Entered;
+            }
+        }
+        let delay = self.gate_delay();
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
+        // The state is committed: whatever else goes wrong, the run is at the gate and
+        // must be announced.
         let id = run_id.to_string();
         let patch = RunPatch {
             result_json: Some(result_json),
             ..RunPatch::default()
         };
-        // The state change decides first: a run that was cancelled meanwhile keeps its
-        // result untouched.
-        let moved = self
-            .db(move |s| {
-                s.update_run_state(&id, RunState::Running, RunState::PendingReview)?;
-                s.patch_run(&id, &patch)?;
-                s.get_run(&id)
-            })
-            .await;
-        let Ok(Some(row)) = moved else {
-            return Gate::Entered;
+        let faulty = self
+            .inner
+            .fault_gate_result
+            .load(std::sync::atomic::Ordering::SeqCst);
+        let stored = if faulty {
+            Err(rpc(so_core::proto::INTERNAL_ERROR, "injected store fault"))
+        } else {
+            self.db(move |s| s.patch_run(&id, &patch)).await
         };
-        self.inner.finished.send_modify(|n| *n += 1);
-        // A pending review holds no slot: let the queue use it.
-        self.request_drain();
+        if let Err(e) = stored {
+            tracing::error!(%run_id, error = %e.message, "could not store the result at the review gate");
+        }
         let names: Vec<&str> = failed.iter().map(|f| f.name.as_str()).collect();
         self.emit(
             &row.session_id,
@@ -494,6 +547,9 @@ impl RunManager {
             json!({"from": RunState::Running, "to": RunState::PendingReview, "failed_checks": names}),
         )
         .await;
+        self.inner.finished.send_modify(|n| *n += 1);
+        // A pending review holds no slot: let the queue use it.
+        self.request_drain();
         let body = if failed.is_empty() {
             format!("Run {run_id} is ready for review.")
         } else {
@@ -514,6 +570,16 @@ impl RunManager {
             )
             .await;
         Gate::Entered
+    }
+
+    /// Changes the outcome recorded on an attempt that `enter_review` already closed.
+    async fn relabel_attempt(&self, attempt: Option<String>, outcome: &str) {
+        if let Some(aid) = attempt {
+            let outcome = outcome.to_string();
+            let _ = self
+                .db(move |s| s.finish_attempt(&aid, &outcome, chrono::Utc::now()))
+                .await;
+        }
     }
 
     async fn pending_review_run(&self, ctx: &ConnCtx, run: &str) -> R<RunRow> {
@@ -541,7 +607,7 @@ impl RunManager {
             &row.session_id,
             Some(&row.id),
             EventType::ReviewAccepted,
-            json!({}),
+            json!({"actor": ctx.actor()}),
         )
         .await;
         let outcome = Outcome {
@@ -580,7 +646,7 @@ impl RunManager {
             )
             .await;
         match self
-            .resume_finished(&row, &p.feedback, "review rejected", None)
+            .resume_finished(&row, &p.feedback, "review rejected", None, ctx.actor())
             .await?
         {
             Resumed::Skipped => Err(rpc(INVALID_REQUEST, "the run changed state; try again")),
@@ -698,15 +764,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_detached_background_process_survives_a_clean_exit() {
+        let dir = std::env::temp_dir();
+        let marker = dir.join(format!("so-detached-{}", std::process::id()));
+        let _ = std::fs::remove_file(&marker);
+        // Output redirected away: the pipes close with the shell, so there is nothing to
+        // clean up and the daemon-like helper keeps running.
+        let cmd = format!(
+            "(sleep 1; touch {}) >/dev/null 2>&1 </dev/null & echo ok",
+            marker.display()
+        );
+        let c = check_cmd("cmd:detached", &cmd, &dir, Duration::from_secs(20)).await;
+        assert!(c.ok, "{c:?}");
+        for _ in 0..200 {
+            if marker.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(marker.exists(), "the detached process was killed");
+        let _ = std::fs::remove_file(&marker);
+    }
+
+    #[tokio::test]
     async fn a_timeout_kills_the_whole_process_group() {
         let dir = std::env::temp_dir();
-        let marker = dir.join(format!("so-grandchild-{}", std::process::id()));
-        let _ = std::fs::remove_file(&marker);
-        let cmd = format!("(sleep 1; touch {}) & sleep 30", marker.display());
-        let t = check_cmd("cmd:slow", &cmd, &dir, Duration::from_millis(200)).await;
+        let pidfile = dir.join(format!("so-grandchild-{}", std::process::id()));
+        let _ = std::fs::remove_file(&pidfile);
+        let cmd = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
+        let t = check_cmd("cmd:slow", &cmd, &dir, Duration::from_millis(500)).await;
         assert!(!t.ok && t.detail.contains("timed out"));
-        tokio::time::sleep(Duration::from_millis(1500)).await;
-        assert!(!marker.exists(), "the grandchild survived the timeout");
+        let pid: u32 = std::fs::read_to_string(&pidfile)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        // The grandchild must go too; poll until it does.
+        let gone = || !Path::new(&format!("/proc/{pid}")).exists();
+        for _ in 0..200 {
+            if gone() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(gone(), "the grandchild survived the timeout");
+        let _ = std::fs::remove_file(&pidfile);
     }
 
     #[tokio::test]
@@ -732,5 +834,53 @@ mod tests {
         assert!(!f.ok && f.detail.contains("exited with 3") && f.detail.contains("boom"));
         let t = check_cmd("cmd:sleep", "sleep 5", &dir, Duration::from_millis(100)).await;
         assert!(!t.ok && t.detail.contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn accepted_worktrees_are_only_removed_for_terminal_runs() {
+        use super::super::testutil::{insert_run, manager};
+        let (m, dir) = manager();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let st = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@e"])
+                .args(args)
+                .status()
+                .unwrap();
+            assert!(st.success(), "git {args:?}");
+        };
+        git(&["init", "-q", "-b", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "init"]);
+        let info = worktree::repo_info(&repo).unwrap();
+        let created = worktree::create(
+            &info,
+            &dir.path().join("wt").to_string_lossy(),
+            "so/",
+            "x",
+            "0123456789abcdef",
+        )
+        .unwrap();
+        let row = insert_run(&m, RunState::Running);
+        let patch = RunPatch {
+            worktree_path: Some(Some(created.path.to_string_lossy().into_owned())),
+            branch: Some(Some(created.branch.clone())),
+            worktree_base: Some(Some(created.base.clone())),
+            worktree_repo: Some(Some(created.repo.to_string_lossy().into_owned())),
+            ..RunPatch::default()
+        };
+        m.store().patch_run(&row.id, &patch).unwrap();
+        // Resumed meanwhile (running): the worktree is in use and stays.
+        m.remove_accepted_worktree(&row.id).await;
+        assert!(created.path.is_dir());
+        // Terminal and merged (nothing was committed): removed.
+        let finish = so_store::FinishPatch::default();
+        m.store()
+            .finish_run(&row.id, RunState::Running, RunState::Succeeded, &finish)
+            .unwrap();
+        m.remove_accepted_worktree(&row.id).await;
+        assert!(!created.path.exists());
     }
 }

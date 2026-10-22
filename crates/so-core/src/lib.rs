@@ -8,6 +8,7 @@ pub mod error;
 mod fsutil;
 pub mod paths;
 pub mod proto;
+pub mod redact;
 pub mod types;
 
 pub use account::{AccountFile, validate_account_name};

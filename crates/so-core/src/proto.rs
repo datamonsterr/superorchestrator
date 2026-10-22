@@ -21,6 +21,8 @@ pub const DEPTH_LIMIT: i64 = -32001;
 pub const CAP_EXCEEDED: i64 = -32002;
 pub const NOT_FOUND: i64 = -32003;
 pub const UNAVAILABLE: i64 = -32004;
+/// A call took longer than its deadline.
+pub const TIMEOUT: i64 = -32005;
 
 // Method names.
 pub const METHOD_HELLO: &str = "hello";
@@ -43,6 +45,8 @@ pub const METHOD_REPORT_PROGRESS: &str = "report_progress";
 pub const METHOD_ASK_PARENT: &str = "ask_parent";
 /// Returns the command a person runs to join a run (CLI `join`).
 pub const METHOD_JOIN_RUN: &str = "join_run";
+/// Starts the web UI inside the supervisor (CLI `ui`).
+pub const METHOD_UI_START: &str = "ui_start";
 
 fn jsonrpc() -> String {
     JSONRPC.to_string()
@@ -345,6 +349,9 @@ pub struct UsageTotals {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RunView {
     pub run_id: String,
+    /// Session the run belongs to.
+    #[serde(default)]
+    pub session_id: String,
     pub state: RunState,
     #[serde(default)]
     pub harness: Option<Harness>,
@@ -486,6 +493,45 @@ pub struct AccountView {
     /// the other fields are then placeholders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Routing priority (lower is tried first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<i32>,
+    /// Quota pools of the account (agy: gemini and claude).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pools: Option<Vec<String>>,
+    /// Active manual or automatic cooldowns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flags: Option<Vec<AccountFlag>>,
+}
+
+/// A cooldown on an account (or one of its pools).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AccountFlag {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pool: Option<String>,
+    pub until: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// Parameters of `ui_start`; unset fields fall back to `[ui]` in `config.toml`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UiStartParams {
+    #[serde(default)]
+    pub bind: Option<String>,
+    #[serde(default)]
+    pub port: Option<u16>,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+/// Result of `ui_start`: where the UI listens.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct UiStartResult {
+    pub url: String,
+    /// True when the UI was already running (the parameters were then ignored).
+    pub already_running: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -501,6 +547,14 @@ pub struct AgentView {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// Where the agent was found: `user`, `superorchestrator` or `claude` (read-only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// The harness the agent asks for (`auto` or a harness name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

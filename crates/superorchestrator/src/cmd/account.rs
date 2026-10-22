@@ -10,7 +10,8 @@ use dialoguer::{Confirm, Input};
 use serde_json::{Value, json};
 use so_accounts::{HostEnv, ImportCandidate, manage};
 use so_core::{AccountFile, Config, Harness, Paths};
-use so_store::{FlagRow, Store};
+use so_store::Store;
+use so_supervisor::services::accounts::{FlagAction, apply_flag, flag_pools};
 
 use crate::cli::{AccountAdd, AccountCmd, AccountFlag, AccountImport, AccountRemove};
 use crate::ctx::{Ctx, interactive, stdin_is_tty};
@@ -258,15 +259,10 @@ fn set_enabled(ctx: &Ctx, name: &str, enabled: bool) -> Result<ExitCode> {
 
 fn flag(ctx: &Ctx, a: AccountFlag) -> Result<ExitCode> {
     let account = load_account(&ctx.paths, &a.name)?;
-    let pools: Vec<String> = match &a.pool {
-        Some(p) => vec![p.clone()],
-        None => account.pools.clone(),
-    };
+    let pools = flag_pools(&account, a.pool.as_deref());
     let store = Store::open(ctx.paths.state_db()).context("could not open state.db")?;
     if a.clear {
-        for p in &pools {
-            store.clear_flag(&a.name, p)?;
-        }
+        apply_flag(&store, &a.name, &pools, FlagAction::Clear, None)?;
         ctx.emit_ok(
             json!({ "name": a.name, "pools": pools, "until": null }),
             &format!("cleared cooldown on {}", a.name),
@@ -282,14 +278,7 @@ fn flag(ctx: &Ctx, a: AccountFlag) -> Result<ExitCode> {
         }
         _ => bail!("--hours must be a positive number"),
     };
-    for p in &pools {
-        store.set_flag(&FlagRow {
-            account: a.name.clone(),
-            pool: p.clone(),
-            until,
-            reason: "manual".into(),
-        })?;
-    }
+    apply_flag(&store, &a.name, &pools, FlagAction::Until(until), None)?;
     ctx.emit_ok(
         json!({ "name": a.name, "pools": pools, "until": until.to_rfc3339() }),
         &format!("{} in cooldown until {}", a.name, until.to_rfc3339()),

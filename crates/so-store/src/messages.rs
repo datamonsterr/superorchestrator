@@ -68,6 +68,66 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
+    /// Like [`Store::unread_messages`], but only the given kinds, so a limit never cuts
+    /// off the kind the caller wants behind other kinds.
+    pub fn unread_messages_of_kinds(
+        &self,
+        session_id: &str,
+        to_run: Option<&str>,
+        kinds: &[so_core::MessageKind],
+        limit: usize,
+    ) -> Result<Vec<MessageRow>> {
+        let list = kinds
+            .iter()
+            .map(|k| format!("'{}'", enum_to_sql(k)))
+            .collect::<Vec<_>>()
+            .join(",");
+        let conn = self.conn();
+        let mut st = conn.prepare(&format!(
+            "SELECT {COLS} FROM messages WHERE session_id = ?1 AND to_run IS ?2 \
+             AND read_at IS NULL AND kind IN ({list}) ORDER BY created_at, id LIMIT ?3"
+        ))?;
+        let rows = st.query_map(params![session_id, to_run, limit as i64], map)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Marks the given messages read and returns the ids this call actually changed. Two
+    /// callers racing over the same ids get disjoint sets, so a message is handed to
+    /// exactly one of them.
+    pub fn claim_messages(&self, ids: &[String], now: DateTime<Utc>) -> Result<Vec<String>> {
+        let now = ts_to_sql(&now);
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let mut claimed = Vec::new();
+        {
+            let mut st = tx.prepare(
+                "UPDATE messages SET read_at = ?2 WHERE id = ?1 AND read_at IS NULL RETURNING id",
+            )?;
+            for id in ids {
+                let mut rows = st.query(params![id, now])?;
+                if let Some(r) = rows.next()? {
+                    claimed.push(r.get::<_, String>(0)?);
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(claimed)
+    }
+
+    /// Puts messages back to unread (a delivery that failed after they were claimed).
+    pub fn mark_messages_unread(&self, ids: &[String]) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        {
+            let mut st = tx.prepare("UPDATE messages SET read_at = NULL WHERE id = ?1")?;
+            for id in ids {
+                st.execute(params![id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Marks messages read now; returns how many were newly marked.
     pub fn mark_messages_read(&self, ids: &[String], now: DateTime<Utc>) -> Result<usize> {
         let now = ts_to_sql(&now);
@@ -102,6 +162,24 @@ mod tests {
             created_at: crate::codec::now(),
             read_at: None,
         }
+    }
+
+    #[test]
+    fn claim_returns_only_what_it_flipped_and_unread_restores() {
+        let s = Store::open_in_memory().unwrap();
+        let a = msg("s", Some("r"));
+        let b = msg("s", Some("r"));
+        for m in [&a, &b] {
+            s.insert_message(m).unwrap();
+        }
+        let ids = vec![a.id.clone(), b.id.clone()];
+        let now = crate::codec::now();
+        assert_eq!(s.claim_messages(&ids[..1], now).unwrap(), ids[..1]);
+        // The second claimer gets only what the first left.
+        assert_eq!(s.claim_messages(&ids, now).unwrap(), ids[1..]);
+        assert!(s.claim_messages(&ids, now).unwrap().is_empty());
+        s.mark_messages_unread(&ids[..1]).unwrap();
+        assert_eq!(s.unread_messages("s", Some("r"), 10).unwrap(), vec![a]);
     }
 
     #[test]
