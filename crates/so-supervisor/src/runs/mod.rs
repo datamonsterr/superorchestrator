@@ -13,6 +13,7 @@ mod lifecycle;
 mod pump;
 mod queue;
 mod reconcile;
+mod resume;
 mod review;
 mod spawn;
 mod view;
@@ -78,6 +79,8 @@ pub(crate) struct RunRt {
     /// Blocking calls in progress (`ask_parent`, `wait_agent` on children). While there is
     /// one the run is `waiting` and is not stall-checked.
     pub waits: u32,
+    /// How many of those are `ask_parent` calls.
+    pub asks: u32,
 }
 
 struct Inner {
@@ -105,6 +108,8 @@ struct Inner {
     go_live_open: watch::Sender<bool>,
     launch_timeout_ms: AtomicU64,
     launch_delay_ms: AtomicU64,
+    /// How long a question may wait before `question_waiting_10m` fires.
+    question_notify_ms: AtomicU64,
 }
 
 impl Drop for Inner {
@@ -158,6 +163,7 @@ impl RunManager {
                 u64::try_from(LAUNCH_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
             ),
             launch_delay_ms: AtomicU64::new(0),
+            question_notify_ms: AtomicU64::new(600_000),
         });
         queue::spawn_drainer(&inner, drain_wake);
         reconcile::spawn_resumer(&inner, resume_rx);
@@ -179,11 +185,21 @@ impl RunManager {
     }
 
     /// Sends a notification about `key` (rate limited, filtered by `notifications.on`).
-    pub(crate) async fn notify(&self, event: &str, key: &str, name: &str, reason: &str) {
-        self.inner
-            .notifications
-            .notify(event, key, name, reason)
-            .await;
+    /// Delivery runs on its own task: a slow webhook never holds up a run.
+    pub(crate) fn notify(&self, event: &str, key: &str, name: &str, reason: &str) {
+        let inner = self.inner.clone();
+        let (event, key, name, reason) = (
+            event.to_string(),
+            key.to_string(),
+            name.to_string(),
+            reason.to_string(),
+        );
+        tokio::spawn(async move {
+            inner
+                .notifications
+                .notify(&event, &key, &name, &reason)
+                .await;
+        });
     }
 
     pub(crate) fn config(&self) -> &Config {
@@ -224,6 +240,17 @@ impl RunManager {
     pub fn set_launch_delay(&self, d: Duration) {
         let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
         self.inner.launch_delay_ms.store(ms, Ordering::SeqCst);
+    }
+
+    /// Test hook: how long a question may wait before it raises `question_waiting_10m`.
+    #[doc(hidden)]
+    pub fn set_question_notify_after(&self, d: Duration) {
+        let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        self.inner.question_notify_ms.store(ms, Ordering::SeqCst);
+    }
+
+    pub(crate) fn question_notify_after(&self) -> Duration {
+        Duration::from_millis(self.inner.question_notify_ms.load(Ordering::SeqCst))
     }
 
     pub(crate) fn launch_timeout(&self) -> Duration {

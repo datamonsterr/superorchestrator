@@ -153,6 +153,43 @@ pub fn remove_if_unchanged(c: &Created) -> Result<(), Kept> {
     remove(c, false).map_err(Kept::Failed)
 }
 
+/// Puts a run's worktree back at `path` from its branch, e.g. after the directory was
+/// deleted. Fails with a clear message when the branch is gone.
+pub fn recreate(repo: &Path, path: &Path, branch: &str) -> Result<(), String> {
+    let _ = git(repo, &["worktree", "prune"]);
+    let reference = format!("refs/heads/{branch}");
+    git(repo, &["rev-parse", "--verify", "--quiet", &reference]).map_err(|_| {
+        format!("branch {branch} no longer exists, so the run's worktree cannot be recreated")
+    })?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
+    }
+    let path_arg = path.to_string_lossy().into_owned();
+    git(repo, &["worktree", "add", &path_arg, branch])?;
+    Ok(())
+}
+
+/// True when the branch's tip is contained in `base` (merged) or in any remote branch
+/// (pushed).
+pub fn merged_or_pushed(c: &Created) -> bool {
+    let tip = match git(&c.repo, &["rev-parse", &format!("refs/heads/{}", c.branch)]) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    // Merged into the repository's current HEAD (what the worktree was cut from).
+    let merged = Command::new("git")
+        .arg("-C")
+        .arg(&c.repo)
+        .args(["merge-base", "--is-ancestor", &tip, "HEAD"])
+        .status()
+        .is_ok_and(|s| s.success());
+    if merged {
+        return true;
+    }
+    git(&c.repo, &["branch", "-r", "--contains", &tip]).is_ok_and(|out| !out.is_empty())
+}
+
 /// Removes the worktree and deletes its branch. `force` also drops local changes.
 pub fn remove(c: &Created, force: bool) -> Result<(), String> {
     let path_arg = c.path.to_string_lossy().into_owned();

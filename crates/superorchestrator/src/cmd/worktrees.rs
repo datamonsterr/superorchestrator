@@ -119,6 +119,8 @@ fn prune(ctx: &Ctx) -> Result<()> {
                     event_type: EventType::WorktreeRemoved,
                     data: json!({"path": c.path, "branch": c.branch, "pruned": true}),
                 })?;
+                // Nothing left to resume in: drop the run's checks and resume intent too.
+                let _ = store.delete_run_meta(&run.id);
                 removed.push(run.id.clone());
             }
             Err(e) => eprintln!("could not remove {}: {e}", c.path.display()),

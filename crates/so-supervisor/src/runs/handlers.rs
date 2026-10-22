@@ -166,7 +166,7 @@ async fn wait_agent(m: &RunManager, ctx: ConnCtx, p: WaitParams) -> Result<Value
     } = {
         // A run that blocks on its own children is `waiting`, and is not stall-checked.
         let guard = match &ctx.run_id {
-            Some(id) => Some(m.begin_wait(id).await),
+            Some(id) => Some(m.begin_wait(id, false).await),
             None => None,
         };
         let r = m
