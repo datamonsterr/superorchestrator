@@ -12,7 +12,7 @@ export default defineConfig({
   server: {
     proxy: {
       // Includes SSE: http-proxy streams responses without buffering.
-      '/api': { target: 'http://127.0.0.1:7878', changeOrigin: true },
+      '/api': { target: 'http://127.0.0.1:7878', changeOrigin: true, timeout: 0, proxyTimeout: 0 },
     },
   },
   build: { outDir: 'dist' },
