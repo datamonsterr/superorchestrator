@@ -652,7 +652,13 @@ async fn choices_config_and_worktrees() {
 
     let (s, v) = get(&f.app, "/api/v1/config").await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(v["platform"], "linux");
+    // Mirrors the server's mapping in `api/system.rs` (`Platform::current`).
+    let platform = if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    assert_eq!(v["platform"], platform);
     assert!(v["config"]["ui"].get("token").is_none() || v["config"]["ui"]["token"].is_null());
     assert_eq!(v["ui_token"]["source"], "unset");
     let (s, v) = send_json(
