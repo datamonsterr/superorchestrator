@@ -347,7 +347,8 @@ enabled = true
 
    `score = fit + w_headroom·headroom − w_load·active_runs − w_cost·cost + priority`
 
-   - `fit` compares task complexity with model tier. Complexity is estimated from prompt length and keywords: refactor, architecture, migrate, concurrency and security point to high; typo, rename, format and docs point to low.
+   - `fit` compares task complexity with model tier. Complexity is estimated from prompt length and keywords (and a choice whose effort differs from the one the complexity wants, medium or high, loses 0.05 per step, which breaks ties inside a tier): refactor, architecture, migrate, concurrency and security point to high; typo, rename, format and docs point to low.
+   - `fit` is reduced by 0.05 per step between the effort the complexity wants (medium for low and mid, high for high) and the choice's effort. This only breaks ties inside a tier.
    - `priority` is the harness priority. Default `agy > opencode > codex > claude`.
    - Free models get a cost bonus.
 
@@ -588,8 +589,8 @@ key_file = "~/dev/jev_skill_selector/.env"   # optional dotenv
 timeout = "20s"
 
 [router.policy]
-min_confidence = 0.6
-min_margin = 0.1
+min_confidence = 0.45
+min_margin = 0.15
 
 [worktrees]
 dir = "{repo_parent}/{repo}-worktrees"
@@ -613,7 +614,7 @@ on = ["escalated", "question_waiting_10m", "session_finished", "account_exhauste
 
 Environment variables: `SUPERORCHESTRATOR_CONFIG_DIR`, `SUPERORCHESTRATOR_RUN_ID`, `SUPERORCHESTRATOR_SOCKET`, `SUPERORCHESTRATOR_LOG`.
 
-The default `min_confidence` and `min_margin` values are placeholders until `route eval` has been run against live Jev. Tune them from those results.
+The default `min_confidence` (0.45) and `min_margin` (0.15) were tuned on 2026-10-23 against `jev-1.14-20261014` (`~typesafe/jev-latest`) with the shipped English and Vietnamese cases. With untuned descriptions, correct answers had confidence 0.47-0.56 and margin 0.29-0.42, while the answers that should be rejected had confidence 0.20-0.36 and margin 0.00-0.22. The defaults sit in the gap. With the tuned seed descriptions and routing instruction, every live answer has confidence of at least 0.90, so the gate only rejects genuine ties. Choices already in a user's `config.toml` keep their old descriptions: `init` never rewrites them (8.2), so copy the seeded descriptions to benefit from the tuning.
 
 ## 17. Data model (SQLite)
 
@@ -726,4 +727,3 @@ Each milestone is one or more PRs with `cargo test` coverage, and is usable by i
 ## 23. Open items
 
 - The section 4 driver spikes (agy MCP injection and conversation id, opencode per-run config, codex thread parameters, claude `--max-turns`).
-- Tune `min_confidence` and `min_margin` from live `route eval`.

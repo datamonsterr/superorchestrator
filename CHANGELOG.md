@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 First release. Pending the `v0.1.0` tag.
 
+### Changed
+
+- Routing tuned against live Jev (`jev-1.14-20261014`): `router.policy` defaults are now
+  `min_confidence = 0.45` and `min_margin = 0.15`. The seeded choice descriptions and the
+  default routing instruction now separate the effort and capability tiers. Live accuracy on the
+  bundled cases rose from about 50% (9-10 of 15 falling back to the heuristic) to above 90% with
+  no fallbacks. The heuristic breaks ties inside a tier by effort. `route eval --json` reports
+  each case's probabilities and fallback reason.
+
 ### Added
 
 - Cargo workspace with a React, Vite and TypeScript frontend in `web/`.

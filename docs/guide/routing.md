@@ -83,7 +83,7 @@ superorchestrator route eval --require-live --min-accuracy 0.8
 - `--require-live` fails when there is no Jev key, and when any case fell back from Jev.
 - `--min-accuracy X` (0 to 1) fails when accuracy is lower.
 
-The command exits non-zero when a check fails. Tune `router.policy.min_confidence` and `router.policy.min_margin` from live results.
+The command exits non-zero when a check fails. Tune `router.policy.min_confidence` and `router.policy.min_margin` from live results. The decider reads only the choice descriptions and the routing instruction, so write descriptions that separate the tiers. Choices already in your `config.toml` keep the descriptions they were seeded with; copy newer seeded descriptions by hand if you want them.
 
 ## Defaults
 

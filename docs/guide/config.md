@@ -80,10 +80,10 @@ superorchestrator config edit
 
 | Key | Default | Meaning |
 |---|---|---|
-| `min_confidence` | `0.6` | Lowest confidence to accept a decision |
-| `min_margin` | `0.1` | Lowest gap between the top two probabilities |
+| `min_confidence` | `0.45` | Lowest confidence to accept a decision |
+| `min_margin` | `0.15` | Lowest gap between the top two probabilities |
 
-The two defaults are placeholders until you run `route eval` against live Jev.
+The two defaults were tuned on 2026-10-23 against `jev-1.14-20261014`. Re-run `route eval --require-live` after you change choice descriptions or the routing instruction.
 
 ### `[worktrees]`
 
