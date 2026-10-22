@@ -81,6 +81,16 @@ pub fn init(paths: &Paths) -> Result<Vec<(std::path::PathBuf, Outcome)>> {
         let o = ensure_file(&p, &text)?;
         report.push((p, o));
     }
+    for (p, created) in so_agents::install_starters(paths)? {
+        report.push((
+            p,
+            if created {
+                Outcome::Created
+            } else {
+                Outcome::Exists
+            },
+        ));
+    }
     Ok(report)
 }
 

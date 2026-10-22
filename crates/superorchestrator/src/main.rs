@@ -67,6 +67,7 @@ fn dispatch(cli: Cli, path: &str) -> Result<ExitCode> {
         Command::Init => ok(cmd::init::run(&ctx)),
         Command::Config(c) => cmd::config::run(&ctx, c),
         Command::Account(a) => cmd::account::run(&ctx, a),
+        Command::Agent(a) => ok(cmd::agent::run(&ctx, a)),
         // `exec::run` only returns on error: success replaces the process, and
         // `Infallible` has no values, so the empty match proves it.
         Command::Exec(e) => match cmd::exec::run(&ctx, &e.account, &e.args)? {},
