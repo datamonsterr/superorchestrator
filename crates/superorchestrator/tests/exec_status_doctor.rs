@@ -83,7 +83,7 @@ fn exec_still_launches_when_the_store_is_unavailable() {
 fn exec_unknown_account_fails() {
     let e = Env::new();
     e.init();
-    e.cmd().args(["exec", "ghost-acc", "--"]).assert().failure();
+    e.cmd().args(["exec", "ghost-acc", "--"]).assert().code(3);
 }
 
 #[test]
@@ -126,10 +126,10 @@ fn doctor_passes_with_fake_binaries() {
     }
     let out = e.cmd().arg("doctor").assert().success();
     let s = stdout(&out);
-    assert!(s.contains("✓ codex") && s.contains("1.2.3"), "{s}");
-    assert!(s.contains("✓ config.toml loads"), "{s}");
-    assert!(s.contains("account codex-acc1: signed in"), "{s}");
-    assert!(s.contains("supervisor not running"), "{s}");
+    assert!(s.contains("✓ codex:") && s.contains("1.2.3"), "{s}");
+    assert!(s.contains("✓ config.toml: loads"), "{s}");
+    assert!(s.contains("✓ account codex-acc1: signed in"), "{s}");
+    assert!(s.contains("! supervisor: not running"), "{s}");
 }
 
 #[test]
@@ -141,7 +141,7 @@ fn doctor_fails_when_a_needed_binary_is_missing() {
         .arg("doctor")
         .assert()
         .code(1)
-        .stdout(predicate::str::contains("✗ codex"));
+        .stdout(predicate::str::contains("✗ codex:"));
 }
 
 #[test]
@@ -158,16 +158,46 @@ fn doctor_fails_on_invalid_config_and_missing_dir() {
         .arg("doctor")
         .assert()
         .code(1)
-        .stdout(predicate::str::contains("config.toml does not load"));
+        .stdout(predicate::str::contains("✗ config.toml: does not load"));
 }
 
 #[test]
-fn doctor_times_out_a_hanging_binary() {
+fn doctor_times_out_a_hanging_binary_using_the_configured_timeout() {
     let e = Env::new();
     e.init();
-    e.script("claude", "sleep 30");
+    e.script("claude", "exec sleep 30");
     let start = std::time::Instant::now();
-    let out = e.cmd().arg("doctor").assert().success();
-    assert!(start.elapsed().as_secs() < 15);
-    assert!(stdout(&out).contains("timed out"));
+    let out = e
+        .cmd()
+        .env("SUPERORCHESTRATOR_DOCTOR_TIMEOUT_MS", "200")
+        .arg("doctor")
+        .assert()
+        .success();
+    assert!(start.elapsed().as_secs() < 4);
+    assert!(
+        stdout(&out).contains("timed out after 200ms"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn doctor_json_lists_checks_and_reports_unloadable_accounts() {
+    let e = Env::new();
+    e.init();
+    std::fs::write(e.cfg.join("accounts/bad.toml"), "not = [valid").unwrap();
+    let out = e.cmd().args(["--json", "doctor"]).assert().code(1);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["ok"], false);
+    let checks = v["checks"].as_array().unwrap();
+    assert!(
+        checks
+            .iter()
+            .any(|c| c["name"] == "accounts" && c["status"] == "fail")
+    );
+    assert!(
+        checks
+            .iter()
+            .any(|c| c["name"] == "config.toml" && c["status"] == "ok")
+    );
 }

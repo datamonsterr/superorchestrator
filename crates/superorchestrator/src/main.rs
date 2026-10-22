@@ -3,31 +3,56 @@
 mod cli;
 mod cmd;
 mod ctx;
+mod exit;
+mod output;
 mod redact;
+mod views;
 
 use std::process::ExitCode;
 
 use anyhow::Result;
-use clap::{CommandFactory, Parser};
+use clap::{ArgMatches, CommandFactory, FromArgMatches};
 
-use cli::{AgentCmd, Cli, Command, ModelsCmd, RouteSub, RunsCmd, WorkflowCmd, WorktreesCmd};
-use ctx::{Ctx, interactive, not_implemented};
+use cli::{Cli, Command};
+use ctx::{Ctx, interactive};
+use exit::CliError;
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    match dispatch(cli) {
+    let matches = Cli::command().get_matches();
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(c) => c,
+        Err(e) => e.exit(),
+    };
+    match dispatch(cli, &command_path(&matches)) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e:#}");
-            ExitCode::FAILURE
+            ExitCode::from(exit::code_for(&e))
         }
     }
 }
 
-fn dispatch(cli: Cli) -> Result<ExitCode> {
-    let Some(command) = cli.command else {
+/// The subcommand chain as typed, e.g. `route eval` or `runs list`.
+fn command_path(matches: &ArgMatches) -> String {
+    let mut parts = Vec::new();
+    let mut cur = matches;
+    while let Some((name, sub)) = cur.subcommand() {
+        parts.push(name);
+        cur = sub;
+    }
+    parts.join(" ")
+}
+
+fn dispatch(cli: Cli, path: &str) -> Result<ExitCode> {
+    let Cli {
+        config_dir,
+        json,
+        yes,
+        command,
+    } = cli;
+    let ctx = Ctx::new(config_dir, json, yes)?;
+    let Some(command) = command else {
         if interactive() {
-            let ctx = Ctx::from_cli(&cli)?;
             cmd::menu::run(&ctx)?;
         } else {
             Cli::command().print_help()?;
@@ -35,55 +60,19 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         }
         return Ok(ExitCode::SUCCESS);
     };
-    let ctx = Ctx::from_cli(&Cli {
-        command: None,
-        ..cli
-    })?;
     let ok = |r: Result<()>| r.map(|()| ExitCode::SUCCESS);
     match command {
-        Command::Init => ok(cmd::init::run(&ctx.paths)),
+        Command::Init => ok(cmd::init::run(&ctx)),
         Command::Config(c) => cmd::config::run(&ctx, c),
         Command::Account(a) => cmd::account::run(&ctx, a),
+        // `exec::run` only returns on error: success replaces the process, and
+        // `Infallible` has no values, so the empty match proves it.
         Command::Exec(e) => match cmd::exec::run(&ctx, &e.account, &e.args)? {},
         Command::Daemon(d) => ok(cmd::daemon::run(&ctx, d.foreground)),
         Command::Status => ok(cmd::status::run(&ctx)),
         Command::Doctor => cmd::doctor::run(&ctx),
-        Command::Install => Ok(not_implemented("install")),
-        Command::Uninstall => Ok(not_implemented("uninstall")),
-        Command::Agent(a) => Ok(not_implemented(match a {
-            AgentCmd::Create => "agent create",
-            AgentCmd::List => "agent list",
-            AgentCmd::Show { .. } => "agent show",
-            AgentCmd::Edit { .. } => "agent edit",
-            AgentCmd::Remove { .. } => "agent remove",
-        })),
-        Command::Models(m) => Ok(not_implemented(match m {
-            ModelsCmd::Refresh => "models refresh",
-            ModelsCmd::List => "models list",
-        })),
-        Command::Route(r) => Ok(not_implemented(match r.sub {
-            Some(RouteSub::Eval { .. }) => "route eval",
-            None => "route",
-        })),
-        Command::Runs(r) => Ok(not_implemented(match r {
-            RunsCmd::List => "runs list",
-            RunsCmd::Show { .. } => "runs show",
-            RunsCmd::Watch { .. } => "runs watch",
-            RunsCmd::Cancel { .. } => "runs cancel",
-        })),
-        Command::Join(_) => Ok(not_implemented("join")),
-        Command::Worktrees(w) => Ok(not_implemented(match w {
-            WorktreesCmd::List => "worktrees list",
-            WorktreesCmd::Prune => "worktrees prune",
-        })),
-        Command::Workflow(w) => Ok(not_implemented(match w {
-            WorkflowCmd::Run { .. } => "workflow run",
-            WorkflowCmd::List => "workflow list",
-            WorkflowCmd::Status { .. } => "workflow status",
-        })),
-        Command::Ui(_) => Ok(not_implemented("ui")),
-        Command::Mcp => Ok(not_implemented("mcp")),
-        Command::Migrate(_) => Ok(not_implemented("migrate")),
+        // Commands without an arm yet; later tasks add only their own arm above.
+        _ => Err(CliError::not_implemented(path).into()),
     }
 }
 
@@ -94,5 +83,14 @@ mod tests {
     #[test]
     fn cli_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn command_path_follows_subcommands() {
+        let path = |args: &[&str]| command_path(&Cli::command().get_matches_from(args));
+        assert_eq!(path(&["so", "route", "eval"]), "route eval");
+        assert_eq!(path(&["so", "route", "do it"]), "route");
+        assert_eq!(path(&["so", "runs", "list"]), "runs list");
+        assert_eq!(path(&["so", "migrate", "--apply"]), "migrate");
     }
 }

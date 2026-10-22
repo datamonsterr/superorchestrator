@@ -3,25 +3,33 @@
 use std::process::{Command, ExitCode};
 
 use anyhow::{Context, Result, bail};
+use serde_json::json;
 use so_core::Config;
 
 use crate::cli::ConfigCmd;
 use crate::ctx::Ctx;
+use crate::exit;
 
 pub fn run(ctx: &Ctx, cmd: ConfigCmd) -> Result<ExitCode> {
     match cmd {
         ConfigCmd::Get { key } => {
             let cfg = ctx.config()?;
-            match cfg.get(&key)? {
-                Some(v) => {
-                    println!("{v}");
-                    Ok(ExitCode::SUCCESS)
+            let value = cfg.get(&key)?;
+            ctx.emit(&json!({ "key": key, "value": value }), |w| {
+                if let Some(v) = &value {
+                    writeln!(w, "{v}")?;
                 }
-                None => Ok(ExitCode::FAILURE),
-            }
+                Ok(())
+            })?;
+            Ok(if value.is_some() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::from(exit::NOT_FOUND)
+            })
         }
         ConfigCmd::Set { key, value } => {
             Config::set_in_file(&ctx.paths, &key, &value)?;
+            ctx.emit_ok(json!({ "key": key, "value": value }), &format!("set {key}"))?;
             Ok(ExitCode::SUCCESS)
         }
         ConfigCmd::Edit => edit(ctx),
@@ -53,7 +61,10 @@ fn edit(ctx: &Ctx) -> Result<ExitCode> {
         bail!("editor `{editor}` exited with {status}");
     }
     match Config::load(&ctx.paths) {
-        Ok(_) => Ok(ExitCode::SUCCESS),
+        Ok(_) => {
+            ctx.emit_ok(json!({ "path": path }), "config.toml is valid")?;
+            Ok(ExitCode::SUCCESS)
+        }
         Err(e) => {
             eprintln!("error: config.toml is invalid after editing: {e}");
             eprintln!("fix it with `superorchestrator config edit`");

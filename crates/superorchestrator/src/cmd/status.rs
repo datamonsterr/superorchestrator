@@ -1,13 +1,16 @@
 //! `status`: supervisor state (never spawned) plus the accounts summary.
 
 use anyhow::Result;
+use serde_json::json;
 use so_core::Paths;
 use so_core::proto::{METHOD_STATUS, StatusResult};
 use so_supervisor::SupervisorClient;
 
-use crate::cmd::account::{collect_views, open_existing_store, print_views_table, views_json};
-use crate::cmd::exec::end_dead_interactive_sessions;
 use crate::ctx::Ctx;
+use crate::views::{
+    collect_views, end_dead_interactive_sessions, open_existing_store, views_json,
+    write_views_table,
+};
 
 /// Asks a running supervisor for its status; `None` when none answers.
 pub fn supervisor_status() -> Option<StatusResult> {
@@ -26,7 +29,7 @@ pub fn supervisor_status() -> Option<StatusResult> {
             .await
             .ok()?;
         client
-            .call::<_, StatusResult>(METHOD_STATUS, serde_json::json!({}))
+            .call::<_, StatusResult>(METHOD_STATUS, json!({}))
             .await
             .ok()
     })
@@ -38,25 +41,23 @@ pub fn run(ctx: &Ctx) -> Result<()> {
     }
     let sup = supervisor_status();
     let views = collect_views(ctx)?;
-    if ctx.json {
-        let sup_json = sup.as_ref().map(|s| {
-            serde_json::json!({
-                "pid": s.pid, "version": s.version, "uptime_s": s.uptime_s,
-                "sessions": s.sessions, "active_runs": s.active_runs,
-            })
-        });
-        let out = serde_json::json!({ "supervisor": sup_json, "accounts": views_json(&views) });
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
-    }
-    match sup {
-        Some(s) => println!(
-            "supervisor: running (pid {}, v{}, up {}s, {} session(s), {} active run(s))",
-            s.pid, s.version, s.uptime_s, s.sessions, s.active_runs
-        ),
-        None => println!("supervisor: not running"),
-    }
-    println!();
-    print_views_table(&views);
-    Ok(())
+    let sup_json = sup.as_ref().map(|s| {
+        json!({
+            "pid": s.pid, "version": s.version, "uptime_s": s.uptime_s,
+            "sessions": s.sessions, "active_runs": s.active_runs,
+        })
+    });
+    let value = json!({ "supervisor": sup_json, "accounts": views_json(&views) });
+    ctx.emit(&value, |w| {
+        match &sup {
+            Some(s) => writeln!(
+                w,
+                "supervisor: running (pid {}, v{}, up {}s, {} session(s), {} active run(s))",
+                s.pid, s.version, s.uptime_s, s.sessions, s.active_runs
+            )?,
+            None => writeln!(w, "supervisor: not running")?,
+        }
+        writeln!(w)?;
+        write_views_table(w, &views)
+    })
 }

@@ -207,6 +207,37 @@ fn flag_hours_until_and_clear() {
 }
 
 #[test]
+fn action_commands_emit_ok_json() {
+    let e = Env::new();
+    e.init();
+    import_one(&e, "codex-acc1");
+    for args in [
+        vec!["account", "disable", "codex-acc1"],
+        vec!["account", "enable", "codex-acc1"],
+        vec!["account", "flag", "codex-acc1", "--hours", "1"],
+        vec!["account", "flag", "codex-acc1", "--clear"],
+        vec!["account", "remove", "codex-acc1", "--yes"],
+    ] {
+        let out = e.cmd().arg("--json").args(&args).assert().success();
+        let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+        assert_eq!(v["ok"], true, "{args:?}");
+        assert_eq!(v["name"], "codex-acc1");
+    }
+    let out = e
+        .cmd()
+        .args(["--json", "account", "add", "codex", "--name", "codex-acc3"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert!(
+        v["login"]["command"]
+            .as_str()
+            .unwrap()
+            .contains("CODEX_HOME=")
+    );
+}
+
+#[test]
 fn remove_requires_confirmation_without_tty() {
     let e = Env::new();
     e.init();

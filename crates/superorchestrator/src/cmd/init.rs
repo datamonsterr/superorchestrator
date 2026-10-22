@@ -7,6 +7,8 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use so_core::Paths;
 
+use crate::ctx::Ctx;
+
 const CONFIG_HEADER: &str = include_str!("../seed/config_header.toml");
 /// Choices seeded from agent-dispatcher's `config.example.json`, plus Codex and
 /// Claude choices that start disabled (SPEC 8.2).
@@ -82,13 +84,25 @@ pub fn init(paths: &Paths) -> Result<Vec<(std::path::PathBuf, Outcome)>> {
     Ok(report)
 }
 
-pub fn run(paths: &Paths) -> Result<()> {
-    for (path, outcome) in init(paths)? {
-        let word = match outcome {
-            Outcome::Created => "created",
-            Outcome::Exists => "exists ",
-        };
-        println!("{word} {}", path.display());
-    }
-    Ok(())
+pub fn run(ctx: &Ctx) -> Result<()> {
+    let report = init(&ctx.paths)?;
+    let items: Vec<_> = report
+        .iter()
+        .map(|(p, o)| {
+            serde_json::json!({
+                "path": p,
+                "status": match o { Outcome::Created => "created", Outcome::Exists => "exists" },
+            })
+        })
+        .collect();
+    ctx.emit(&serde_json::json!({ "ok": true, "items": items }), |w| {
+        for (path, outcome) in &report {
+            let word = match outcome {
+                Outcome::Created => "created",
+                Outcome::Exists => "exists ",
+            };
+            writeln!(w, "{word} {}", path.display())?;
+        }
+        Ok(())
+    })
 }

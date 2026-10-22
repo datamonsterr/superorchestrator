@@ -25,6 +25,7 @@ so-mcp = { path = "../so-mcp" }
 so-web = { path = "../so-web" }
 clap.workspace = true
 anyhow.workspace = true
+serde.workspace = true
 chrono.workspace = true
 dialoguer.workspace = true
 serde_json.workspace = true

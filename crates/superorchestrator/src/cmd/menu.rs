@@ -26,7 +26,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
             .default(0)
             .interact_opt()?;
         match pick {
-            Some(0) => init::run(&ctx.paths)?,
+            Some(0) => init::run(ctx)?,
             Some(1) => accounts_menu(ctx, &theme)?,
             Some(2) => status::run(ctx)?,
             Some(3) => eprintln!("`ui` is not implemented yet"),

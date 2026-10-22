@@ -1,17 +1,21 @@
 //! `account add|import|login|list|remove|enable|disable|flag`.
 
-use std::process::{Command, ExitCode};
+use std::io::Write;
+use std::os::fd::AsFd;
+use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration, Utc};
 use dialoguer::{Confirm, Input};
 use serde_json::{Value, json};
-use so_accounts::{HostEnv, ImportCandidate, SignIn, manage};
+use so_accounts::{HostEnv, ImportCandidate, manage};
 use so_core::{AccountFile, Config, Harness, Paths};
 use so_store::{FlagRow, Store};
 
 use crate::cli::{AccountAdd, AccountCmd, AccountFlag, AccountImport, AccountRemove};
-use crate::ctx::{Ctx, interactive, print_table, stdin_is_tty};
+use crate::ctx::{Ctx, interactive, stdin_is_tty};
+use crate::exit::CliError;
+use crate::views::{collect_views, views_json, write_views_table};
 
 pub fn run(ctx: &Ctx, cmd: AccountCmd) -> Result<ExitCode> {
     match cmd {
@@ -37,7 +41,7 @@ fn parse_harness(s: &str) -> Result<Harness> {
 fn load_account(paths: &Paths, name: &str) -> Result<AccountFile> {
     let file = paths.account_file(name);
     if !file.exists() {
-        bail!("account `{name}` not found");
+        return Err(CliError::not_found(format!("account `{name}` not found")).into());
     }
     Ok(AccountFile::load(&file)?)
 }
@@ -47,25 +51,42 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
     let cfg = ctx.config()?;
     let host = ctx.host()?;
     let account = manage::add(&ctx.paths, &cfg, &host, harness, &a.name, a.home.as_deref())?;
-    println!(
-        "added account {} ({}) at {}",
-        account.name, account.harness, account.home
-    );
-    print_login_hint(&account, &host)?;
+    let login = login_json(&account, &host)?;
+    ctx.emit(
+        &json!({
+            "ok": true, "name": account.name, "harness": account.harness.as_str(),
+            "home": account.home, "login": login,
+        }),
+        |w| {
+            writeln!(
+                w,
+                "added account {} ({}) at {}",
+                account.name, account.harness, account.home
+            )?;
+            write_login_hint(w, &login)
+        },
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
-fn print_login_hint(account: &AccountFile, host: &HostEnv) -> Result<()> {
+/// The login command for an account as `{ command, note }`.
+fn login_json(account: &AccountFile, host: &HostEnv) -> Result<Value> {
     let plan = manage::login_command(account, host, stdin_is_tty())?;
     let env: Vec<String> = plan.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
-    let cmd = if env.is_empty() {
+    let command = if env.is_empty() {
         plan.argv.join(" ")
     } else {
         format!("{} {}", env.join(" "), plan.argv.join(" "))
     };
-    println!("to sign in, run: {cmd}");
-    if let Some(note) = plan.note {
-        println!("note: {note}");
+    Ok(json!({ "command": command, "note": plan.note }))
+}
+
+fn write_login_hint(w: &mut dyn Write, login: &Value) -> std::io::Result<()> {
+    if let Some(c) = login["command"].as_str() {
+        writeln!(w, "to sign in, run: {c}")?;
+    }
+    if let Some(n) = login["note"].as_str() {
+        writeln!(w, "note: {n}")?;
     }
     Ok(())
 }
@@ -87,10 +108,13 @@ fn import(ctx: &Ctx, a: AccountImport) -> Result<ExitCode> {
         parse_harness(&harness)?,
         &home,
     )?;
-    println!(
-        "imported account {} ({}) from {}",
-        acc.name, acc.harness, acc.home
-    );
+    ctx.emit_ok(
+        json!({ "name": acc.name, "harness": acc.harness.as_str(), "home": acc.home }),
+        &format!(
+            "imported account {} ({}) from {}",
+            acc.name, acc.harness, acc.home
+        ),
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -100,21 +124,33 @@ fn describe(c: &ImportCandidate, host: &HostEnv) -> String {
 
 pub fn import_scan(ctx: &Ctx, cfg: &Config, host: &HostEnv) -> Result<ExitCode> {
     let found = so_accounts::scan_new(&ctx.paths, host)?;
-    if found.is_empty() {
-        println!("no new accounts found");
-        return Ok(ExitCode::SUCCESS);
-    }
+    let candidates = |found: &[ImportCandidate]| -> Vec<Value> {
+        found
+            .iter()
+            .map(|c| json!({ "name": c.name, "harness": c.harness.as_str(), "home": host.tildify(&c.home) }))
+            .collect()
+    };
     let tty = interactive();
-    if !ctx.yes && !tty {
-        println!(
-            "found {} importable account(s); pass --yes to import them:",
-            found.len()
-        );
-        for c in &found {
-            println!("  {}", describe(c, host));
-        }
+    if found.is_empty() || (!ctx.yes && !tty) {
+        ctx.emit(
+            &json!({ "ok": true, "imported": [], "candidates": candidates(&found) }),
+            |w| {
+                if found.is_empty() {
+                    return writeln!(w, "no new accounts found");
+                }
+                writeln!(
+                    w,
+                    "found {} importable account(s); pass --yes to import them:",
+                    found.len()
+                )?;
+                found
+                    .iter()
+                    .try_for_each(|c| writeln!(w, "  {}", describe(c, host)))
+            },
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
+    let mut imported = Vec::new();
     let mut failed = false;
     for c in &found {
         let take = ctx.yes
@@ -127,13 +163,18 @@ pub fn import_scan(ctx: &Ctx, cfg: &Config, host: &HostEnv) -> Result<ExitCode> 
         }
         let home = host.tildify(&c.home);
         match manage::import(&ctx.paths, cfg, host, &c.name, c.harness, &home) {
-            Ok(acc) => println!("imported {} ({})", acc.name, acc.harness),
+            Ok(acc) => imported.push(acc.name),
             Err(e) => {
                 eprintln!("could not import {}: {e}", c.name);
                 failed = true;
             }
         }
     }
+    ctx.emit(&json!({ "ok": !failed, "imported": imported }), |w| {
+        imported
+            .iter()
+            .try_for_each(|n| writeln!(w, "imported {n}"))
+    })?;
     Ok(if failed {
         ExitCode::FAILURE
     } else {
@@ -148,23 +189,35 @@ fn login(ctx: &Ctx, name: &str) -> Result<ExitCode> {
     let plan = manage::login_command(&account, &host, tty)?;
     let runnable = tty || account.harness == Harness::Codex;
     if !runnable {
-        print_login_hint(&account, &host)?;
+        let login = login_json(&account, &host)?;
+        ctx.emit(&json!({ "ok": true, "name": name, "login": login }), |w| {
+            write_login_hint(w, &login)
+        })?;
         return Ok(ExitCode::SUCCESS);
     }
-    if let Some(note) = &plan.note {
+    if let Some(note) = &plan.note
+        && !ctx.json
+    {
         println!("note: {note}");
     }
     let (program, args) = plan.argv.split_first().context("empty login command")?;
-    let status = Command::new(program)
-        .args(args)
-        .envs(plan.env.iter().map(|(k, v)| (k, v)))
+    let mut cmd = Command::new(program);
+    cmd.args(args).envs(plan.env.iter().map(|(k, v)| (k, v)));
+    if ctx.json {
+        // Keep stdout for the JSON result; the harness talks on stderr.
+        cmd.stdout(Stdio::from(std::io::stderr().as_fd().try_clone_to_owned()?));
+    }
+    let status = cmd
         .status()
         .with_context(|| format!("could not run `{program}`"))?;
-    Ok(if status.success() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    })
+    if !status.success() {
+        return Ok(ExitCode::FAILURE);
+    }
+    ctx.emit_ok(
+        json!({ "name": name }),
+        &format!("login finished for {name}"),
+    )?;
+    Ok(ExitCode::SUCCESS)
 }
 
 fn remove(ctx: &Ctx, a: AccountRemove) -> Result<ExitCode> {
@@ -186,13 +239,20 @@ fn remove(ctx: &Ctx, a: AccountRemove) -> Result<ExitCode> {
         }
     }
     manage::remove(&ctx.paths, &cfg, &host, &a.name, a.purge)?;
-    println!("removed account {}", a.name);
+    ctx.emit_ok(
+        json!({ "name": a.name, "purged": a.purge }),
+        &format!("removed account {}", a.name),
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
 fn set_enabled(ctx: &Ctx, name: &str, enabled: bool) -> Result<ExitCode> {
     manage::set_enabled(&ctx.paths, name, enabled)?;
-    println!("{} {name}", if enabled { "enabled" } else { "disabled" });
+    let word = if enabled { "enabled" } else { "disabled" };
+    ctx.emit_ok(
+        json!({ "name": name, "enabled": enabled }),
+        &format!("{word} {name}"),
+    )?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -207,7 +267,10 @@ fn flag(ctx: &Ctx, a: AccountFlag) -> Result<ExitCode> {
         for p in &pools {
             store.clear_flag(&a.name, p)?;
         }
-        println!("cleared cooldown on {}", a.name);
+        ctx.emit_ok(
+            json!({ "name": a.name, "pools": pools, "until": null }),
+            &format!("cleared cooldown on {}", a.name),
+        )?;
         return Ok(ExitCode::SUCCESS);
     }
     let until: DateTime<Utc> = match (&a.until, a.hours) {
@@ -227,144 +290,14 @@ fn flag(ctx: &Ctx, a: AccountFlag) -> Result<ExitCode> {
             reason: "manual".into(),
         })?;
     }
-    println!("{} in cooldown until {}", a.name, until.to_rfc3339());
+    ctx.emit_ok(
+        json!({ "name": a.name, "pools": pools, "until": until.to_rfc3339() }),
+        &format!("{} in cooldown until {}", a.name, until.to_rfc3339()),
+    )?;
     Ok(ExitCode::SUCCESS)
-}
-
-/// One account as shown by `account list` and `status`.
-pub struct AccountView {
-    pub account: AccountFile,
-    pub signed_in: SignIn,
-    pub active_runs: Option<i64>,
-    pub headroom: Vec<(String, String)>,
-}
-
-pub fn sign_in_text(s: SignIn) -> &'static str {
-    match s {
-        SignIn::SignedIn => "yes",
-        SignIn::SignedOut => "no",
-        SignIn::Unknown => "unknown",
-    }
-}
-
-/// Opens `state.db` only when it already exists.
-pub fn open_existing_store(paths: &Paths) -> Option<Store> {
-    paths
-        .state_db()
-        .exists()
-        .then(|| Store::open(paths.state_db()).ok())
-        .flatten()
-}
-
-pub fn collect_views(ctx: &Ctx) -> Result<Vec<AccountView>> {
-    let host = ctx.host()?;
-    let store = open_existing_store(&ctx.paths);
-    let now = Utc::now();
-    let mut out = Vec::new();
-    for account in AccountFile::list(&ctx.paths)? {
-        let signed_in = so_accounts::sign_in_state(&account, &host)?;
-        let active_runs = store
-            .as_ref()
-            .and_then(|s| s.count_active_runs_by_account(&account.name).ok());
-        let headroom = account
-            .pools
-            .iter()
-            .map(|pool| {
-                let flag = store
-                    .as_ref()
-                    .and_then(|s| s.get_flag(&account.name, pool).ok().flatten())
-                    .filter(|f| f.until > now);
-                let text = if let Some(f) = flag {
-                    format!("cooldown until {}", f.until.to_rfc3339())
-                } else {
-                    match store
-                        .as_ref()
-                        .and_then(|s| s.get_headroom(&account.name, pool).ok().flatten())
-                    {
-                        Some(h) => match h.five_hour_remaining_pct {
-                            Some(p) => format!("{} {p:.0}%", h.status.as_str()),
-                            None => h.status.as_str().to_string(),
-                        },
-                        None => "unknown".to_string(),
-                    }
-                };
-                (pool.clone(), text)
-            })
-            .collect();
-        out.push(AccountView {
-            account,
-            signed_in,
-            active_runs,
-            headroom,
-        });
-    }
-    Ok(out)
-}
-
-pub fn views_json(views: &[AccountView]) -> Value {
-    Value::Array(
-        views
-            .iter()
-            .map(|v| {
-                json!({
-                    "name": v.account.name,
-                    "harness": v.account.harness.as_str(),
-                    "signed_in": sign_in_text(v.signed_in),
-                    "enabled": v.account.enabled,
-                    "cap": v.account.cap,
-                    "active_runs": v.active_runs.unwrap_or(0),
-                    "headroom": v.headroom.iter()
-                        .map(|(p, t)| (p.clone(), Value::String(t.clone())))
-                        .collect::<serde_json::Map<_, _>>(),
-                })
-            })
-            .collect(),
-    )
-}
-
-pub fn print_views_table(views: &[AccountView]) {
-    if views.is_empty() {
-        println!("no accounts; add one with `superorchestrator account add`");
-        return;
-    }
-    let rows: Vec<Vec<String>> = views
-        .iter()
-        .map(|v| {
-            vec![
-                v.account.name.clone(),
-                v.account.harness.as_str().to_string(),
-                sign_in_text(v.signed_in).to_string(),
-                if v.account.enabled { "yes" } else { "no" }.to_string(),
-                v.account.cap.to_string(),
-                v.active_runs.unwrap_or(0).to_string(),
-                v.headroom
-                    .iter()
-                    .map(|(p, t)| format!("{p}: {t}"))
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            ]
-        })
-        .collect();
-    print_table(
-        &[
-            "NAME",
-            "HARNESS",
-            "SIGNED IN",
-            "ENABLED",
-            "CAP",
-            "ACTIVE",
-            "HEADROOM",
-        ],
-        &rows,
-    );
 }
 
 pub fn print_accounts(ctx: &Ctx) -> Result<()> {
     let views = collect_views(ctx)?;
-    if ctx.json {
-        println!("{}", serde_json::to_string_pretty(&views_json(&views))?);
-    } else {
-        print_views_table(&views);
-    }
-    Ok(())
+    ctx.emit(&views_json(&views), |w| write_views_table(w, &views))
 }

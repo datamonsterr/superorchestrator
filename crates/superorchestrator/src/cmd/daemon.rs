@@ -2,7 +2,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -41,7 +41,10 @@ fn init_tracing(ctx: &Ctx, foreground: bool) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("could not set up logging: {e}"))?;
     } else {
         let dir = ctx.paths.logs_dir();
-        std::fs::create_dir_all(&dir)
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
             .with_context(|| format!("could not create {}", dir.display()))?;
         let path = dir.join("supervisor.log");
         let file = Arc::new(
@@ -61,8 +64,9 @@ fn init_tracing(ctx: &Ctx, foreground: bool) -> Result<()> {
 }
 
 pub fn run(ctx: &Ctx, foreground: bool) -> Result<()> {
-    let config = ctx.config()?;
+    // Logging first, so a config error also lands in the log.
     init_tracing(ctx, foreground)?;
+    let config = ctx.config().inspect_err(|e| tracing::error!("{e:#}"))?;
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;

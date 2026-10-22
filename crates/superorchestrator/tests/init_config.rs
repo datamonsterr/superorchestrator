@@ -98,13 +98,13 @@ fn config_get_set_roundtrip_and_validation() {
 }
 
 #[test]
-fn config_get_unset_optional_key_prints_nothing_and_exits_1() {
+fn config_get_unset_optional_key_prints_nothing_and_exits_3() {
     let e = Env::new();
     e.init();
     e.cmd()
         .args(["config", "get", "ui.token"])
         .assert()
-        .code(1)
+        .code(3)
         .stdout("");
 }
 
@@ -136,7 +136,7 @@ fn config_edit_validates_after_editor() {
 }
 
 #[test]
-fn unimplemented_commands_exit_2() {
+fn unimplemented_commands_exit_4_and_name_the_command() {
     let e = Env::new();
     for args in [
         vec!["install"],
@@ -150,9 +150,64 @@ fn unimplemented_commands_exit_2() {
         e.cmd()
             .args(&args)
             .assert()
-            .code(2)
+            .code(4)
             .stderr(predicate::str::contains("is not implemented yet"));
     }
+}
+
+#[test]
+fn unimplemented_message_names_the_full_path() {
+    let e = Env::new();
+    e.cmd()
+        .args(["route", "eval"])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains(
+            "`route eval` is not implemented yet",
+        ));
+    e.cmd()
+        .args(["runs", "list"])
+        .assert()
+        .code(4)
+        .stderr(predicate::str::contains(
+            "`runs list` is not implemented yet",
+        ));
+}
+
+#[test]
+fn usage_errors_exit_2() {
+    let e = Env::new();
+    e.cmd().arg("no-such-command").assert().code(2);
+    e.cmd().args(["account", "flag"]).assert().code(2);
+}
+
+#[test]
+fn json_output_for_init_and_config() {
+    let e = Env::new();
+    let out = e.cmd().args(["--json", "init"]).assert().success();
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["ok"], true);
+    assert!(
+        v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|i| i["status"] == "created")
+    );
+    let out = e
+        .cmd()
+        .args(["--json", "config", "set", "limits.global_cap", "5"])
+        .assert()
+        .success();
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["ok"], true);
+    let out = e
+        .cmd()
+        .args(["--json", "config", "get", "ui.token"])
+        .assert()
+        .code(3);
+    let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert!(v["value"].is_null());
 }
 
 #[test]
