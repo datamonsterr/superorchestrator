@@ -34,8 +34,13 @@ fn init_tracing(ctx: &Ctx, foreground: bool) -> Result<()> {
             .create(&dir)
             .with_context(|| format!("could not create {}", dir.display()))?;
         // `create` leaves an existing directory as it is: tighten it.
-        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("could not restrict {}", dir.display()))?;
+        if let Err(e) = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)) {
+            // Not ours to chmod (or read-only): log files are still 0600.
+            eprintln!(
+                "superorchestrator: could not restrict {} to 0700: {e}",
+                dir.display()
+            );
+        }
         let path = dir.join("supervisor.log");
         let log = RotatingLog::open(&path, MAX_BYTES, KEEP)
             .with_context(|| format!("could not open {}", path.display()))?;

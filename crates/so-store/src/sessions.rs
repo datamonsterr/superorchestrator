@@ -25,35 +25,7 @@ fn map(r: &Row<'_>) -> rusqlite::Result<SessionRow> {
     })
 }
 
-/// Ends open interactive sessions whose process is gone. `exec` replaces the wrapper
-/// process, so nothing else records the end. Runs inside every cap check.
-pub(crate) fn reap_dead_interactive(conn: &Connection) -> Result<usize> {
-    let open: Vec<(String, i64, Option<String>)> = {
-        let mut st = conn.prepare(
-            "SELECT id, pid, pid_start FROM sessions \
-             WHERE kind = ?1 AND ended_at IS NULL AND pid IS NOT NULL",
-        )?;
-        st.query_map([enum_to_sql(&SessionKind::Interactive)], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })?
-        .collect::<rusqlite::Result<_>>()?
-    };
-    let now = ts_to_sql(&chrono::Utc::now());
-    let mut ended = 0;
-    for (id, pid, start) in open {
-        if !so_core::procinfo::same_process_alive(pid, start.as_deref()) {
-            ended += conn.execute(
-                "UPDATE sessions SET ended_at = ?2, status = 'ended' \
-                 WHERE id = ?1 AND ended_at IS NULL",
-                params![id, now],
-            )?;
-        }
-    }
-    Ok(ended)
-}
-
 pub(crate) fn count_interactive(conn: &Connection, account: &str) -> Result<i64> {
-    reap_dead_interactive(conn)?;
     Ok(conn.query_row(
         "SELECT COUNT(*) FROM sessions WHERE kind = ?1 AND account = ?2 AND ended_at IS NULL",
         params![enum_to_sql(&SessionKind::Interactive), account],
@@ -148,9 +120,45 @@ impl Store {
         )?)
     }
 
-    /// Ends open interactive sessions whose process is gone; returns how many ended.
+    /// Ends open interactive sessions whose process is gone (`exec` replaces the wrapper
+    /// process, so nothing else records the end); returns how many ended. Cap checks call
+    /// this before they open their transaction. The process checks run without the
+    /// connection locked, then the dead sessions end in one short write.
     pub fn reap_dead_interactive_sessions(&self) -> Result<usize> {
-        reap_dead_interactive(&self.conn())
+        let open: Vec<(String, i64, Option<String>)> = {
+            let conn = self.conn();
+            let mut st = conn.prepare(
+                "SELECT id, pid, pid_start FROM sessions \
+                 WHERE kind = ?1 AND ended_at IS NULL AND pid IS NOT NULL",
+            )?;
+            st.query_map([enum_to_sql(&SessionKind::Interactive)], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?
+        };
+        let dead: Vec<String> = open
+            .into_iter()
+            .filter(|(_, pid, start)| {
+                !so_core::procinfo::same_process_alive(*pid, start.as_deref())
+            })
+            .map(|(id, ..)| id)
+            .collect();
+        if dead.is_empty() {
+            return Ok(0);
+        }
+        let now = ts_to_sql(&chrono::Utc::now());
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let mut ended = 0;
+        for id in &dead {
+            ended += tx.execute(
+                "UPDATE sessions SET ended_at = ?2, status = 'ended' \
+                 WHERE id = ?1 AND ended_at IS NULL",
+                params![id, now],
+            )?;
+        }
+        tx.commit()?;
+        Ok(ended)
     }
 
     /// Records when the session's process started (see `so_core::procinfo::process_start`).
@@ -164,6 +172,7 @@ impl Store {
 
     /// Open interactive sessions on `account` (they count toward its cap, SPEC 5.1).
     pub fn count_active_interactive_sessions_by_account(&self, account: &str) -> Result<i64> {
+        self.reap_dead_interactive_sessions()?;
         count_interactive(&self.conn(), account)
     }
 

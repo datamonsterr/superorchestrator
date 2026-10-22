@@ -173,6 +173,9 @@ impl Store {
         global_cap: i64,
         prompt: &str,
     ) -> Result<ResumeClaim> {
+        // Dead wrapper sessions hold caps: end them before the transaction opens, so
+        // liveness checks never run inside it.
+        self.reap_dead_interactive_sessions()?;
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let from = current_state(&tx, run_id)?;
@@ -499,6 +502,9 @@ impl Store {
         to: &Reassign,
         account_cap: i64,
     ) -> Result<bool> {
+        // Dead wrapper sessions hold caps: end them before the transaction opens, so
+        // liveness checks never run inside it.
+        self.reap_dead_interactive_sessions()?;
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let state = current_state(&tx, run_id)?;
@@ -590,6 +596,9 @@ impl Store {
         if !from.can_transition(to) {
             return Err(StoreError::InvalidTransition { from, to });
         }
+        // Dead wrapper sessions hold caps: end them before the transaction opens, so
+        // liveness checks never run inside it.
+        self.reap_dead_interactive_sessions()?;
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let actual = current_state(&tx, run_id)?;

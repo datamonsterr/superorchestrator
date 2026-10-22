@@ -7,6 +7,7 @@ use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 /// Size at which `supervisor.log` rotates.
 pub const MAX_BYTES: u64 = 10 * 1024 * 1024;
@@ -19,7 +20,12 @@ struct Inner {
     keep: usize,
     file: File,
     len: u64,
+    /// When the last rotation failed: no retry before [`RETRY_AFTER`] has passed, so a
+    /// persistent failure does not shift the kept history away on every write.
+    failed_at: Option<Instant>,
 }
+
+const RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// Cheap to clone; every clone writes to the same file.
 #[derive(Clone)]
@@ -49,6 +55,7 @@ impl RotatingLog {
             keep: keep.max(1),
             file,
             len,
+            failed_at: None,
         }))))
     }
 
@@ -74,15 +81,19 @@ impl Inner {
 }
 
 impl Write for RotatingLog {
+    /// Each call is written whole, so a rotation never tears a chunk. The redacting
+    /// writer in front may still flush an oversize line in several chunks, and a rotation
+    /// can fall between them; lines are normally flushed whole.
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut g = self.inner();
-        if g.len > 0 && g.len + buf.len() as u64 > g.max {
+        let retry_ok = g.failed_at.is_none_or(|t| t.elapsed() >= RETRY_AFTER);
+        if g.len > 0 && g.len + buf.len() as u64 > g.max && retry_ok {
             // A failed rotation must not lose the log line: keep appending to the old file.
-            let _ = g.rotate();
+            g.failed_at = g.rotate().err().map(|_| Instant::now());
         }
-        let n = g.file.write(buf)?;
-        g.len += n as u64;
-        Ok(n)
+        g.file.write_all(buf)?;
+        g.len += buf.len() as u64;
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -135,6 +146,29 @@ mod tests {
         b.write_all(b"efgh").unwrap();
         assert_eq!(read(&rotated(&path, 1)), "0123456789012345abcd");
         assert_eq!(read(&path), "efgh");
+    }
+
+    #[test]
+    fn a_failed_rotation_keeps_writing_and_backs_off() {
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("supervisor.log");
+        let mut log = RotatingLog::open(&path, 10, 1).unwrap();
+        // A non-empty directory in the way of `.1` makes the rename fail.
+        let blocker = rotated(&path, 1);
+        std::fs::create_dir_all(blocker.join("x")).unwrap();
+        log.write_all(b"aaaaaaaaaa").unwrap();
+        log.write_all(b"bbbbbbbbbb").unwrap();
+        assert!(blocker.is_dir(), "the failed rotation changed nothing else");
+        assert_eq!(read(&path), "aaaaaaaaaabbbbbbbbbb");
+        // Within the back-off no second attempt is made, even once the way is clear.
+        std::fs::remove_dir_all(&blocker).unwrap();
+        log.write_all(b"cccccccccc").unwrap();
+        assert!(!blocker.exists());
+        // After it, rotation resumes.
+        log.inner().failed_at = Some(Instant::now() - RETRY_AFTER);
+        log.write_all(b"d").unwrap();
+        assert_eq!(read(&blocker), "aaaaaaaaaabbbbbbbbbbcccccccccc");
+        assert_eq!(read(&path), "d");
     }
 
     #[test]

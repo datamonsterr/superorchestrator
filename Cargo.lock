@@ -2494,6 +2494,7 @@ dependencies = [
  "thiserror",
  "toml",
  "toml_edit",
+ "tracing",
  "uuid",
 ]
 
