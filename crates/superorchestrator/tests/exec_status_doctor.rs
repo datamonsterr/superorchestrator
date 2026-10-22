@@ -95,23 +95,19 @@ fn status_without_supervisor_says_not_running_and_ends_dead_sessions() {
         .args(["exec", "codex-acc1", "--"])
         .assert()
         .success();
-    assert_eq!(
+    // The wrapper process is gone, but the row stays open until something reaps it.
+    let open = || {
         e.store()
-            .count_active_interactive_sessions_by_account("codex-acc1")
-            .unwrap(),
-        1
-    );
+            .list_sessions(so_store::SessionFilter::Active, 100)
+            .unwrap()
+            .len()
+    };
+    assert_eq!(open(), 1);
     e.cmd().arg("status").assert().success().stdout(
         predicate::str::contains("supervisor: not running")
             .and(predicate::str::contains("codex-acc1")),
     );
-    assert_eq!(
-        e.store()
-            .count_active_interactive_sessions_by_account("codex-acc1")
-            .unwrap(),
-        0,
-        "status reaps sessions whose pid is gone"
-    );
+    assert_eq!(open(), 0, "status reaps sessions whose pid is gone");
     let out = e.cmd().args(["status", "--json"]).assert().success();
     let v: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
     assert!(v["supervisor"].is_null());

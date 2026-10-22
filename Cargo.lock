@@ -2494,6 +2494,7 @@ dependencies = [
  "thiserror",
  "toml",
  "toml_edit",
+ "tracing",
  "uuid",
 ]
 
@@ -2730,7 +2731,6 @@ dependencies = [
  "predicates",
  "reqwest",
  "rmcp",
- "rustix",
  "serde",
  "serde_json",
  "so-accounts",

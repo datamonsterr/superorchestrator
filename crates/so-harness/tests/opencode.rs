@@ -755,6 +755,49 @@ async fn server_that_exits_before_listening_fails_fast() {
     assert!(err.to_string().contains("exited before printing"), "{err}");
 }
 
+#[tokio::test]
+async fn server_that_exits_with_an_auth_or_quota_line_is_classified() {
+    for (stderr, want) in [
+        ("Error: not logged in", ErrorKind::Auth),
+        ("usage limit reached", ErrorKind::Quota),
+        ("segfault", ErrorKind::Other),
+    ] {
+        let rig = Rig::new();
+        let mut spec = rig.spec();
+        spec.launch.argv_prefix = vec!["-c".into(), format!("echo '{stderr}' >&2; exit 3")];
+        let d = OpencodeDriver::new(DriverConfig::default());
+        match d.launch(spec).await.unwrap_err() {
+            DriverError::Exited { kind, text } => {
+                assert_eq!(kind, want, "{text}");
+                assert!(text.contains("exited before printing"), "{text}");
+                assert!(text.contains(stderr), "{text}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+async fn server_that_prints_its_url_but_dies_before_health_is_classified() {
+    let rig = Rig::new();
+    let mut spec = rig.spec();
+    // Prints a URL nothing listens on, then fails the way a signed-out server would.
+    spec.launch.argv_prefix = vec![
+        "-c".into(),
+        "echo 'opencode server listening on http://127.0.0.1:9'; sleep 0.5; \
+         echo 'insufficient funds: out of quota' >&2; exit 4"
+            .into(),
+    ];
+    let d = OpencodeDriver::new(DriverConfig::default());
+    match d.launch(spec).await.unwrap_err() {
+        DriverError::Exited { kind, text } => {
+            assert_eq!(kind, ErrorKind::Quota, "{text}");
+            assert!(text.contains("before becoming healthy"), "{text}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 fn line(v: Value) -> String {
     format!("data: {v}")
 }

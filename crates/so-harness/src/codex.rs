@@ -42,7 +42,7 @@ use crate::driver::{
 };
 use crate::process::{
     EventSink, ExitWatch, LineParser, ProcessHandle, ProducerGuard, Supervised, create_private_dir,
-    record_with, spawn_supervised_with, write_private,
+    record_with, spawn_supervised_with, startup_failure, write_private,
 };
 use crate::transcript::{Dir, SharedTranscript};
 
@@ -134,6 +134,19 @@ pub fn thread_params(spec: &LaunchSpec) -> Value {
     Value::Object(p)
 }
 
+impl CodexDriver {
+    /// Stops the server that never became ready and explains why from its stderr.
+    async fn startup_error(
+        &self,
+        control: &CodexControl,
+        events: &mut mpsc::UnboundedReceiver<HarnessEvent>,
+        cause: DriverError,
+    ) -> DriverError {
+        let _ = control.shutdown(Duration::ZERO).await;
+        startup_failure(cause, events, |t| self.classify_error(t)).await
+    }
+}
+
 impl Driver for CodexDriver {
     fn harness(&self) -> Harness {
         Harness::Codex
@@ -162,7 +175,7 @@ impl Driver for CodexDriver {
         )?;
         let guard = sup.producer_guard();
         let Supervised {
-            events,
+            mut events,
             handle,
             transcript,
             events_sink,
@@ -189,7 +202,25 @@ impl Driver for CodexDriver {
             cmd_rx,
             guard,
         };
-        match start(&spec, &control, &token, banner_rx, conn).await {
+        let exit = control.inner.proc.exit.clone();
+        // A server that dies or stalls before it is ready says why on its stderr (not signed
+        // in, out of quota): report that, classified, so the run can fail over. A banner
+        // that names another host is a different failure and stays as it is.
+        let addr = match wait_banner(banner_rx, &exit).await {
+            Ok(addr) => addr,
+            Err(e) => return Err(self.startup_error(&control, &mut events, e).await),
+        };
+        let port = match loopback_port(&addr) {
+            Ok(port) => port,
+            Err(e) => {
+                let _ = control.shutdown(Duration::ZERO).await;
+                return Err(e);
+            }
+        };
+        if let Err(e) = wait_ready(port, &exit).await {
+            return Err(self.startup_error(&control, &mut events, e).await);
+        }
+        match start(&spec, &control, &token, port, conn).await {
             Ok((thread_id, port)) => Ok(RunHandle {
                 events,
                 control: RunControl::Codex(control),
@@ -238,18 +269,16 @@ impl Driver for CodexDriver {
     }
 }
 
-/// Everything after the process is spawned: readiness, WebSocket, handshake,
-/// thread and first turn. Returns the thread id.
+/// Everything after the server is ready: WebSocket, handshake, thread and first turn.
+/// Returns the thread id.
 async fn start(
     spec: &LaunchSpec,
     control: &CodexControl,
     token: &str,
-    banner: oneshot::Receiver<String>,
+    port: u16,
     conn: ConnParts,
 ) -> Result<(String, u16), DriverError> {
     let exit = control.inner.proc.exit.clone();
-    let port = loopback_port(&wait_banner(banner, &exit).await?)?;
-    wait_ready(port, &exit).await?;
 
     let mut req = format!("ws://127.0.0.1:{port}")
         .into_client_request()

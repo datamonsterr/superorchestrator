@@ -173,6 +173,9 @@ impl Store {
         global_cap: i64,
         prompt: &str,
     ) -> Result<ResumeClaim> {
+        // Dead wrapper sessions hold caps: end them before the transaction opens, so
+        // liveness checks never run inside it.
+        self.reap_dead_interactive_sessions()?;
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let from = current_state(&tx, run_id)?;
@@ -499,6 +502,9 @@ impl Store {
         to: &Reassign,
         account_cap: i64,
     ) -> Result<bool> {
+        // Dead wrapper sessions hold caps: end them before the transaction opens, so
+        // liveness checks never run inside it.
+        self.reap_dead_interactive_sessions()?;
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let state = current_state(&tx, run_id)?;
@@ -590,6 +596,9 @@ impl Store {
         if !from.can_transition(to) {
             return Err(StoreError::InvalidTransition { from, to });
         }
+        // Dead wrapper sessions hold caps: end them before the transaction opens, so
+        // liveness checks never run inside it.
+        self.reap_dead_interactive_sessions()?;
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let actual = current_state(&tx, run_id)?;
@@ -756,6 +765,16 @@ impl Store {
             &format!("SELECT {COLS} FROM runs WHERE {active} ORDER BY created_at, id LIMIT ?1"),
             [limit as i64],
         )
+    }
+
+    /// How many runs `list_active_runs` would return.
+    pub fn count_active_runs(&self) -> Result<i64> {
+        let active = &*ACTIVE;
+        Ok(self.conn().query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE {active}"),
+            [],
+            |r| r.get(0),
+        )?)
     }
 
     /// Queued runs, oldest first (FIFO queue drain).
@@ -1111,6 +1130,7 @@ pub(crate) mod tests {
         assert_eq!(s.count_active_runs_by_account("a1").unwrap(), 0);
         assert_eq!(s.count_active_runs_total().unwrap(), 0);
         assert_eq!(s.list_active_runs(10).unwrap().len(), 3);
+        assert_eq!(s.count_active_runs().unwrap(), 3);
         assert_eq!(s.list_queued_runs(2).unwrap().len(), 2);
         assert_eq!(s.list_queued_runs(10).unwrap()[0].id, a.id);
         for r in [&a, &b, &c] {

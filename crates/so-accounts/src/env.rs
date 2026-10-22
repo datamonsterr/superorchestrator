@@ -79,27 +79,11 @@ fn harness_vars(account: &AccountFile, host: &HostEnv, home: &Path) -> Vec<(Stri
     }
 }
 
-/// Whether the launch is a supervised run or an interactive wrapper launch.
-/// Since ADR-0005 the recipe is the same for both: agy accounts are selected
-/// with `--gemini_dir` and never bwrapped here (the agy driver adds its own
-/// bwrap wrapper for supervised runs).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LaunchMode {
-    Supervised,
-    Interactive,
-}
-
-/// Builds the launch recipe. `bwrap_path` and `mode` are kept for API
-/// stability and are unused: no recipe needs bwrap (ADR-0005), because agy
-/// reads its account from `--gemini_dir=<home>/.gemini` and never binds it
-/// over `~/.gemini`.
-// TODO(M9): remove unused bwrap/mode params
-pub fn build_launch(
-    account: &AccountFile,
-    host: &HostEnv,
-    _bwrap_path: Option<&Path>,
-    _mode: LaunchMode,
-) -> Result<Launch> {
+/// Builds the launch recipe, the same for supervised runs and interactive wrapper
+/// launches. No recipe needs bwrap (ADR-0005): agy reads its account from
+/// `--gemini_dir=<home>/.gemini` and never binds it over `~/.gemini`; the agy driver
+/// adds its own bwrap wrapper for supervised runs.
+pub fn build_launch(account: &AccountFile, host: &HostEnv) -> Result<Launch> {
     let home = host.expand(&account.home)?;
     let binary = resolve_binary(&account.binary, host.path_var.as_deref())?;
     let mut launch = Launch {
@@ -150,8 +134,6 @@ mod tests {
         let l = build_launch(
             &acct("codex-acc2", Harness::Codex, "~/.codex-acc2"),
             &host(d.path(), Platform::Linux),
-            None,
-            LaunchMode::Supervised,
         )
         .unwrap();
         assert_eq!(l.program, d.path().join("bin/codex"));
@@ -170,13 +152,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         stub_bin(d.path(), "opencode");
         let h = host(d.path(), Platform::Linux);
-        let l = build_launch(
-            &acct("oc-two", Harness::Opencode, "~/.oc-two"),
-            &h,
-            None,
-            LaunchMode::Supervised,
-        )
-        .unwrap();
+        let l = build_launch(&acct("oc-two", Harness::Opencode, "~/.oc-two"), &h).unwrap();
         let keys: Vec<_> = l.vars.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]);
         assert_eq!(l.vars[1].1, format!("{}/.oc-two/data", d.path().display()));
@@ -187,8 +163,6 @@ mod tests {
                 "~/.local/share/opencode",
             ),
             &h,
-            None,
-            LaunchMode::Supervised,
         )
         .unwrap();
         assert!(l.vars.is_empty());
@@ -199,21 +173,9 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         stub_bin(d.path(), "claude");
         let h = host(d.path(), Platform::Linux);
-        let l = build_launch(
-            &acct("claude-two", Harness::Claude, "~/.claude-two"),
-            &h,
-            None,
-            LaunchMode::Supervised,
-        )
-        .unwrap();
+        let l = build_launch(&acct("claude-two", Harness::Claude, "~/.claude-two"), &h).unwrap();
         assert_eq!(l.vars[0].0, "CLAUDE_CONFIG_DIR");
-        let l = build_launch(
-            &acct("claude-acc1", Harness::Claude, "~/.claude"),
-            &h,
-            None,
-            LaunchMode::Supervised,
-        )
-        .unwrap();
+        let l = build_launch(&acct("claude-acc1", Harness::Claude, "~/.claude"), &h).unwrap();
         assert!(l.vars.is_empty());
     }
 
@@ -221,27 +183,21 @@ mod tests {
     fn agy_never_binds_gemini_over_home() {
         let d = tempfile::tempdir().unwrap();
         let agy = stub_bin(d.path(), "agy");
-        let bwrap = stub_bin(d.path(), "bwrap");
         let h = host(d.path(), Platform::Linux);
         let a = acct("agy-acc2", Harness::Agy, "~/.agy2");
         assert!(matches!(
-            build_launch(&a, &h, Some(&bwrap), LaunchMode::Supervised),
+            build_launch(&a, &h),
             Err(AccountsError::HomeMissing(_))
         ));
         std::fs::create_dir_all(d.path().join(".agy2/.gemini")).unwrap();
-        for mode in [LaunchMode::Supervised, LaunchMode::Interactive] {
-            // With or without bwrap on PATH the recipe is the same.
-            for bw in [Some(bwrap.as_path()), None] {
-                let l = build_launch(&a, &h, bw, mode).unwrap();
-                assert_eq!(l.program, agy);
-                assert!(l.argv_prefix.is_empty(), "no bwrap, no --bind");
-                assert!(l.vars.is_empty(), "HOME must stay unchanged");
-                assert_eq!(
-                    l.extra_args,
-                    [format!("--gemini_dir={}/.agy2/.gemini", d.path().display())]
-                );
-            }
-        }
+        let l = build_launch(&a, &h).unwrap();
+        assert_eq!(l.program, agy);
+        assert!(l.argv_prefix.is_empty(), "no bwrap, no --bind");
+        assert!(l.vars.is_empty(), "HOME must stay unchanged");
+        assert_eq!(
+            l.extra_args,
+            [format!("--gemini_dir={}/.agy2/.gemini", d.path().display())]
+        );
     }
 
     #[test]
@@ -250,7 +206,7 @@ mod tests {
         let agy = stub_bin(d.path(), "agy");
         let real = acct("agy-acc1", Harness::Agy, "~");
         for p in [Platform::Linux, Platform::MacOs] {
-            let l = build_launch(&real, &host(d.path(), p), None, LaunchMode::Supervised).unwrap();
+            let l = build_launch(&real, &host(d.path(), p)).unwrap();
             assert_eq!(l.program, agy);
             assert!(l.argv_prefix.is_empty());
             assert_eq!(
@@ -260,12 +216,7 @@ mod tests {
         }
         let other = acct("agy-acc2", Harness::Agy, "~/.agy2");
         assert!(matches!(
-            build_launch(
-                &other,
-                &host(d.path(), Platform::MacOs),
-                None,
-                LaunchMode::Supervised
-            ),
+            build_launch(&other, &host(d.path(), Platform::MacOs)),
             Err(AccountsError::AgyMultiAccountUnsupported(_))
         ));
     }

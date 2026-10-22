@@ -248,7 +248,7 @@ fn remove(ctx: &Ctx, a: AccountRemove) -> Result<ExitCode> {
 }
 
 fn set_enabled(ctx: &Ctx, name: &str, enabled: bool) -> Result<ExitCode> {
-    manage::set_enabled(&ctx.paths, name, enabled)?;
+    manage::set_enabled(&ctx.paths, &ctx.host()?, name, enabled)?;
     let word = if enabled { "enabled" } else { "disabled" };
     ctx.emit_ok(
         json!({ "name": name, "enabled": enabled }),

@@ -9,7 +9,8 @@
 //! needs a server-side task store; SPEC 13 allows the fallback, so the long tools block and
 //! stream MCP progress notifications instead.
 //!
-//! TODO(M4): elicitation (`ask_parent` / questions from the supervisor) is out of scope for now.
+//! Elicitation: `wait_agent` surfaces a run's questions to the person through MCP
+//! elicitation when the client supports it (`bridge.rs`).
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod bridge;

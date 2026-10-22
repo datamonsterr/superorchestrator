@@ -130,8 +130,13 @@ const V7: &str = "
 ALTER TABLE run_meta ADD COLUMN queued_route_json TEXT;
 ";
 
+const V8: &str = "
+-- When the process behind a session started, so a reused pid is not mistaken for it.
+ALTER TABLE sessions ADD COLUMN pid_start TEXT;
+";
+
 /// Ordered migrations; entry `i` brings the database to version `i + 1`.
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8];
 
 /// Latest schema version known to this build.
 pub fn latest_version() -> i64 {

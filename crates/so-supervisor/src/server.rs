@@ -64,6 +64,9 @@ pub struct SupervisorOptions {
     pub host: Option<HostEnv>,
     /// Executable children run as their `mcp` server; default the current executable.
     pub mcp_exe: Option<PathBuf>,
+    /// How often dead interactive wrapper sessions are ended (they hold account caps).
+    /// Cap checks end them too, so this only keeps the stored state fresh.
+    pub reap_interval: Duration,
 }
 
 impl SupervisorOptions {
@@ -80,7 +83,13 @@ impl SupervisorOptions {
             setup: None,
             host: None,
             mcp_exe: None,
+            reap_interval: REAP_INTERVAL,
         }
+    }
+
+    pub fn with_reap_interval(mut self, d: Duration) -> Self {
+        self.reap_interval = d.max(Duration::from_millis(1));
+        self
     }
 
     pub fn with_mcp_exe(mut self, exe: PathBuf) -> Self {
@@ -254,6 +263,7 @@ impl Supervisor {
             setup,
             host,
             mcp_exe,
+            reap_interval,
         } = opts;
 
         let lock = acquire_lock(&paths.config_dir, lock_wait).await?;
@@ -318,6 +328,7 @@ impl Supervisor {
             spawn_signal_task(state.clone())?;
         }
         tokio::spawn(idle_monitor(state.clone(), idle_exit, shutdown_rx.clone()));
+        tokio::spawn(reap_loop(state.clone(), reap_interval, shutdown_rx.clone()));
         let join = tokio::spawn(accept_loop(
             state.clone(),
             listener,
@@ -407,6 +418,30 @@ fn spawn_signal_task(state: Arc<SupervisorState>) -> Result<()> {
     Ok(())
 }
 
+/// Ends interactive sessions whose process died, so their account caps free up.
+async fn reap_loop(
+    state: Arc<SupervisorState>,
+    every: Duration,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    loop {
+        let store = state.store.clone();
+        match tokio::task::spawn_blocking(move || store.reap_dead_interactive_sessions()).await {
+            Ok(Ok(0)) => {}
+            Ok(Ok(n)) => {
+                tracing::info!(ended = n, "ended dead interactive sessions");
+                state.runs.request_drain();
+            }
+            Ok(Err(e)) => tracing::warn!(error = %e, "could not end dead interactive sessions"),
+            Err(e) => tracing::warn!(error = %e, "session reaper panicked"),
+        }
+        tokio::select! {
+            _ = wait_shutdown(&mut shutdown) => return,
+            _ = tokio::time::sleep(every) => {}
+        }
+    }
+}
+
 /// Requests shutdown once no client has been connected and the probe has been quiet for
 /// `idle_exit`.
 async fn idle_monitor(
@@ -494,6 +529,7 @@ async fn accept_loop(
 }
 
 const MAX_INFLIGHT: usize = 64;
+const REAP_INTERVAL: Duration = Duration::from_secs(30);
 const LOCK_WAIT: Duration = Duration::from_secs(3);
 const LOCK_STEP: Duration = Duration::from_millis(50);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);

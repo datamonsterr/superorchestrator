@@ -22,7 +22,7 @@ use crate::driver::{
 };
 use crate::process::{
     ExitWatch, LineParser, MAX_LINE_BYTES, ProcessHandle, TRUNCATED_MARK, create_private_dir,
-    default_truncated_event, record, spawn_supervised, write_private,
+    default_truncated_event, record, spawn_supervised, startup_failure, write_private,
 };
 use crate::transcript::{Dir, SharedTranscript, TranscriptWriter};
 
@@ -1108,7 +1108,13 @@ impl Driver for OpencodeDriver {
                     ),
                     Err(msg) => {
                         sup.handle.shutdown(Duration::ZERO).await;
-                        return Err(DriverError::Other(msg));
+                        let mut sup_events = sup.events;
+                        return Err(startup_failure(
+                            DriverError::Other(msg),
+                            &mut sup_events,
+                            |t| self.classify_error(t),
+                        )
+                        .await);
                     }
                 }
             }
@@ -1138,6 +1144,24 @@ impl Driver for OpencodeDriver {
             out: out.clone(),
         };
 
+        // A server that dies or stalls before it is healthy says why on its stderr (not
+        // signed in, out of quota): report that, classified, so the run can fail over.
+        let mut forward = forward;
+        if let Err(e) = api
+            .wait_ready(deadline, proc.as_ref().map(|p| p.exit.clone()))
+            .await
+        {
+            if let Some(p) = &proc {
+                p.shutdown(Duration::ZERO).await;
+            }
+            return Err(match forward.as_mut() {
+                Some(sup_events) => {
+                    startup_failure(e, sup_events, |t| self.classify_error(t)).await
+                }
+                None => e,
+            });
+        }
+
         let sse_slot: Arc<Mutex<Option<JoinHandle<()>>>> = Arc::new(Mutex::new(None));
         let (stop, stop_rx) = watch::channel(());
         let stop = Arc::new(stop);
@@ -1163,7 +1187,7 @@ impl Driver for OpencodeDriver {
         }
 
         let started = self
-            .start_session(&spec, &api, &out, (stop_rx, &proc, deadline), &sse_slot)
+            .start_session(&spec, &api, &out, (stop_rx, &proc), &sse_slot)
             .await;
         let session_id = match started {
             Ok(id) => id,
@@ -1258,15 +1282,9 @@ impl OpencodeDriver {
         spec: &LaunchSpec,
         api: &Api,
         out: &Arc<Out>,
-        (stop_rx, proc, deadline): (
-            watch::Receiver<()>,
-            &Option<Arc<ProcessHandle>>,
-            tokio::time::Instant,
-        ),
+        (stop_rx, proc): (watch::Receiver<()>, &Option<Arc<ProcessHandle>>),
         sse_slot: &Arc<Mutex<Option<JoinHandle<()>>>>,
     ) -> Result<String, DriverError> {
-        api.wait_ready(deadline, proc.as_ref().map(|p| p.exit.clone()))
-            .await?;
         let resp = api.open_events().await?;
         out.emit(Dir::Out, Channel::Http, "GET /event", vec![]);
 

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 use serde_json::{Value, json};
-use so_accounts::{LaunchMode, build_launch, resolve_binary};
+use so_accounts::build_launch;
 use so_agents::{AgentDef, AgentError, HarnessPref};
 use so_core::proto::{
     CAP_EXCEEDED, DEPTH_LIMIT, INVALID_PARAMS, INVALID_REQUEST, NOT_FOUND, RpcError, SpawnParams,
@@ -70,10 +70,7 @@ impl RunManager {
         let host = self
             .host()
             .ok_or_else(|| rpc(UNAVAILABLE, "the host environment (HOME) is not available"))?;
-        let bwrap = (account.harness == Harness::Agy)
-            .then(|| resolve_binary("bwrap", host.path_var.as_deref()).ok())
-            .flatten();
-        build_launch(account, host, bwrap.as_deref(), LaunchMode::Supervised).map_err(|e| {
+        build_launch(account, host).map_err(|e| {
             rpc(
                 UNAVAILABLE,
                 format!("cannot launch account {}: {e}", account.name),

@@ -391,8 +391,7 @@ async fn run_collector(
     stdin_lines: Vec<String>,
     wait_for: ResponseMatcher,
 ) -> std::result::Result<String, String> {
-    let launch = build_launch(account, env.host, None, so_accounts::LaunchMode::Supervised)
-        .map_err(|e| e.to_string())?;
+    let launch = build_launch(account, env.host).map_err(|e| e.to_string())?;
     let mut args = launch.argv_prefix.clone();
     args.extend(launch.extra_args.clone());
     args.extend(subcommand.iter().map(|s| s.to_string()));

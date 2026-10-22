@@ -742,8 +742,6 @@ impl RunManager {
     // ---------------------------------------------------------------- finish
 
     pub(crate) async fn fail_run(&self, run_id: &str, kind: ErrorKind, reason: &str) {
-        // TODO(failover): a quota or rate-limit failure should hand the run to the router
-        // for another account instead of ending it.
         self.finish(run_id, Outcome::failed(kind, reason, None))
             .await;
     }

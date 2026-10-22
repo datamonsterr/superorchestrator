@@ -7,6 +7,7 @@ pub mod duration;
 pub mod error;
 mod fsutil;
 pub mod paths;
+pub mod procinfo;
 pub mod proto;
 pub mod redact;
 pub mod types;

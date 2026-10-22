@@ -5,12 +5,10 @@ Minor review findings deferred to M9 hardening. Each line names the file and the
 - `crates/superorchestrator/src/redact.rs`: oversize flush can split `Bearer <token>` across chunks; carry a "previous word was Bearer" flag.
 - `crates/superorchestrator/src/cmd/account.rs`: argument-validation errors exit 1; route through `CliError::new(USAGE, ..)`.
 - `crates/superorchestrator/src/views.rs`: `active_runs` shows 0 when the store is unavailable; emit `null` / "-".
-- `crates/superorchestrator/src/cmd/daemon.rs`: tighten an existing logs dir to 0700.
 - `crates/so-store`: `patch_run` can write `finished_at`/`error_kind` outside `finish_run`; narrow the patch.
 - `crates/so-supervisor`: idle-exit negative tests use timed sleeps; server writer timeout and join-error logging have no tests.
 - `crates/so-mcp`: progress for `spawn_agent wait` and `run_workflow` is connection-scoped, not per call.
 - `crates/so-accounts`: failed `add` leaves the new home behind; `reserve_backup` leaks an empty file if both rename and copy fail.
-- `crates/so-accounts/src/env.rs`: `build_launch` keeps unused `bwrap_path` and `mode` params (ADR-0005); remove them and update `exec.rs`, `so-usage/src/probe.rs` and tests.
 - `crates/so-supervisor/src/runs/view.rs`: `run_view` loads every event of a run to sum usage; keep a running total or query sums.
 - `crates/so-web/src/stream.rs`: the SSE pump reads `list_headroom` (all rows) on each `usage` event; query by account.
 - `crates/so-web/src/api/sessions.rs`: the sessions list does a stats query per session (N+1) and scans up to 5000 sessions; push filters into SQL.
@@ -26,4 +24,3 @@ Minor review findings deferred to M9 hardening. Each line names the file and the
 - `web/src/api/msw/handlers.ts`: the `/accounts/import` mock does not record the harness, so imported claude accounts get a device-code login in mock mode.
 - `crates/so-supervisor/src/runs/{comm,lifecycle}.rs`: `append_run_turn_prompt` errors are ignored. A failed write drops that message from a later failover; at least log it.
 - `crates/so-supervisor/src/runs/routing.rs`: re-routing a queued first-spawn agent run with tool controls does not filter out harnesses with tool gaps. Only pending failovers are filtered.
-- `crates/so-harness/src/{codex,opencode}.rs`: startup failures carry no process output, so a codex or opencode account that is not signed in or out of quota at launch fails as `other` with no failover. Capture the process's stderr and return `DriverError::Exited`.

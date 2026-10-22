@@ -209,6 +209,96 @@ async fn account_cap_queues_fifo() {
     h.shutdown().await;
 }
 
+fn interactive_session(account: &str, pid: i64) -> so_store::SessionRow {
+    so_store::SessionRow {
+        id: new_id(),
+        kind: so_core::SessionKind::Interactive,
+        client: "wrapper".into(),
+        cwd: None,
+        account: Some(account.into()),
+        pid: Some(pid),
+        started_at: chrono::Utc::now(),
+        ended_at: None,
+        status: "active".into(),
+    }
+}
+
+#[tokio::test]
+async fn a_live_interactive_session_holds_the_cap_and_a_dead_one_does_not() {
+    let env = Env::new();
+    env.account("claude-acc1", 1, &ok_script(&[]));
+    let store = env.store();
+    // A real process stands in for the wrapper.
+    let mut wrapper = Command::new("sleep").arg("60").spawn().unwrap();
+    let live = interactive_session("claude-acc1", i64::from(wrapper.id()));
+    store.insert_session(&live).unwrap();
+    let h = env.start_reaping(Duration::from_millis(50)).await;
+    let c = env.client(&h).await;
+    let mut p = env.spawn_params("claude-acc1");
+    p.isolation = Some(so_core::Isolation::None);
+
+    let queued = spawn(&c, p.clone()).await;
+    assert_eq!(
+        queued.state,
+        RunState::Queued,
+        "live wrapper holds the slot"
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(view(&c, &queued.run_id).await.state, RunState::Queued);
+    assert!(
+        store
+            .get_session(&live.id)
+            .unwrap()
+            .unwrap()
+            .ended_at
+            .is_none()
+    );
+
+    // The wrapper dies: the periodic reaper frees the slot and the queue drains, with no
+    // `status` call.
+    wrapper.kill().unwrap();
+    wrapper.wait().unwrap();
+    wait_state(&c, &queued.run_id, RunState::Succeeded).await;
+    assert!(
+        store
+            .get_session(&live.id)
+            .unwrap()
+            .unwrap()
+            .ended_at
+            .is_some()
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn spawn_reaps_a_dead_wrapper_before_checking_the_cap() {
+    let env = Env::new();
+    env.account("claude-acc1", 1, &ok_script(&[]));
+    let store = env.store();
+    let dead = interactive_session("claude-acc1", i64::from(i32::MAX));
+    store.insert_session(&dead).unwrap();
+    // The reaper never fires inside this test: only the cap check can free the slot.
+    let h = env.start_reaping(Duration::from_secs(3600)).await;
+    // `start` already reaped once; put a fresh dead session back after it.
+    let dead2 = interactive_session("claude-acc1", i64::from(i32::MAX));
+    store.insert_session(&dead2).unwrap();
+    let c = env.client(&h).await;
+    let mut p = env.spawn_params("claude-acc1");
+    p.isolation = Some(so_core::Isolation::None);
+    let r = spawn(&c, p).await;
+    assert_ne!(r.state, RunState::Queued);
+    wait_state(&c, &r.run_id, RunState::Succeeded).await;
+    assert!(
+        store
+            .get_session(&dead2.id)
+            .unwrap()
+            .unwrap()
+            .ended_at
+            .is_some()
+    );
+    h.shutdown().await;
+}
+
 #[tokio::test]
 async fn depth_two_caller_cannot_spawn_and_children_are_capped() {
     let mut env = Env::new();

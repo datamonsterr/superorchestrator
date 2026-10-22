@@ -4,6 +4,7 @@ mod cli;
 mod cmd;
 mod ctx;
 mod exit;
+mod logfile;
 mod output;
 mod redact;
 mod register;

@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-use so_accounts::{HostEnv, LaunchMode, build_launch, resolve_binary};
+use so_accounts::{HostEnv, build_launch, resolve_binary};
 use so_core::{AccountFile, Config, Harness, Headroom, HeadroomSource};
 use so_store::{FlagRow, Store};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -415,7 +415,7 @@ impl UsageService {
     }
 
     async fn probe_codex(&self, account: &AccountFile) -> Result<Vec<WindowReading>> {
-        let launch = build_launch(account, &self.host, None, LaunchMode::Supervised)?;
+        let launch = build_launch(account, &self.host)?;
         let mut args = launch.argv_prefix.clone();
         args.extend(launch.extra_args.clone());
         args.extend(["app-server".into(), "--listen".into(), "stdio://".into()]);

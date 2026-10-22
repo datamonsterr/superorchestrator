@@ -252,6 +252,11 @@ impl Env {
     }
 
     pub async fn start(&self) -> SupervisorHandle {
+        self.start_reaping(Duration::from_secs(30)).await
+    }
+
+    /// Like [`Env::start`], ending dead interactive sessions every `reap`.
+    pub async fn start_reaping(&self, reap: Duration) -> SupervisorHandle {
         let host = HostEnv {
             home: self.home.clone(),
             path_var: Some("/usr/bin:/bin".into()),
@@ -261,6 +266,7 @@ impl Env {
             SupervisorOptions::new(self.paths.clone(), self.config.clone(), self.sock.clone())
                 .with_lock_wait(Duration::ZERO)
                 .with_idle_exit(Duration::from_secs(600))
+                .with_reap_interval(reap)
                 .with_host(host)
                 .with_setup(default_handlers);
         Supervisor::start(opts).await.unwrap()
