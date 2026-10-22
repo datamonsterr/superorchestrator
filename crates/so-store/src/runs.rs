@@ -160,8 +160,10 @@ impl Store {
 
     /// Atomically claims a concurrency slot: moves the run `from -> to` and sets its account,
     /// only if the account (slot-holding runs plus open interactive sessions) is below
-    /// `account_cap` and all slot-holding runs are below `global_cap`. Returns `false`
+    /// `account_cap` and all slot-holding runs are below `global_cap`. Moving into
+    /// `starting` also sets `started_at` to `now`. Returns `false`
     /// (changing nothing) when a cap is reached.
+    #[allow(clippy::too_many_arguments)] // one atomic claim; a params struct would only add noise
     pub fn try_claim_slot(
         &self,
         run_id: &str,
@@ -170,6 +172,7 @@ impl Store {
         account: &str,
         account_cap: i64,
         global_cap: i64,
+        now: DateTime<Utc>,
     ) -> Result<bool> {
         if !from.can_transition(to) {
             return Err(StoreError::InvalidTransition { from, to });
@@ -200,8 +203,14 @@ impl Store {
             return Ok(false);
         }
         tx.execute(
-            "UPDATE runs SET state = ?2, account = ?3 WHERE id = ?1",
-            params![run_id, enum_to_sql(&to), account],
+            "UPDATE runs SET state = ?2, account = ?3, started_at = COALESCE(?4, started_at) \
+             WHERE id = ?1",
+            params![
+                run_id,
+                enum_to_sql(&to),
+                account,
+                (to == RunState::Starting).then(|| ts_to_sql(&now))
+            ],
         )?;
         tx.commit()?;
         Ok(true)
@@ -657,10 +666,25 @@ pub(crate) mod tests {
                 "a1",
                 acct_cap,
                 global_cap,
+                crate::codec::now(),
             )
             .unwrap()
         };
         assert!(claim(0, 2, 10));
+        assert!(
+            s.get_run(&runs[0].id)
+                .unwrap()
+                .unwrap()
+                .started_at
+                .is_some()
+        );
+        assert!(
+            s.get_run(&runs[1].id)
+                .unwrap()
+                .unwrap()
+                .started_at
+                .is_none()
+        );
         assert_eq!(
             s.get_run(&runs[0].id).unwrap().unwrap().account.as_deref(),
             Some("a1")
@@ -683,15 +707,39 @@ pub(crate) mod tests {
         assert!(claim(2, 5, 3));
         // errors
         assert!(matches!(
-            s.try_claim_slot(&runs[2].id, RunState::Queued, RunState::Starting, "a", 9, 9),
+            s.try_claim_slot(
+                &runs[2].id,
+                RunState::Queued,
+                RunState::Starting,
+                "a",
+                9,
+                9,
+                crate::codec::now()
+            ),
             Err(StoreError::StateConflict { .. })
         ));
         assert!(matches!(
-            s.try_claim_slot(&runs[3].id, RunState::Queued, RunState::Running, "a", 9, 9),
+            s.try_claim_slot(
+                &runs[3].id,
+                RunState::Queued,
+                RunState::Running,
+                "a",
+                9,
+                9,
+                crate::codec::now()
+            ),
             Err(StoreError::InvalidTransition { .. })
         ));
         assert!(matches!(
-            s.try_claim_slot("nope", RunState::Queued, RunState::Starting, "a", 9, 9),
+            s.try_claim_slot(
+                "nope",
+                RunState::Queued,
+                RunState::Starting,
+                "a",
+                9,
+                9,
+                crate::codec::now()
+            ),
             Err(StoreError::NotFound { .. })
         ));
     }
@@ -712,8 +760,16 @@ pub(crate) mod tests {
             .into_iter()
             .map(|(st, id)| {
                 std::thread::spawn(move || {
-                    st.try_claim_slot(&id, RunState::Queued, RunState::Starting, "acc", 1, 1)
-                        .unwrap()
+                    st.try_claim_slot(
+                        &id,
+                        RunState::Queued,
+                        RunState::Starting,
+                        "acc",
+                        1,
+                        1,
+                        crate::codec::now(),
+                    )
+                    .unwrap()
                 })
             })
             .collect();

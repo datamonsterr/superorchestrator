@@ -217,3 +217,16 @@ fn new_db_file_is_private() {
     let mode = std::fs::metadata(&path).unwrap().permissions().mode();
     assert_eq!(mode & 0o777, 0o600);
 }
+
+#[cfg(unix)]
+#[test]
+fn wide_existing_db_file_is_tightened() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    drop(Store::open(&path).unwrap());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+    drop(Store::open(&path).unwrap());
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+}

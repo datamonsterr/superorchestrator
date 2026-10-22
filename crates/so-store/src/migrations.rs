@@ -38,8 +38,9 @@ CREATE TABLE events (
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL, run_id TEXT, ts TEXT NOT NULL,
   type TEXT NOT NULL, data_json TEXT NOT NULL
 );
-CREATE INDEX idx_events_session_ts ON events(session_id, ts);
-CREATE INDEX idx_events_run_ts ON events(run_id, ts);
+CREATE INDEX idx_events_session_ts ON events(session_id, ts, id);
+CREATE INDEX idx_events_run_ts ON events(run_id, ts, id);
+CREATE INDEX idx_events_ts ON events(ts);
 
 CREATE TABLE messages (
   id TEXT PRIMARY KEY, session_id TEXT NOT NULL, from_run TEXT, to_run TEXT,

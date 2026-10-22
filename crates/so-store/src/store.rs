@@ -63,7 +63,8 @@ impl Store {
     }
 }
 
-/// Creates the database file with mode 0600 if it does not exist yet (it may hold prompts).
+/// Creates the database file with mode 0600 if it does not exist yet (it may hold prompts),
+/// and tightens an existing file that is group- or world-accessible.
 fn create_private(path: &Path) -> Result<()> {
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);
@@ -74,7 +75,17 @@ fn create_private(path: &Path) -> Result<()> {
     }
     match opts.open(path) {
         Ok(_) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let meta = std::fs::metadata(path)?;
+                if meta.is_file() && meta.permissions().mode() & 0o077 != 0 {
+                    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+                }
+            }
+            Ok(())
+        }
         Err(e) => Err(StoreError::Io(e)),
     }
 }
