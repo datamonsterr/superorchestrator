@@ -113,7 +113,7 @@ impl RunManager {
                 .await;
         }
         if !st.done && !self.is_cancelling(&pc.run_id) {
-            self.exited(&pc, &mut st, None).await;
+            self.exited(&pc, &mut st, &control, None).await;
         }
     }
 
@@ -236,7 +236,7 @@ impl RunManager {
                         .await;
                 }
             }
-            HarnessEvent::Exited { code } => self.exited(pc, st, code).await,
+            HarnessEvent::Exited { code } => self.exited(pc, st, control, code).await,
         }
     }
 
@@ -249,6 +249,10 @@ impl RunManager {
         text: &str,
     ) {
         st.done = true;
+        // A limit on the account may only mean another account should take over (SPEC 8.5).
+        if self.begin_failover(pc, control, kind, text).await {
+            return;
+        }
         let o = Outcome::failed(kind, text, Some(control.clone()));
         self.finish(&pc.run_id, o).await;
     }
@@ -375,14 +379,20 @@ impl RunManager {
         st.nudges = 0;
     }
 
-    async fn exited(&self, pc: &PumpCtx, st: &mut State, code: Option<i32>) {
+    async fn exited(&self, pc: &PumpCtx, st: &mut State, control: &RunControl, code: Option<i32>) {
         if st.done {
             return;
         }
         st.done = true;
         let text = match st.pending_error.take() {
-            // A quota, auth or similar error: resuming would only repeat it.
-            Some(err) => err,
+            // A quota, auth or similar error: resuming would only repeat it, but another
+            // account may take the run over.
+            Some((kind, text)) => {
+                if self.begin_failover(pc, control, kind, &text).await {
+                    return;
+                }
+                (kind, text)
+            }
             None => {
                 let text = format!(
                     "the harness exited ({}) before producing a result",

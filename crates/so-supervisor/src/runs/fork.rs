@@ -115,7 +115,7 @@ impl RunManager {
             timeout_ms: src.timeout_ms,
         };
         let mgr = self.clone();
-        tokio::spawn(async move { mgr.enqueue(row, Vec::new(), Some(native)).await })
+        tokio::spawn(async move { mgr.enqueue(row, Vec::new(), Some(native), None).await })
             .await
             .map_err(crate::dispatch::internal)??;
         let row = self.resolve_run(&id).await?;

@@ -22,7 +22,7 @@ const TRANSCRIPT: &str = include_str!("../../so-harness/tests/fixtures/claude/tr
 fn fake_harness() -> PathBuf {
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"));
+        .unwrap_or_else(target_dir_of_this_test);
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let st = Command::new(cargo)
         .args([
@@ -199,4 +199,13 @@ fn worktrees_list_json_is_empty_without_a_store() {
         .args(["worktrees", "prune", "--yes"])
         .assert()
         .success();
+}
+
+/// `<target>/debug/deps/<this test>` gives the target directory when `CARGO_TARGET_DIR` is
+/// not set (a `build.target-dir` in cargo's config is invisible to the test).
+fn target_dir_of_this_test() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| Some(p.parent()?.parent()?.parent()?.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"))
 }

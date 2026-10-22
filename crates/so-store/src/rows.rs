@@ -90,6 +90,16 @@ pub struct RunPatch {
     pub finished_at: Option<Option<DateTime<Utc>>>,
 }
 
+/// Where a failed-over run goes (see `Store::reassign_run`).
+#[derive(Debug, Clone)]
+pub struct Reassign {
+    pub account: String,
+    pub harness: Harness,
+    pub choice_id: Option<String>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
 /// Result of `Store::claim_resume`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResumeClaim {

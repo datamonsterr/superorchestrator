@@ -107,8 +107,13 @@ const V3: &str = "
 ALTER TABLE run_meta ADD COLUMN resume_prompt TEXT;
 ";
 
+const V4: &str = "
+-- How a run was routed (the caller's pins), kept so a failover can route again within them.
+ALTER TABLE run_meta ADD COLUMN route_json TEXT;
+";
+
 /// Ordered migrations; entry `i` brings the database to version `i + 1`.
-const MIGRATIONS: &[&str] = &[V1, V2, V3];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
 
 /// Latest schema version known to this build.
 pub fn latest_version() -> i64 {

@@ -35,7 +35,7 @@ fn fake_harness() -> PathBuf {
     static BUILD: Once = Once::new();
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"));
+        .unwrap_or_else(target_dir_of_this_test);
     BUILD.call_once(|| {
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let st = Command::new(cargo)
@@ -1846,4 +1846,13 @@ async fn a_cancel_during_the_gate_teardown_leaves_a_cancelled_attempt() {
     assert_eq!(attempts[0].outcome.as_deref(), Some("cancelled"));
     assert_eq!(view(&c, &id).await.state, RunState::Cancelled);
     h.shutdown().await;
+}
+
+/// `<target>/debug/deps/<this test>` gives the target directory when `CARGO_TARGET_DIR` is
+/// not set (a `build.target-dir` in cargo's config is invisible to the test).
+fn target_dir_of_this_test() -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| Some(p.parent()?.parent()?.parent()?.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target"))
 }

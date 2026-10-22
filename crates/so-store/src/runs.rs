@@ -9,7 +9,7 @@ use so_core::{RunState, new_id};
 
 use crate::codec::*;
 use crate::error::{Result, StoreError};
-use crate::rows::{AttemptRow, FinishPatch, InsertRun, ResumeClaim, RunPatch, RunRow};
+use crate::rows::{AttemptRow, FinishPatch, InsertRun, Reassign, ResumeClaim, RunPatch, RunRow};
 use crate::store::Store;
 
 const COLS: &str = "id, session_id, parent_run_id, depth, name, agent, choice_id, harness, \
@@ -286,6 +286,90 @@ impl Store {
         Ok(json
             .and_then(|j| serde_json::from_str(&j).ok())
             .unwrap_or_default())
+    }
+
+    /// Stores how a run was routed (the caller's pins as JSON), for failover.
+    pub fn set_run_route(&self, run_id: &str, route_json: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO run_meta (run_id, route_json) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET route_json = excluded.route_json",
+            params![run_id, route_json],
+        )?;
+        Ok(())
+    }
+
+    /// How a run was routed; `None` for a run whose harness and account were both named.
+    pub fn get_run_route(&self, run_id: &str) -> Result<Option<String>> {
+        let v: Option<Option<String>> = self
+            .conn()
+            .query_row(
+                "SELECT route_json FROM run_meta WHERE run_id = ?1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?;
+        Ok(v.flatten())
+    }
+
+    /// Failover: atomically moves a running run's slot from `from_account` to `to.account`,
+    /// switching its harness, choice, model and effort and clearing its native session (it
+    /// belongs to the old account). Only done if the new account (slot-holding runs plus open
+    /// interactive sessions) is below `account_cap`; returns `false` when it is not. The
+    /// global count does not change, because this run already holds a slot.
+    pub fn reassign_run(
+        &self,
+        run_id: &str,
+        from_account: &str,
+        to: &Reassign,
+        account_cap: i64,
+    ) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let state = current_state(&tx, run_id)?;
+        if !state.is_active() || state == RunState::Queued || state == RunState::PendingReview {
+            return Err(StoreError::StateConflict {
+                id: run_id.into(),
+                expected: RunState::Running,
+                actual: state,
+            });
+        }
+        let current: Option<String> =
+            tx.query_row("SELECT account FROM runs WHERE id = ?1", [run_id], |r| {
+                r.get(0)
+            })?;
+        if current.as_deref() != Some(from_account) {
+            return Err(StoreError::Constraint(format!(
+                "run `{run_id}` is not on account `{from_account}`"
+            )));
+        }
+        let slot = &*SLOT_HOLDING;
+        let on_target: i64 = tx.query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE account = ?1 AND id != ?2 AND {slot}"),
+            params![to.account, run_id],
+            |r| r.get(0),
+        )?;
+        let interactive = crate::sessions::count_interactive(&tx, &to.account)?;
+        if on_target + interactive >= account_cap {
+            return Ok(false);
+        }
+        tx.execute(
+            "UPDATE runs SET account = ?2, harness = ?3, choice_id = ?4, model = ?5, \
+             effort = ?6, native_session_id = NULL WHERE id = ?1",
+            params![
+                run_id,
+                to.account,
+                enum_to_sql(&to.harness),
+                to.choice_id,
+                to.model,
+                to.effort
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Marks a run as a fork: it resumes a copy of this native session when it starts.
@@ -1152,6 +1236,59 @@ pub(crate) mod tests {
             InsertRun::ChildCap { active: 2 }
         );
         assert_eq!(s.list_child_runs(&parent.id, 10).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn route_meta_round_trips_next_to_checks() {
+        let (s, sid) = setup();
+        let r = run(&sid, None);
+        assert_eq!(s.get_run_route(&r.id).unwrap(), None);
+        s.set_run_checks(&r.id, &["ci".into()]).unwrap();
+        s.set_run_route(&r.id, "{\"role\":\"worker\"}").unwrap();
+        assert_eq!(
+            s.get_run_route(&r.id).unwrap().as_deref(),
+            Some("{\"role\":\"worker\"}")
+        );
+        assert_eq!(s.get_run_checks(&r.id).unwrap(), vec!["ci".to_string()]);
+    }
+
+    #[test]
+    fn reassign_moves_the_slot_only_below_the_target_cap() {
+        let (s, sid) = setup();
+        let mut moving = run(&sid, Some("a"));
+        moving.state = RunState::Running;
+        s.insert_run(&moving).unwrap();
+        let mut busy = run(&sid, Some("b"));
+        busy.state = RunState::Running;
+        s.insert_run(&busy).unwrap();
+        let to = Reassign {
+            account: "b".into(),
+            harness: Harness::Opencode,
+            choice_id: Some("c2".into()),
+            model: Some("m".into()),
+            effort: None,
+        };
+        // `b` already holds one slot and its cap is 1.
+        assert!(!s.reassign_run(&moving.id, "a", &to, 1).unwrap());
+        assert_eq!(s.count_active_runs_by_account("a").unwrap(), 1);
+        assert!(s.reassign_run(&moving.id, "a", &to, 2).unwrap());
+        let got = s.get_run(&moving.id).unwrap().unwrap();
+        assert_eq!(got.account.as_deref(), Some("b"));
+        assert_eq!(got.harness, Harness::Opencode);
+        assert_eq!(got.choice_id.as_deref(), Some("c2"));
+        assert_eq!(s.count_active_runs_by_account("a").unwrap(), 0);
+        assert_eq!(s.count_active_runs_by_account("b").unwrap(), 2);
+        // Not on `a` any more, and a queued run holds no slot to move.
+        assert!(matches!(
+            s.reassign_run(&moving.id, "a", &to, 9),
+            Err(StoreError::Constraint(_))
+        ));
+        let queued = run(&sid, Some("a"));
+        s.insert_run(&queued).unwrap();
+        assert!(matches!(
+            s.reassign_run(&queued.id, "a", &to, 9),
+            Err(StoreError::StateConflict { .. })
+        ));
     }
 
     #[test]

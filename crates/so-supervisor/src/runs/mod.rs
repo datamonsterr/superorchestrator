@@ -6,6 +6,7 @@
 
 mod comm;
 mod events;
+mod failover;
 mod fork;
 mod handlers;
 mod instructions;
@@ -15,6 +16,7 @@ mod queue;
 mod reconcile;
 mod resume;
 mod review;
+mod routing;
 mod spawn;
 mod view;
 pub mod worktree;
@@ -104,6 +106,8 @@ struct Inner {
     socket_path: PathBuf,
     mcp_exe: PathBuf,
     driver_cfg: DriverConfig,
+    /// For the route decider. Never follows redirects, so the bearer key cannot be forwarded.
+    http: reqwest::Client,
     /// The single place run state lives. Held only for short, non-awaiting sections.
     runs: Mutex<HashMap<String, RunRt>>,
     /// Orchestrator sessions with a connected client.
@@ -123,6 +127,8 @@ struct Inner {
     fault_gate_result: std::sync::atomic::AtomicBool,
     /// Runs whose process died, to be resumed by the resumer task.
     resume_tx: tokio::sync::mpsc::UnboundedSender<reconcile::ResumeRequest>,
+    /// Runs to move to another account after a quota or auth error.
+    failover_tx: tokio::sync::mpsc::UnboundedSender<failover::FailoverRequest>,
     notifications: Notifications,
     /// Test hooks: hold `go_live`, shorten the launch limit, slow the launch down.
     go_live_open: watch::Sender<bool>,
@@ -160,6 +166,7 @@ impl RunManager {
             .unwrap_or_else(|| PathBuf::from("superorchestrator"));
         let drain_wake = Arc::new(Notify::new());
         let (resume_tx, resume_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (failover_tx, failover_rx) = tokio::sync::mpsc::unbounded_channel();
         let notifications = Notifications::new(&config.notifications.on);
         let inner = Arc::new(Inner {
             store,
@@ -169,6 +176,10 @@ impl RunManager {
             socket_path,
             mcp_exe,
             driver_cfg: DriverConfig::default(),
+            http: reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .unwrap_or_default(),
             runs: Mutex::default(),
             connected: Mutex::default(),
             bus: Arc::default(),
@@ -177,6 +188,7 @@ impl RunManager {
             finished: watch::channel(0).0,
             msg_tick: watch::channel(0).0,
             resume_tx,
+            failover_tx,
             locks: Mutex::default(),
             gate_delay_ms: AtomicU64::new(0),
             fault_gate_result: std::sync::atomic::AtomicBool::new(false),
@@ -190,6 +202,7 @@ impl RunManager {
         });
         queue::spawn_drainer(&inner, drain_wake);
         reconcile::spawn_resumer(&inner, resume_rx);
+        failover::spawn_failover(&inner, failover_rx);
         Self { inner }
     }
 

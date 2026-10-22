@@ -543,7 +543,7 @@ impl RunManager {
             .await;
     }
 
-    async fn flag_account(&self, run_id: &str, reason: &str) {
+    pub(crate) async fn flag_account(&self, run_id: &str, reason: &str) {
         let id = run_id.to_string();
         let Ok(Some(row)) = self.db(move |s| s.get_run(&id)).await else {
             return;
