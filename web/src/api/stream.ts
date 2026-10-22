@@ -4,11 +4,14 @@ import { API_BASE } from './client'
 import { qk } from './keys'
 import type { Event, Page, RunViewPublic, SessionSummary, SseMessage } from './types'
 
-/** Keys that are refetched at most once per interval (design 2.3). */
-export const THROTTLE_MS: { key: QueryKey; ms: number }[] = [
-  { key: qk.dashboard(), ms: 2000 },
-  { key: qk.usageDailyAll(), ms: 10000 },
-]
+/** Max refetch rate per key (design 2.3): dashboard 1 per 2 s, daily usage 1 per 10 s, a run's transcript 1 per 2 s. */
+export function throttleMsFor(key: QueryKey): number | null {
+  const k = JSON.stringify(key)
+  if (k === JSON.stringify(qk.dashboard())) return 2000
+  if (k === JSON.stringify(qk.usageDailyAll())) return 10000
+  if (key[0] === 'run' && key[2] === 'transcript') return 2000
+  return null
+}
 
 /**
  * Pure map from a stream message to the query keys it invalidates (design 2.3).
@@ -32,6 +35,12 @@ export function invalidationsFor(msg: SseMessage): QueryKey[] {
         case 'usage':
           if (rid) keys.push(qk.run(rid))
           keys.push(qk.usageDailyAll())
+          break
+        case 'assistant_message':
+        case 'tool_call_finished':
+        case 'progress':
+          // Transcript lines are not pushed; refetch (throttled) while the stream is up.
+          if (rid) keys.push(qk.transcript(rid))
           break
         case 'route_decision':
           if (rid) keys.push(qk.runRoute(rid))
@@ -161,11 +170,11 @@ export function useEventStream(opts: EventStreamOptions = {}): StreamState {
     const timers = new Map<string, { last: number; trailing?: ReturnType<typeof setTimeout> }>()
 
     const invalidate = (key: QueryKey) => {
-      const throttle = THROTTLE_MS.find((t) => JSON.stringify(t.key) === JSON.stringify(key))
-      if (!throttle) return void qc.invalidateQueries({ queryKey: key })
+      const throttleMs = throttleMsFor(key)
+      if (throttleMs === null) return void qc.invalidateQueries({ queryKey: key })
       const id = JSON.stringify(key)
       const slot = timers.get(id) ?? { last: 0 }
-      const wait = slot.last + throttle.ms - Date.now()
+      const wait = slot.last + throttleMs - Date.now()
       if (wait <= 0) {
         slot.last = Date.now()
         void qc.invalidateQueries({ queryKey: key })

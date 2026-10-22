@@ -28,6 +28,9 @@ describe('invalidationsFor', () => {
     ['question_answered', [['run', 'r1', 'messages']]],
     ['worktree_created', [['run', 'r1', 'view']]],
     ['worktree_removed', [['run', 'r1', 'view']]],
+    ['assistant_message', [['run', 'r1', 'transcript']]],
+    ['tool_call_finished', [['run', 'r1', 'transcript']]],
+    ['progress', [['run', 'r1', 'transcript']]],
     ['escalated', []],
     ['stall_detected', []],
     ['tool_call_started', []],
@@ -139,6 +142,21 @@ describe('useEventStream', () => {
     expect(keys().filter((k) => k === '["dashboard"]')).toHaveLength(2) // trailing call
   })
 
+  it('throttles transcript refetches per run to one per 2 s with a trailing call', () => {
+    render()
+    const s = FakeSource.instances[0]
+    act(() => s.open())
+    invalidate.mockClear()
+    const count = () =>
+      invalidate.mock.calls.filter((c) => JSON.stringify((c[0] as { queryKey: unknown }).queryKey) === '["run","r1","transcript"]').length
+    act(() => s.emit('event', ev('assistant_message', 'r1', 'e1'), '1'))
+    act(() => s.emit('event', ev('assistant_message', 'r1', 'e2'), '2'))
+    act(() => s.emit('event', ev('progress', 'r1', 'e3'), '3'))
+    expect(count()).toBe(1)
+    act(() => void vi.advanceTimersByTime(2100))
+    expect(count()).toBe(2)
+  })
+
   it('refetches everything on resync, boot_id change, gaps and reopen', () => {
     render()
     const s = FakeSource.instances[0]
@@ -206,6 +224,9 @@ describe('which active queries refetch per message', () => {
     ['usage', e('usage'), [['dashboard'], ['run', R, 'view'], ['usage', 'daily', 30]]],
     ['route_decision', e('route_decision'), [['dashboard'], ['run', R, 'route'], ['routing', 'records']]],
     ['message_sent', e('message_sent'), [['dashboard'], ['run', R, 'messages']]],
+    ['assistant_message', e('assistant_message'), [['dashboard'], ['run', R, 'transcript', 0]]],
+    ['tool_call_finished', e('tool_call_finished'), [['dashboard'], ['run', R, 'transcript', 0]]],
+    ['progress', e('progress'), [['dashboard'], ['run', R, 'transcript', 0]]],
     ['escalated', e('escalated'), [['dashboard']]],
     ['worktree_created', e('worktree_created'), [['dashboard'], ['run', R, 'view']]],
     ['headroom', { event: 'headroom', data: {} as never }, [['accounts', 'list'], ['harnesses'], ['dashboard']]],
