@@ -2,7 +2,9 @@
 
 Status: design for SPEC section 14 (milestone M6). No code here. Terms follow [CONTEXT.md](../../CONTEXT.md).
 
-Stack (already in `web/`): Vite, React 19, TypeScript, Tailwind v4, shadcn/ui (radix-nova, lucide icons, `@/` alias), TanStack Query, React Router. Components in `web/src/components/ui` today: `button`, `card`, `badge`. Everything else below is added with `pnpm dlx shadcn@latest add <name>`. New runtime dependencies: `recharts` (through the shadcn `chart` component), `@tanstack/react-virtual`, `sonner`, `msw` and `@playwright/test` (dev). No state library beyond TanStack Query; local UI state uses `useState` and URL search params.
+Forms use shadcn `field` with react-hook-form and zod (`@hookform/resolvers`); the shadcn `form` component is not used (the current docs steer to `field`). Toasts use `sonner`: checked against the registry, `https://ui.shadcn.com/r/styles/new-york-v4/sonner.json` exists and `toast.json` returns 404, so `pnpm dlx shadcn@latest add sonner` is the command.
+
+Stack (already in `web/`): Vite, React 19, TypeScript, Tailwind v4, shadcn/ui (radix-nova, lucide icons, `@/` alias), TanStack Query, React Router. Components in `web/src/components/ui` today: `button`, `card`, `badge`. Everything else below is added with `pnpm dlx shadcn@latest add <name>`. New runtime dependencies: `react-hook-form`, `zod`, `@hookform/resolvers`, `recharts` (through the shadcn `chart` component), `@tanstack/react-virtual`, `sonner`, `msw` and `@playwright/test` (dev). No state library beyond TanStack Query; local UI state uses `useState` and URL search params.
 
 The frontend talks only to `/api/v1` (SPEC 14). It never reads the database, socket or credential homes.
 
@@ -30,7 +32,7 @@ The frontend talks only to `/api/v1` (SPEC 14). It never reads the database, soc
   - Global cap usage: `Progress` plus text `active_runs / global cap`, from `GET /status` (`StatusResult.active_runs`) and `GET /config` (`caps.global`). Turns amber at 80 percent, red at 100 percent.
   - Theme toggle: `DropdownMenu` (light, dark, system). Persisted in `localStorage` (wrapped in try/catch), applied as a `dark` class on `<html>`.
   - `Command` palette (ctrl/cmd+K): jump to a page, a session or a run id.
-- `Sonner` `Toaster` mounted once in the shell for action results and errors.
+- `sonner` `Toaster` mounted once in the shell for action results and errors.
 
 ### 1.2 Routes
 
@@ -48,7 +50,7 @@ The frontend talks only to `/api/v1` (SPEC 14). It never reads the database, soc
 | `/workflows` | Workflows | `features/workflows/WorkflowsPage` |
 | `/workflows/:id` | Workflow run detail | `features/workflows/WorkflowRunPage` |
 | `/settings` | Settings | `features/settings/SettingsPage` |
-| `/login` | Token prompt (non-loopback only) | `features/auth/TokenPage` |
+| `/token` | Token prompt (non-loopback only) | `features/auth/TokenPage` |
 | `*` | Not found | `NotFoundPage` |
 
 Pages are lazy-loaded (`React.lazy`) so the timeline code and `recharts` stay out of the initial bundle.
@@ -58,69 +60,79 @@ Pages are lazy-loaded (`React.lazy`) so the timeline code and `recharts` stay ou
 Conventions:
 - JSON, snake_case, same field names as `crates/so-core/src/proto.rs`. Types are named after the Rust types.
 - Errors: HTTP status plus `{ "error": { "code": number, "message": string, "data"?: any } }`, where `code` is the JSON-RPC code from `proto.rs` (`NOT_FOUND` -32003 gives 404, `CAP_EXCEEDED` -32002 gives 409, `INVALID_PARAMS` -32602 gives 422, `UNAVAILABLE` -32004 gives 503, `DEPTH_LIMIT` -32001 gives 409). Typed in the client as `ApiError`.
-- Auth: loopback needs nothing. Non-loopback requires the HttpOnly cookie set by `POST /api/v1/auth` (section 12).
+- Auth: loopback needs nothing. Non-loopback requires the HttpOnly cookie set by `POST /api/v1/auth` (section 7.5).
 - Lists are paginated with `?limit=&cursor=`; response `{ items: T[], next_cursor: string | null }`.
 - The handlers call the same supervisor methods as the CLI and MCP tools, so each endpoint names its CLI twin.
 
 ### 2.1 Endpoint list
 
+CLI twin column lists only SPEC 15 commands; "UI-only" means no CLI command exists. Paginated lists use `(ts,id)` cursors where ordered by time (events, decisions); `limit` default 200, **max 1000**, larger values are clamped.
+
 | Method and path | Request | Response | CLI twin |
 |---|---|---|---|
 | `GET /status` | | `StatusResult` plus `caps: { global: number }` | `status` |
-| `GET /dashboard` | | `DashboardView` (below) | `status`, `account list`, `runs list` |
-| `GET /usage/daily?days=30` | | `DailyUsage[]` (`{ day, input_tokens, output_tokens, cost, by_account: Record<string, number> }`) | `status --usage` |
-| `GET /harnesses` | | `HarnessesView` | `list_harnesses` |
-| `GET /sessions?status=&limit=&cursor=` | filter `active\|escalated\|failed` | `Page<SessionSummary>` | `runs list` |
-| `GET /sessions/:id` | | `SessionDetail` = `SessionSummary` plus `runs: RunView[]` (no events) | `runs show` |
-| `GET /sessions/:id/events?after=&limit=` | cursor is the last event id | `Page<Event>`, ordered by `(ts, id)`. The timeline loads all pages (10 000 events is 20 pages of 500). | `runs watch` |
-| `GET /runs/:id` | | `RunView` | `get_run` |
-| `GET /runs/:id/events?after=&type=&limit=` | | `Page<Event>` | `runs show --events` |
-| `GET /runs/:id/transcript?offset=&limit=` | byte offset into `transcript.jsonl` | `TranscriptPage` (`{ lines: TranscriptLine[], next_offset: number \| null, total_bytes }`) | `runs show --transcript` |
-| `GET /runs/:id/route` | | `RouteResult` (from the `route_decision` event) | |
-| `GET /runs/:id/messages` | | `MessageView[]` | `read_messages` |
-| `POST /runs/:id/messages` | `SendMessageParams` minus `run` | `AckResult` | `send_message` |
-| `POST /runs/:id/cancel` | | `AckResult` | `cancel_agent` |
-| `POST /runs/:id/accept` | | `AckResult` | `accept_run` |
-| `POST /runs/:id/reject` | `{ feedback: string }` | `AckResult` | `reject_run` |
-| `POST /runs/:id/join` | | `JoinResult` redacted: `{ argv, cwd, env_names }`. Env values are never returned to the browser. | `join` |
+| `GET /dashboard` | | `DashboardView` (below) | `status` |
+| `GET /usage/daily?days=30` | | `DailyUsage[]` | `status` |
+| `GET /doctor` | | `DoctorReport` (`{ checks: { name, ok, detail }[] }`) | `doctor` |
+| `GET /harnesses` | | `HarnessesView` | `status`, `account list` |
+| `GET /sessions?status=&q=&limit=&cursor=` | `status`: `active\|escalated\|failed`; `q`: substring match on client, cwd, run name, run id | `Page<SessionSummary>` | `runs list` |
+| `GET /sessions/:id` | | `SessionDetail` = `SessionSummary` plus `runs: RunViewPublic[]` (no events) | `runs show` |
+| `GET /sessions/:id/events?after=&limit=` | `after` = opaque cursor encoding `(ts,id)` of the last event seen | `Page<Event>`, ordered by `(ts,id)` | `runs watch` |
+| `GET /runs/:id` | | `RunViewPublic` | `runs show` |
+| `GET /runs/:id/events?after=&type=&limit=` | same `(ts,id)` cursor | `Page<Event>` | `runs show` |
+| `GET /runs/:id/transcript?offset=&limit=` | byte offset into the normalised stream | `TranscriptPage` (normalised, redacted lines only; section 7.5) | `runs show` |
+| `GET /runs/:id/route` | | `RouteResult` (from the `route_decision` event) | UI-only |
+| `GET /runs/:id/messages` | | `MessageView[]` | UI-only |
+| `POST /runs/:id/messages` | `SendMessageParams` minus `run` | `AckResult` | UI-only |
+| `POST /runs/:id/cancel` | | `AckResult` | `runs cancel` |
+| `POST /runs/:id/accept` | | `AckResult` | UI-only |
+| `POST /runs/:id/reject` | `{ feedback: string }` | `AckResult` | UI-only |
+| `POST /runs/:id/join` | | `JoinView` = `{ argv, cwd, env_names }`, secret values redacted from argv; records a `join_command_issued` audit event | `join` |
 | `POST /route` | `RouteParams` | `RouteResult` | `route` |
-| `GET /routing/decisions?limit=&cursor=` | | `Page<RouteDecisionRow>` (`{ ts, run_id?, prompt_excerpt, result: RouteResult }`) | `route log` |
+| `GET /routing/records?limit=&cursor=` | `(ts,id)` cursor | `Page<RouteRecord>` (`{ ts, run_id?, prompt_excerpt, result: RouteResult }`), the Route log | UI-only |
 | `GET /accounts` | | `AccountView[]` (extended, see open questions) | `account list` |
 | `POST /accounts` | `{ harness, name, home? }` | `AccountView` | `account add` |
 | `POST /accounts/import` | `{ name, harness, home }` | `AccountView` | `account import` |
-| `GET /accounts/scan` | | `ImportCandidate[]` (`{ harness, name, home }`) | `account import --scan` |
-| `PATCH /accounts/:name` | `{ cap?, priority?, enabled?, pools? }` | `AccountView` | `account enable\|disable`, config edit |
+| `GET /accounts/scan` | | `ImportCandidate[]` (`{ harness, name, home }`) | `account import` |
+| `PATCH /accounts/:name` | `{ cap?, priority?, enabled?, pools? }` | `AccountView` | `account enable`, `account disable`, `config set` |
 | `DELETE /accounts/:name?purge=` | | `AckResult` | `account remove` |
-| `POST /accounts/:name/flag` | `{ pool?, until?: string, hours?: number, clear?: boolean, reason?: string }` | `AccountView` | `account flag` |
-| `POST /accounts/:name/login` | | `LoginStart` (below) | `account login` |
-| `GET /accounts/:name/login` | | `LoginStatus` (below), the poll target | |
-| `GET /choices` | | `Choice[]` plus `routing_instruction: string` | `models`, config |
-| `PUT /choices` | `{ choices: Choice[], routing_instruction: string }` | same | config edit |
+| `POST /accounts/:name/flag` | `{ pool?, until?, hours?, clear?, reason? }` | `AccountView` | `account flag` |
+| `POST /accounts/:name/login` | | `SignInStart` (below) | `account login` |
+| `GET /accounts/:name/login` | | `SignInStatus`, the poll target | `account login` |
+| `GET /choices` | | `{ choices: Choice[], routing_instruction: string }` | `config get` |
+| `PUT /choices` | same shape | same | `config edit` |
+| `GET /models` | | `ModelCatalog` (`{ refreshed_at, models: { harness, id, efforts[] }[] }`) | `models list` |
+| `POST /models/refresh` | | `ModelCatalog` | `models refresh` |
+| `GET /worktrees` | | `WorktreeView[]` (`{ path, branch, run_id?, size_bytes, orphaned }`) | `worktrees list` |
+| `POST /worktrees/prune` | `{ dry_run?: boolean }` | `{ removed: string[] }` | `worktrees prune` |
 | `GET /agents` | | `AgentsView` | `agent list` |
-| `GET /agents/:name` | | `{ name, description, path, source: string }` (raw `AGENT.md`) | `agent show` |
-| `PUT /agents/:name` | `{ source: string }` | `{ ok, warnings: string[] }` | `agent edit` |
+| `POST /agents` | `{ name, source }` | `{ ok, warnings[] }`; **409** if the name exists | `agent create` |
+| `GET /agents/:name` | | `{ name, description, path, source }` (raw `AGENT.md`) | `agent show` |
+| `PUT /agents/:name` | `{ source }` | `{ ok, warnings[] }` | `agent edit` |
 | `DELETE /agents/:name` | | `AckResult` | `agent remove` |
-| `GET /workflows` | | `WorkflowSummary[]` (saved) | |
-| `GET /workflows/runs?limit=&cursor=` | | `Page<WorkflowRunView>` | |
-| `GET /workflows/runs/:id` | | `WorkflowStatusResult` plus `steps: WorkflowStep[]` | `workflow_status` |
-| `POST /workflows/:name/run` | `{ args?: unknown }` | `RunWorkflowResult` | `run_workflow` |
-| `GET /config` | | `ConfigView`, secrets replaced by `{ source: "env"\|"file"\|"unset", name?: string }` | `config get` |
+| `GET /workflows` | | `WorkflowSummary[]` (saved) | `workflow list` |
+| `GET /workflows/runs?limit=&cursor=` | | `Page<WorkflowRunView>` | `workflow list` |
+| `GET /workflows/runs/:id` | | `WorkflowStatusResult` plus `steps: WorkflowStep[]` | `workflow status` |
+| `POST /workflows/:name/run` | `{ args?: unknown }` | `RunWorkflowResult` | `workflow run` |
+| `GET /config` | | `ConfigView`; secrets replaced by `{ source: "env"\|"file"\|"unset", name?: string }` | `config get` |
 | `PATCH /config` | partial `ConfigView` | `ConfigView` | `config set` |
-| `POST /auth` | `{ token }` | 204 and `Set-Cookie` | |
+| `POST /auth` | `{ token }` | 204 and `Set-Cookie` | `ui --token` |
 | `GET /stream` | `Accept: text/event-stream`, `?session=` optional filter | SSE (section 2.3) | `runs watch` |
 
-Types not in `proto.rs` that the supervisor adds in `so-core` (the API task generates them from the same `schemars` schemas): `SessionSummary` (`{ id, kind: "orchestrator"|"interactive", client, cwd, account?, started_at, ended_at?, status: "active"|"escalated"|"failed"|"done", run_count, cost }`), `DashboardView` (`{ status: StatusResult, caps, accounts: AccountView[], live_runs: RunView[], escalations: Event[], daily: DailyUsage[] }`), `LoginStart`, `LoginStatus`, `ConfigView`, `TranscriptPage`, `WorkflowSummary`, `WorkflowRunView`, `WorkflowStep`.
+`RunViewPublic` is `RunView` (proto.rs) with `join_command`, `join_cwd` and `join_env` removed. Every API response, SSE payload and fixture uses it; the Rust type is a distinct struct so a field cannot leak by accident.
 
-`LoginStart` = `{ mode: "device_auth", url: string, code: string, expires_at: string } | { mode: "manual", command: string, cwd?: string }`.
-`LoginStatus` = `{ signed_in: SignInState, mode: "device_auth"|"manual", state: "pending"|"done"|"expired"|"failed", message?: string }`.
+Types the supervisor adds in `so-core` or `so-web` (T2.1 defines them with `schemars` and generates the TypeScript, section 6.1): `SessionSummary` (`{ id, kind: "orchestrator"|"interactive", client, cwd, account?, started_at, ended_at?, status: "active"|"escalated"|"failed"|"done", run_count, cost }`), `DashboardView` (`{ status: StatusResult, caps, accounts: AccountView[], live_runs: RunViewPublic[], escalations: Event[], daily: DailyUsage[] }`), `SignInStart`, `SignInStatus`, `ConfigView`, `TranscriptPage`, `DoctorReport`, `ModelCatalog`, `WorktreeView`, `RouteRecord`, and the workflow view types.
+
+`SignInStart` = `{ mode: "device_auth", url: string, code: string, expires_at: string } | { mode: "manual", command: string, cwd?: string }`.
+`SignInStatus` = `{ signed_in: SignInState, mode: "device_auth"|"manual", state: "pending"|"done"|"expired"|"failed", message?: string }`.
 
 ### 2.2 Query keys
 
 ```
 ["status"] ["dashboard"] ["usage","daily",days] ["harnesses"] ["accounts"] ["accounts","scan"]
-["accounts",name,"login"] ["sessions",filter] ["session",id] ["session",id,"events"]
+["accounts",name,"signin"] ["sessions",filter] ["session",id] ["session",id,"events"]
 ["run",id] ["run",id,"events"] ["run",id,"transcript"] ["run",id,"route"] ["run",id,"messages"]
-["choices"] ["routing","decisions"] ["agents"] ["agent",name] ["workflows"] ["workflow-runs"]
+["choices"] ["routing","records"] ["agents"] ["agent",name] ["workflows"] ["workflow-runs"]
 ["workflow-run",id] ["config"]
 ```
 
@@ -131,11 +143,12 @@ One `EventSource` for the whole app, opened by `useEventStream()` in the shell. 
 | SSE event | `data` | Used for |
 |---|---|---|
 | `event` | `Event` (the SPEC 12 shape) | Every appended event. Drives the timeline append and the invalidations below. |
-| `run` | `RunView` without `recent_events` | State or usage change of a run; patches `["run",id]` in the cache. |
+| `run` | `RunViewPublic` without `recent_events` | State or usage change of a run; patches `["run",id]` in the cache. |
 | `session` | `SessionSummary` | Session start, end, status change. |
 | `headroom` | `Headroom` | Patches `["accounts"]` and `["harnesses"]`. |
-| `account` | `AccountView` | Sign-in, enable, flag or cap changed; also finishes login polling early. |
-| `hello` | `{ seq, server_time }` | First message, used to detect restarts. |
+| `account` | `AccountView` | Sign-in, enable, flag or cap changed; also finishes sign-in polling early. |
+| `workflow` | `{ id, name, state, step?: WorkflowStep, session_id?: string, ts }` | Workflow run state or step change; invalidates `["workflow-runs"]` and `["workflow-run",id]`. Servers that do not run workflows (before M8) never send it. |
+| `hello` | `{ seq, server_time, boot_id }` | First message; a changed `boot_id` means the supervisor restarted and the client resyncs. |
 | `resync` | `{}` | Invalidate everything and refetch. |
 
 Invalidation map (done in one place, `api/stream.ts`, as a pure `invalidationsFor(event) => QueryKey[]`):
@@ -145,7 +158,7 @@ Invalidation map (done in one place, `api/stream.ts`, as a pure `invalidationsFo
 | `event` of any type | append to `["session",sid,"events"]` cache (no refetch); `["dashboard"]` throttled to 1 per 2 s |
 | `state_changed`, `run_started`, `run_finished`, `run_queued` | `["run",rid]`, `["sessions"]`, `["status"]` |
 | `usage` | `["run",rid]`, `["usage","daily"]` (throttled 10 s) |
-| `route_decision` | `["run",rid,"route"]`, `["routing","decisions"]` |
+| `route_decision` | `["run",rid,"route"]`, `["routing","records"]` |
 | `message_sent`, `question_asked`, `question_answered` | `["run",rid,"messages"]` |
 | `escalated`, `stall_detected` | `["dashboard"]` (escalations list) |
 | `worktree_created`, `worktree_removed` | `["run",rid]` |
@@ -222,7 +235,7 @@ Data: `GET /sessions/:id` (runs), `GET /sessions/:id/events` (all pages, then li
 
 ### 3.4 Accounts
 
-Purpose: manage logins. Detailed login flow in section 5.
+Purpose: manage accounts and their sign-in. Detailed sign-in flow in section 5.
 
 ```
 +-------------------------------------------------------------------------+
@@ -233,12 +246,12 @@ Purpose: manage logins. Detailed login flow in section 5.
 +-------------------------------------------------------------------------+
 ```
 
-Components: `Table`, `Switch` (enable), `Badge`, `Progress`, `DropdownMenu` (row actions: Edit, Flag cooldown, Sign in, Remove), `Dialog` (add, import, login), `AlertDialog` (remove, type the name to confirm), `Sheet` (edit cap, priority, pools: `Form`, `Input type=number`, `Checkbox` per pool), `Popover` plus `Calendar`/`Input` (flag until), `Select` (harness), `Sonner`.
+Components: `Table`, `Switch` (enable), `Badge`, `Progress`, `DropdownMenu` (row actions: Edit, Flag cooldown, Sign in, Remove), `Dialog` (add, import, login), `AlertDialog` (remove, type the name to confirm), `Sheet` (edit cap, priority, pools: `Form`, `Input type=number`, `Checkbox` per pool), `Popover` plus `Calendar`/`Input` (flag until), `Select` (harness), `sonner` toasts.
 Data: `GET /accounts`; mutations per table above. Live: `account`, `headroom` events.
 
 ### 3.5 Choices and routing
 
-Purpose: edit the approved Choices and the routing instruction, preview a Route, review past decisions.
+Purpose: edit the approved Choices and the routing instruction, preview a Route, review the Route log.
 
 ```
 +-------------------------------------------------------------------------+
@@ -255,14 +268,14 @@ Purpose: edit the approved Choices and the routing instruction, preview a Route,
 +-------------------------------------------------------------------------+
 ```
 
-Components: `Tabs`, `Table` with inline edit through `Dialog` + `Form` (`Input`, `Select` for harness, `Textarea` for description, `Switch` enabled, `Checkbox`/`ToggleGroup` for roles), `Textarea` (instruction, with a character count and Save/Revert buttons), `Progress`-style probability bars (shared `ProbabilityBars` component), `Badge` (source: jev, heuristic, pinned), `Table` + `Pagination` (log), `Sonner`.
-Data: `GET/PUT /choices`, `POST /route`, `GET /routing/decisions`. Live: `route_decision` invalidates the log. Saving shows validation errors from 422 `data` next to fields.
+Components: `Tabs`, `Table` with inline edit through `Dialog` + `Field` with react-hook-form (`Input`, `Select` for harness, `Textarea` for description, `Switch` enabled, `Checkbox`/`ToggleGroup` for roles), `Textarea` (instruction, with a character count and Save/Revert buttons), `Progress`-style probability bars (shared `ProbabilityBars` component), `Badge` (source: jev, heuristic, pinned), `Table` + `Pagination` (log), `sonner` toasts.
+Data: `GET/PUT /choices`, `POST /route`, `GET /routing/records`. Live: `route_decision` invalidates the log. Saving shows validation errors from 422 `data` next to fields.
 
 ### 3.6 Agents
 
 Purpose: list, view and edit `AGENT.md` files.
 
-Components: `Table` (name, description, source path, harness overrides), `Button` New, editor page with a monospace `Textarea` (v1: no code editor dependency) for the file, a read-only `Card` showing parsed frontmatter (from `warnings` after save), `AlertDialog` for delete, `Sonner`.
+Components: `Table` (name, description, source path, harness overrides), `Button` New, editor page with a monospace `Textarea` (v1: no code editor dependency) for the file, a read-only `Card` showing parsed frontmatter (from `warnings` after save), `AlertDialog` for delete, `sonner` toasts.
 Data: `GET /agents`, `GET/PUT/DELETE /agents/:name`. Live: none; refetch on window focus.
 
 ```
@@ -293,7 +306,7 @@ Data: `GET /workflows`, `GET /workflows/runs`, `GET /workflows/runs/:id`, `POST 
 
 Purpose: edit `config.toml` fields. Sections as `Tabs` or an `Accordion`: General (caps, stall_ms), Notifications, Worktree defaults, Routing (min_confidence, min_margin), OpenRouter key source, UI (bind, port; changing shows "restart required" `Alert`).
 
-Components: `Form` with `Input`, `Select`, `Switch`, `Textarea`, `Separator`, `Alert`, `Button`, `Sonner`.
+Components: `Field` (react-hook-form + zod) with `Input`, `Select`, `Switch`, `Textarea`, `Separator`, `Alert`, `Button`, `sonner` toasts.
 OpenRouter key: shows only `source` (env var name, file path, or unset) as a `Badge` and a "Key set: yes/no" line. There is no input that displays a stored value. To change it the user edits the source name (env var name) or path; a pasted value is not supported in v1.
 Data: `GET/PATCH /config`. Live: none.
 
@@ -302,32 +315,32 @@ Data: `GET/PATCH /config`. Live: none.
 ### 4.1 Data model
 
 ```ts
-type RunNode = { run: RunView; children: RunNode[]; lane: number };
+type RunNode = { run: RunViewPublic; children: RunNode[]; lane: number };
 type Segment =
   | { kind: "state"; runId: string; state: RunState; start: number; end: number | null; open: boolean }
   | { kind: "attempt"; runId: string; account: string; start: number; end: number | null;
       outcome: "ok" | "failover" | "failed" | "running"; reason?: string };
 type Tick   = { kind: "tool"; runId: string; at: number; name: string; ok: boolean | null };
 type Arrow  = { kind: "message"; from: string; to: string; at: number; msgKind: MessageKind };
-type Marker = { kind: "stall" | "nudge" | "escalated" | "question" | "check" | "review"; runId: string; at: number; label: string; ok?: boolean };
+type Marker = { kind: "stall" | "nudge" | "escalated" | "question" | "check" | "review" | "join"; runId: string; at: number; label: string; ok?: boolean };
 type RunLane = { runId: string; segments: Segment[]; attempts: Segment[]; ticks: Tick[]; markers: Marker[] };
-type TimelineModel = { lanes: RunLane[]; arrows: Arrow[]; tMin: number; tMax: number; lastSeq: number };
+type TimelineModel = { lanes: RunLane[]; arrows: Arrow[]; tMin: number; tMax: number; lastKey: { ts: number; id: string } };
 ```
 Times are epoch milliseconds.
 
 ### 4.2 Derivation (pure, unit-tested)
 
-`deriveTimeline(runs: RunView[], events: Event[], now: number): TimelineModel` in `features/timeline/derive.ts`, no React, no `Date.now()` (callers pass `now`). A companion `applyEvent(model, event, now)` returns a new model for live append; `deriveTimeline(runs, events)` must equal folding `applyEvent` over the same events (tested as a property).
+`deriveTimeline(runs: RunViewPublic[], events: Event[], now: number): TimelineModel` in `features/timeline/derive.ts`, no React, no `Date.now()` (callers pass `now`). A companion `applyEvent(model, event, now)` returns a new model for live append; `deriveTimeline(runs, events)` must equal folding `applyEvent` over the same events (tested as a property).
 
 Algorithm, events sorted by `(ts, id)` once:
 1. Lane order: depth-first over `parent_run` links, children ordered by `created_at`; the orchestrator lane is a synthetic lane with `runId = "orchestrator"` at the top (events with `run_id == null`, user joins, message arrows from the orchestrator).
 2. Per run keep `cur: { state, start }`. `run_queued` sets `queued`. `state_changed{from,to}` closes `cur` at `ts` (end) and opens `{to, ts}`. `run_started` opens `starting` if no state is open. `run_finished{status}` closes the open segment and ends the lane (`open=false`). The last open segment gets `end = now` (`open: true`) while the run is not terminal. If a `state_changed.from` disagrees with `cur.state`, trust the event, insert nothing, and count a `warnings` entry (surfaced in dev console only).
 3. Attempts: `attempt_started{account}` opens an attempt; `failover{from,to,reason}` closes the open attempt with `outcome:"failover"` and `reason`; `run_finished` closes it with `ok` (succeeded) or `failed`. Attempts render as a thin bar under the state bar, labelled with the account.
 4. Ticks: `tool_call_started` creates a tick; a later `tool_call_finished` with the same `name` for that run (FIFO match) sets `ok`. Unmatched finishes create a tick with `ok` set. Ticks closer than 2 px at the current zoom are clustered at render time into one tick with a count (clustering is in the renderer from the same data, not in derive).
-5. Markers: `stall_detected` (stall), `nudge_sent`, `escalated`, `question_asked` (with `question_answered` pairing to a span), `check_result{ok}`, `review_accepted`, `review_rejected`.
+5. Markers: `stall_detected` (stall), `nudge_sent`, `escalated`, `question_asked` (with `question_answered` pairing to a span), `check_result{ok}`, `review_accepted`, `review_rejected`, and join markers: `user_joined` and `user_left` pair into a bracket span on the lane (a person is attached), `join_command_issued` is a point marker (`kind: "join"`). The legend lists marker glyphs (stall, nudge, escalated, question, check, review, join) next to the state swatches.
 6. Arrows: `message_sent{to, kind}` from the event's `run_id` (or orchestrator) to `to` at `ts`.
 7. `tMin` is the earliest event or `created_at`; `tMax` is `now` while any run is active, otherwise the latest `finished_at`.
-8. Complexity O(n) after the sort; the sort is skipped for appends because SSE delivers in order, and events with a `ts` earlier than `lastSeq`'s `ts` trigger a full re-derive.
+8. Complexity O(n) after the sort. The server orders events by `(ts,id)`; the sort is skipped for appends because SSE delivers in that order. An event that sorts before the last applied `(ts,id)` triggers a full re-derive. `lastKey` holds the last applied `(ts,id)` pair.
 
 Colour is a pure function of `RunState`; `usage`, `assistant_message`, `progress` and `route_decision` do not draw on the chart (they appear in the Events tab).
 
@@ -381,13 +394,13 @@ Layout: a fixed left gutter (lane labels, `HTML`, sticky, indent by depth, state
 
 - The page loads runs and events once, derives the model, and stores it in a `useReducer` (not TanStack Query state; the events cache stores only the raw array).
 - `useEventStream` pushes SSE `event` payloads into a ref buffer; a `requestAnimationFrame` flush (at most 1 per frame, or every 100 ms when the tab is hidden) calls `applyEvent` for each, and appends to the raw events cache with `queryClient.setQueryData`.
-- Events whose `session_id` differs are ignored. Unknown run ids (a run spawned after load) trigger a refetch of `["session",id]` to get the new `RunView`, and the lane appears when it arrives.
+- Events whose `session_id` differs are ignored. Unknown run ids (a run spawned after load) trigger a refetch of `["session",id]` to get the new `RunViewPublic`, and the lane appears when it arrives.
 - "Live" toggle: when on, the viewport right edge follows `now` (ticked by a 1 s timer that only moves open segment ends and the axis). Panning or zooming turns it off; a "Jump to live" button restores it.
-- On `resync` or reconnect with a gap: refetch events with `after=<last id>`; if rejected, full reload.
+- On `resync` or reconnect with a gap: refetch events with `after=<last (ts,id) cursor>`; if the cursor is rejected, full reload.
 
 ### 4.8 Performance target (M9: 10 000 events per session)
 
-- Initial load: events fetched in pages of 500 in parallel after the first page returns `next_cursor`s (server cursor is by id, so pages are fetched sequentially; the UI renders after the first page and progressively fills, showing a progress bar). Derive of 10 000 events in under 50 ms (Vitest benchmark guard at 200 ms in CI).
+- Initial load: events are fetched in pages of 1000 (the API maximum) following the `(ts,id)` cursor from each response, so pages are sequential: 10 000 events is 10 requests. The UI renders after the first page and fills progressively with a progress bar. Derive of 10 000 events in under 50 ms (Vitest guard at 200 ms in CI).
 - Interaction: pan and zoom render under 16 ms per frame with 10 000 events, 30 runs (Playwright trace assertion later).
 - Memory: events kept as the API objects, no copies; derive output indexes by run id.
 - Run panel Events tab: virtualised list (`@tanstack/react-virtual`), 10 000 rows.
@@ -398,26 +411,26 @@ Layout: a fixed left gutter (lane labels, `HTML`, sticky, indent by depth, state
 
 | Tab | Content | Data |
 |---|---|---|
-| Brief | The prompt/brief and spawn options (agent, isolation, review, checks, timeout) | `RunView`; brief from the `run_queued` event data |
+| Brief | The prompt/brief and spawn options (agent, isolation, review, checks, timeout) | `RunViewPublic`; brief from the `run_queued` event data |
 | Route | `ProbabilityBars` (every entry of `probabilities`, selected choice highlighted, bars sorted descending, numeric percent label), `source` badge, `confidence`, `rationale` text, `alternatives` list with account and score, usage (tokens, cost) of the decision | `GET /runs/:id/route` |
 | Events | Virtualised list (`ScrollArea` + react-virtual), filter by type group (lifecycle, activity, messages, stalls) with `ToggleGroup`, each row `time, type badge, summary`, click expands JSON | `["run",id,"events"]`, shares the session cache |
 | Transcript | Virtualised, variable-height rows (`measureElement`), normalised lines: role-coloured; tool calls collapsed `Collapsible`; "Load older" at top, auto-scroll to bottom when at bottom and the run is active; search `Input` (client-side over loaded lines) | `GET /runs/:id/transcript` |
-| Result | `result` JSON rendered as a collapsible tree or `<pre>`; `error_kind` `Alert` when failed; schema validation note when `output_schema` was set | `RunView.result` |
-| Worktree | path, branch, cwd, isolation, copy buttons; check results (`check_result` events) as a list with ok badges | `RunView`, events |
-| Join | The command line built from `argv` and `cwd` (`cd <cwd> && ...`), env variable names listed as "sets: CODEX_HOME" (never values), a `Button` "Copy command" (`navigator.clipboard`, toast "Copied"). The command is fetched with `POST /runs/:id/join` only when the user opens the tab or clicks Copy (it records `join_command_issued`). | `POST /runs/:id/join` |
+| Result | `result` JSON rendered as a collapsible tree or `<pre>`; `error_kind` `Alert` when failed; schema validation note when `output_schema` was set | `RunViewPublic.result` |
+| Worktree | path, branch, cwd, isolation, copy buttons; check results (`check_result` events) as a list with ok badges | `RunViewPublic`, events |
+| Join | The command line built from `argv` and `cwd` (`cd <cwd> && ...`), env variable names listed as "sets: CODEX_HOME" (never values), a `Button` "Copy command" (`navigator.clipboard`, toast "Copied"). The command is fetched with `POST /runs/:id/join` only when the user opens the tab or clicks Copy (the server records a `join_command_issued` audit event). | `POST /runs/:id/join` |
 
 Footer actions (`Button` row, enabled by state):
 - Send message: opens inline `Textarea` + `Select` for `MessageKind` (message or nudge) + Send; `POST /runs/:id/messages`. Allowed for any run (a finished run is resumed; the button label says "Send and resume" when terminal).
 - Cancel: `AlertDialog` ("cancels this run and its subtree"); enabled when active.
 - Accept and Reject: only in `pending_review`. Reject opens a `Dialog` with a required feedback `Textarea`.
-- All use optimistic disable plus `Sonner` result and invalidate `["run",id]`; failures show the error message from the API.
+- All use optimistic disable plus `sonner` toasts result and invalidate `["run",id]`; failures show the error message from the API.
 
-## 5. Accounts page and login flow
+## 5. Accounts page and sign-in flow
 
-Add account `Dialog` (steps): 1. harness `Select` and name `Input` (validated `^[a-z0-9-]+$`, unique); optional home path under "Advanced". 2. `POST /accounts` creates the account (home, toml, wrapper) and returns it signed out. 3. Login step starts automatically.
+Add account `Dialog` (steps): 1. harness `Select` and name `Input` (validated `^[a-z0-9-]+$`, unique); optional home path under "Advanced". 2. `POST /accounts` creates the account (home, toml, wrapper) and returns it signed out. 3. Sign-in step starts automatically.
 
-Login step (`LoginDialog`, also opened from the row "Sign in"):
-- `POST /accounts/:name/login` returns `LoginStart`.
+Sign-in step (`SignInDialog`, also opened from the row "Sign in"):
+- `POST /accounts/:name/login` (the endpoint keeps the `account login` command name) returns `SignInStart`.
 - `device_auth` (codex): shows the URL as a link (`target="_blank" rel="noreferrer"`) with an Open button, and the one-time code in large monospace with a Copy button, plus "Expires in mm:ss" countdown from `expires_at`. Below: "Waiting for sign-in" with a spinner.
 - `manual` (agy, opencode, claude, codex without device-auth): shows the command (`CommandBlock` with Copy) with the note "Run this in a terminal, then come back". Same waiting state.
 - Polling: `GET /accounts/:name/login` every 2 s (TanStack Query `refetchInterval`), stopping when `state` is `done`, `expired` or `failed`, or the dialog closes; also ends early on the SSE `account` event with `signed_in`. On `done`: success `Alert`, toast, close. On `expired`/`failed`: error `Alert` with "Try again" which re-posts the login. The sign-in check is only that the auth file exists (SPEC 5.4); the UI says "signed in" accordingly, never shows file content.
@@ -434,8 +447,8 @@ web/src/
   App.tsx                  route table (lazy pages)
   index.css                tokens, --state-* colours, dark variant
   api/
-    types.ts               hand-written TS mirror of proto types (below)
-    client.ts              fetch wrapper: base URL, JSON, ApiError, 401 -> /login
+    types.ts               TS types: stubs written by hand in T2.3 from the list below, replaced by the schemars-generated output of T2.1
+    client.ts              fetch wrapper: base URL, JSON, ApiError, 401 -> /token
     endpoints.ts           one typed function per endpoint of section 2.1
     queries.ts             query key factory + useXxx hooks (useAccounts, useRun, ...)
     stream.ts              useEventStream(), invalidationsFor(event) (pure), reconnect state
@@ -452,9 +465,9 @@ web/src/
                            GanttCanvas.tsx, LaneLabel.tsx, TimeAxis.tsx, Minimap.tsx, Legend.tsx, useTimelineModel.ts,
                            run-panel/ (RunPanel, BriefTab, RouteTab, EventsTab, TranscriptTab, ResultTab,
                                        WorktreeTab, JoinTab, RunActions)
-    accounts/              AccountsPage, AccountsTable, AddAccountDialog, LoginDialog, ImportDialog,
+    accounts/              AccountsPage, AccountsTable, AddAccountDialog, SignInDialog, ImportDialog,
                            EditAccountSheet, FlagDialog, RemoveAccountDialog
-    routing/               RoutingPage, ChoicesTable, ChoiceDialog, InstructionEditor, RoutePreview, DecisionLog
+    routing/               RoutingPage, ChoicesTable, ChoiceDialog, InstructionEditor, RoutePreview, RouteLog
     agents/                AgentsPage, AgentEditor
     workflows/             WorkflowsPage, WorkflowRunPage
     settings/              SettingsPage, sections/*
@@ -472,7 +485,7 @@ Rules: a `features/x` folder never imports another feature except `features/time
 
 ### 6.1 TypeScript types (`api/types.ts`)
 
-Hand-written, one-to-one with `proto.rs` and `types.rs` (the API task adds a CI check that diffs these against `schemars` JSON schema output, see T2.3).
+One-to-one with `proto.rs` and `types.rs`. T2.3 writes these by hand as stubs so page tasks can start; T2.1 generates the same types from `schemars` and a CI check fails if they drift. `RunView` is never used by the frontend, only `RunViewPublic`. Workflow, config, doctor, models, worktree and route-record types are added as stubs in T2.3 following 2.1.
 
 ```ts
 export type Harness = "codex" | "agy" | "opencode" | "claude";
@@ -495,9 +508,9 @@ export interface Headroom { account: string; pool: string; five_hour_remaining_p
   weekly_remaining_pct: number | null; weekly_resets_at: string | null; status: HeadroomStatus; source: string; observed_at: string }
 export interface Choice { id: string; harness: Harness; model: string; effort?: string; roles: string[]; description: string; enabled: boolean }
 export interface UsageTotals { input_tokens: number; output_tokens: number; cost: number }
-export interface RunView { run_id: string; state: RunState; harness?: Harness; account?: string; model?: string;
+export interface RunViewPublic { run_id: string; state: RunState; harness?: Harness; account?: string; model?: string;
   recent_events: Event[]; result?: unknown; usage: UsageTotals; worktree?: string; branch?: string;
-  join_command?: string; join_cwd?: string; join_env?: string[]; name?: string; depth: number; parent_run?: string;
+  name?: string; depth: number; parent_run?: string;
   error_kind?: ErrorKind; cwd?: string; created_at?: string; finished_at?: string }
 export interface AccountView { name: string; harness: Harness; signed_in: SignInState; enabled: boolean; cap: number;
   active_runs: number; headroom: Headroom[]; error?: string; priority?: number; pools?: string[]; flags?: AccountFlag[] }
@@ -518,19 +531,20 @@ export interface JoinView { argv: string[]; cwd: string; env_names: string[] }
 export interface Page<T> { items: T[]; next_cursor: string | null }
 export interface SessionSummary { id: string; kind: "orchestrator" | "interactive"; client: string; cwd: string; account?: string;
   started_at: string; ended_at?: string; status: "active" | "escalated" | "failed" | "done"; run_count: number; cost: number }
-export interface SessionDetail extends SessionSummary { runs: RunView[] }
+export interface SessionDetail extends SessionSummary { runs: RunViewPublic[] }
 export interface DailyUsage { day: string; input_tokens: number; output_tokens: number; cost: number; by_account: Record<string, number> }
-export interface DashboardView { status: StatusResult; caps: { global: number }; accounts: AccountView[]; live_runs: RunView[];
+export interface DashboardView { status: StatusResult; caps: { global: number }; accounts: AccountView[]; live_runs: RunViewPublic[];
   escalations: Event[]; daily: DailyUsage[] }
-export type LoginStart = { mode: "device_auth"; url: string; code: string; expires_at: string } | { mode: "manual"; command: string; cwd?: string };
-export interface LoginStatus { signed_in: SignInState; mode: "device_auth" | "manual"; state: "pending" | "done" | "expired" | "failed"; message?: string }
+export type SignInStart = { mode: "device_auth"; url: string; code: string; expires_at: string } | { mode: "manual"; command: string; cwd?: string };
+export interface SignInStatus { signed_in: SignInState; mode: "device_auth" | "manual"; state: "pending" | "done" | "expired" | "failed"; message?: string }
 export interface TranscriptLine { offset: number; role: "user" | "assistant" | "tool" | "system"; text: string; tool?: { name: string; ok?: boolean }; ts?: string }
 export interface TranscriptPage { lines: TranscriptLine[]; next_offset: number | null; total_bytes: number }
 export interface ApiErrorBody { error: { code: number; message: string; data?: unknown } }
 export type SseMessage =
-  | { event: "event"; data: Event } | { event: "run"; data: RunView } | { event: "session"; data: SessionSummary }
+  | { event: "event"; data: Event } | { event: "run"; data: Omit<RunViewPublic, "recent_events"> } | { event: "session"; data: SessionSummary }
   | { event: "headroom"; data: Headroom } | { event: "account"; data: AccountView }
-  | { event: "hello"; data: { seq: number; server_time: string } } | { event: "resync"; data: Record<string, never> };
+  | { event: "workflow"; data: { id: string; name: string; state: string; step?: WorkflowStep; session_id?: string; ts: string } }
+  | { event: "hello"; data: { seq: number; server_time: string; boot_id: string } } | { event: "resync"; data: Record<string, never> };
 ```
 (Workflow and config types are added by their tasks, T2.7 and T2.8, from the matching Rust types.)
 
@@ -558,7 +572,9 @@ Tailwind `dark` class strategy on `<html>`, three-way toggle (system default). A
 
 ### 7.5 Security
 - Loopback binding: no auth. Non-loopback: the server requires `--token`; unauthenticated API calls return 401; the SPA shows `TokenPage` (single `Input type=password`), posts `POST /auth`, and the server sets an HttpOnly, SameSite=Strict cookie. The token is never kept in JS, `localStorage` or URLs.
-- Never displayed: API key values (OpenRouter, anything under credential homes), `JoinResult.env` values (API returns only names), auth file contents. The API never sends them, and the client types have no field for them. Join command display shows `argv` and `cwd` only.
+- Never displayed or served: API key values (OpenRouter and any harness key), env values of join commands, credential-home file contents, auth files. Credential-home **paths** are shown (account rows, run `cwd`), contents never.
+- `RunViewPublic` has no `join_command`, `join_cwd` or `join_env`. The only route to a join command is `POST /runs/:id/join`, which writes a `join_command_issued` event and returns `argv` with any secret-looking value redacted (values of env names and of arguments matching the redaction list replaced with `***`), plus `env_names` only.
+- `GET /runs/:id/transcript` serves only the normalised lines (role, text, tool name and ok), never the raw harness lines, and passes every line through the server redactor (known key patterns, values of configured secret env vars) before sending.
 - State-changing requests send `Content-Type: application/json` only (rejects simple cross-site form posts) and the server checks `Origin` equals the UI origin.
 - Rendering untrusted text (transcripts, results, messages): React text nodes only, no `dangerouslySetInnerHTML`, no Markdown HTML. Links in transcripts are not auto-linked.
 - CSP set by the server: `default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'`; no third-party scripts or fonts at runtime (Geist is bundled via `@fontsource-variable/geist`).
@@ -571,7 +587,7 @@ Tailwind `dark` class strategy on `<html>`, three-way toggle (system default). A
   - `invalidationsFor`, `viewport` zoom/pan math, `nice` axis step, tick clustering, `contrast` of all state colour pairs in light and dark.
 - Component:
   - `RunPanel`: tab switching, Route tab bars sorted and highlighted, Join tab copies argv (clipboard mocked) and never renders env values, action buttons enabled per state (`pending_review` shows accept/reject, terminal shows "Send and resume"), reject requires feedback.
-  - `AccountsTable`: rows, headroom bars, enable switch calls `PATCH`, remove requires typing the name, login dialog for device auth shows URL and code and stops polling on `done`, manual mode shows the command.
+  - `AccountsTable`: rows, headroom bars, enable switch calls `PATCH`, remove requires typing the name, sign-in dialog for device auth shows URL and code and stops polling on `done`, manual mode shows the command.
   - `GanttCanvas` renders lanes for a fixture, click lane calls `onSelect`, keyboard Enter opens, hidden summary table present.
   - `SupervisorPill`/`CapMeter` states, theme toggle persists, `TokenPage` posts and redirects.
 - Integration: `useEventStream` with a fake `EventSource` verifies invalidations and the polling fallback.
@@ -580,56 +596,76 @@ Tailwind `dark` class strategy on `<html>`, three-way toggle (system default). A
 
 ## 9. Task breakdown
 
-Order: T2.3 first (everything depends on it). T2.4 to T2.7 can run in parallel after T2.3 (they touch separate `features/` folders). T2.8 last. Each task is sized for one implementer. Server-side work (axum `/api/v1`, SSE) is a separate Rust milestone task and is not in this list; the frontend uses MSW until it lands.
+Numbering follows `docs/plans/v1-plan.md` (Phase 2). T2.1 (server) is owned separately from the frontend tasks T2.3 to T2.8, and T2.2 is this document. Order: T2.1 and T2.3 start in parallel (T2.3 develops against MSW and the stub types, T2.1 delivers the real server and the generated types). T2.4 to T2.7 run in parallel after T2.3. T2.8 last. Each task is sized for one implementer.
 
-### T2.3 App shell, API client, stream (sonnet)
-- Goal: router, shell, header, theme, typed API client, MSW setup, SSE hook.
+### T2.1 so-web server (sonnet)
+- Goal: the axum server behind `superorchestrator ui`, serving `/api/v1` and the embedded SPA.
 - Acceptance:
-  - Add shadcn components: `sidebar`, `sheet`, `tooltip`, `dropdown-menu`, `command`, `sonner`, `skeleton`, `alert`, `progress`, `separator`, `scroll-area`, `tabs`, `table`, `input`, `select`, `switch`, `dialog`, `alert-dialog`, `form`, `textarea`, `checkbox`, `toggle-group`, `slider`, `popover`, `collapsible`.
-  - Routes from 1.2 render placeholder pages (lazy), `NotFound`, `TokenPage`.
-  - `api/types.ts` complete per 6.1; `client.ts`, `endpoints.ts`, `queries.ts` for the whole 2.1 list; `ApiError`; 401 handling.
-  - `stream.ts` with `useEventStream` (reconnect, Last-Event-ID, polling fallback flag) and pure `invalidationsFor` with tests.
-  - Header: supervisor pill, cap meter, theme toggle, command palette.
-  - MSW handlers and fixtures for status, dashboard, sessions, accounts, one session with ~40 events; `pnpm dev:mock`.
-  - Tests pass: `pnpm lint typecheck test build`.
+  - A router for every route in 2.1, each handler calling the same supervisor methods as the CLI and MCP tools (no duplicated logic). `RunViewPublic` is a distinct type; no handler returns `join_command`, `join_env` or `join_cwd`.
+  - Error mapping from JSON-RPC codes to HTTP statuses and the `{ error: { code, message, data } }` body; `limit` clamped to 1000; `(ts,id)` cursors; `POST /agents` returns 409 on a duplicate.
+  - `GET /stream` SSE: monotonic `seq` as the SSE `id`, an in-memory replay buffer (last 5 000 events), `Last-Event-ID` replay, a `hello` first message with `boot_id`, `resync` when the id is older than the buffer, keep-alive comments every 15 s, optional `?session=` filter, `workflow` events when workflows exist.
+  - Token auth (`--token`, required for any non-loopback bind): constant-time comparison; rate limit on `POST /auth` (5 failures per minute per IP, then 429); HttpOnly, SameSite=Strict cookie, `Secure` when TLS is terminated or a trusted `X-Forwarded-Proto: https` is configured, lifetime 7 days, `Path=/`.
+  - DNS rebinding and CSRF defence on every request, including `GET /api/v1/stream` and the SPA: `Host` header allowlist (`127.0.0.1:port`, `localhost:port`, `[::1]:port`, plus the configured bind host); `Origin` check on all state-changing requests and on `/stream` (absent Origin allowed for non-browser clients on loopback only); mismatch gives 403.
+  - Response headers: the CSP in 7.5, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `Cache-Control: no-store` on `/api`.
+  - rust-embed of `web/dist` with immutable caching for hashed assets and an SPA fallback to `index.html` for non-`/api` paths (404 JSON for unknown `/api` paths).
+  - `ui [--bind] [--port] [--token] [--install-service]` (systemd user unit on Linux, launchd agent on macOS), loopback default `127.0.0.1:7878`.
+  - Rust contract tests (axum `oneshot` plus a temp `state.db`) for every route and status code, SSE replay and resync, auth success and failure and rate limit, Host and Origin rejection, redaction (a seeded secret never appears in any response), and a snapshot test of the OpenAPI/JSON schema.
+  - `schemars`-generated TypeScript types written to `web/src/api/generated/` by `cargo xtask gen-ts` (or an equivalent `cargo run` bin); a CI check fails if the committed output is stale. T2.3 consumes them (`api/types.ts` re-exports the generated types).
+- Out of scope: any frontend page, MSW, Playwright.
+
+### T2.3 Shell, API client, shared components, fixtures (sonnet)
+- Goal: everything the page tasks share.
+- Acceptance:
+  - shadcn install list (one `pnpm dlx shadcn@latest add ...` run): `sidebar`, `sheet`, `tooltip`, `dropdown-menu`, `command`, `sonner`, `skeleton`, `alert`, `alert-dialog`, `progress`, `separator`, `scroll-area`, `tabs`, `table`, `input`, `select`, `switch`, `dialog`, `field`, `textarea`, `checkbox`, `toggle-group`, `slider`, `popover`, `collapsible`, `empty`, `chart`, `pagination`, `calendar`, `accordion`. Plus npm deps from section 1. Pages do not add components themselves.
+  - Routes from 1.2 with lazy placeholder pages, `NotFound`, `TokenPage`, error boundaries per route.
+  - `api/types.ts` with **all** TS types from 6.1 (including workflow, config, doctor, models and worktree types as stubs matching 2.1) so page tasks never edit it; replaced by or re-exporting the T2.1-generated types when they land. `client.ts`, `endpoints.ts`, `queries.ts` for the whole 2.1 list; `ApiError`; 401 handling.
+  - `stream.ts`: `useEventStream` (reconnect, `Last-Event-ID`, polling fallback flag, `resync`, `boot_id` change) and the pure `invalidationsFor` with tests.
+  - Header: supervisor pill, cap meter, theme toggle, command palette. Theme, skip link.
+  - Shared components in `components/common`, each with a test: `HeadroomBar`, `ProbabilityBars`, `StateBadge`, `HarnessBadge`, `CommandBlock`, `CopyButton`, `ErrorAlert`, `EmptyState`, `TableSkeleton`, `RelativeTime`, `Duration`, `JsonView`, `ConfirmDialog`.
+  - MSW base handlers and fixtures for every endpoint in 2.1, and a seeded large-fixture generator `test/fixtures/large.ts` (`makeLargeSession({ events: 10000, runs: 30, transcriptRows: 10000, seed })`, deterministic) used by MSW and by `pnpm dev:mock?large=1`.
+  - `pnpm lint typecheck test build` pass.
 - Out of scope: page content, Rust server work, Playwright.
 
-### T2.4 Dashboard and Sessions pages (haiku or sonnet; sonnet if the chart needs judgment)
+### T2.4 Dashboard and Sessions pages (sonnet)
 - Goal: sections 3.1 and 3.2 against MSW.
-- Acceptance: stat cards, accounts table with headroom bars (colour thresholds and `unknown` state), live runs, escalations, cost/tokens chart (recharts via shadcn `chart`), sessions table with filters mirrored in the URL, load more, empty/error/loading states, SSE patching verified in a test; component tests for `HeadroomBar` and the filter.
-- Out of scope: timeline, account mutations.
+- Acceptance: stat cards, accounts table (`HeadroomBar`, colour thresholds, `unknown` state), live runs, escalations, cost and tokens chart (`chart`), sessions table with `status` and `q` filters mirrored in the URL, load more, empty/error/loading states, SSE patching verified in a test.
+- Out of scope: timeline, account mutations, shared components (owned by T2.3).
 
 ### T2.5 Session timeline Gantt (sonnet; the hard one)
-- Goal: sections 3.3 and 4 except the run panel tabs beyond a stub.
+- Goal: sections 3.3 and 4 except the run panel contents.
 - Acceptance:
-  - `derive.ts`, `applyEvent.ts` pure with all unit tests in section 8, benchmark test under 200 ms for 10 000 events.
-  - `colors.ts` with CSS variables, patterns, legend, contrast test.
-  - `GanttCanvas` (SVG) with lanes, nesting, axis, zoom/pan (wheel, keys, slider), minimap, time and lane culling, tick clustering, attempt bars, message arrows, markers.
+  - `derive.ts`, `applyEvent.ts` pure with all unit tests in section 8 and the 10 000-event benchmark under 200 ms using the T2.3 large fixture.
+  - `colors.ts` with CSS variables, patterns, legend (states and marker glyphs including join), contrast test.
+  - `GanttCanvas` (SVG): lanes, nesting, axis, zoom and pan (wheel, keys, slider), minimap, time and lane culling, tick clustering, attempt bars, message arrows, markers.
   - Live follow and append through the rAF buffer; keyboard and screen-reader summary table; tooltips.
-  - Selecting a lane opens the `Sheet` shell with the route `/sessions/:sid/runs/:rid`.
-  - A seeded fixture with 10 000 events renders and pans smoothly (manual check recorded in the PR).
-- Out of scope: run panel tab contents (T2.6), canvas renderer.
+  - Hosts the run panel only through a prop: `TimelinePage` accepts `renderRunPanel(runId, onClose)` defaulting to a stub, and the route `/sessions/:sid/runs/:rid` selects the run. It imports nothing from `run-panel/`.
+  - Manual perf check with the 10 000-event fixture recorded in the PR.
+- Out of scope: everything under `features/timeline/run-panel/` (T2.6), the canvas renderer.
 
 ### T2.6 Run panel (sonnet)
-- Goal: section 4.9.
-- Acceptance: all seven tabs against MSW, virtualised Events and Transcript lists (10 000 rows fixture), `ProbabilityBars`, Join tab with copy and no env values, actions (send message, cancel, accept, reject with feedback) with toasts and invalidation, state-dependent enablement, component tests per section 8.
-- Out of scope: Gantt drawing, server endpoints.
+- Goal: section 4.9. Owns the `features/timeline/run-panel/` folder and wires it into `TimelinePage` through the T2.5 prop.
+- Acceptance: all seven tabs against MSW; virtualised Events and Transcript lists tested with the 10 000-row fixtures; Join tab copy with no env values; actions (send message, cancel, accept, reject with feedback) with toasts and invalidation; state-dependent enablement; component tests per section 8.
+- Out of scope: Gantt drawing, server endpoints, shared components (T2.3).
 
 ### T2.7 Accounts and Choices/routing pages (sonnet)
-- Goal: sections 3.5 and 5.
-- Acceptance: accounts table and all dialogs/sheets (add, login with device-auth and manual polling flows, import scan, edit, flag, remove with typed confirmation), choices CRUD, instruction editor, route preview with `ProbabilityBars`, decision log pagination; form validation; tests for login polling (fake timers) and remove confirmation.
-- Out of scope: Rust account commands, agents, workflows.
+- Goal: sections 3.4, 3.5 and 5.
+- Acceptance: accounts table and all dialogs and sheets (add, sign-in with device-auth and manual polling flows, import scan, edit, flag, remove with typed confirmation), choices CRUD, instruction editor, route preview with `ProbabilityBars`, Route log pagination, `models list/refresh` control on the Choices tab; forms via `field` + react-hook-form + zod; tests for sign-in polling (fake timers) and remove confirmation.
+- Out of scope: Rust account commands, agents, workflows, settings.
 
-### T2.8 Agents, Workflows, Settings and polish (haiku for Agents/Workflows lists; sonnet for Settings and the pass)
+### T2.8 Agents, Workflows, Settings and polish (sonnet)
 - Goal: sections 3.6 to 3.8 and cross-cutting 7.
-- Acceptance: pages built against MSW; Settings never renders a secret value (test asserts the key source display only); error boundaries per route; skip link; responsive checks at 375, 768, 1280 px; axe (`vitest-axe`) run on every page with zero serious violations; Playwright smoke scaffold with one spec.
-- Out of scope: Rust server work, `ui --install-service`.
+- Acceptance:
+  - Pages built against MSW. Agents, Workflows and the worktrees list/prune and doctor panels (Settings tab "System") depend on server endpoints that arrive with M7 (agents), M8 (workflows) and T2.1 (worktrees, doctor): until then the pages show an `Empty` state "not available on this supervisor" when the endpoint returns 404 or 501, and the SSE `workflow` event is simply never received.
+  - The workflow SSE contract is the `workflow` event in 2.3: `{ id, name, state, step?, session_id?, ts }`; the page invalidates `["workflow-runs"]` and `["workflow-run",id]` on it.
+  - Settings never renders a secret value (test asserts the key source display only).
+  - Skip link, responsive checks at 375, 768, 1280 px, `vitest-axe` on every page with zero serious violations, Playwright smoke scaffold with one spec.
+- Out of scope: Rust server work, `ui --install-service` (T2.1).
 
 ## 10. Open questions
 
 1. `AccountView` lacks `priority`, `pools` and flags; the Accounts page needs them (6.1 adds them as optional fields). The API task must extend `AccountView` or add an `AccountDetail`.
 2. Where the `route_decision` brief and the spawn options live for the Brief tab: assumed in the `run_queued` event data and `route_decision` event data; SPEC 12 does not fix their shape.
 3. `GET /sessions/:id/events` cursor semantics and an upper bound (10 000 events in memory is assumed fine; the server should reject unbounded pulls with `limit` max 1000).
-4. Whether the supervisor can start `codex login --device-auth` and capture URL and code over the API (assumed yes, with a login task id held server side for 10 minutes).
+4. Whether the supervisor can start `codex login --device-auth` and capture URL and code over the API (assumed yes, with a sign-in task id held server side for 10 minutes).
 5. Daily usage aggregate source: assumed computed from the `ledger` table on request.
 6. Browser clipboard needs a secure context; loopback `http://127.0.0.1` qualifies, a non-loopback plain-HTTP bind does not (fallback: select-all text, no failure toast).
