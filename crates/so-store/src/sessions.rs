@@ -139,6 +139,15 @@ impl Store {
         Ok(())
     }
 
+    /// How many sessions `list_sessions(Active, ..)` would return.
+    pub fn count_active_sessions(&self) -> Result<i64> {
+        Ok(self.conn().query_row(
+            "SELECT COUNT(*) FROM sessions WHERE ended_at IS NULL",
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Ends open interactive sessions whose process is gone; returns how many ended.
     pub fn reap_dead_interactive_sessions(&self) -> Result<usize> {
         reap_dead_interactive(&self.conn())
@@ -226,6 +235,7 @@ pub(crate) mod tests {
                 .is_none()
         );
         assert_eq!(s.reap_dead_interactive_sessions().unwrap(), 0);
+        assert_eq!(s.count_active_sessions().unwrap(), 2);
     }
 
     #[test]

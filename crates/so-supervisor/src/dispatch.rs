@@ -318,14 +318,11 @@ async fn hello(
 
 /// The `status` result: pid, version, uptime and counts.
 pub async fn status_result(state: &Arc<SupervisorState>) -> Result<StatusResult, RpcError> {
-    // TODO: add COUNT(*) helpers to so-store instead of listing rows.
     let (sessions, runs) = state
         .db(|s| {
-            Ok((
-                s.list_sessions(so_store::SessionFilter::Active, 100_000)?
-                    .len(),
-                s.list_active_runs(100_000)?.len(),
-            ))
+            // Dead wrapper sessions are not active sessions.
+            s.reap_dead_interactive_sessions()?;
+            Ok((s.count_active_sessions()?, s.count_active_runs()?))
         })
         .await?;
     Ok(StatusResult {

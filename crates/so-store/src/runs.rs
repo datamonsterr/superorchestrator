@@ -758,6 +758,16 @@ impl Store {
         )
     }
 
+    /// How many runs `list_active_runs` would return.
+    pub fn count_active_runs(&self) -> Result<i64> {
+        let active = &*ACTIVE;
+        Ok(self.conn().query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE {active}"),
+            [],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Queued runs, oldest first (FIFO queue drain).
     pub fn list_queued_runs(&self, limit: usize) -> Result<Vec<RunRow>> {
         self.query_runs(
@@ -1111,6 +1121,7 @@ pub(crate) mod tests {
         assert_eq!(s.count_active_runs_by_account("a1").unwrap(), 0);
         assert_eq!(s.count_active_runs_total().unwrap(), 0);
         assert_eq!(s.list_active_runs(10).unwrap().len(), 3);
+        assert_eq!(s.count_active_runs().unwrap(), 3);
         assert_eq!(s.list_queued_runs(2).unwrap().len(), 2);
         assert_eq!(s.list_queued_runs(10).unwrap()[0].id, a.id);
         for r in [&a, &b, &c] {
