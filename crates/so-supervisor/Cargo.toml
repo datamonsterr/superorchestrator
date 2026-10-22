@@ -1,0 +1,21 @@
+[package]
+name = "so-supervisor"
+description = "Run lifecycle, caps, stall watcher, notifications and socket API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+so-core = { path = "../so-core" }
+so-store = { path = "../so-store" }
+so-harness = { path = "../so-harness" }
+so-accounts = { path = "../so-accounts" }
+so-usage = { path = "../so-usage" }
+so-router = { path = "../so-router" }
+so-agents = { path = "../so-agents" }
+so-workflow = { path = "../so-workflow" }

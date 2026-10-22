@@ -1,0 +1,14 @@
+[package]
+name = "so-store"
+description = "SQLite schema, migrations, queries and event append"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+so-core = { path = "../so-core" }
