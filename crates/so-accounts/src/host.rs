@@ -56,3 +56,13 @@ pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
         _ => false,
     }
 }
+
+/// Canonical form of `p`; a missing path stays lexical. Any other failure is
+/// an error so callers can fail closed.
+pub(crate) fn canon(p: &Path) -> std::io::Result<PathBuf> {
+    match p.canonicalize() {
+        Ok(c) => Ok(c),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(p.to_path_buf()),
+        Err(e) => Err(e),
+    }
+}

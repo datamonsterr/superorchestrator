@@ -28,6 +28,8 @@ pub enum AccountsError {
     NotFound(String),
     #[error("credential home {0} does not exist")]
     HomeMissing(PathBuf),
+    #[error("invalid account name `{0}`")]
+    InvalidName(String),
     #[error("refusing to purge {path}: {reason}")]
     UnsafePurge { path: PathBuf, reason: String },
 }

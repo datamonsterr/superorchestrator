@@ -1,6 +1,6 @@
 //! Sign-in check by auth-file existence only. Contents are never read.
 
-use so_core::{AccountFile, Harness};
+use so_core::{AccountFile, Harness, Platform};
 
 use crate::env::claude_default_home;
 use crate::error::Result;
@@ -27,7 +27,9 @@ pub fn sign_in_state(account: &AccountFile, host: &HostEnv) -> Result<SignIn> {
         Harness::Claude => {
             if present(&[".credentials.json"]) {
                 SignIn::SignedIn
-            } else if same_path(&home, &claude_default_home(host)) {
+            } else if host.platform == Platform::MacOs
+                || same_path(&home, &claude_default_home(host))
+            {
                 SignIn::Unknown
             } else {
                 SignIn::SignedOut
@@ -54,7 +56,6 @@ fn bool_state(b: bool) -> SignIn {
 mod tests {
     use super::*;
     use crate::testutil::host;
-    use so_core::Platform;
     use std::os::unix::fs::PermissionsExt;
 
     fn acct(h: Harness, home: &str) -> AccountFile {
@@ -95,6 +96,16 @@ mod tests {
             touch_unreadable(&r.join(rel));
             assert_eq!(sign_in_state(&a, &h).unwrap(), SignIn::SignedIn, "{rel}");
         }
+    }
+
+    #[test]
+    fn claude_missing_file_is_unknown_on_macos() {
+        let d = tempfile::tempdir().unwrap();
+        let h = host(d.path(), Platform::MacOs);
+        assert_eq!(
+            sign_in_state(&acct(Harness::Claude, "~/.claude-two"), &h).unwrap(),
+            SignIn::Unknown
+        );
     }
 
     #[test]

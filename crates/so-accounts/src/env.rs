@@ -17,8 +17,6 @@ pub struct Launch {
     pub extra_args: Vec<String>,
 }
 
-pub type AccountEnv = Launch;
-
 /// Resolves `name` on `path_var`; an absolute (or `/`-containing) name must
 /// itself be an executable file.
 pub fn resolve_binary(name: &str, path_var: Option<&str>) -> Result<PathBuf> {
@@ -81,12 +79,21 @@ fn harness_vars(account: &AccountFile, host: &HostEnv, home: &Path) -> Vec<(Stri
     }
 }
 
+/// Whether the launch is a supervised run or an interactive wrapper launch.
+/// Interactive launches keep the controlling TTY, so bwrap omits `--new-session`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaunchMode {
+    Supervised,
+    Interactive,
+}
+
 /// Builds the launch recipe. `bwrap_path` is the resolved `bwrap` binary, used
 /// only for agy accounts on Linux whose `.gemini` is not the real `~/.gemini`.
 pub fn build_launch(
     account: &AccountFile,
     host: &HostEnv,
     bwrap_path: Option<&Path>,
+    mode: LaunchMode,
 ) -> Result<Launch> {
     let home = host.expand(&account.home)?;
     let binary = resolve_binary(&account.binary, host.path_var.as_deref())?;
@@ -112,24 +119,21 @@ pub fn build_launch(
                         account.name.clone(),
                     ));
                 }
+                if !gemini.is_dir() {
+                    return Err(AccountsError::HomeMissing(gemini));
+                }
                 let bwrap =
                     bwrap_path.ok_or_else(|| AccountsError::BwrapMissing(account.name.clone()))?;
                 launch.program = bwrap.to_path_buf();
-                launch.argv_prefix = vec![
-                    "--die-with-parent".into(),
-                    "--new-session".into(),
-                    "--bind".into(),
-                    "/".into(),
-                    "/".into(),
-                    "--dev-bind".into(),
-                    "/dev".into(),
-                    "/dev".into(),
-                    "--bind".into(),
-                    s(&gemini),
-                    s(&real),
-                    "--".into(),
-                    s(&binary),
-                ];
+                let mut argv = vec!["--die-with-parent".to_string()];
+                if mode == LaunchMode::Supervised {
+                    argv.push("--new-session".into());
+                }
+                argv.extend(
+                    ["--bind", "/", "/", "--dev-bind", "/dev", "/dev", "--bind"].map(String::from),
+                );
+                argv.extend([s(&gemini), s(&real), "--".into(), s(&binary)]);
+                launch.argv_prefix = argv;
             }
         }
     }
@@ -153,6 +157,7 @@ mod tests {
             &acct("codex-acc2", Harness::Codex, "~/.codex-acc2"),
             &host(d.path(), Platform::Linux),
             None,
+            LaunchMode::Supervised,
         )
         .unwrap();
         assert_eq!(l.program, d.path().join("bin/codex"));
@@ -171,7 +176,13 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         stub_bin(d.path(), "opencode");
         let h = host(d.path(), Platform::Linux);
-        let l = build_launch(&acct("oc-two", Harness::Opencode, "~/.oc-two"), &h, None).unwrap();
+        let l = build_launch(
+            &acct("oc-two", Harness::Opencode, "~/.oc-two"),
+            &h,
+            None,
+            LaunchMode::Supervised,
+        )
+        .unwrap();
         let keys: Vec<_> = l.vars.iter().map(|(k, _)| k.as_str()).collect();
         assert_eq!(keys, ["XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"]);
         assert_eq!(l.vars[1].1, format!("{}/.oc-two/data", d.path().display()));
@@ -183,6 +194,7 @@ mod tests {
             ),
             &h,
             None,
+            LaunchMode::Supervised,
         )
         .unwrap();
         assert!(l.vars.is_empty());
@@ -197,10 +209,17 @@ mod tests {
             &acct("claude-two", Harness::Claude, "~/.claude-two"),
             &h,
             None,
+            LaunchMode::Supervised,
         )
         .unwrap();
         assert_eq!(l.vars[0].0, "CLAUDE_CONFIG_DIR");
-        let l = build_launch(&acct("claude-acc1", Harness::Claude, "~/.claude"), &h, None).unwrap();
+        let l = build_launch(
+            &acct("claude-acc1", Harness::Claude, "~/.claude"),
+            &h,
+            None,
+            LaunchMode::Supervised,
+        )
+        .unwrap();
         assert!(l.vars.is_empty());
     }
 
@@ -211,7 +230,15 @@ mod tests {
         let bwrap = stub_bin(d.path(), "bwrap");
         let h = host(d.path(), Platform::Linux);
         let a = acct("agy-acc2", Harness::Agy, "~/.agy2");
-        let l = build_launch(&a, &h, Some(&bwrap)).unwrap();
+        assert!(matches!(
+            build_launch(&a, &h, Some(&bwrap), LaunchMode::Supervised),
+            Err(AccountsError::HomeMissing(_))
+        ));
+        std::fs::create_dir_all(d.path().join(".agy2/.gemini")).unwrap();
+        let l = build_launch(&a, &h, Some(&bwrap), LaunchMode::Supervised).unwrap();
+        let i = build_launch(&a, &h, Some(&bwrap), LaunchMode::Interactive).unwrap();
+        assert!(!i.argv_prefix.contains(&"--new-session".to_string()));
+        assert_eq!(i.argv_prefix.len() + 1, l.argv_prefix.len());
         let home = d.path().display();
         assert_eq!(l.program, bwrap);
         assert!(l.vars.is_empty(), "HOME must stay unchanged");
@@ -235,7 +262,7 @@ mod tests {
         );
         assert_eq!(l.extra_args, [format!("--gemini_dir={home}/.agy2/.gemini")]);
         assert!(matches!(
-            build_launch(&a, &h, None),
+            build_launch(&a, &h, None, LaunchMode::Supervised),
             Err(AccountsError::BwrapMissing(_))
         ));
     }
@@ -246,7 +273,7 @@ mod tests {
         let agy = stub_bin(d.path(), "agy");
         let real = acct("agy-acc1", Harness::Agy, "~");
         for p in [Platform::Linux, Platform::MacOs] {
-            let l = build_launch(&real, &host(d.path(), p), None).unwrap();
+            let l = build_launch(&real, &host(d.path(), p), None, LaunchMode::Supervised).unwrap();
             assert_eq!(l.program, agy);
             assert!(l.argv_prefix.is_empty());
             assert_eq!(
@@ -256,7 +283,12 @@ mod tests {
         }
         let other = acct("agy-acc2", Harness::Agy, "~/.agy2");
         assert!(matches!(
-            build_launch(&other, &host(d.path(), Platform::MacOs), None),
+            build_launch(
+                &other,
+                &host(d.path(), Platform::MacOs),
+                None,
+                LaunchMode::Supervised
+            ),
             Err(AccountsError::AgyMultiAccountUnsupported(_))
         ));
     }

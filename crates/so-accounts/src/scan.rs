@@ -2,10 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use so_core::{Harness, Paths};
+use so_core::{AccountFile, Harness, Paths};
 
 use crate::error::Result;
-use crate::host::same_path;
+use crate::host::{HostEnv, same_path};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImportCandidate {
@@ -80,14 +80,36 @@ pub fn scan(home: &Path) -> Vec<ImportCandidate> {
     if claude.is_dir() {
         push("claude-acc1".into(), Harness::Claude, claude);
     }
+    dedupe(out)
+}
+
+/// Drops repeated names and candidates whose resolved home was already emitted.
+fn dedupe(cands: Vec<ImportCandidate>) -> Vec<ImportCandidate> {
+    let mut out: Vec<ImportCandidate> = Vec::new();
+    for c in cands {
+        let canon = c.home.canonicalize().unwrap_or_else(|_| c.home.clone());
+        let clash = out.iter().any(|o| {
+            o.name == c.name || o.home.canonicalize().unwrap_or_else(|_| o.home.clone()) == canon
+        });
+        if !clash {
+            out.push(c);
+        }
+    }
     out
 }
 
-/// [`scan`] without candidates whose account file already exists.
-pub fn scan_new(paths: &Paths, home: &Path) -> Result<Vec<ImportCandidate>> {
-    Ok(scan(home)
+/// [`scan`] of the host home, without candidates whose account file already
+/// exists or whose home an existing account already uses.
+pub fn scan_new(paths: &Paths, host: &HostEnv) -> Result<Vec<ImportCandidate>> {
+    let used: Vec<PathBuf> = AccountFile::list(paths)?
+        .iter()
+        .filter_map(|a| host.expand(&a.home).ok())
+        .map(|h| h.canonicalize().unwrap_or(h))
+        .collect();
+    Ok(scan(&host.home)
         .into_iter()
         .filter(|c| !paths.account_file(&c.name).exists())
+        .filter(|c| !used.contains(&c.home.canonicalize().unwrap_or_else(|_| c.home.clone())))
         .collect())
 }
 
@@ -165,11 +187,26 @@ mod tests {
         mk(d.path(), ".claude");
         mk(d.path(), ".local/share/opencode");
         let paths = Paths::from_dir(d.path().join("cfg"));
-        std::fs::create_dir_all(paths.accounts_dir()).unwrap();
-        std::fs::write(paths.account_file("claude-acc1"), "").unwrap();
-        assert_eq!(
-            names(&scan_new(&paths, d.path()).unwrap()),
-            ["opencode-acc1"]
-        );
+        let host = HostEnv {
+            home: d.path().to_path_buf(),
+            path_var: None,
+            platform: so_core::Platform::Linux,
+        };
+        AccountFile::new("claude-acc1", Harness::Claude, "~/.claude", "claude")
+            .unwrap()
+            .save(&paths)
+            .unwrap();
+        assert_eq!(names(&scan_new(&paths, &host).unwrap()), ["opencode-acc1"]);
+        // An account under another name already using the home also hides it.
+        AccountFile::new(
+            "my-oc",
+            Harness::Opencode,
+            "~/.local/share/opencode",
+            "opencode",
+        )
+        .unwrap()
+        .save(&paths)
+        .unwrap();
+        assert!(scan_new(&paths, &host).unwrap().is_empty());
     }
 }
