@@ -2,6 +2,8 @@
 //! Messages, nesting, the review gate, stalls, process death, notifications and fork,
 //! against the scripted fake harness and an in-process supervisor.
 
+mod common;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -33,9 +35,6 @@ const PROMPT: &str = "do the task";
 
 fn fake_harness() -> PathBuf {
     static BUILD: Once = Once::new();
-    let target = std::env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target"));
     BUILD.call_once(|| {
         let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
         let st = Command::new(cargo)
@@ -52,7 +51,7 @@ fn fake_harness() -> PathBuf {
             .unwrap();
         assert!(st.success());
     });
-    let p = target.join("debug/fake-harness");
+    let p = common::sibling_bin("fake-harness");
     assert!(p.exists(), "{} missing", p.display());
     p
 }
