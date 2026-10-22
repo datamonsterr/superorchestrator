@@ -1,7 +1,7 @@
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { useLocation } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 import { describe, expect, it } from 'vitest'
 import { server } from '@/test/server'
 import { renderWithProviders } from '@/test/render'
@@ -14,10 +14,20 @@ function Loc() {
   const l = useLocation()
   return <output data-testid="loc">{l.search}</output>
 }
+function Nav() {
+  const navigate = useNavigate()
+  return (
+    <>
+      <button onClick={() => navigate('/sessions?q=other')}>go-other</button>
+      <button onClick={() => navigate(-1)}>go-back</button>
+    </>
+  )
+}
 const ui = (
   <>
     <SessionsPage />
     <Loc />
+    <Nav />
   </>
 )
 
@@ -54,6 +64,19 @@ describe('SessionsPage', () => {
     await userEvent.type(screen.getByRole('searchbox'), 'other')
     await waitFor(() => expect(screen.getByTestId('loc')).toHaveTextContent('?q=other'))
     await waitFor(() => expect(screen.getAllByRole('row')).toHaveLength(2))
+  })
+
+  it('re-syncs the search box when ?q= changes externally, without clobbering typing', async () => {
+    renderWithProviders(ui, { route: '/sessions?q=claude' })
+    const box = screen.getByRole('searchbox', { name: 'Search sessions' })
+    await userEvent.click(screen.getByRole('button', { name: 'go-other' }))
+    await waitFor(() => expect(box).toHaveValue('other'))
+    await userEvent.click(screen.getByRole('button', { name: 'go-back' }))
+    await waitFor(() => expect(box).toHaveValue('claude'))
+    // typing in progress survives the debounce write-back
+    await userEvent.type(box, 'x')
+    await new Promise((r) => setTimeout(r, 400))
+    expect(box).toHaveValue('claudex')
   })
 
   it('loads more pages', async () => {

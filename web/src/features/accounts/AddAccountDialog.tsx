@@ -38,16 +38,26 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
   async function onSubmit(values: AddAccountValues) {
     try {
       const account = await create.mutateAsync({ harness: values.harness, name: values.name, ...(values.home ? { home: values.home } : {}) })
-      onOpenChange(false)
-      form.reset()
+      changeOpen(false)
       onCreated(account.name)
     } catch (e) {
       applyApiFieldErrors(e, setError, ['harness', 'name', 'home'])
     }
   }
 
+  function changeOpen(o: boolean) {
+    if (!o) {
+      form.reset()
+      setAdvanced(false)
+    }
+    onOpenChange(o)
+  }
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={changeOpen}
+    >
       <DialogContent>
         <form onSubmit={handleSubmit(onSubmit)} noValidate className="flex flex-col gap-4">
           <DialogHeader>
@@ -107,7 +117,7 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
             </p>
           )}
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            <Button type="button" variant="outline" onClick={() => changeOpen(false)}>
               Cancel
             </Button>
             <Button type="submit" disabled={create.isPending || blocked}>

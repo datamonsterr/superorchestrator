@@ -6,8 +6,8 @@ import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { HarnessBadge } from '@/components/common/HarnessBadge'
 import { HeadroomBar } from '@/components/common/HeadroomBar'
+import { SignInState } from '@/components/common/SignInState'
 import { RelativeTime } from '@/components/common/RelativeTime'
-import { SignInState } from './SignInState'
 import type { AccountView } from '@/api/types'
 
 export interface AccountActions {

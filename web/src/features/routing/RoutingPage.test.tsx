@@ -128,6 +128,17 @@ describe('Routing instruction tab', () => {
   })
 })
 
+describe('Routing instruction draft', () => {
+  it('survives a background refetch of the choices', async () => {
+    const { queryClient } = renderWithProviders(<RoutingPage />, { route: '/choices?tab=instruction' })
+    const box = await screen.findByRole('textbox', { name: 'Routing instruction' })
+    await userEvent.type(box, ' Draft.')
+    server.use(http.get('/api/v1/choices', () => HttpResponse.json({ ...fx.choices, routing_instruction: 'changed elsewhere' })))
+    await queryClient.invalidateQueries({ queryKey: ['choices'] })
+    expect(screen.getByRole('textbox', { name: 'Routing instruction' })).toHaveValue(`${fx.choices.routing_instruction} Draft.`)
+  })
+})
+
 describe('Preview tab', () => {
   it('requires a prompt, then shows the result with probability bars', async () => {
     let body: unknown

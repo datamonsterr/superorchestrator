@@ -18,7 +18,8 @@ function Stat({ label, children, hint }: { label: string; children: ReactNode; h
 
 /** Today's cost is the newest day of the usage series. */
 function todayCost(daily: DashboardView['daily']): number {
-  return daily.length ? daily[daily.length - 1].cost : 0
+  const newest = [...daily].sort((a, b) => a.day.localeCompare(b.day)).at(-1)
+  return newest?.cost ?? 0
 }
 
 export function StatCards({ data }: { data: DashboardView }) {

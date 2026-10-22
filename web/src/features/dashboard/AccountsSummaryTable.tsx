@@ -1,27 +1,11 @@
 import { Link } from 'react-router'
-import { Badge } from '@/components/ui/badge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { SignInState } from '@/components/common/SignInState'
 import { HarnessBadge } from '@/components/common/HarnessBadge'
 import { HeadroomBar } from '@/components/common/HeadroomBar'
 import { EmptyState } from '@/components/common/EmptyState'
 import { Users } from 'lucide-react'
-import type { AccountView, SignInState } from '@/api/types'
-
-const SIGNIN: Record<SignInState, { label: string; dot: string }> = {
-  signed_in: { label: 'Signed in', dot: 'bg-green-600 dark:bg-green-500' },
-  signed_out: { label: 'Signed out', dot: 'bg-zinc-400' },
-  unknown: { label: 'Unknown', dot: 'bg-amber-500' },
-}
-
-export function SignInBadge({ state }: { state: SignInState }) {
-  const s = SIGNIN[state]
-  return (
-    <Badge variant="outline" className="gap-1.5" data-signin={state}>
-      <span aria-hidden className={`size-2 rounded-full ${s.dot}`} />
-      {s.label}
-    </Badge>
-  )
-}
+import type { AccountView } from '@/api/types'
 
 /** One row per (account, pool); accounts without headroom data get a single unknown row. */
 export function AccountsSummaryTable({ accounts }: { accounts: AccountView[] }) {
@@ -71,7 +55,7 @@ export function AccountsSummaryTable({ accounts }: { accounts: AccountView[] }) 
                     <HarnessBadge harness={a.harness} />
                   </TableCell>
                   <TableCell rowSpan={rows.length} className="align-top">
-                    <SignInBadge state={a.signed_in} />
+                    <SignInState state={a.signed_in} />
                   </TableCell>
                 </>
               ) : null}

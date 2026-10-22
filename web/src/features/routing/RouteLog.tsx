@@ -45,8 +45,8 @@ export function RouteLog() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {page.items.map((r) => (
-              <TableRow key={`${r.ts}-${r.run_id ?? r.prompt_excerpt}`}>
+            {page.items.map((r, i) => (
+              <TableRow key={`${i}-${r.ts}-${r.run_id ?? ''}`}>
                 <TableCell>
                   <RelativeTime value={r.ts} />
                 </TableCell>

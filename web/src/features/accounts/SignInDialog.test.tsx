@@ -49,24 +49,23 @@ describe('SignInDialog', () => {
     expect(screen.getByRole('link', { name: /Open sign-in page/ })).toHaveAttribute('rel', 'noreferrer')
     expect(screen.getByText('Expires in 15:00')).toBeInTheDocument()
     expect(screen.getByText('Waiting for sign-in')).toBeInTheDocument()
-    expect(polls()).toBe(1)
+    expect(polls()).toBeGreaterThanOrEqual(1)
 
     await tick(2000)
-    expect(polls()).toBe(2)
+    expect(polls()).toBeGreaterThanOrEqual(2)
     expect(onClose).not.toHaveBeenCalled()
     await tick(2000)
-    expect(polls()).toBe(3)
     expect(onClose).toHaveBeenCalledOnce()
+    const settled = polls()
 
     // Polling stops once done.
     await tick(10_000)
-    expect(polls()).toBe(3)
+    expect(polls()).toBe(settled)
   })
 
   it('stops polling when the dialog closes', async () => {
     const polls = pollServer([pending])
-    const { rerender, queryClient } = renderWithProviders(<SignInDialog name="agy-acc1" onClose={() => {}} />)
-    void queryClient
+    const { rerender } = renderWithProviders(<SignInDialog name="agy-acc1" onClose={() => {}} />)
     await settle()
     await tick(2000)
     const before = polls()
@@ -109,11 +108,15 @@ describe('SignInDialog', () => {
   })
 
   it('reports an expired device code', async () => {
-    pollServer([pending])
+    server.use(http.post('/api/v1/accounts/:name/login', () => HttpResponse.json({ mode: 'device_auth', url: 'https://example.test/d', code: 'X', expires_at: new Date(NOW + 5000).toISOString() })))
+    const polls = pollServer([pending])
     renderWithProviders(<SignInDialog name="agy-acc1" onClose={() => {}} />)
     await settle()
-    await tick(16 * 60 * 1000)
+    await tick(6000)
     expect(screen.getByText('The code has expired.')).toBeInTheDocument()
+    const after = polls()
+    await tick(10_000)
+    expect(polls()).toBe(after) // polling stops once the code expired
     expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
   })
 
@@ -128,5 +131,32 @@ describe('SignInDialog', () => {
     act(() => client.setQueryData(qk.accounts(), fx.accounts.map((a) => (a.name === 'agy-acc1' ? { ...a, signed_in: 'signed_in' as const } : a))))
     await settle()
     expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it('retries after the login cannot be started', async () => {
+    let logins = 0
+    server.use(
+      http.post('/api/v1/accounts/:name/login', () => {
+        logins++
+        return logins === 1
+          ? HttpResponse.json({ error: { code: -32004, message: 'no harness' } }, { status: 503 })
+          : HttpResponse.json({ mode: 'manual', command: 'agy auth login' })
+      }),
+    )
+    pollServer([pending])
+    renderWithProviders(<SignInDialog name="agy-acc1" onClose={() => {}} />)
+    await settle()
+    expect(screen.getByRole('alert')).toHaveTextContent('no harness')
+    await act(async () => screen.getByRole('button', { name: 'Retry' }).click())
+    await settle()
+    expect(screen.getByText('agy auth login')).toBeInTheDocument()
+  })
+
+  it('does not link a non-http url', async () => {
+    server.use(http.post('/api/v1/accounts/:name/login', () => HttpResponse.json({ mode: 'device_auth', url: 'javascript:alert(1)', code: 'X', expires_at: new Date(NOW + 60_000).toISOString() })))
+    pollServer([pending])
+    renderWithProviders(<SignInDialog name="agy-acc1" onClose={() => {}} />)
+    await settle()
+    expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
 })

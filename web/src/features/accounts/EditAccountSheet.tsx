@@ -20,7 +20,7 @@ function EditForm({ account, onClose }: { account: AccountView; onClose: () => v
   const { control, register, handleSubmit, setError, formState } = form
   async function onSubmit(v: EditAccountValues) {
     try {
-      await patch.mutateAsync({ name: account.name, body: { cap: v.cap, priority: v.priority, enabled: v.enabled, ...(account.harness === 'agy' ? { pools: v.pools } : {}) } })
+      await patch.mutateAsync({ name: account.name, body: { cap: v.cap, ...(formState.dirtyFields.priority ? { priority: v.priority } : {}), enabled: v.enabled, ...(account.harness === 'agy' ? { pools: v.pools } : {}) } })
       onClose()
     } catch (e) {
       applyApiFieldErrors(e, setError, ['cap', 'priority', 'enabled', 'pools'])

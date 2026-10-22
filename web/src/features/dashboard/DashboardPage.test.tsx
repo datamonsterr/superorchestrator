@@ -45,6 +45,7 @@ describe('DashboardPage', () => {
     expect(within(screen.getByLabelText('Live runs')).getByText('refactor-api')).toBeInTheDocument()
     expect(within(screen.getByLabelText('Recent escalations')).getByText('stalled after 3 nudges')).toBeInTheDocument()
     expect(await screen.findByRole('img', { name: 'Cost per day' })).toBeInTheDocument()
+    expect(await screen.findByRole('table', { name: 'Cost per day' })).toBeInTheDocument()
   })
 
   it('colours headroom by threshold and renders unknown', async () => {

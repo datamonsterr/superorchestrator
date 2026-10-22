@@ -31,7 +31,10 @@ export function RoutingPage() {
   const [deleting, setDeleting] = useState<Choice | null>(null)
   const view = query.data
 
-  const save = (choices: Choice[]) => put.mutateAsync({ choices, routing_instruction: view?.routing_instruction ?? '' })
+  const save = (choices: Choice[]) => {
+    if (!view) return Promise.reject(new Error('Choices are not loaded yet'))
+    return put.mutateAsync({ choices, routing_instruction: view.routing_instruction })
+  }
 
   return (
     <>
@@ -84,7 +87,7 @@ export function RoutingPage() {
           {query.isError && !view ? (
             <ErrorAlert error={query.error} title="Could not load the instruction" onRetry={() => void query.refetch()} />
           ) : view ? (
-            <InstructionEditor key={view.routing_instruction} view={view} />
+            <InstructionEditor view={view} />
           ) : (
             <TableSkeleton rows={3} columns={1} />
           )}

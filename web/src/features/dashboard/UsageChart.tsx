@@ -45,6 +45,29 @@ export function UsageChart({ daily }: { daily: DailyUsage[] }) {
           ))}
         </BarChart>
       </ChartContainer>
+      <table className="sr-only">
+        <caption>{mode === 'cost' ? 'Cost' : 'Tokens'} per day</caption>
+        <thead>
+          <tr>
+            <th scope="col">Day</th>
+            {series.map((s) => (
+              <th key={s} scope="col">
+                {s}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.day as string}>
+              <th scope="row">{r.day}</th>
+              {series.map((s) => (
+                <td key={s}>{fmt(r[s] as number)}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

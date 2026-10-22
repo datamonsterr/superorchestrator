@@ -1,6 +1,6 @@
 import { Link } from 'react-router'
 import { ChevronRight } from 'lucide-react'
-import { Badge } from '@/components/ui/badge'
+import { StatusBadge } from '@/components/common/StatusBadge'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { RelativeTime } from '@/components/common/RelativeTime'
 import { formatMoney } from '@/lib/format'
@@ -13,14 +13,8 @@ const STATUS: Record<SessionStatus, { label: string; dot: string }> = {
   done: { label: 'Done', dot: 'bg-zinc-400' },
 }
 
-export function SessionStatusBadge({ status }: { status: SessionStatus }) {
-  const s = STATUS[status]
-  return (
-    <Badge variant="outline" className="gap-1.5" data-status={status}>
-      <span aria-hidden className={`size-2 rounded-full ${s.dot}`} />
-      {s.label}
-    </Badge>
-  )
+function SessionStatusBadge({ status }: { status: SessionStatus }) {
+  return <StatusBadge {...STATUS[status]} data-status={status} />
 }
 
 export function SessionsTable({ sessions }: { sessions: SessionSummary[] }) {
@@ -51,7 +45,11 @@ export function SessionsTable({ sessions }: { sessions: SessionSummary[] }) {
               <RelativeTime value={s.started_at} />
             </TableCell>
             <TableCell className="text-muted-foreground">{s.kind}</TableCell>
-            <TableCell className="font-medium">{s.client}</TableCell>
+            <TableCell className="font-medium">
+              <Link to={`/sessions/${s.id}`} className="underline-offset-4 hover:underline">
+                {s.client}
+              </Link>
+            </TableCell>
             <TableCell className="max-w-56 truncate font-mono text-xs text-muted-foreground" title={s.cwd}>
               {s.cwd}
             </TableCell>

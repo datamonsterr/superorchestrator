@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router'
 import { Layers } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -19,13 +19,26 @@ export function SessionsPage() {
   const [params, setParams] = useSearchParams()
   const filter = useMemo(() => filterFromParams(params), [params])
   const [text, setText] = useState(filter.q ?? '')
+  // The last q this page wrote to the URL; a different q in the URL came from outside (back/forward, a link).
+  const written = useRef(filter.q ?? '')
+  const urlQ = filter.q ?? ''
+  useEffect(() => {
+    if (urlQ !== written.current) {
+      written.current = urlQ
+      setText(urlQ)
+    }
+  }, [urlQ])
 
   // Debounce typing into the URL; the URL is the source of truth for the query.
   useEffect(() => {
-    if (text.trim() === (filter.q ?? '')) return
-    const id = setTimeout(() => setParams(paramsFromFilter({ ...filter, q: text.trim() || undefined }), { replace: true }), SEARCH_DEBOUNCE_MS)
+    const next = text.trim()
+    if (next === urlQ || next === written.current) return
+    const id = setTimeout(() => {
+      written.current = next
+      setParams(paramsFromFilter({ ...filter, q: next || undefined }), { replace: true })
+    }, SEARCH_DEBOUNCE_MS)
     return () => clearTimeout(id)
-  }, [text, filter, setParams])
+  }, [text, urlQ, filter, setParams])
 
   const query = useSessions(filter)
   const sessions = query.data?.pages.flatMap((p) => p.items) ?? []

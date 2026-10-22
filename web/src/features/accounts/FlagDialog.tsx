@@ -7,6 +7,8 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { RelativeTime } from '@/components/common/RelativeTime'
 import { useFlagAccount } from '@/api/queries'
+import { applyApiFieldErrors } from '@/lib/form-errors'
+import { errorMessage } from '@/lib/errors'
 import type { AccountView } from '@/api/types'
 import { flagSchema, type FlagValues } from './schemas'
 
@@ -18,24 +20,34 @@ function FlagForm({ account, onClose }: { account: AccountView; onClose: () => v
   const flag = useFlagAccount()
   const pools = poolsOf(account)
   const form = useForm<FlagValues>({ resolver: zodResolver(flagSchema), defaultValues: { pool: 'all', duration: '5', until: '', reason: '' } })
-  const { control, register, handleSubmit, formState } = form
+  const { control, register, handleSubmit, setError, formState } = form
   const duration = useWatch({ control, name: 'duration' })
   const flags = account.flags ?? []
 
   async function onSubmit(v: FlagValues) {
-    await flag.mutateAsync({
-      name: account.name,
-      body: {
-        ...(v.pool !== 'all' ? { pool: v.pool } : {}),
-        ...(v.duration === 'custom' ? { until: new Date(v.until).toISOString() } : { hours: Number(v.duration) }),
-        ...(v.reason ? { reason: v.reason } : {}),
-      },
-    })
-    onClose()
+    try {
+      await flag.mutateAsync({
+        name: account.name,
+        body: {
+          ...(v.pool !== 'all' ? { pool: v.pool } : {}),
+          ...(v.duration === 'custom' ? { until: new Date(v.until).toISOString() } : { hours: Number(v.duration) }),
+          ...(v.reason ? { reason: v.reason } : {}),
+        },
+      })
+      onClose()
+    } catch (e) {
+      applyApiFieldErrors(e, setError, ['until'])
+      setError('root', { type: 'server', message: errorMessage(e) })
+    }
   }
   async function clear(pool?: string) {
-    await flag.mutateAsync({ name: account.name, body: { clear: true, ...(pool ? { pool } : {}) } })
-    onClose()
+    try {
+      await flag.mutateAsync({ name: account.name, body: { clear: true, ...(pool ? { pool } : {}) } })
+      // Stay open while other flags remain; the list below follows the refetched account.
+      if (flags.filter((f) => (pool ? f.pool !== pool : false)).length === 0) onClose()
+    } catch (e) {
+      setError('root', { type: 'server', message: errorMessage(e) })
+    }
   }
 
   return (
@@ -116,6 +128,11 @@ function FlagForm({ account, onClose }: { account: AccountView; onClose: () => v
           <Input id="flag-reason" autoComplete="off" placeholder="quota" {...register('reason')} />
         </Field>
       </FieldGroup>
+      {formState.errors.root && (
+        <p role="alert" className="text-sm text-destructive">
+          {formState.errors.root.message}
+        </p>
+      )}
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onClose}>
           Cancel

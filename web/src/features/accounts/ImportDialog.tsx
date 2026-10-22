@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Check, Loader2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -8,13 +9,14 @@ import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { HarnessBadge } from '@/components/common/HarnessBadge'
 import { TableSkeleton } from '@/components/common/TableSkeleton'
-import { useAccountScan, useImportAccount } from '@/api/queries'
+import { qk, useAccountScan, useImportAccount } from '@/api/queries'
 import { errorMessage } from '@/lib/errors'
 import { FolderSearch } from 'lucide-react'
 
 type RowState = { kind: 'pending' } | { kind: 'ok' } | { kind: 'error'; message: string }
 
 export function ImportDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (o: boolean) => void }) {
+  const qc = useQueryClient()
   const scan = useAccountScan(open)
   const importAccount = useImportAccount()
   const [picked, setPicked] = useState<Set<string>>(new Set())
@@ -42,10 +44,20 @@ export function ImportDialog({ open, onOpenChange }: { open: boolean; onOpenChan
       }
     }
     setRunning(false)
+    void qc.invalidateQueries({ queryKey: qk.accountsScan() })
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) {
+          setPicked(new Set())
+          setStatus({})
+        }
+        onOpenChange(o)
+      }}
+    >
       <DialogContent className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Scan and import</DialogTitle>

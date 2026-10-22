@@ -17,6 +17,16 @@ interface Props {
   onClose: () => void
 }
 
+/** Only http(s) targets become links; anything else (javascript:, data:) is shown as text. */
+function isWebUrl(url: string): boolean {
+  try {
+    const p = new URL(url).protocol
+    return p === 'https:' || p === 'http:'
+  } catch {
+    return false
+  }
+}
+
 /** mm:ss until `expiresAt`, or null when it has passed. */
 function useCountdown(expiresAt: string | null): string | null {
   const [now, setNow] = useState(() => Date.now())
@@ -26,7 +36,9 @@ function useCountdown(expiresAt: string | null): string | null {
     return () => clearInterval(id)
   }, [expiresAt])
   if (!expiresAt) return null
-  const left = Math.max(0, Math.floor((new Date(expiresAt).getTime() - now) / 1000))
+  const end = new Date(expiresAt).getTime()
+  if (!Number.isFinite(end)) return 'unknown' // unparseable time: do not claim it expired
+  const left = Math.max(0, Math.floor((end - now) / 1000))
   if (left === 0) return null
   return `${String(Math.floor(left / 60)).padStart(2, '0')}:${String(left % 60).padStart(2, '0')}`
 }
@@ -54,12 +66,12 @@ function SignInBody({ name, onClose }: { name: string; onClose: () => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- starts once per account
   }, [name])
 
-  const status = useSignInStatus(name, !!info)
   const countdown = useCountdown(info?.mode === 'device_auth' ? info.expires_at : null)
+  const codeExpired = info?.mode === 'device_auth' && countdown === null
+  const status = useSignInStatus(name, !!info && !codeExpired)
   const signedInNow = accounts.data?.find((a) => a.name === name)?.signed_in === 'signed_in'
   const done = status.data?.state === 'done' || (!!info && accountsKnown && !wasSignedIn && signedInNow)
   const failed = status.data?.state === 'failed' || status.data?.state === 'expired'
-  const codeExpired = info?.mode === 'device_auth' && countdown === null && !done
 
   const notified = useRef(false)
   useEffect(() => {
@@ -87,14 +99,16 @@ function SignInBody({ name, onClose }: { name: string; onClose: () => void }) {
       {info?.mode === 'device_auth' && (
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2">
-            <Button asChild variant="outline" size="sm">
-              <a href={info.url} target="_blank" rel="noreferrer">
-                <ExternalLink aria-hidden /> Open sign-in page
-              </a>
-            </Button>
-            <a href={info.url} target="_blank" rel="noreferrer" className="min-w-0 truncate text-sm text-muted-foreground underline underline-offset-4">
+            {isWebUrl(info.url) ? (
+              <Button asChild variant="outline" size="sm">
+                <a href={info.url} target="_blank" rel="noreferrer">
+                  <ExternalLink aria-hidden /> Open sign-in page
+                </a>
+              </Button>
+            ) : null}
+            <span className="min-w-0 truncate text-sm text-muted-foreground" title={info.url}>
               {info.url}
-            </a>
+            </span>
           </div>
           <div className="flex items-center gap-3 rounded-md border bg-muted/50 p-3">
             <code aria-label="One-time code" className="flex-1 text-center font-mono text-3xl font-semibold tracking-[0.25em]">
@@ -102,7 +116,7 @@ function SignInBody({ name, onClose }: { name: string; onClose: () => void }) {
             </code>
             <CopyButton value={info.code} label="Copy code" />
           </div>
-          <p className="text-sm text-muted-foreground">{countdown ? `Expires in ${countdown}` : 'The code has expired.'}</p>
+          <p className="text-sm text-muted-foreground">{countdown === 'unknown' ? 'Expiry time unknown.' : countdown ? `Expires in ${countdown}` : 'The code has expired.'}</p>
         </div>
       )}
 

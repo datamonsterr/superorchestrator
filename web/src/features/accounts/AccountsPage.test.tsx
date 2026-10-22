@@ -114,6 +114,16 @@ describe('AccountsPage', () => {
       expect(await screen.findByLabelText('One-time code')).toHaveTextContent('ABCD-1234')
     })
 
+    it('clears the form when the dialog is closed and reopened', async () => {
+      renderWithProviders(<AccountsPage />)
+      await userEvent.click(await screen.findByRole('button', { name: /Add account/ }))
+      await userEvent.type(await screen.findByLabelText('Name'), 'half-typed')
+      await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add account' })).not.toBeInTheDocument())
+      await userEvent.click(screen.getByRole('button', { name: /Add account/ }))
+      expect(await screen.findByLabelText('Name')).toHaveValue('')
+    })
+
     it('blocks a second agy account on macOS', async () => {
       server.use(http.get('/api/v1/config', () => HttpResponse.json({ ...fx.config, platform: 'macos' })))
       renderWithProviders(<AccountsPage />)
@@ -165,7 +175,7 @@ describe('AccountsPage', () => {
       await userEvent.clear(cap)
       await userEvent.type(cap, '4')
       await userEvent.click(within(sheet).getByRole('button', { name: 'Save' }))
-      await waitFor(() => expect(body).toEqual({ cap: 4, priority: 1, enabled: true }))
+      await waitFor(() => expect(body).toEqual({ cap: 4, enabled: true }))
     })
 
     it('offers pool checkboxes for agy', async () => {
@@ -204,5 +214,27 @@ describe('AccountsPage', () => {
     const again = await screen.findByRole('dialog', { name: /Flag cooldown for agy-acc1/ })
     await userEvent.click(within(within(again).getByRole('list', { name: 'Current flags' })).getByRole('button', { name: 'Clear' }))
     await waitFor(() => expect(bodies[1]).toEqual({ clear: true, pool: 'claude' }))
+  })
+
+  it('keeps the flag dialog open and shows the error when flagging fails', async () => {
+    server.use(
+      http.post('/api/v1/accounts/:name/flag', () => HttpResponse.json({ error: { code: -32602, message: 'bad until', data: { until: 'must be in the future' } } }, { status: 422 })),
+    )
+    renderWithProviders(<AccountsPage />)
+    await openMenu('agy-acc1', 'Flag cooldown')
+    const dialog = await screen.findByRole('dialog', { name: /Flag cooldown for agy-acc1/ })
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Flag account' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(/future|bad until/)
+    expect(screen.getByRole('dialog', { name: /Flag cooldown for agy-acc1/ })).toBeInTheDocument()
+  })
+
+  it('keeps the flag dialog open when clearing fails', async () => {
+    server.use(http.post('/api/v1/accounts/:name/flag', () => HttpResponse.json({ error: { code: -32004, message: 'down' } }, { status: 503 })))
+    renderWithProviders(<AccountsPage />)
+    await openMenu('agy-acc1', 'Flag cooldown')
+    const dialog = await screen.findByRole('dialog', { name: /Flag cooldown for agy-acc1/ })
+    await userEvent.click(within(within(dialog).getByRole('list', { name: 'Current flags' })).getByRole('button', { name: 'Clear' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('down')
+    expect(screen.getByRole('dialog', { name: /Flag cooldown for agy-acc1/ })).toBeInTheDocument()
   })
 })

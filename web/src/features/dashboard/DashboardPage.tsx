@@ -27,6 +27,7 @@ export function DashboardPage() {
   const dash = useDashboard()
   const usage = useDailyUsage(30)
   const data = dash.data
+  // TODO(T2.1): use run.session_id once RunViewPublic carries it.
   // RunViewPublic has no session id: take it from the run's recent events or an escalation about it.
   const sessionOf = useCallback(
     (run: RunViewPublic) =>
