@@ -1,0 +1,23 @@
+{
+ "id": "ses_e9d0e831fffejyPMluk5gnwrFx",
+ "slug": "silent-wizard",
+ "projectID": "global",
+ "directory": "/work/spike-opencode",
+ "path": "",
+ "cost": 0,
+ "tokens": {
+  "input": 0,
+  "output": 0,
+  "reasoning": 0,
+  "cache": {
+   "read": 0,
+   "write": 0
+  }
+ },
+ "title": "spike",
+ "version": "1.18.35",
+ "time": {
+  "created": 1792661355745,
+  "updated": 1792661355745
+ }
+}

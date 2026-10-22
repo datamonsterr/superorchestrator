@@ -1,0 +1,90 @@
+data: {"id": "evt_162f364de001DDh4PlWm8Anw4A", "type": "server.connected", "properties": {}}
+
+data: {"id": "evt_162f368ca002Tp4koa2VwIJCRU", "type": "session.created", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "ses_e9d0c9735ffeANTApp10GZgEp6", "slug": "eager-cactus", "version": "1.18.35", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike2", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1792661481674, "updated": 1792661481674}}}}
+
+data: {"id": "evt_162f368e7001yhjQILzye8rkQi", "type": "session.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "ses_e9d0c9735ffeANTApp10GZgEp6", "slug": "eager-cactus", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike2", "agent": "build", "model": {"id": "glm-5.3-flash-free", "providerID": "opencode", "variant": "default"}, "version": "1.18.35", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1792661481674, "updated": 1792661481701}}}}
+
+data: {"id": "evt_162f368ea001Lrh0vIkqn4lIci", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "msg_162f368e5001VaKt7r3HYAy73Y", "role": "user", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "time": {"created": 1792661481701}, "agent": "build", "model": {"providerID": "opencode", "modelID": "glm-5.3-flash-free"}}}}
+
+data: {"id": "evt_162f368ed001r3Qj8nBqlCFUeq", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "part": {"type": "text", "text": "Create a file hello.txt containing the word hi, then reply with exactly: done", "messageID": "msg_162f368e5001VaKt7r3HYAy73Y", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "id": "prt_162f368ea001tqOXzyiJdtYSmd"}, "time": 1792661481709}}
+
+data: {"id": "evt_162f368f00013yy8s77aiCDGWK", "type": "session.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "ses_e9d0c9735ffeANTApp10GZgEp6", "slug": "eager-cactus", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike2", "agent": "build", "model": {"id": "glm-5.3-flash-free", "providerID": "opencode", "variant": "default"}, "version": "1.18.35", "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1792661481674, "updated": 1792661481711}}}}
+
+data: {"id": "evt_162f368f4001TtwyOQzWRZQiGF", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "busy"}}}
+
+data: {"id": "evt_162f368f5001eUXKb1j2q7x7GY", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "msg_162f368f5001xI1B8JAzhcvUFa", "parentID": "msg_162f368e5001VaKt7r3HYAy73Y", "role": "assistant", "mode": "build", "agent": "build", "path": {"cwd": "/work/spike-opencode", "root": "/work/spike-opencode"}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "modelID": "glm-5.3-flash-free", "providerID": "opencode", "time": {"created": 1792661481717}, "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6"}}}
+
+data: {"id": "evt_162f36919001rn03hoaTQNKt6V", "type": "session.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "ses_e9d0c9735ffeANTApp10GZgEp6", "slug": "eager-cactus", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike2", "agent": "build", "model": {"id": "glm-5.3-flash-free", "providerID": "opencode", "variant": "default"}, "version": "1.18.35", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1792661481674, "updated": 1792661481752}}}}
+
+data: {"id": "evt_162f3691d001cSuJTKP00mtNM4", "type": "session.diff", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "diff": []}}
+
+data: {"id": "evt_162f3691e0019eTFDn0LgR3oDS", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"role": "user", "time": {"created": 1792661481701}, "agent": "build", "model": {"providerID": "opencode", "modelID": "glm-5.3-flash-free"}, "id": "msg_162f368e5001VaKt7r3HYAy73Y", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "summary": {"diffs": []}}}}
+
+data: {"id": "evt_162f36c2b001KaQj5mJipg3iod", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "busy"}}}
+
+data: {"id": "evt_162f38bf7001WTFN0tNgF46HMZ", "type": "server.heartbeat", "properties": {}}
+
+data: {"id": "evt_162f3b308001F5agviYgFS0JM0", "type": "server.heartbeat", "properties": {}}
+
+data: {"id": "evt_162f4d9e6001GANgweHDXa7HTw", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "part": {"id": "prt_162f4d9e6001o9uUYwK4AzCC1A", "messageID": "msg_162f368f5001xI1B8JAzhcvUFa", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "snapshot": "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "type": "step-start"}, "time": 1792661576166}}
+
+data: {"id": "evt_162f4da9f001Q1YKRRr7DhtjpZ", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "part": {"id": "prt_162f4da9e001ZjAjkhgS15x8ya", "messageID": "msg_162f368f5001xI1B8JAzhcvUFa", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "type": "tool", "tool": "write", "callID": "chatcmpl-tool-89d969f5261f1967", "state": {"status": "pending", "input": {}, "raw": ""}}, "time": 1792661576350}}
+
+data: {"id": "evt_162f4dd6e001q5ZCR3lExj5m5A", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "part": {"type": "tool", "tool": "write", "callID": "chatcmpl-tool-89d969f5261f1967", "state": {"status": "running", "input": {"filePath": "/work/spike-opencode/hello.txt", "content": "hi\n"}, "time": {"start": 1792661577069}}, "id": "prt_162f4da9e001ZjAjkhgS15x8ya", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "messageID": "msg_162f368f5001xI1B8JAzhcvUFa"}, "time": 1792661577070}}
+
+data: {"id": "evt_162f4dd7d001jS1JXJHlbG4NGk", "type": "file.edited", "properties": {"file": "/work/spike-opencode/hello.txt"}}
+
+data: {"id": "evt_162f4dd7e0010YbnVSWKn3j6dQ", "type": "file.watcher.updated", "properties": {"file": "/work/spike-opencode/hello.txt", "event": "add"}}
+
+data: {"id": "evt_162f4dd84001ONArayBauEeRfn", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "part": {"type": "tool", "tool": "write", "callID": "chatcmpl-tool-89d969f5261f1967", "state": {"status": "completed", "input": {"filePath": "/work/spike-opencode/hello.txt", "content": "hi\n"}, "output": "Wrote file successfully.", "metadata": {"diagnostics": {}, "filepath": "/work/spike-opencode/hello.txt", "exists": false, "truncated": false}, "title": "hello.txt", "time": {"start": 1792661577069, "end": 1792661577092}}, "id": "prt_162f4da9e001ZjAjkhgS15x8ya", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "messageID": "msg_162f368f5001xI1B8JAzhcvUFa"}, "time": 1792661577092}}
+
+data: {"id": "evt_162f4de04001VIjg8DOZCBnRqX", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "part": {"id": "prt_162f4de04001lyr5xVMFi8sZvW", "reason": "tool-calls", "snapshot": "7a2871192d49caaff5451df37b27afc373d8298b", "messageID": "msg_162f368f5001xI1B8JAzhcvUFa", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "type": "step-finish", "tokens": {"total": 13822, "input": 13753, "output": 69, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "cost": 0}, "time": 1792661577220}}
+
+data: {"id": "evt_162f4de07001VNmluo9M1juHk4", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "msg_162f368f5001xI1B8JAzhcvUFa", "parentID": "msg_162f368e5001VaKt7r3HYAy73Y", "role": "assistant", "mode": "build", "agent": "build", "path": {"cwd": "/work/spike-opencode", "root": "/work/spike-opencode"}, "cost": 0, "tokens": {"total": 13822, "input": 13753, "output": 69, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "modelID": "glm-5.3-flash-free", "providerID": "opencode", "time": {"created": 1792661481717}, "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "finish": "tool-calls"}}}
+
+data: {"id": "evt_162f4de33001KXLEu5y0BP96XW", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "part": {"id": "prt_162f4de330016CCxP52QZUnLwg", "messageID": "msg_162f368f5001xI1B8JAzhcvUFa", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "type": "patch", "hash": "4b825dc642cb6eb9a060e54bf8d69288fbee4904", "files": ["/work/spike-opencode/hello.txt"]}, "time": 1792661577267}}
+
+data: {"id": "evt_162f4de37001MMh0JLS2M7C3LN", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "msg_162f368f5001xI1B8JAzhcvUFa", "parentID": "msg_162f368e5001VaKt7r3HYAy73Y", "role": "assistant", "mode": "build", "agent": "build", "path": {"cwd": "/work/spike-opencode", "root": "/work/spike-opencode"}, "cost": 0, "tokens": {"total": 13822, "input": 13753, "output": 69, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "modelID": "glm-5.3-flash-free", "providerID": "opencode", "time": {"created": 1792661481717, "completed": 1792661577271}, "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "finish": "tool-calls"}}}
+
+data: {"id": "evt_162f4de39001pEEd0zngsqLpRO", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "busy"}}}
+
+data: {"id": "evt_162f4de3b001zE3mj5AzIDHsJ1", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "msg_162f4de3b001KW7mi7xpaRZye1", "parentID": "msg_162f368e5001VaKt7r3HYAy73Y", "role": "assistant", "mode": "build", "agent": "build", "path": {"cwd": "/work/spike-opencode", "root": "/work/spike-opencode"}, "cost": 0, "tokens": {"input": 0, "output": 0, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "modelID": "glm-5.3-flash-free", "providerID": "opencode", "time": {"created": 1792661577275}, "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6"}}}
+
+data: {"id": "evt_162f4de3e0010crcb5JX0QPFjY", "type": "session.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "ses_e9d0c9735ffeANTApp10GZgEp6", "slug": "eager-cactus", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike2", "agent": "build", "model": {"id": "glm-5.3-flash-free", "providerID": "opencode", "variant": "default"}, "version": "1.18.35", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 13753, "output": 69, "reasoning": 0, "cache": {"read": 0, "write": 0}}, "time": {"created": 1792661481674, "updated": 1792661577277}}}}
+
+data: {"id": "evt_162f4de42001yhgmb9NW4Pe1A4", "type": "session.diff", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "diff": []}}
+
+data: {"id": "evt_162f4de74001Em7gpcqghoEj1v", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "busy"}}}
+
+data: {"id": "evt_162f4de9c001nBail6wybZJrSM", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"role": "user", "time": {"created": 1792661481701}, "agent": "build", "model": {"providerID": "opencode", "modelID": "glm-5.3-flash-free"}, "summary": {"diffs": [{"file": "hello.txt", "patch": "Index: hello.txt\n===================================================================\n--- hello.txt\t\n+++ hello.txt\t\n@@ -0,0 +1,1 @@\n+hi\n", "additions": 1, "deletions": 0, "status": "added"}]}, "id": "msg_162f368e5001VaKt7r3HYAy73Y", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6"}}}
+
+data: {"id": "evt_162f50ed4001RdUHMGyd4CjtB8", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "part": {"id": "prt_162f50ed3001VcURp67W9w1Ss6", "messageID": "msg_162f4de3b001KW7mi7xpaRZye1", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "snapshot": "7a2871192d49caaff5451df37b27afc373d8298b", "type": "step-start"}, "time": 1792661589716}}
+
+data: {"id": "evt_162f50f18001Qti3qc1tmNCdo9", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "part": {"id": "prt_162f50f180019fZveJiqh6BQLJ", "messageID": "msg_162f4de3b001KW7mi7xpaRZye1", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "type": "text", "text": "", "time": {"start": 1792661589784}}, "time": 1792661589784}}
+
+data: {"id": "evt_162f50f1d001P6bLYuVgbdMBwb", "type": "message.part.delta", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "messageID": "msg_162f4de3b001KW7mi7xpaRZye1", "partID": "prt_162f50f180019fZveJiqh6BQLJ", "field": "text", "delta": "done"}}
+
+data: {"id": "evt_162f50f1e001QQjO0mAtDajl5V", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "part": {"id": "prt_162f50f180019fZveJiqh6BQLJ", "messageID": "msg_162f4de3b001KW7mi7xpaRZye1", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "type": "text", "text": "done", "time": {"start": 1792661589784, "end": 1792661589790}}, "time": 1792661589790}}
+
+data: {"id": "evt_162f50f600011EvSv3M2G3CXfu", "type": "message.part.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "part": {"id": "prt_162f50f60001QUpWKedCFRAUy6", "reason": "stop", "snapshot": "7a2871192d49caaff5451df37b27afc373d8298b", "messageID": "msg_162f4de3b001KW7mi7xpaRZye1", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "type": "step-finish", "tokens": {"total": 13834, "input": 775, "output": 3, "reasoning": 0, "cache": {"write": 0, "read": 13056}}, "cost": 0}, "time": 1792661589856}}
+
+data: {"id": "evt_162f50f63001rCoSb8Vov45NRQ", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "msg_162f4de3b001KW7mi7xpaRZye1", "parentID": "msg_162f368e5001VaKt7r3HYAy73Y", "role": "assistant", "mode": "build", "agent": "build", "path": {"cwd": "/work/spike-opencode", "root": "/work/spike-opencode"}, "cost": 0, "tokens": {"total": 13834, "input": 775, "output": 3, "reasoning": 0, "cache": {"write": 0, "read": 13056}}, "modelID": "glm-5.3-flash-free", "providerID": "opencode", "time": {"created": 1792661577275}, "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "finish": "stop"}}}
+
+data: {"id": "evt_162f50f87001XwdCy0tbM69G0z", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "msg_162f4de3b001KW7mi7xpaRZye1", "parentID": "msg_162f368e5001VaKt7r3HYAy73Y", "role": "assistant", "mode": "build", "agent": "build", "path": {"cwd": "/work/spike-opencode", "root": "/work/spike-opencode"}, "cost": 0, "tokens": {"total": 13834, "input": 775, "output": 3, "reasoning": 0, "cache": {"write": 0, "read": 13056}}, "modelID": "glm-5.3-flash-free", "providerID": "opencode", "time": {"created": 1792661577275, "completed": 1792661589895}, "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "finish": "stop"}}}
+
+data: {"id": "evt_162f50f89001hLBkCPkMQY4tY2", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "busy"}}}
+
+data: {"id": "evt_162f50f8b001pxCjkSTUT8Ua0P", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "idle"}}}
+
+data: {"id": "evt_162f50f8b0028s5maknuB0IQ6J", "type": "session.idle", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6"}}
+
+data: {"id": "evt_162f50f8c001bD6MVwmeqtFic0", "type": "session.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"id": "ses_e9d0c9735ffeANTApp10GZgEp6", "slug": "eager-cactus", "projectID": "global", "directory": "/work/spike-opencode", "path": "", "title": "spike2", "agent": "build", "model": {"id": "glm-5.3-flash-free", "providerID": "opencode", "variant": "default"}, "version": "1.18.35", "summary": {"additions": 0, "deletions": 0, "files": 0}, "cost": 0, "tokens": {"input": 14528, "output": 72, "reasoning": 0, "cache": {"read": 13056, "write": 0}}, "time": {"created": 1792661481674, "updated": 1792661589899}}}}
+
+data: {"id": "evt_162f50f8e001ms336AtXILgARC", "type": "session.diff", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "diff": []}}
+
+data: {"id": "evt_162f50fbd001VtFSbyEzaX4vGh", "type": "message.updated", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "info": {"role": "user", "time": {"created": 1792661481701}, "agent": "build", "model": {"providerID": "opencode", "modelID": "glm-5.3-flash-free"}, "summary": {"diffs": [{"file": "hello.txt", "patch": "Index: hello.txt\n===================================================================\n--- hello.txt\t\n+++ hello.txt\t\n@@ -0,0 +1,1 @@\n+hi\n", "additions": 1, "deletions": 0, "status": "added"}]}, "id": "msg_162f368e5001VaKt7r3HYAy73Y", "sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6"}}}
+
+data: {"id": "evt_162f5ae0e001FY68dN63xtCIo3", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "idle"}}}
+
+data: {"id": "evt_162f5ae0e002DhT6aPA83zobbf", "type": "session.idle", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6"}}
+

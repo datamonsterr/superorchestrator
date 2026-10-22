@@ -1,0 +1,31 @@
+# Quota exhausted (stderr, plus {"event":"result","result":{"status":"ERROR","error":"Individual quota reached. ..."}} on stdout)
+error: Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 40h19m40s.
+
+AGY_ERROR: {"short_error":"RESOURCE_EXHAUSTED (code 429): Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 40h19m40s.","status":"RESOURCE_EXHAUSTED","error_code":429,"code_kind":"http","retryable":true,"error_id":"ERROR_ID"}
+
+# Bogus model (exit 1, also a result event with status ERROR and empty conversation_id)
+error: invalid model selection (--model "bogus-model" --effort ""): model bogus-model is not recognized as a known model or custom model in settings
+Available models:
+  Gemini 3.8 Flash (High)
+  Gemini 3.8 Flash (Medium)
+  Gemini 3.8 Flash (Low)
+  Claude Sonnet 4.6 (Thinking)
+  Claude Opus 4.6 (Thinking)
+  GPT-OSS 120B (Medium)
+
+# Account not eligible / not signed in (from `--print /usage`; the real output also contains a sign-in URL, elided)
+error: Eligibility check failed: Your current account is not eligible for Antigravity. Verify your account to continue.
+
+# Bad stream-json input
+warning: ignoring unsupported stream input message event "user_message"
+error: stream input message is missing the "event" field
+error: stream input "user" message is missing the "message" field
+error: stream input "user" message has no content
+failed to decode stream input: json: cannot unmarshal string into Go struct field StreamInputMessage.message of type printmode.StreamInputUserMessage
+
+# -p takes the next token as its prompt
+Error: -p took "--input-format" as its prompt, so the intended prompt was left as an argument and ignored.
+Attach the prompt to the flag (-p='your prompt') and move --input-format elsewhere on the command line.
+
+# Per-run gemini_dir whose config is a symlink to the dir bwrap-bound over ~/.gemini
+failed to start conversation: project: failed to get/create default project: project: create projects dir /home/user/.gemini/config/projects: mkdir /home/user/.gemini/config: file exists

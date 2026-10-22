@@ -1,0 +1,6 @@
+# Bogus model over app-server: no error until the turn runs, then notification `error`
+# params.error.message = {"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'bogus-model-xyz' model is not supported when using Codex with a ChatGPT account."}}
+# params.error.codexErrorInfo = "other", params.willRetry = false; thread/status/changed {type: systemError}
+# Full enum of codexErrorInfo string values (schema): contextWindowExceeded, sessionBudgetExceeded, usageLimitExceeded, rateLimitExceeded, flexUnavailable, serverOverloaded, cyberPolicy, misalignmentPolicyViolation, tooManyDenials, internalServerError, unauthorized, badRequest, threadRollbackFailed, sandboxError, other
+# plus objects: httpConnectionFailed, responseStreamConnectionFailed, responseStreamDisconnected, ...{httpStatusCode}
+# `thread/start` with model "" -> JSON-RPC error -32600 "No models are available. Set `model` explicitly or check your model catalog configuration."
