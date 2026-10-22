@@ -4,7 +4,7 @@
 use chrono::{DateTime, Utc};
 use so_accounts::{HostEnv, SignIn};
 use so_core::{EventType, Harness, RunState};
-use so_store::{RunRow, SessionFilter, Store};
+use so_store::{RunRow, Store};
 
 use crate::cmd::{install, setup};
 use crate::ctx::Ctx;
@@ -98,8 +98,11 @@ pub struct RunDetail {
     pub brief: String,
     pub route: Vec<String>,
     pub events: Vec<String>,
+    /// How many events the run has (the shown ones are the last few).
+    pub events_total: usize,
     pub result: Option<String>,
-    /// What the run changed; only fetched for runs waiting for review. `Err` says why not.
+    /// What the run changed, when the reader was asked for it. The app moves it into the
+    /// detail view, which keeps it between reads.
     pub diff: Option<Result<so_core::proto::RunDiff, String>>,
 }
 
@@ -140,13 +143,8 @@ fn run_item(r: &RunRow) -> RunItem {
 
 /// Newest first, at most [`RECENT_RUNS`], and the count of active runs.
 fn recent_runs(store: &Store) -> so_store::Result<(Vec<RunRow>, usize)> {
-    let mut rows = Vec::new();
-    for s in store.list_sessions(SessionFilter::All, 40)? {
-        rows.extend(store.list_runs_by_session(&s.id, RECENT_RUNS)?);
-    }
-    rows.sort_by(|a, b| (b.created_at, &b.id).cmp(&(a.created_at, &a.id)));
-    rows.truncate(RECENT_RUNS);
-    let active = store.list_active_runs(100_000)?.len();
+    let rows = store.list_recent_runs(RECENT_RUNS)?;
+    let active = usize::try_from(store.count_active_runs()?).unwrap_or(0);
     Ok((rows, active))
 }
 
@@ -367,6 +365,7 @@ pub fn load_detail(ctx: &Ctx, id: &str) -> Result<RunDetail, String> {
         brief: r.prompt.as_deref().map(clean_multiline).unwrap_or_default(),
         route,
         events: events.iter().skip(skip).map(event_line).collect(),
+        events_total: events.len(),
         result: r.result_json.as_deref().map(clean_multiline),
         diff: None,
     })

@@ -10,8 +10,8 @@ use serde::de::DeserializeOwned;
 use so_accounts::{HostEnv, manage};
 use so_core::proto::{
     AcceptParams, AcceptResult, AckResult, GetRunParams, JoinResult, METHOD_ACCEPT_RUN,
-    METHOD_CANCEL_AGENT, METHOD_GET_RUN, METHOD_JOIN_RUN, METHOD_REJECT_RUN, RejectParams, RunRef,
-    RunView,
+    METHOD_CANCEL_AGENT, METHOD_GET_RUN, METHOD_JOIN_RUN, METHOD_REJECT_RUN, METHOD_STATUS,
+    RejectParams, RunRef, RunView, StatusResult,
 };
 use so_core::{AccountFile, Harness, Paths};
 use so_store::Store;
@@ -21,7 +21,7 @@ use so_supervisor::services::accounts::{FlagAction, apply_flag, flag_pools};
 use super::app::{Effect, Launch, SetupStep, StepState, Update};
 use super::data::{SupInfo, load_detail, load_snapshot};
 use crate::cmd::account::{login_json, write_login_hint};
-use crate::cmd::{install, runs, setup, status};
+use crate::cmd::{install, runs, setup};
 use crate::ctx::Ctx;
 
 /// Shown when an action needs the supervisor and none answers.
@@ -33,44 +33,167 @@ fn send(tx: &Sender<Update>, u: Update) {
     let _ = tx.send(u);
 }
 
-/// Reads: the snapshot and the open run's detail. Never blocks the draw loop.
+/// Runs `f`, turning a panic into its message. The panic hook stays quiet on worker
+/// threads (see `mod.rs`), so nothing is written over the screen.
+pub fn guarded<T>(f: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|p| {
+        let msg = p
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| p.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+        format!("internal error: {msg}")
+    })
+}
+
+/// How long a supervisor call (connect, hello and answer together) may take on the reader.
+const SUP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// A long-lived connection to the supervisor for the reader thread: one runtime, one client
+/// reused between reads, every call bounded by a timeout. It never starts the supervisor.
+pub struct Link {
+    rt: tokio::runtime::Runtime,
+    socket: Option<std::path::PathBuf>,
+    client: Option<SupervisorClient>,
+    timeout: std::time::Duration,
+}
+
+enum Fail {
+    Down,
+    Rpc(String),
+    Other(String),
+}
+
+async fn attempt<P: Serialize, R: DeserializeOwned>(
+    client: &mut Option<SupervisorClient>,
+    socket: &std::path::Path,
+    method: &str,
+    params: P,
+) -> Result<R, Fail> {
+    if client.is_none() {
+        let c = SupervisorClient::connect(socket)
+            .await
+            .map_err(|_| Fail::Down)?;
+        let cwd = std::env::current_dir()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        c.hello_inspect("tui", &cwd, Some(std::process::id()))
+            .await
+            .map_err(|_| Fail::Down)?;
+        *client = Some(c);
+    }
+    let Some(c) = client.as_ref() else {
+        return Err(Fail::Down);
+    };
+    match c.call(method, params).await {
+        Ok(v) => Ok(v),
+        Err(so_supervisor::ClientError::Rpc(r)) => Err(Fail::Rpc(r.message)),
+        Err(e) => {
+            // The connection is suspect: reconnect next time.
+            *client = None;
+            Err(Fail::Other(e.to_string()))
+        }
+    }
+}
+
+impl Link {
+    pub fn new(socket: Option<std::path::PathBuf>, timeout: std::time::Duration) -> Option<Self> {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .ok()?;
+        Some(Self {
+            rt,
+            socket,
+            client: None,
+            timeout,
+        })
+    }
+
+    pub fn call<P: Serialize, R: DeserializeOwned>(
+        &mut self,
+        method: &str,
+        params: P,
+    ) -> Result<R, String> {
+        let socket = self.socket.clone().ok_or(NOT_RUNNING)?;
+        let mut slot = self.client.take();
+        let timeout = self.timeout;
+        let timed = self.rt.block_on(async {
+            tokio::time::timeout(timeout, attempt(&mut slot, &socket, method, params)).await
+        });
+        match timed {
+            Ok(r) => {
+                self.client = slot;
+                r.map_err(|f| match f {
+                    Fail::Down => NOT_RUNNING.to_string(),
+                    Fail::Rpc(m) | Fail::Other(m) => m,
+                })
+            }
+            // Dropping `slot` closes a connection that did not answer.
+            Err(_) => Err(format!(
+                "the supervisor did not answer within {} s",
+                self.timeout.as_secs().max(1)
+            )),
+        }
+    }
+}
+
+/// Reads: the snapshot and the open run's detail. Never blocks the draw loop, and never
+/// waits on the supervisor for longer than [`SUP_TIMEOUT`].
 pub fn read_loop(ctx: Ctx, host: HostEnv, rx: Receiver<Effect>, tx: Sender<Update>) {
+    let Some(mut link) = Link::new(Paths::socket_path().ok(), SUP_TIMEOUT) else {
+        send(&tx, Update::ReadFailed("could not start the reader".into()));
+        return;
+    };
     while let Ok(effect) = rx.recv() {
-        match effect {
-            Effect::Refresh => {
-                let sup = status::supervisor_status().map(|s| SupInfo {
+        let done = guarded(|| read_one(&ctx, &host, &mut link, effect, &tx));
+        if let Err(e) = done {
+            // A panic must not leave the loop waiting for an answer that never comes.
+            send(&tx, Update::ReadFailed(e));
+        }
+    }
+}
+
+fn read_one(ctx: &Ctx, host: &HostEnv, link: &mut Link, effect: Effect, tx: &Sender<Update>) {
+    match effect {
+        Effect::Refresh => {
+            let sup = link
+                .call::<_, StatusResult>(METHOD_STATUS, serde_json::json!({}))
+                .ok()
+                .map(|s| SupInfo {
                     pid: s.pid,
                     version: s.version,
                     uptime_s: s.uptime_s,
                 });
-                let snap = load_snapshot(&ctx, &host, sup, Utc::now());
-                send(&tx, Update::Snapshot(Box::new(snap)));
-            }
-            Effect::Detail(id) => {
-                let d = load_detail(&ctx, &id).map(|mut d| {
-                    // The diff comes from the supervisor (it owns the worktree's git calls).
-                    if d.state == so_core::RunState::PendingReview && d.worktree.is_some() {
-                        d.diff = Some(fetch_diff(&id));
-                    }
-                    Box::new(d)
-                });
-                send(&tx, Update::Detail(d));
-            }
-            _ => {}
+            let snap = load_snapshot(ctx, host, sup, Utc::now());
+            send(tx, Update::Snapshot(Box::new(snap)));
         }
+        Effect::Detail { id, diff } => {
+            let d = load_detail(ctx, &id).map(|mut d| {
+                // The diff comes from the supervisor (it owns the worktree's git calls).
+                if diff && d.state == so_core::RunState::PendingReview && d.worktree.is_some() {
+                    d.diff = Some(fetch_diff(link, &id));
+                }
+                Box::new(d)
+            });
+            send(tx, Update::Detail(d));
+        }
+        _ => {}
     }
 }
 
 /// Actions, one at a time in the order they were asked.
 pub fn action_loop(ctx: Ctx, host: HostEnv, rx: Receiver<Effect>, tx: Sender<Update>) {
     while let Ok(effect) = rx.recv() {
-        let done = match perform(&ctx, &host, effect, &tx) {
-            Ok(Some(text)) => Update::Done { ok: true, text },
-            Ok(None) => continue,
-            Err(e) => Update::Done {
+        let done = match guarded(|| perform(&ctx, &host, effect, &tx)) {
+            Ok(Ok(Some(text))) => Update::Done { ok: true, text },
+            Ok(Ok(None)) => continue,
+            Ok(Err(e)) => Update::Done {
                 ok: false,
                 text: format!("{e:#}"),
             },
+            Err(text) => Update::Done { ok: false, text },
         };
         send(&tx, done);
     }
@@ -91,7 +214,7 @@ fn perform(
         }
     };
     Ok(Some(match effect {
-        Effect::Refresh | Effect::Detail(_) => return Ok(None),
+        Effect::Refresh | Effect::Detail { .. } => return Ok(None),
         Effect::AddAccounts { harness, count } => {
             let cfg = ctx.config()?;
             let batch = manage::add_numbered(&ctx.paths, &cfg, host, harness, count);
@@ -277,15 +400,14 @@ fn accept_text(run: &str, r: &AcceptResult) -> String {
 }
 
 /// `get_run` with the diff, without starting the supervisor.
-fn fetch_diff(id: &str) -> Result<so_core::proto::RunDiff, String> {
-    let v: RunView = supervisor_call(
+fn fetch_diff(link: &mut Link, id: &str) -> Result<so_core::proto::RunDiff, String> {
+    let v: RunView = link.call(
         METHOD_GET_RUN,
         GetRunParams {
             run: id.to_string(),
             diff: true,
         },
-    )
-    .map_err(|e| format!("{e:#}"))?;
+    )?;
     match v.diff {
         Some(d) => match d.error.clone() {
             Some(e) => Err(e),
@@ -340,14 +462,24 @@ fn supervisor_call<P: Serialize, R: DeserializeOwned>(method: &str, params: P) -
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_default();
     runs::runtime()?.block_on(async {
-        let client = SupervisorClient::connect(&socket)
-            .await
-            .map_err(|_| anyhow!(NOT_RUNNING))?;
+        // Connecting and the hello are quick or the supervisor is not there; the call itself
+        // may take a while (accept runs git).
+        let client = tokio::time::timeout(SUP_TIMEOUT, async {
+            let client = SupervisorClient::connect(&socket).await.ok()?;
+            client
+                .hello_inspect("tui", &cwd, Some(std::process::id()))
+                .await
+                .ok()?;
+            Some(client)
+        })
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| anyhow!(NOT_RUNNING))?;
         client
-            .hello_inspect("tui", &cwd, Some(std::process::id()))
+            .call_timeout(method, params, std::time::Duration::from_secs(60))
             .await
-            .map_err(|_| anyhow!(NOT_RUNNING))?;
-        client.call(method, params).await.map_err(runs::rpc)
+            .map_err(runs::rpc)
     })
 }
 
@@ -367,9 +499,10 @@ fn run_step(
             lines: Vec::new(),
         },
     );
-    let (state, lines) = match step_body(ctx, host, step) {
-        Ok(r) => r,
-        Err(e) => (StepState::Failed, vec![format!("{e:#}")]),
+    let (state, lines) = match guarded(|| step_body(ctx, host, step)) {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => (StepState::Failed, vec![format!("{e:#}")]),
+        Err(e) => (StepState::Failed, vec![e]),
     };
     send(
         tx,
@@ -667,6 +800,60 @@ mod tests {
             Update::Hint { lines, .. } => assert!(lines[0].contains("not on PATH"), "{lines:?}"),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn panics_are_caught_with_their_message() {
+        assert_eq!(guarded(|| 7), Ok(7));
+        let e = guarded(|| -> () { panic!("static message") }).unwrap_err();
+        assert_eq!(e, "internal error: static message");
+        let n = 3;
+        let e = guarded(|| -> () { panic!("formatted {n}") }).unwrap_err();
+        assert_eq!(e, "internal error: formatted 3");
+    }
+
+    #[test]
+    fn link_says_not_running_for_a_missing_socket_and_when_unset() {
+        let d = tempfile::tempdir().unwrap();
+        let mut l = Link::new(
+            Some(d.path().join("none.sock")),
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap();
+        let e = l
+            .call::<_, serde_json::Value>("status", serde_json::json!({}))
+            .unwrap_err();
+        assert!(e.contains("not running"), "{e}");
+        let mut l = Link::new(None, std::time::Duration::from_secs(1)).unwrap();
+        assert!(
+            l.call::<_, serde_json::Value>("status", serde_json::json!({}))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn link_gives_up_on_a_supervisor_that_never_answers() {
+        let d = tempfile::tempdir().unwrap();
+        let sock = d.path().join("hang.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        // Accepts and then says nothing.
+        let t = std::thread::spawn(move || {
+            let (s, _) = listener.accept().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1500));
+            drop(s);
+        });
+        let mut l = Link::new(Some(sock), std::time::Duration::from_millis(300)).unwrap();
+        let start = std::time::Instant::now();
+        let e = l
+            .call::<_, serde_json::Value>("status", serde_json::json!({}))
+            .unwrap_err();
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(e.contains("did not answer"), "{e}");
+        t.join().unwrap();
     }
 
     #[test]

@@ -10,6 +10,7 @@ use so_core::{Harness, RunState};
 
 use super::data::{AccountRow, RunDetail, RunItem, Snapshot};
 use super::theme::Theme;
+use so_core::proto::RunDiff;
 
 /// The harnesses an account can be added for, in the order the form lists them.
 pub const HARNESSES: [Harness; 4] = [
@@ -121,7 +122,11 @@ pub struct StepRow {
 #[derive(Debug, Clone)]
 pub enum Effect {
     Refresh,
-    Detail(String),
+    /// `diff` also asks the supervisor for the run's diff (only done for runs waiting for review).
+    Detail {
+        id: String,
+        diff: bool,
+    },
     AddAccounts {
         harness: Harness,
         count: u32,
@@ -157,7 +162,7 @@ impl Effect {
     /// Short phrase for the status line while the effect runs; `None` for reads.
     pub fn busy_label(&self) -> Option<&'static str> {
         Some(match self {
-            Effect::Refresh | Effect::Detail(_) => return None,
+            Effect::Refresh | Effect::Detail { .. } => return None,
             Effect::AddAccounts { .. } => "adding accounts",
             Effect::Login(_) => "preparing sign-in",
             Effect::SetEnabled { .. } => "updating account",
@@ -191,6 +196,8 @@ pub struct Launch {
 pub enum Update {
     Snapshot(Box<Snapshot>),
     Detail(Result<Box<RunDetail>, String>),
+    /// A read on the reader thread panicked or failed outright.
+    ReadFailed(String),
     Done {
         ok: bool,
         text: String,
@@ -280,6 +287,12 @@ pub struct DetailView {
     /// `None` while loading.
     pub data: Option<Result<RunDetail, String>>,
     pub scroll: u16,
+    /// The diff, kept between refreshes; `Err` says why there is none.
+    pub diff: Option<Result<RunDiff, String>>,
+    /// What the run looked like when `diff` was fetched: (state, event count).
+    pub diff_key: Option<(RunState, usize)>,
+    /// Fetch the diff with the next detail read (R / F5, or the run changed).
+    pub force_diff: bool,
 }
 
 pub struct App {
@@ -346,7 +359,8 @@ impl App {
         self.runs().get(self.runs_sel)
     }
 
-    /// The run whose detail pane is open (to keep it fresh).
+    /// The run whose detail pane is open.
+    #[cfg(test)]
     pub fn detail_id(&self) -> Option<&str> {
         self.detail.as_ref().map(|d| d.id.as_str())
     }
@@ -408,8 +422,8 @@ impl App {
             KeyCode::Char(c @ '1'..='4') if plain => {
                 self.switch(Tab::ALL[usize::from(c as u8 - b'1')]);
             }
-            KeyCode::F(5) => return Some(Effect::Refresh),
-            KeyCode::Char('R') if plain => return Some(Effect::Refresh),
+            KeyCode::F(5) => return self.refresh(),
+            KeyCode::Char('R') if plain => return self.refresh(),
             KeyCode::Char('q') | KeyCode::Esc if plain => self.back_or_quit(),
             _ => {
                 return match self.tab {
@@ -421,6 +435,25 @@ impl App {
             }
         }
         None
+    }
+
+    /// R / F5: reload everything, including the open run's diff.
+    fn refresh(&mut self) -> Option<Effect> {
+        if let Some(d) = &mut self.detail {
+            d.force_diff = true;
+        }
+        Some(Effect::Refresh)
+    }
+
+    /// The read that keeps the open run's detail fresh. It asks for the diff only the
+    /// first time, after R / F5, or when the run changed since the diff was fetched.
+    pub fn detail_request(&mut self) -> Option<Effect> {
+        let d = self.detail.as_mut()?;
+        let diff = std::mem::take(&mut d.force_diff);
+        Some(Effect::Detail {
+            id: d.id.clone(),
+            diff,
+        })
     }
 
     fn switch(&mut self, tab: Tab) {
@@ -524,8 +557,11 @@ impl App {
                 id: id.clone(),
                 data: None,
                 scroll: 0,
+                diff: None,
+                diff_key: None,
+                force_diff: false,
             });
-            return Some(Effect::Detail(id));
+            return Some(Effect::Detail { id, diff: true });
         }
         let KeyCode::Char(c) = key.code else {
             return None;
@@ -798,11 +834,35 @@ impl App {
             Update::Detail(r) => {
                 if let Some(d) = &mut self.detail {
                     match r {
-                        Ok(v) if v.id == d.id => d.data = Some(Ok(*v)),
+                        Ok(v) if v.id == d.id => {
+                            let mut v = *v;
+                            let waiting =
+                                v.state == RunState::PendingReview && v.worktree.is_some();
+                            let key = (v.state, v.events_total);
+                            match v.diff.take() {
+                                Some(diff) => {
+                                    d.diff = Some(diff);
+                                    d.diff_key = Some(key);
+                                    d.force_diff = false;
+                                }
+                                None if !waiting => {
+                                    d.diff = None;
+                                    d.diff_key = None;
+                                    d.force_diff = false;
+                                }
+                                None if d.diff_key != Some(key) => d.force_diff = true,
+                                None => {}
+                            }
+                            d.data = Some(Ok(v));
+                        }
                         Ok(_) => {}
                         Err(e) => d.data = Some(Err(e)),
                     }
                 }
+                Next::Nothing
+            }
+            Update::ReadFailed(e) => {
+                self.say(ToastKind::Err, e);
                 Next::Nothing
             }
             Update::Done { ok, text } => {

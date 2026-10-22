@@ -238,6 +238,7 @@ fn detail() -> RunDetail {
             "jev / codex-fast / codex-2 / gpt-5".into(),
             "small, well-scoped edit".into(),
         ],
+        events_total: 2,
         events: vec![
             "12:00:01 run_started".into(),
             "12:03:10 progress tests green".into(),
@@ -574,10 +575,11 @@ fn account_keys_with_no_accounts_do_nothing_harmful() {
 fn enter_opens_the_detail_and_asks_for_it() {
     let mut a = app();
     press(&mut a, &[ch('3'), key(KeyCode::Down)]);
-    let Some(Effect::Detail(id)) = a.on_key(key(KeyCode::Enter)) else {
+    let Some(Effect::Detail { id, diff }) = a.on_key(key(KeyCode::Enter)) else {
         panic!()
     };
     assert_eq!(id, "0190bbbb-2222");
+    assert!(diff, "the diff is fetched once when the pane opens");
     assert_eq!(a.detail_id(), Some("0190bbbb-2222"));
     // Arrow keys scroll the pane instead of moving the list.
     a.on_key(key(KeyCode::Down));
@@ -1324,4 +1326,162 @@ fn a_missing_diff_says_why() {
     a.on_update(Update::Detail(Ok(Box::new(d))));
     a.on_key(ch('G'));
     assert!(shot(&mut a, 80, 24).contains("supervisor not running"));
+}
+
+// ------------------------------------------------------------ diff caching
+
+fn open_detail(a: &mut App) {
+    press(a, &[ch('3'), key(KeyCode::Down), key(KeyCode::Enter)]);
+}
+
+fn detail_without_diff() -> RunDetail {
+    RunDetail {
+        diff: None,
+        ..detail()
+    }
+}
+
+#[test]
+fn the_diff_is_cached_and_not_asked_for_again() {
+    let mut a = app();
+    open_detail(&mut a);
+    a.on_update(Update::Detail(Ok(Box::new(detail()))));
+    assert!(a.detail.as_ref().unwrap().diff.is_some());
+    // Later reads come back without a diff; the cached one stays and none is requested.
+    for _ in 0..3 {
+        a.on_update(Update::Detail(Ok(Box::new(detail_without_diff()))));
+        let Some(Effect::Detail { diff, .. }) = a.detail_request() else {
+            panic!()
+        };
+        assert!(!diff);
+    }
+    assert!(a.detail.as_ref().unwrap().diff.is_some());
+}
+
+#[test]
+fn a_changed_run_or_a_manual_refresh_fetches_the_diff_again() {
+    let mut a = app();
+    open_detail(&mut a);
+    a.on_update(Update::Detail(Ok(Box::new(detail()))));
+    // The run did something new: events_total changed.
+    let mut changed = detail_without_diff();
+    changed.events_total += 1;
+    a.on_update(Update::Detail(Ok(Box::new(changed))));
+    assert!(matches!(
+        a.detail_request(),
+        Some(Effect::Detail { diff: true, .. })
+    ));
+    assert!(
+        matches!(a.detail_request(), Some(Effect::Detail { diff: false, .. })),
+        "asked once"
+    );
+    // R asks for it too.
+    a.on_update(Update::Detail(Ok(Box::new(detail()))));
+    assert!(matches!(a.on_key(ch('R')), Some(Effect::Refresh)));
+    assert!(matches!(
+        a.detail_request(),
+        Some(Effect::Detail { diff: true, .. })
+    ));
+}
+
+#[test]
+fn a_run_that_reaches_review_later_gets_its_diff() {
+    let mut a = app();
+    open_detail(&mut a);
+    let mut running = detail_without_diff();
+    running.state = RunState::Running;
+    a.on_update(Update::Detail(Ok(Box::new(running))));
+    assert!(matches!(
+        a.detail_request(),
+        Some(Effect::Detail { diff: false, .. })
+    ));
+    a.on_update(Update::Detail(Ok(Box::new(detail_without_diff()))));
+    assert!(matches!(
+        a.detail_request(),
+        Some(Effect::Detail { diff: true, .. })
+    ));
+}
+
+#[test]
+fn a_failed_diff_is_cached_too_so_it_is_not_retried_every_tick() {
+    let mut a = app();
+    open_detail(&mut a);
+    let mut d = detail();
+    d.diff = Some(Err("supervisor not running".into()));
+    a.on_update(Update::Detail(Ok(Box::new(d))));
+    a.on_update(Update::Detail(Ok(Box::new(detail_without_diff()))));
+    assert!(matches!(
+        a.detail_request(),
+        Some(Effect::Detail { diff: false, .. })
+    ));
+}
+
+#[test]
+fn read_failures_become_an_error_toast() {
+    let mut a = app();
+    a.on_update(Update::ReadFailed("internal error: boom".into()));
+    let t = a.toast.unwrap();
+    assert_eq!(t.kind, ToastKind::Err);
+}
+
+// ------------------------------------------------------------ dispatch and stop
+
+#[test]
+fn dispatch_keeps_one_read_of_each_kind_in_flight() {
+    use super::Dispatch;
+    let (rtx, rrx) = std::sync::mpsc::channel();
+    let (atx, _arx) = std::sync::mpsc::channel();
+    let mut d = Dispatch {
+        reads: &rtx,
+        actions: &atx,
+        refreshing: false,
+        detail_in_flight: false,
+        last_refresh: std::time::Instant::now(),
+    };
+    let det = || Effect::Detail {
+        id: "r".into(),
+        diff: false,
+    };
+    assert!(d.send(Effect::Refresh) && d.send(Effect::Refresh));
+    assert!(d.send(det()) && d.send(det()));
+    assert_eq!(rrx.try_iter().count(), 2, "one refresh, one detail");
+    d.on_update(&Update::Detail(Err("x".into())));
+    assert!(d.send(det()));
+    assert_eq!(rrx.try_iter().count(), 1);
+    d.on_update(&Update::ReadFailed("x".into()));
+    assert!(!d.refreshing && !d.detail_in_flight);
+}
+
+#[test]
+fn dispatch_reports_a_dead_worker() {
+    use super::Dispatch;
+    let (rtx, rrx) = std::sync::mpsc::channel();
+    let (atx, arx) = std::sync::mpsc::channel();
+    let mut d = Dispatch {
+        reads: &rtx,
+        actions: &atx,
+        refreshing: false,
+        detail_in_flight: false,
+        last_refresh: std::time::Instant::now(),
+    };
+    drop(arx);
+    assert!(!d.send(Effect::Remove("x".into())));
+    drop(rrx);
+    assert!(!d.send(Effect::Refresh));
+}
+
+#[test]
+fn sigint_is_for_the_child_while_one_runs() {
+    use super::Stop;
+    use std::sync::atomic::Ordering;
+    let s = Stop::default();
+    s.child.store(true, Ordering::SeqCst);
+    assert!(!s.interrupt());
+    assert_eq!(s.requested(), None);
+    s.child.store(false, Ordering::SeqCst);
+    assert!(s.interrupt());
+    assert_eq!(s.requested(), Some(130));
+    // The first request wins.
+    assert!(!s.request(143));
+    assert_eq!(s.requested(), Some(130));
 }

@@ -793,7 +793,7 @@ fn detail_lines(
         Some(res) => out.extend(res.lines().map(|l| Line::raw(l.to_string()))),
         None => out.push(Line::styled("(not finished)", t.muted())),
     }
-    match &r.diff {
+    match &d.diff {
         None => {}
         Some(Err(e)) => {
             out.push(Line::raw(""));
