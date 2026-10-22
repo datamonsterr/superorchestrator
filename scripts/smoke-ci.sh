@@ -21,17 +21,34 @@ fi
 [ -x "$bin" ] || { echo "smoke: binary not found: $bin" >&2; exit 1; }
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/so-smoke.XXXXXX")
+# Unix socket paths are limited to about 104 bytes and macOS TMPDIR is long, so keep it short.
+sockdir=$(mktemp -d /tmp/so.XXXXXX)
 export HOME=$tmp/home
 export SUPERORCHESTRATOR_CONFIG_DIR=$tmp/config
-export SUPERORCHESTRATOR_SOCKET=$tmp/s.sock
+export SUPERORCHESTRATOR_SOCKET=$sockdir/s.sock
 unset XDG_RUNTIME_DIR XDG_CONFIG_HOME XDG_DATA_HOME
 mkdir -p "$HOME"
 
+# Bounds a command's run time; macOS has no `timeout` unless coreutils is installed.
+bounded() {
+  if command -v timeout >/dev/null 2>&1; then timeout 30 "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout 30 "$@"
+  else "$@"; fi
+}
+
 cleanup() {
-  local pid
-  pid=$("$bin" --json status 2>/dev/null | sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' | head -n 1 || true)
-  if [ -n "${pid:-}" ]; then kill "$pid" 2>/dev/null || true; fi
-  rm -rf "$tmp"
+  local pid i
+  pid=$(bounded "$bin" --json status 2>/dev/null | sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' | head -n 1 || true)
+  if [ -n "${pid:-}" ]; then
+    kill "$pid" 2>/dev/null || true
+    # Wait for the daemon to exit before its files are removed.
+    for i in $(seq 1 50); do
+      kill -0 "$pid" 2>/dev/null || break
+      [ "$i" -lt 50 ] || kill -9 "$pid" 2>/dev/null || true
+      sleep 0.2
+    done
+  fi
+  rm -rf "$tmp" "$sockdir"
 }
 trap cleanup EXIT
 
@@ -40,21 +57,21 @@ step() { echo "smoke: $*"; }
 
 want=$(sed -n 's/^version *= *"\(.*\)"/\1/p' Cargo.toml | head -n 1)
 step "version (expect $want)"
-got=$("$bin" --version)
+got=$(bounded "$bin" --version)
 [ "$got" = "superorchestrator $want" ] || fail "--version printed '$got'"
 
 step "init"
-"$bin" init --yes >/dev/null
+bounded "$bin" init --yes >/dev/null
 [ -f "$SUPERORCHESTRATOR_CONFIG_DIR/config.toml" ] || fail "init did not write config.toml"
 
 step "doctor"
-"$bin" doctor >/dev/null || fail "doctor failed"
+bounded "$bin" doctor >/dev/null || fail "doctor failed"
 
 step "status (no supervisor yet)"
-"$bin" status | grep -q "supervisor: not running" || fail "status should report no supervisor"
+bounded "$bin" status | grep -q "supervisor: not running" || fail "status should report no supervisor"
 
 step "ui --no-open --port 0"
-url=$("$bin" --json ui --no-open --port 0 | sed -n 's/.*"url": *"\([^"]*\)".*/\1/p')
+url=$(bounded "$bin" --json ui --no-open --port 0 | sed -n 's/.*"url": *"\([^"]*\)".*/\1/p')
 [ -n "$url" ] || fail "ui printed no url"
 url=${url%/}
 step "ui at $url"
@@ -73,6 +90,6 @@ printf '%s' "$page" | grep -q 'id="root"' || [ "${SMOKE_ALLOW_PLACEHOLDER:-0}" =
   || fail "index.html has no #root mount point"
 
 step "status (supervisor running)"
-"$bin" status | grep -q "supervisor: running" || fail "status should report a running supervisor"
+bounded "$bin" status | grep -q "supervisor: running" || fail "status should report a running supervisor"
 
 echo "smoke: ok"
