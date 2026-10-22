@@ -8,7 +8,8 @@ use std::io::Write as _;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::Stdio;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
@@ -29,21 +30,41 @@ pub fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 
-/// Writes `bytes` to `path` with mode 0600.
+/// Writes `bytes` to `path` with mode 0600. The mode is set before any data
+/// is written, so an existing wider file is tightened first.
 pub fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mut f = std::fs::OpenOptions::new()
         .write(true)
         .create(true)
-        .truncate(true)
+        .truncate(false)
         .mode(0o600)
         .open(path)?;
-    f.write_all(bytes)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+    f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    f.set_len(0)?;
+    f.write_all(bytes)
+}
+
+/// The event for a line cut at [`MAX_LINE_BYTES`] when the parser has nothing
+/// better to say.
+pub fn default_truncated_event() -> HarnessEvent {
+    HarnessEvent::Error {
+        kind: so_core::ErrorKind::Other,
+        message: "line exceeded 4 MiB".into(),
+    }
 }
 
 /// Turns stdout lines into normalised events.
 pub trait LineParser: Send + 'static {
     fn parse_line(&mut self, line: &str) -> Vec<HarnessEvent>;
+
+    /// A line on `channel` exceeded [`MAX_LINE_BYTES`] and was dropped
+    /// unparsed. Parsers that track turn state should close open turns here.
+    fn on_truncated(&mut self, _channel: Channel) -> Vec<HarnessEvent> {
+        vec![default_truncated_event()]
+    }
+
+    /// The stream ended (EOF or read error).
+    fn on_eof(&mut self) {}
 }
 
 /// `None` while the leader runs, `Some(code)` once reaped.
@@ -59,39 +80,75 @@ async fn exited(exit: &ExitWatch, within: Duration) -> Option<Option<i32>> {
     }
 }
 
-/// Owns the process group of a harness started with `process_group(0)`, so
-/// grandchildren (tool subprocesses, wrappers) die with it. Dropping the guard
-/// SIGKILLs the group if any member is left, including after a clean leader
-/// exit. A pgid cannot be reused while a member survives, so signalling
-/// `-pgid` after the leader was reaped is safe in practice; the only residual
-/// window is a fully empty group whose pid is reused before the drop.
 #[derive(Debug)]
-pub struct ProcessGuard {
+struct GroupState {
     pgid: Option<rustix::process::Pid>,
-    kill_leader: Mutex<Option<oneshot::Sender<()>>>,
+    /// Set once the leader was reaped and leftovers were killed; the pgid may
+    /// be reused from then on, so nothing signals it any more.
+    reaped: AtomicBool,
 }
 
-impl ProcessGuard {
-    fn new(pid: Option<u32>, kill_leader: oneshot::Sender<()>) -> Self {
-        let pgid = pid
-            .and_then(|p| i32::try_from(p).ok())
-            .and_then(rustix::process::Pid::from_raw);
-        Self {
-            pgid,
-            kill_leader: Mutex::new(Some(kill_leader)),
-        }
-    }
-
+impl GroupState {
     fn signal(&self, sig: rustix::process::Signal) {
+        if self.reaped.load(Ordering::SeqCst) {
+            return;
+        }
         if let Some(pgid) = self.pgid {
             let _ = rustix::process::kill_process_group(pgid, sig);
         }
     }
 
-    /// Whether any process of the group still exists.
+    fn alive(&self) -> bool {
+        !self.reaped.load(Ordering::SeqCst)
+            && self
+                .pgid
+                .is_some_and(|p| rustix::process::test_kill_process_group(p).is_ok())
+    }
+
+    /// Called by the waiter right after the leader was reaped: while a member
+    /// survives the pgid cannot be reused, so SIGKILL the leftovers now, then
+    /// disarm for good.
+    fn kill_leftovers_and_disarm(&self) {
+        if self.alive() {
+            self.signal(rustix::process::Signal::KILL);
+        }
+        self.reaped.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Owns the process group of a harness started with `process_group(0)`, so
+/// grandchildren (tool subprocesses, wrappers) die with it. When the leader
+/// exits (by itself or killed), the waiter kills any leftover members at once
+/// and disarms the guard, so dropping it later never signals a possibly
+/// reused pgid. Dropping the guard while the leader is still alive SIGKILLs
+/// the group.
+#[derive(Debug)]
+pub struct ProcessGuard {
+    state: Arc<GroupState>,
+    kill_leader: Mutex<Option<oneshot::Sender<()>>>,
+}
+
+impl ProcessGuard {
+    fn new(pid: Option<u32>, kill_leader: oneshot::Sender<()>) -> (Self, Arc<GroupState>) {
+        let pgid = pid
+            .and_then(|p| i32::try_from(p).ok())
+            .and_then(rustix::process::Pid::from_raw);
+        let state = Arc::new(GroupState {
+            pgid,
+            reaped: AtomicBool::new(false),
+        });
+        (
+            Self {
+                state: state.clone(),
+                kill_leader: Mutex::new(Some(kill_leader)),
+            },
+            state,
+        )
+    }
+
+    /// Whether any process of the (still armed) group exists.
     pub fn group_alive(&self) -> bool {
-        self.pgid
-            .is_some_and(|p| rustix::process::test_kill_process_group(p).is_ok())
+        self.state.alive()
     }
 
     fn kill_leader(&self) {
@@ -103,16 +160,17 @@ impl ProcessGuard {
     }
 
     /// SIGTERM the group, SIGKILL after `grace` if members remain, and as a
-    /// backstop make the waiter kill the leader directly.
+    /// backstop make the waiter kill the leader directly. A no-op once the
+    /// leader was reaped (leftovers are already dead).
     pub async fn terminate(&self, grace: Duration) {
-        if self.group_alive() {
-            self.signal(rustix::process::Signal::TERM);
+        if self.state.alive() {
+            self.state.signal(rustix::process::Signal::TERM);
             let deadline = tokio::time::Instant::now() + grace;
-            while self.group_alive() && tokio::time::Instant::now() < deadline {
+            while self.state.alive() && tokio::time::Instant::now() < deadline {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
-            if self.group_alive() {
-                self.signal(rustix::process::Signal::KILL);
+            if self.state.alive() {
+                self.state.signal(rustix::process::Signal::KILL);
             }
         }
         self.kill_leader();
@@ -121,8 +179,8 @@ impl ProcessGuard {
 
 impl Drop for ProcessGuard {
     fn drop(&mut self) {
-        if self.group_alive() {
-            self.signal(rustix::process::Signal::KILL);
+        if self.state.alive() {
+            self.state.signal(rustix::process::Signal::KILL);
         }
         self.kill_leader();
     }
@@ -162,8 +220,16 @@ async fn stdin_actor(
     mut rx: mpsc::UnboundedReceiver<StdinCmd>,
     transcript: SharedTranscript,
     events: mpsc::UnboundedSender<HarnessEvent>,
+    mut exit: ExitWatch,
 ) {
-    while let Some(cmd) = rx.recv().await {
+    // Ends when the process exited (dropping its event sender so the event
+    // channel can close) or when every handle is gone.
+    loop {
+        let cmd = tokio::select! {
+            c = rx.recv() => c,
+            _ = exit.wait_for(|v| v.is_some()) => None,
+        };
+        let Some(cmd) = cmd else { return };
         match cmd {
             StdinCmd::Close => stdin = None,
             StdinCmd::Line(line, reply) => {
@@ -259,7 +325,12 @@ async fn pump<R: AsyncRead + Unpin>(
     let mut buf = Vec::new();
     loop {
         match read_capped(&mut reader, &mut buf).await {
-            Ok(None) => return,
+            Ok(None) => {
+                if let Some(p) = parser.as_mut() {
+                    p.on_eof();
+                }
+                return;
+            }
             Ok(Some(truncated)) => {
                 let mut line = String::from_utf8_lossy(&buf).into_owned();
                 if line.ends_with('\r') {
@@ -267,7 +338,10 @@ async fn pump<R: AsyncRead + Unpin>(
                 }
                 let events = if truncated {
                     line.push_str(TRUNCATED_MARK);
-                    Vec::new()
+                    match parser.as_mut() {
+                        Some(p) => p.on_truncated(channel),
+                        None => vec![default_truncated_event()],
+                    }
                 } else {
                     parser
                         .as_mut()
@@ -289,6 +363,9 @@ async fn pump<R: AsyncRead + Unpin>(
                     kind: so_core::ErrorKind::Other,
                     message: format!("read error: {e}"),
                 });
+                if let Some(p) = parser.as_mut() {
+                    p.on_eof();
+                }
                 // Keep the pipe drained so the child never blocks on it.
                 let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
                 return;
@@ -309,7 +386,8 @@ pub struct ProcessHandle {
 
 impl ProcessHandle {
     /// Closes stdin and waits up to `deadline` for a clean exit; otherwise
-    /// kills the process group (SIGTERM, then SIGKILL after the grace).
+    /// kills the process group (SIGTERM, then SIGKILL after the grace). When
+    /// the leader exits on its own, leftover group members are killed too.
     pub async fn shutdown(&self, deadline: Duration) -> ShutdownOutcome {
         self.stdin.close();
         if let Some(code) = exited(&self.exit, deadline).await {
@@ -331,7 +409,7 @@ pub struct Supervised {
 /// Spawns `cmd` as a supervised process: piped stdio, `kill_on_drop`, own
 /// process group, transcript in `run_dir`. Events: `Raw` for every line on
 /// stdout, stderr and stdin; parser events after the matching `Raw`; `Exited`
-/// last. The exit flag flips right after the leader is reaped, before any send.
+/// last and terminal (the event channel closes after it). The exit flag flips right after the leader is reaped, before any send.
 pub fn spawn_supervised(
     mut cmd: Command,
     run_dir: &Path,
@@ -376,16 +454,19 @@ pub fn spawn_supervised(
     .flatten()
     .collect();
 
+    let (kill_tx, kill_rx) = oneshot::channel::<()>();
+    let (exit_tx, exit_rx) = watch::channel(None);
+    let (guard, group) = ProcessGuard::new(pid, kill_tx);
+
     let (stdin_tx, stdin_rx) = mpsc::unbounded_channel();
     tokio::spawn(stdin_actor(
         child.stdin.take(),
         stdin_rx,
         transcript,
         tx.clone(),
+        exit_rx.clone(),
     ));
 
-    let (kill_tx, kill_rx) = oneshot::channel::<()>();
-    let (exit_tx, exit_rx) = watch::channel(None);
     tokio::spawn(async move {
         let status = tokio::select! {
             s = child.wait() => s,
@@ -396,9 +477,19 @@ pub fn spawn_supervised(
         };
         let code = status.ok().and_then(|s| s.code());
         let _ = exit_tx.send(Some(code));
-        for r in readers {
-            let _ = tokio::time::timeout(Duration::from_secs(2), r).await;
+        // Leftover group members would keep the pipes open: kill them now.
+        group.kill_leftovers_and_disarm();
+        for mut r in readers {
+            // A process that escaped the group may still hold the pipes.
+            if tokio::time::timeout(Duration::from_secs(2), &mut r)
+                .await
+                .is_err()
+            {
+                r.abort();
+                let _ = r.await;
+            }
         }
+        // Terminal: after Exited no sender is left, so the channel closes.
         let _ = tx.send(HarnessEvent::Exited { code });
     });
 
@@ -406,10 +497,29 @@ pub fn spawn_supervised(
         events: rx,
         handle: ProcessHandle {
             stdin: StdinHandle { tx: stdin_tx },
-            guard: ProcessGuard::new(pid, kill_tx),
+            guard,
             exit: exit_rx,
             pid,
             grace,
         },
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_private_tightens_existing_files() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("x");
+        std::fs::write(&f, "old old old").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_private(&f, b"new").unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), b"new");
+        assert_eq!(
+            std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 }

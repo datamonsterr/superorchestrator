@@ -243,7 +243,8 @@ pub enum HarnessEvent {
 pub struct RunHandle {
     /// Unbounded on purpose: the harness and transcript never block on the
     /// consumer. The supervisor must drain it (it persists every event to the
-    /// database); an undrained handle only costs memory.
+    /// database); an undrained handle only costs memory. `Exited` is the last
+    /// event; the channel closes after it.
     pub events: mpsc::UnboundedReceiver<HarnessEvent>,
     pub control: RunControl,
     pub native_session_id: Option<String>,

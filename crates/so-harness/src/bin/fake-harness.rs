@@ -6,7 +6,7 @@
 //! - `{"stdout": <json value or string>}`: print one line (strings verbatim)
 //! - `{"stderr": "text"}`: print one stderr line
 //! - `{"sleep_ms": n}`
-//! - `{"spawn_sleep": secs}`: spawn a `sleep` grandchild (same process group), log `{"grandchild": pid}`
+//! - `{"spawn_sleep": secs, "detach": bool}`: spawn a `sleep` grandchild (same process group), log `{"grandchild": pid}`
 //! - `{"exit": code}`: exit immediately
 //!
 //! After the last step it drains stdin until EOF and exits 0, like `claude -p`.
@@ -16,6 +16,7 @@
 
 use std::fs::OpenOptions;
 use std::io::{BufRead, Write};
+use std::os::unix::process::CommandExt;
 
 use serde_json::{Value, json};
 
@@ -67,13 +68,18 @@ fn main() {
         } else if let Some(ms) = step["sleep_ms"].as_u64() {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         } else if let Some(secs) = step["spawn_sleep"].as_u64() {
-            let child = std::process::Command::new("sleep")
-                .arg(secs.to_string())
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn()
-                .expect("spawn sleep");
+            let detach = step["detach"].as_bool().unwrap_or(false);
+            let mut cmd = std::process::Command::new("sleep");
+            cmd.arg(secs.to_string()).stdin(std::process::Stdio::null());
+            if detach {
+                // Own process group, inherits stdout/stderr: escapes group kills
+                // and keeps the harness pipes open.
+                cmd.process_group(0);
+            } else {
+                cmd.stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
+            }
+            let child = cmd.spawn().expect("spawn sleep");
             record(json!({"grandchild": child.id()}));
         } else if let Some(code) = step["exit"].as_i64() {
             std::process::exit(code as i32);

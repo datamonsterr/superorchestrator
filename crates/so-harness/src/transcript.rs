@@ -6,7 +6,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write};
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -64,6 +64,7 @@ impl TranscriptWriter {
             .append(true)
             .mode(0o600)
             .open(Self::path(run_dir))?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
         Self::from_file(file)
     }
 
@@ -124,7 +125,6 @@ impl TranscriptWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     #[test]
     fn offsets_point_at_entries_and_mode_is_private() {
@@ -151,6 +151,19 @@ mod tests {
         let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&TranscriptWriter::path(&run)), 0o600);
         assert_eq!(mode(&run), 0o700);
+    }
+
+    #[test]
+    fn create_tightens_existing_transcript() {
+        let d = tempfile::tempdir().unwrap();
+        let f = TranscriptWriter::path(d.path());
+        std::fs::write(&f, "").unwrap();
+        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
+        TranscriptWriter::create(d.path()).unwrap();
+        assert_eq!(
+            std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[cfg(target_os = "linux")]

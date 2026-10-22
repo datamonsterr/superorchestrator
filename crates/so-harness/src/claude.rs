@@ -12,11 +12,12 @@ use tokio::process::Command;
 use tokio::sync::oneshot;
 
 use crate::driver::{
-    Driver, DriverConfig, DriverError, HarnessEvent, JoinCommand, JoinInfo, LaunchSpec, RateLimits,
-    RunControl, RunHandle, ShutdownOutcome, classify_common,
+    Channel, Driver, DriverConfig, DriverError, HarnessEvent, JoinCommand, JoinInfo, LaunchSpec,
+    RateLimits, RunControl, RunHandle, ShutdownOutcome, classify_common,
 };
 use crate::process::{
-    LineParser, ProcessHandle, create_private_dir, spawn_supervised, write_private,
+    LineParser, ProcessHandle, create_private_dir, default_truncated_event, spawn_supervised,
+    write_private,
 };
 
 /// How long `interrupt` waits for claude's `control_response`.
@@ -178,6 +179,18 @@ impl Acks {
         rx
     }
 
+    /// Resolves every pending request as failed (the process is gone).
+    fn fail_all(&self) {
+        let all: Vec<_> = self
+            .0
+            .lock()
+            .map(|mut m| m.drain().collect())
+            .unwrap_or_default();
+        for (_, tx) in all {
+            let _ = tx.send(false);
+        }
+    }
+
     fn forget(&self, id: &str) {
         if let Ok(mut m) = self.0.lock() {
             m.remove(id);
@@ -226,7 +239,9 @@ impl ClaudeControl {
         }
         match tokio::time::timeout(INTERRUPT_ACK_TIMEOUT, ack).await {
             Ok(Ok(true)) => Ok(()),
-            Ok(Ok(false)) => Err(DriverError::Other("claude rejected the interrupt".into())),
+            Ok(Ok(false)) => Err(DriverError::Other(
+                "claude rejected the interrupt or exited".into(),
+            )),
             _ => {
                 self.acks.forget(&id);
                 Err(DriverError::Other(
@@ -253,6 +268,7 @@ fn user_message(text: &str) -> Value {
 #[derive(Debug, Default)]
 pub struct ClaudeParser {
     started: bool,
+    turn_open: bool,
     tools: HashMap<String, String>,
     rate_limits: Option<RateLimits>,
     acks: Acks,
@@ -301,6 +317,7 @@ impl ClaudeParser {
                 });
             }
         }
+        self.turn_open = true;
         out.push(HarnessEvent::TurnStarted);
         out
     }
@@ -367,6 +384,7 @@ impl ClaudeParser {
     }
 
     fn result(&mut self, v: &Value) -> Vec<HarnessEvent> {
+        self.turn_open = false;
         let u = &v["usage"];
         let n = |k: &str| u[k].as_u64().unwrap_or(0);
         let usage = HarnessEvent::Usage {
@@ -402,6 +420,27 @@ impl ClaudeParser {
 impl LineParser for ClaudeParser {
     fn parse_line(&mut self, line: &str) -> Vec<HarnessEvent> {
         ClaudeParser::parse_line(self, line)
+    }
+
+    /// The dropped line may have been the turn's result, so an open turn is
+    /// closed as failed rather than left hanging.
+    fn on_truncated(&mut self, _channel: Channel) -> Vec<HarnessEvent> {
+        self.tools.clear();
+        if std::mem::take(&mut self.turn_open) {
+            vec![HarnessEvent::TurnFinished {
+                result_text: None,
+                structured: None,
+                is_error: true,
+                error_kind: Some(ErrorKind::Other),
+                error_text: Some("truncated output".into()),
+            }]
+        } else {
+            vec![default_truncated_event()]
+        }
+    }
+
+    fn on_eof(&mut self) {
+        self.acks.fail_all();
     }
 }
 

@@ -542,7 +542,7 @@ async fn shutdown_kills_grandchildren() {
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn dropping_control_after_clean_exit_kills_leftover_group() {
+async fn leftover_group_is_killed_when_leader_exits() {
     let rig = Rig::new();
     let s = script(&[
         json!({"expect_stdin_contains": PROMPT}),
@@ -551,10 +551,89 @@ async fn dropping_control_after_clean_exit_kills_leftover_group() {
     ]);
     let mut h = driver().launch(rig.spec(&s)).await.unwrap();
     until(&mut h, is_exit).await;
-    let pid = grandchild_pid(&rig);
-    assert!(!process_gone(pid), "grandchild should outlive the leader");
-    drop(h);
-    assert_gets_killed(pid).await;
+    // No shutdown and no drop: the waiter itself cleans up.
+    assert_gets_killed(grandchild_pid(&rig)).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn exited_is_terminal_even_if_an_escaped_process_holds_the_pipes() {
+    let rig = Rig::new();
+    let s = script(&[
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"spawn_sleep": 60, "detach": true}),
+        json!({"stdout": {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "hi"}]}}}),
+        json!({"exit": 0}),
+    ]);
+    let mut h = driver().launch(rig.spec(&s)).await.unwrap();
+    let mut events = Vec::new();
+    let drained = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(e) = h.events.recv().await {
+            events.push(e);
+        }
+    })
+    .await;
+    assert!(drained.is_ok(), "event channel never closed");
+    assert_eq!(events.last(), Some(&HarnessEvent::Exited { code: Some(0) }));
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, HarnessEvent::Exited { .. }))
+            .count(),
+        1
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, HarnessEvent::AssistantMessage { text } if text == "hi"))
+    );
+    // Clean up the escaped sleeper.
+    let pid = rustix::process::Pid::from_raw(grandchild_pid(&rig) as i32).unwrap();
+    let _ = rustix::process::kill_process(pid, rustix::process::Signal::KILL);
+}
+
+#[tokio::test]
+async fn interrupt_fails_fast_when_process_exits() {
+    let rig = Rig::new();
+    let s = script(&[
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"expect_stdin_contains": "interrupt"}),
+        json!({"exit": 0}),
+    ]);
+    let h = driver().launch(rig.spec(&s)).await.unwrap();
+    let started = std::time::Instant::now();
+    let err = h.control.interrupt().await.unwrap_err();
+    assert!(err.to_string().contains("exited"), "{err}");
+    assert!(started.elapsed() < Duration::from_secs(3));
+}
+
+#[tokio::test]
+async fn truncated_line_closes_the_open_turn() {
+    let rig = Rig::new();
+    let init = json!({"type": "system", "subtype": "init", "session_id": "sid"});
+    let s = script(&[
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"stdout": init}),
+        json!({"stdout": "y".repeat(5 * 1024 * 1024)}),
+    ]);
+    let mut h = driver().launch(rig.spec(&s)).await.unwrap();
+    let evs = until(&mut h, is_turn).await;
+    use HarnessEvent::*;
+    assert!(matches!(
+        &evs[..],
+        [
+            SessionStarted { .. },
+            TurnStarted,
+            TurnFinished {
+                is_error: true,
+                error_kind: Some(ErrorKind::Other),
+                error_text: Some(t),
+                ..
+            }
+        ] if t == "truncated output"
+    ));
+    h.control.shutdown(Duration::from_secs(5)).await.unwrap();
 }
 
 #[tokio::test]
@@ -604,8 +683,13 @@ async fn oversized_line_is_truncated_and_stream_continues() {
     ]);
     let mut h = driver().launch(rig.spec(&s)).await.unwrap();
     let mut saw_truncated = false;
+    let mut saw_error = false;
     loop {
         match next(&mut h).await {
+            HarnessEvent::Error { message, .. } => {
+                assert_eq!(message, "line exceeded 4 MiB");
+                saw_error = true;
+            }
             HarnessEvent::Raw { line, .. }
                 if line.ends_with(so_harness::process::TRUNCATED_MARK) =>
             {
@@ -622,7 +706,7 @@ async fn oversized_line_is_truncated_and_stream_continues() {
             _ => {}
         }
     }
-    assert!(saw_truncated);
+    assert!(saw_truncated && saw_error);
     h.control.shutdown(Duration::from_secs(5)).await.unwrap();
 }
 
