@@ -30,11 +30,12 @@ fn state_list(pred: impl Fn(RunState) -> bool) -> String {
 static ACTIVE: LazyLock<String> =
     LazyLock::new(|| format!("state IN ({})", state_list(|s| s.is_active())));
 
-/// States that hold a concurrency slot. `queued` waits for a slot and is excluded (SPEC 7.7).
+/// States that hold a concurrency slot. `queued` waits for a slot and `pending_review` has
+/// no harness process, so both are excluded (SPEC 7.7).
 static SLOT_HOLDING: LazyLock<String> = LazyLock::new(|| {
     format!(
         "state IN ({})",
-        state_list(|s| s.is_active() && s != RunState::Queued)
+        state_list(|s| s.is_active() && s != RunState::Queued && s != RunState::PendingReview)
     )
 });
 
@@ -186,7 +187,8 @@ impl Store {
     pub fn set_run_checks(&self, run_id: &str, checks: &[String]) -> Result<()> {
         let json = serde_json::to_string(checks).unwrap_or_else(|_| "[]".into());
         self.conn().execute(
-            "INSERT OR REPLACE INTO run_checks (run_id, checks_json) VALUES (?1, ?2)",
+            "INSERT INTO run_meta (run_id, checks_json) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET checks_json = excluded.checks_json",
             params![run_id, json],
         )?;
         Ok(())
@@ -197,7 +199,7 @@ impl Store {
         let json: Option<String> = self
             .conn()
             .query_row(
-                "SELECT checks_json FROM run_checks WHERE run_id = ?1",
+                "SELECT checks_json FROM run_meta WHERE run_id = ?1",
                 [run_id],
                 |r| r.get(0),
             )
@@ -209,6 +211,33 @@ impl Store {
         Ok(json
             .and_then(|j| serde_json::from_str(&j).ok())
             .unwrap_or_default())
+    }
+
+    /// Marks a run as a fork: it resumes a copy of this native session when it starts.
+    pub fn set_run_fork(&self, run_id: &str, native_session_id: &str) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO run_meta (run_id, fork_from) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET fork_from = excluded.fork_from",
+            params![run_id, native_session_id],
+        )?;
+        Ok(())
+    }
+
+    /// The native session a fork run starts from.
+    pub fn get_run_fork(&self, run_id: &str) -> Result<Option<String>> {
+        let v: Option<Option<String>> = self
+            .conn()
+            .query_row(
+                "SELECT fork_from FROM run_meta WHERE run_id = ?1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                e => Err(e),
+            })?;
+        Ok(v.flatten())
     }
 
     /// Atomically claims a concurrency slot: moves the run `from -> to` and sets its account,
@@ -682,7 +711,7 @@ pub(crate) mod tests {
     #[test]
     fn slot_sql_sets_match_states() {
         for st in RunState::ALL {
-            let slot = st.is_active() && st != RunState::Queued;
+            let slot = st.is_active() && st != RunState::Queued && st != RunState::PendingReview;
             let q = format!("'{}'", st.as_str());
             assert_eq!(SLOT_HOLDING.contains(&q), slot, "{st}");
             assert_eq!(ACTIVE.contains(&q), st.is_active(), "{st}");
@@ -908,6 +937,10 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(s.get_run_checks(&r.id).unwrap(), ["ci", "cmd:true"]);
         assert!(s.get_run_checks("none").unwrap().is_empty());
+        assert_eq!(s.get_run_fork(&r.id).unwrap(), None);
+        s.set_run_fork(&r.id, "native-1").unwrap();
+        assert_eq!(s.get_run_fork(&r.id).unwrap().as_deref(), Some("native-1"));
+        assert_eq!(s.get_run_checks(&r.id).unwrap(), ["ci", "cmd:true"]);
         let patch = FinishPatch {
             result_json: Some("1".into()),
             error_kind: None,

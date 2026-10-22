@@ -94,7 +94,10 @@ INSERT INTO schema_versions (table_name, version) VALUES
 ";
 
 const V2: &str = "
-CREATE TABLE run_checks (run_id TEXT PRIMARY KEY REFERENCES runs(id), checks_json TEXT NOT NULL);
+-- Per-run extras. No foreign key: the row is written before the run is inserted.
+CREATE TABLE run_meta (
+  run_id TEXT PRIMARY KEY, checks_json TEXT NOT NULL DEFAULT '[]', fork_from TEXT
+);
 UPDATE schema_versions SET version = 2 WHERE table_name = 'runs';
 ";
 
