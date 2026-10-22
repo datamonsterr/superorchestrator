@@ -4,47 +4,14 @@ import {
   useMutation,
   useQuery,
   useQueryClient,
-  type QueryClient,
   type QueryKey,
 } from '@tanstack/react-query'
 import { endpoints } from './endpoints'
+import { qk, type SessionFilter } from './keys'
 import { useStreamState } from './stream'
-import type { EventType, SessionStatus } from './types'
 
-/** Query key factory (design 2.2). Hooks and `invalidationsFor` share these shapes. */
-export const qk = {
-  status: () => ['status'] as const,
-  dashboard: () => ['dashboard'] as const,
-  usageDaily: (days: number) => ['usage', 'daily', days] as const,
-  doctor: () => ['doctor'] as const,
-  harnesses: () => ['harnesses'] as const,
-  accounts: () => ['accounts'] as const,
-  accountsScan: () => ['accounts', 'scan'] as const,
-  signin: (name: string) => ['accounts', name, 'signin'] as const,
-  sessions: (filter: SessionFilter = {}) => ['sessions', filter] as const,
-  session: (id: string) => ['session', id] as const,
-  sessionEvents: (id: string) => ['session', id, 'events'] as const,
-  run: (id: string) => ['run', id] as const,
-  runEvents: (id: string, type?: EventType) => (type ? (['run', id, 'events', type] as const) : (['run', id, 'events'] as const)),
-  transcript: (id: string) => ['run', id, 'transcript'] as const,
-  runRoute: (id: string) => ['run', id, 'route'] as const,
-  runMessages: (id: string) => ['run', id, 'messages'] as const,
-  choices: () => ['choices'] as const,
-  models: () => ['models'] as const,
-  routingRecords: () => ['routing', 'records'] as const,
-  worktrees: () => ['worktrees'] as const,
-  agents: () => ['agents'] as const,
-  agent: (name: string) => ['agent', name] as const,
-  workflows: () => ['workflows'] as const,
-  workflowRuns: () => ['workflow-runs'] as const,
-  workflowRun: (id: string) => ['workflow-run', id] as const,
-  config: () => ['config'] as const,
-}
-
-export interface SessionFilter {
-  status?: SessionStatus
-  q?: string
-}
+export { qk, type SessionFilter }
+import type { ChoicesView, ConfigPatch, ModelCatalog, EventType, Harness, RouteParams, SendMessageParams } from './types'
 
 /** 5 s polling while the SSE stream is down (design 2.3), otherwise false. */
 export function usePollingInterval(ms = 5000): number | false {
@@ -119,12 +86,14 @@ export function useRunEvents(id: string, type?: EventType) {
     enabled: !!id,
   })
 }
+/** Polls every 2 s only while the run is active and the stream is down (the stream pushes events, not transcript lines). */
 export function useTranscript(id: string, offset = 0, opts: { active?: boolean } = {}) {
+  const streamDown = useStreamState().polling
   return useQuery({
     queryKey: [...qk.transcript(id), offset],
     queryFn: ({ signal }) => endpoints.getTranscript(id, { offset, limit: 500 }, { signal }),
     enabled: !!id,
-    refetchInterval: opts.active ? 2000 : false,
+    refetchInterval: opts.active && streamDown ? 2000 : false,
   })
 }
 export function useRunRoute(id: string) {
@@ -175,40 +144,57 @@ export function useConfig() {
   return useQuery({ queryKey: qk.config(), queryFn: ({ signal }) => endpoints.getConfig({ signal }) })
 }
 
-// ---- Mutations: each invalidates the keys it affects ----
+// ---- Mutations ----
+// Variables are named objects. onSuccess returns the invalidations so `mutateAsync`
+// resolves after the affected queries have refetched. Failures toast globally
+// (MutationCache.onError in lib/query-client.ts; set `meta: { silent: true }` to opt out).
 
-function useApiMutation<TArgs extends unknown[], TData>(
-  fn: (...args: TArgs) => Promise<TData>,
-  invalidate: (qc: QueryClient, data: TData, args: TArgs) => QueryKey[] = () => [],
-) {
+function useApiMutation<V, D>(fn: (v: V) => Promise<D>, invalidate: (v: V, d: D) => QueryKey[] = () => []) {
   const qc = useQueryClient()
   return useMutation({
-    // useMutation takes a single variable; wrap the args in a tuple.
-    mutationFn: (args: TArgs) => fn(...args),
-    onSuccess: (data, args) => {
-      for (const key of invalidate(qc, data, args)) void qc.invalidateQueries({ queryKey: key })
-    },
+    mutationFn: fn,
+    onSuccess: (data, vars) => Promise.all(invalidate(vars, data).map((queryKey) => qc.invalidateQueries({ queryKey }))),
   })
 }
-/** Call as `m.mutate([a, b])`; the tuple mirrors the endpoint's arguments. */
 
-export const useSendMessage = () => useApiMutation(endpoints.sendMessage, (_q, _d, [id]) => [qk.run(id), qk.runMessages(id)])
-export const useCancelRun = () => useApiMutation(endpoints.cancelRun, (_q, _d, [id]) => [qk.run(id), ['sessions']])
-export const useAcceptRun = () => useApiMutation(endpoints.acceptRun, (_q, _d, [id]) => [qk.run(id), ['sessions']])
-export const useRejectRun = () => useApiMutation(endpoints.rejectRun, (_q, _d, [id]) => [qk.run(id), ['sessions']])
-export const useJoinRun = () => useApiMutation(endpoints.joinRun, (_q, _d, [id]) => [qk.run(id), ['session']])
-export const useRoutePreview = () => useApiMutation(endpoints.route)
-export const usePutChoices = () => useApiMutation(endpoints.putChoices, () => [qk.choices(), qk.harnesses()])
-export const useRefreshModels = () => useApiMutation(endpoints.refreshModels, () => [qk.models()])
-export const useCreateAccount = () => useApiMutation(endpoints.createAccount, () => [qk.accounts(), qk.harnesses(), qk.dashboard()])
-export const useImportAccount = () => useApiMutation(endpoints.importAccount, () => [qk.accounts(), qk.harnesses(), qk.dashboard()])
-export const usePatchAccount = () => useApiMutation(endpoints.patchAccount, () => [qk.accounts(), qk.harnesses(), qk.dashboard()])
-export const useRemoveAccount = () => useApiMutation(endpoints.removeAccount, () => [qk.accounts(), qk.harnesses(), qk.dashboard()])
-export const useFlagAccount = () => useApiMutation(endpoints.flagAccount, () => [qk.accounts(), qk.harnesses(), qk.dashboard()])
-export const useStartLogin = () => useApiMutation(endpoints.startLogin, (_q, _d, [name]) => [qk.signin(name)])
-export const usePruneWorktrees = () => useApiMutation(endpoints.pruneWorktrees, () => [qk.worktrees()])
-export const useCreateAgent = () => useApiMutation(endpoints.createAgent, () => [qk.agents()])
-export const usePutAgent = () => useApiMutation(endpoints.putAgent, (_q, _d, [name]) => [qk.agents(), qk.agent(name)])
-export const useDeleteAgent = () => useApiMutation(endpoints.deleteAgent, () => [qk.agents()])
-export const useRunWorkflow = () => useApiMutation(endpoints.runWorkflow, () => [qk.workflowRuns()])
-export const usePatchConfig = () => useApiMutation(endpoints.patchConfig, () => [qk.config(), qk.status()])
+const ACCOUNT_KEYS = () => [qk.accounts(), qk.harnesses(), qk.dashboard()]
+type Id = { id: string }
+type Name = { name: string }
+
+export const useSendMessage = () =>
+  useApiMutation(({ id, body }: Id & { body: SendMessageParams }) => endpoints.sendMessage(id, body), ({ id }) => [qk.run(id), qk.runMessages(id)])
+export const useCancelRun = () => useApiMutation(({ id }: Id) => endpoints.cancelRun(id), ({ id }) => [qk.run(id), qk.sessionsRoot()])
+export const useAcceptRun = () => useApiMutation(({ id }: Id) => endpoints.acceptRun(id), ({ id }) => [qk.run(id), qk.sessionsRoot()])
+export const useRejectRun = () =>
+  useApiMutation(({ id, feedback }: Id & { feedback: string }) => endpoints.rejectRun(id, feedback), ({ id }) => [qk.run(id), qk.sessionsRoot()])
+/** Records a `join_command_issued` audit event server side, so the run's events are stale afterwards. */
+export const useJoinRun = () => useApiMutation(({ id }: Id) => endpoints.joinRun(id), ({ id }) => [qk.runEvents(id)])
+export const useRoutePreview = () => useApiMutation((params: RouteParams) => endpoints.route(params))
+export const usePutChoices = () => useApiMutation((body: ChoicesView) => endpoints.putChoices(body), () => [qk.choices(), qk.harnesses()])
+export const useRefreshModels = () => useApiMutation<void, ModelCatalog>(() => endpoints.refreshModels(), () => [qk.models()])
+export const useCreateAccount = () =>
+  useApiMutation((v: { harness: Harness; name: string; home?: string }) => endpoints.createAccount(v), ACCOUNT_KEYS)
+export const useImportAccount = () =>
+  useApiMutation((v: { harness: Harness; name: string; home: string }) => endpoints.importAccount(v), ACCOUNT_KEYS)
+export const usePatchAccount = () =>
+  useApiMutation(
+    ({ name, body }: Name & { body: Parameters<typeof endpoints.patchAccount>[1] }) => endpoints.patchAccount(name, body),
+    ACCOUNT_KEYS,
+  )
+export const useRemoveAccount = () =>
+  useApiMutation(({ name, purge }: Name & { purge?: boolean }) => endpoints.removeAccount(name, purge), ACCOUNT_KEYS)
+export const useFlagAccount = () =>
+  useApiMutation(
+    ({ name, body }: Name & { body: Parameters<typeof endpoints.flagAccount>[1] }) => endpoints.flagAccount(name, body),
+    ACCOUNT_KEYS,
+  )
+export const useStartLogin = () => useApiMutation(({ name }: Name) => endpoints.startLogin(name), ({ name }) => [qk.signin(name)])
+export const usePruneWorktrees = () =>
+  useApiMutation((v: { dry_run?: boolean } | void) => endpoints.pruneWorktrees(v ?? {}), () => [qk.worktrees()])
+export const useCreateAgent = () => useApiMutation((v: { name: string; source: string }) => endpoints.createAgent(v), () => [qk.agents()])
+export const usePutAgent = () =>
+  useApiMutation(({ name, source }: Name & { source: string }) => endpoints.putAgent(name, { source }), ({ name }) => [qk.agents(), qk.agent(name)])
+export const useDeleteAgent = () => useApiMutation(({ name }: Name) => endpoints.deleteAgent(name), () => [qk.agents()])
+export const useRunWorkflow = () =>
+  useApiMutation(({ name, args }: Name & { args?: unknown }) => endpoints.runWorkflow(name, args), () => [qk.workflowRuns()])
+export const usePatchConfig = () => useApiMutation((body: ConfigPatch) => endpoints.patchConfig(body), () => [qk.config(), qk.status()])

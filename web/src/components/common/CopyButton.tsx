@@ -30,9 +30,14 @@ export function CopyButton({ value, label = 'Copy', className, toastText = 'Copi
   }
 
   return (
-    <Button type="button" variant="outline" size="sm" className={className} onClick={copy} aria-label={label}>
-      {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
-      <span aria-live="polite">{copied ? 'Copied' : label}</span>
-    </Button>
+    <>
+      <Button type="button" variant="outline" size="sm" className={className} onClick={copy} aria-label={label}>
+        {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
+        <span aria-hidden>{label}</span>
+      </Button>
+      <span role="status" className="sr-only">
+        {copied ? 'Copied' : ''}
+      </span>
+    </>
   )
 }

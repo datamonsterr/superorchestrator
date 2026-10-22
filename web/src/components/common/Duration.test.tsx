@@ -1,5 +1,6 @@
 import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { act } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { formatDuration, formatMoney, formatPercent, formatTokens } from '@/lib/format'
 import { Duration } from './Duration'
 
@@ -14,6 +15,15 @@ describe('Duration', () => {
     expect(screen.getByText('1h 1m')).toBeInTheDocument()
     rerender(<Duration start={start} now={Date.parse(start) + 30_000} />)
     expect(screen.getByText('30s')).toBeInTheDocument()
+  })
+  it('ticks every second for an open range', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(Date.parse('2026-01-01T12:00:10Z'))
+    render(<Duration start="2026-01-01T12:00:00Z" />)
+    expect(screen.getByText('10s')).toBeInTheDocument()
+    act(() => void vi.advanceTimersByTime(3000))
+    expect(screen.getByText('13s')).toBeInTheDocument()
+    vi.useRealTimers()
   })
   it('renders a dash with nothing to show', () => {
     render(<Duration />)

@@ -58,9 +58,10 @@ describe('query hooks', () => {
   })
 
   it('exposes the design 2.2 key shapes', () => {
-    expect(qk.session('s')).toEqual(['session', 's'])
+    expect(qk.session('s')).toEqual(['session', 's', 'summary'])
+    expect(qk.run('r')).toEqual(['run', 'r', 'view'])
     expect(qk.sessionEvents('s')).toEqual(['session', 's', 'events'])
-    expect(qk.signin('a')).toEqual(['accounts', 'a', 'signin'])
+    expect(qk.signin('a')).toEqual(['account-signin', 'a'])
     expect(qk.usageDaily(30)).toEqual(['usage', 'daily', 30])
     expect(qk.runRoute('r')).toEqual(['run', 'r', 'route'])
   })

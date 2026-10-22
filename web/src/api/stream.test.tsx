@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { applyToCache, hasGap, invalidationsFor, useEventStream } from './stream'
@@ -17,17 +17,17 @@ const msg = (type: EventType, run_id: string | null = 'r1'): SseMessage => ({ ev
 
 describe('invalidationsFor', () => {
   it.each([
-    ['state_changed', [['run', 'r1'], ['sessions'], ['status']]],
-    ['run_started', [['run', 'r1'], ['sessions'], ['status']]],
-    ['run_finished', [['run', 'r1'], ['sessions'], ['status']]],
-    ['run_queued', [['run', 'r1'], ['sessions'], ['status']]],
-    ['usage', [['run', 'r1'], ['usage', 'daily']]],
+    ['state_changed', [['run', 'r1', 'view'], ['sessions'], ['status']]],
+    ['run_started', [['run', 'r1', 'view'], ['sessions'], ['status']]],
+    ['run_finished', [['run', 'r1', 'view'], ['sessions'], ['status']]],
+    ['run_queued', [['run', 'r1', 'view'], ['sessions'], ['status']]],
+    ['usage', [['run', 'r1', 'view'], ['usage', 'daily']]],
     ['route_decision', [['run', 'r1', 'route'], ['routing', 'records']]],
     ['message_sent', [['run', 'r1', 'messages']]],
     ['question_asked', [['run', 'r1', 'messages']]],
     ['question_answered', [['run', 'r1', 'messages']]],
-    ['worktree_created', [['run', 'r1']]],
-    ['worktree_removed', [['run', 'r1']]],
+    ['worktree_created', [['run', 'r1', 'view']]],
+    ['worktree_removed', [['run', 'r1', 'view']]],
     ['escalated', []],
     ['stall_detected', []],
     ['tool_call_started', []],
@@ -40,10 +40,10 @@ describe('invalidationsFor', () => {
   })
 
   it('maps headroom, account, session, workflow, run, resync, hello', () => {
-    const accounts = [['accounts'], ['harnesses'], ['dashboard']]
+    const accounts = [['accounts', 'list'], ['harnesses'], ['dashboard']]
     expect(invalidationsFor({ event: 'headroom', data: {} as never })).toEqual(accounts)
     expect(invalidationsFor({ event: 'account', data: {} as never })).toEqual(accounts)
-    expect(invalidationsFor({ event: 'session', data: { id: 's1' } as never })).toEqual([['sessions'], ['session', 's1']])
+    expect(invalidationsFor({ event: 'session', data: { id: 's1' } as never })).toEqual([['sessions'], ['session', 's1', 'summary']])
     expect(invalidationsFor({ event: 'workflow', data: { id: 'w1' } as never })).toEqual([['workflow-runs'], ['workflow-run', 'w1']])
     expect(invalidationsFor({ event: 'run', data: {} as never })).toEqual([])
     expect(invalidationsFor({ event: 'resync', data: {} })).toEqual([[]])
@@ -64,12 +64,12 @@ describe('applyToCache', () => {
     const qc = new QueryClient()
     const page: Page<Event> = { items: [ev('run_queued', 'r1', 'e0')], next_cursor: null }
     qc.setQueryData(['session', 's1', 'events', null], page)
-    qc.setQueryData(['run', 'r1'], { run_id: 'r1', state: 'queued', recent_events: [] } as unknown as RunViewPublic)
+    qc.setQueryData(['run', 'r1', 'view'], { run_id: 'r1', state: 'queued', recent_events: [] } as unknown as RunViewPublic)
     applyToCache(qc, msg('run_started'))
     applyToCache(qc, msg('run_started')) // duplicate id ignored
     expect(qc.getQueryData<Page<Event>>(['session', 's1', 'events', null])?.items).toHaveLength(2)
     applyToCache(qc, { event: 'run', data: { run_id: 'r1', state: 'running' } as never })
-    expect(qc.getQueryData<RunViewPublic>(['run', 'r1'])).toMatchObject({ state: 'running', recent_events: [] })
+    expect(qc.getQueryData<RunViewPublic>(['run', 'r1', 'view'])).toMatchObject({ state: 'running', recent_events: [] })
   })
 })
 
@@ -134,7 +134,7 @@ describe('useEventStream', () => {
     act(() => s.emit('event', ev('state_changed', 'r1', 'e2'), '2'))
     const keys = () => invalidate.mock.calls.map((c) => JSON.stringify((c[0] as { queryKey: unknown }).queryKey))
     expect(keys().filter((k) => k === '["dashboard"]')).toHaveLength(1)
-    expect(keys().filter((k) => k === '["run","r1"]')).toHaveLength(2)
+    expect(keys().filter((k) => k === '["run","r1","view"]')).toHaveLength(2)
     act(() => void vi.advanceTimersByTime(2100))
     expect(keys().filter((k) => k === '["dashboard"]')).toHaveLength(2) // trailing call
   })
@@ -187,5 +187,63 @@ describe('useEventStream', () => {
     const { result } = renderHook(() => useEventStream(), { wrapper })
     expect(result.current).toMatchObject({ status: 'closed', polling: true })
     vi.unstubAllGlobals()
+  })
+})
+
+describe('which active queries refetch per message', () => {
+  const R = 'r1'
+  // Every key a page might keep active; sub-resources must not be hit by detail invalidations.
+  const ACTIVE: unknown[][] = [
+    ['status'], ['dashboard'], ['usage', 'daily', 30], ['harnesses'], ['accounts', 'list'], ['account-scan'], ['account-signin', 'a'],
+    ['sessions', {}], ['session', 's1', 'summary'], ['session', 's1', 'events', null],
+    ['run', R, 'view'], ['run', R, 'events'], ['run', R, 'transcript', 0], ['run', R, 'route'], ['run', R, 'messages'],
+    ['routing', 'records'], ['workflow-runs'], ['workflow-run', 'w1'], ['config'],
+  ]
+  const e = (type: EventType): SseMessage => ({ event: 'event', data: ev(type, R) })
+  const CASES: [string, SseMessage, unknown[][]][] = [
+    ['tool_call_started', e('tool_call_started'), [['dashboard']]],
+    ['state_changed', e('state_changed'), [['dashboard'], ['run', R, 'view'], ['sessions', {}], ['status']]],
+    ['usage', e('usage'), [['dashboard'], ['run', R, 'view'], ['usage', 'daily', 30]]],
+    ['route_decision', e('route_decision'), [['dashboard'], ['run', R, 'route'], ['routing', 'records']]],
+    ['message_sent', e('message_sent'), [['dashboard'], ['run', R, 'messages']]],
+    ['escalated', e('escalated'), [['dashboard']]],
+    ['worktree_created', e('worktree_created'), [['dashboard'], ['run', R, 'view']]],
+    ['headroom', { event: 'headroom', data: {} as never }, [['accounts', 'list'], ['harnesses'], ['dashboard']]],
+    ['account', { event: 'account', data: {} as never }, [['accounts', 'list'], ['harnesses'], ['dashboard']]],
+    ['session', { event: 'session', data: { id: 's1' } as never }, [['sessions', {}], ['session', 's1', 'summary']]],
+    ['workflow', { event: 'workflow', data: { id: 'w1' } as never }, [['workflow-runs'], ['workflow-run', 'w1']]],
+    ['run (patched, no refetch)', { event: 'run', data: { run_id: R, state: 'running' } as never }, []],
+  ]
+  beforeEach(() => {
+    vi.useFakeTimers()
+    FakeSource.instances = []
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it.each(CASES)('%s', async (_n, message, expected) => {
+    const qc = new QueryClient()
+    const fetched: string[] = []
+    const unsubs = ACTIVE.map((key) =>
+      new QueryObserver(qc, {
+        queryKey: key,
+        queryFn: () => {
+          fetched.push(JSON.stringify(key))
+          return 1
+        },
+        staleTime: Infinity,
+      }).subscribe(() => {}),
+    )
+    await vi.advanceTimersByTimeAsync(0)
+    fetched.length = 0
+    const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    renderHook(() => useEventStream({ createSource: (u) => new FakeSource(u) }), { wrapper })
+    const s = FakeSource.instances[0]
+    act(() => s.open())
+    await vi.advanceTimersByTimeAsync(0)
+    fetched.length = 0 // reopen invalidates everything once; only the message matters
+    act(() => s.emit(message.event, message.data, '1'))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(fetched.sort()).toEqual(expected.map((k) => JSON.stringify(k)).sort())
+    unsubs.forEach((u) => u())
   })
 })

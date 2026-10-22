@@ -17,7 +17,7 @@ export function ProbabilityBars({ probabilities, selected, className }: Props) {
         const pct = Math.max(0, Math.min(1, p)) * 100
         const isSel = id === selected
         return (
-          <li key={id} className="flex items-center gap-2 text-sm" data-selected={isSel || undefined} aria-current={isSel || undefined}>
+          <li key={id} className="flex items-center gap-2 text-sm" data-selected={isSel || undefined}>
             <span className={cn('w-32 shrink-0 truncate', isSel && 'font-semibold')} title={id}>
               {id}
             </span>
@@ -25,6 +25,7 @@ export function ProbabilityBars({ probabilities, selected, className }: Props) {
               <div className={cn('h-full rounded-full', isSel ? 'bg-primary' : 'bg-muted-foreground/50')} style={{ width: `${pct}%` }} />
             </div>
             <span className="w-12 shrink-0 text-right tabular-nums">{pct.toFixed(0)}%</span>
+            {isSel && <span className="sr-only">selected</span>}
           </li>
         )
       })}

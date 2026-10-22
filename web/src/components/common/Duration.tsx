@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { formatDuration } from '@/lib/format'
 
 interface Props {
@@ -11,10 +11,17 @@ interface Props {
 }
 
 export function Duration({ ms, start, end, now, className }: Props) {
-  const [mounted] = useState(() => Date.now())
+  const [tick, setTick] = useState(() => Date.now())
+  const open = ms === undefined && start != null && end == null && now === undefined
+  // An open range counts up once a second.
+  useEffect(() => {
+    if (!open) return
+    const id = setInterval(() => setTick(Date.now()), 1000)
+    return () => clearInterval(id)
+  }, [open])
   let value = ms
   if (value === undefined && start != null) {
-    value = (end != null ? new Date(end).getTime() : (now ?? mounted)) - new Date(start).getTime()
+    value = (end != null ? new Date(end).getTime() : (now ?? tick)) - new Date(start).getTime()
   }
   if (value === undefined || Number.isNaN(value)) return <span className={className}>-</span>
   return (

@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest'
 import { cleanup, configure } from '@testing-library/react'
-import { afterAll, afterEach, beforeAll } from 'vitest'
+import { afterAll, afterEach, beforeAll, vi } from 'vitest'
 import { server } from './server'
 
 // First lazy import of the shell is slow on a cold transform cache.
@@ -30,6 +30,8 @@ window.matchMedia ??= ((query: string) => ({
 beforeAll(() => server.listen({ onUnhandledFrame: 'error' }))
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
+  vi.restoreAllMocks()
   server.resetHandlers()
 })
 afterAll(() => server.close())

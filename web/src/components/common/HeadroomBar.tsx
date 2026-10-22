@@ -20,13 +20,11 @@ interface Props {
 
 export function HeadroomBar({ pct, status, label, resetsAt, className }: Props) {
   const level = headroomLevel(pct, status)
+  const resetsText = resetsAt ? `Resets ${new Date(resetsAt).toLocaleString()}` : ''
   const known = level !== 'unknown'
   const value = known ? Math.max(0, Math.min(100, pct as number)) : 0
   return (
-    <div
-      className={cn('flex items-center gap-2', className)}
-      title={resetsAt ? `Resets ${new Date(resetsAt).toLocaleString()}` : undefined}
-    >
+    <div className={cn('flex items-center gap-2', className)} title={resetsAt ? resetsText : undefined}>
       {label && <span className="w-7 shrink-0 text-xs text-muted-foreground">{label}</span>}
       <div
         role="progressbar"
@@ -44,6 +42,7 @@ export function HeadroomBar({ pct, status, label, resetsAt, className }: Props) 
         {known && <div className={cn('h-full rounded-full', FILL[level])} style={{ width: `${value}%` }} />}
       </div>
       <span className="w-14 shrink-0 text-xs tabular-nums">{known ? formatPercent(value) : 'unknown'}</span>
+      {resetsAt && <span className="sr-only">{resetsText}</span>}
     </div>
   )
 }

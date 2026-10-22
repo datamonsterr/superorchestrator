@@ -118,5 +118,10 @@ export async function request<T>(path: string, opts: RequestOptions = {}): Promi
   }
   if (res.status === 204) return undefined as T
   const text = await res.text()
-  return (text ? JSON.parse(text) : undefined) as T
+  if (!text) return undefined as T
+  try {
+    return JSON.parse(text) as T
+  } catch {
+    throw new ApiError(res.status, 0, 'The supervisor returned an invalid response')
+  }
 }

@@ -20,15 +20,20 @@ export function SupervisorPill() {
   }[health]
   const dot = { up: 'bg-green-600', reconnecting: 'bg-amber-500', unreachable: 'bg-red-600', unknown: 'bg-muted-foreground' }[health]
   return (
-    <Tooltip>
+    <>
+      {/* Announced only when health changes, not on every uptime tick. */}
+      <span role="status" className="sr-only" data-health={health}>
+        {`Supervisor ${health}`}
+      </span>
+      <Tooltip>
       <TooltipTrigger asChild>
-        <Badge variant="outline" className="gap-1.5" data-health={health} role="status">
+        <Badge variant="outline" className="gap-1.5" data-health={health}>
           <span aria-hidden className={cn('size-2 rounded-full', dot)} />
-          <span className="sr-only">Supervisor: </span>
           {text}
         </Badge>
       </TooltipTrigger>
       <TooltipContent>{status.data ? `pid ${status.data.pid}, version ${status.data.version}` : 'No status yet'}</TooltipContent>
-    </Tooltip>
+      </Tooltip>
+    </>
   )
 }

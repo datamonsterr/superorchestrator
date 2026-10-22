@@ -49,6 +49,11 @@ describe('request', () => {
     expect(handler).toHaveBeenCalledTimes(1)
   })
 
+  it('wraps unparseable success bodies in ApiError', async () => {
+    server.use(http.get('*/api/v1/status', () => new HttpResponse('<html>', { status: 200 })))
+    await expect(endpoints.getStatus()).rejects.toMatchObject({ name: 'ApiError', code: 0, status: 200 })
+  })
+
   it('wraps network failures in a status 0 ApiError', async () => {
     server.use(http.get('*/api/v1/status', () => HttpResponse.error()))
     await expect(endpoints.getStatus()).rejects.toMatchObject({ status: 0, name: 'ApiError' })

@@ -14,7 +14,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc -b --noEmit"
+    "typecheck": "tsc -b --noEmit",
+    "size": "node scripts/size.mjs"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
