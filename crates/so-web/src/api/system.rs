@@ -283,6 +283,7 @@ pub async fn config_patch(
         let entries: Vec<(&str, &str)> =
             sets.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         Config::set_many_in_file(&s.sup.paths, &entries)?;
+        s.refresh_skill();
         Ok(Json(config_view(&s)?))
     })
     .await
@@ -335,6 +336,7 @@ pub async fn choices_put(
         let instruction = toml::Value::String(b.routing_instruction).to_string();
         Config::set_in_file(&s.sup.paths, "router.instruction", &instruction)?;
         Config::set_in_file(&s.sup.paths, "choices", &choices)?;
+        s.refresh_skill();
         Ok(Json(choices_view(&s)?))
     })
     .await

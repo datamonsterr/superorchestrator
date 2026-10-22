@@ -161,4 +161,5 @@ case ":${PATH:-}:" in
   *":$install_dir:"*) ;;
   *) say "note: $install_dir is not on your PATH; add it to your shell profile" ;;
 esac
-say "next: run '$BIN init'"
+say "next: run '$BIN init', then follow the quickstart:"
+say "  https://github.com/datamonsterr/superorchestrator#quickstart"

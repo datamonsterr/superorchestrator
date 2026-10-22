@@ -24,3 +24,5 @@ Minor review findings deferred to M9 hardening. Each line names the file and the
 - `web/src/api/msw/handlers.ts`: the `/accounts/import` mock does not record the harness, so imported claude accounts get a device-code login in mock mode.
 - `crates/so-supervisor/src/runs/{comm,lifecycle}.rs`: `append_run_turn_prompt` errors are ignored. A failed write drops that message from a later failover; at least log it.
 - `crates/so-supervisor/src/runs/routing.rs`: re-routing a queued first-spawn agent run with tool controls does not filter out harnesses with tool gaps. Only pending failovers are filtered.
+- `scripts/smoke.sh`: install the cleanup trap before the isolation-check `die`. Cleanup should also kill the supervisor by socket-owner pid when `status` does not answer.
+- `crates/so-mcp`: the `cancelled` doc comment is stale. `cancelling_a_task_does_not_cancel_the_run` uses `run_workflow`, which never calls `cancel_agent`, so it should be a `wait_agent` case.

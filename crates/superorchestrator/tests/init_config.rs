@@ -30,6 +30,28 @@ fn init_creates_layout_and_is_idempotent() {
 }
 
 #[test]
+fn init_prints_the_next_steps_in_order() {
+    let e = Env::new();
+    let out = stdout(&e.cmd().arg("init").assert().success());
+    let tail = out
+        .split("Next steps:")
+        .nth(1)
+        .expect("a next steps section");
+    let at = |needle: &str| {
+        tail.find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing: {tail}"))
+    };
+    assert!(at("account import --scan") < at("superorchestrator install"));
+    assert!(at("superorchestrator install") < at("superorchestrator doctor"));
+    assert!(at("superorchestrator doctor") < at("Claude Code and ask"));
+    // JSON output carries them too, and a repeat run still prints them.
+    let json = stdout(&e.cmd().args(["--json", "init"]).assert().success());
+    let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v["next_steps"].as_array().unwrap().len(), 4);
+    assert!(stdout(&e.cmd().arg("init").assert().success()).contains("Next steps:"));
+}
+
+#[test]
 fn seeded_choices_parse_with_core_config() {
     let e = Env::new();
     e.init();

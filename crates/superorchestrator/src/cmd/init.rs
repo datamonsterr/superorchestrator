@@ -96,6 +96,14 @@ pub fn init(paths: &Paths) -> Result<Vec<(std::path::PathBuf, Outcome)>> {
     Ok(report)
 }
 
+/// What to do after `init`, in order. Printed at the end of `init`.
+pub const NEXT_STEPS: [&str; 4] = [
+    "superorchestrator account import --scan    link the logins you already have (or: account add <harness> --name <name>)",
+    "superorchestrator install                  register the MCP server and the skill with Claude Code",
+    "superorchestrator doctor                   check binaries, sign-ins and the database",
+    "then start Claude Code and ask it to delegate a task",
+];
+
 pub fn run(ctx: &Ctx) -> Result<()> {
     let report = init(&ctx.paths)?;
     let items: Vec<_> = report
@@ -107,14 +115,21 @@ pub fn run(ctx: &Ctx) -> Result<()> {
             })
         })
         .collect();
-    ctx.emit(&serde_json::json!({ "ok": true, "items": items }), |w| {
-        for (path, outcome) in &report {
-            let word = match outcome {
-                Outcome::Created => "created",
-                Outcome::Exists => "exists ",
-            };
-            writeln!(w, "{word} {}", path.display())?;
-        }
-        Ok(())
-    })
+    ctx.emit(
+        &serde_json::json!({ "ok": true, "items": items, "next_steps": NEXT_STEPS }),
+        |w| {
+            for (path, outcome) in &report {
+                let word = match outcome {
+                    Outcome::Created => "created",
+                    Outcome::Exists => "exists ",
+                };
+                writeln!(w, "{word} {}", path.display())?;
+            }
+            writeln!(w, "\nNext steps:")?;
+            for (i, step) in NEXT_STEPS.iter().enumerate() {
+                writeln!(w, "  {}. {step}", i + 1)?;
+            }
+            Ok(())
+        },
+    )
 }

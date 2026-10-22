@@ -136,10 +136,7 @@ fn xdg_config_home(host: &HostEnv) -> PathBuf {
 }
 
 fn skill_files(host: &HostEnv) -> Vec<PathBuf> {
-    [".claude", ".agents"]
-        .iter()
-        .map(|d| host.home.join(d).join("skills").join(NAME).join("SKILL.md"))
-        .collect()
+    so_agents::skill::skill_files(&host.home)
 }
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -565,7 +562,8 @@ pub(crate) fn install_steps(ctx: &Ctx, w: &Writer, force: bool) -> Result<Vec<St
     let exe = exe.to_string_lossy().into_owned();
     let accounts = AccountFile::list(&ctx.paths)?;
     let choices = ctx.config().map(|c| c.choices).unwrap_or_default();
-    let skill = render_skill(&accounts, &choices);
+    let agents = so_agents::discover_user(&ctx.paths).agents;
+    let skill = render_skill(&accounts, &choices, &agents);
 
     let mut results = vec![(
         "claude".to_string(),

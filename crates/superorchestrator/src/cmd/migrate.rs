@@ -165,6 +165,7 @@ pub fn run(ctx: &Ctx, apply_it: bool) -> Result<ExitCode> {
             bail!(msg);
         }
     };
+    ctx.refresh_skill();
     print(ctx, &done, false)?;
     match done.failures() {
         0 => Ok(ExitCode::SUCCESS),

@@ -70,12 +70,14 @@ fn create(ctx: &Ctx, a: AgentCreate) -> Result<()> {
         .with_context(|| format!("could not create {}", folder.display()))?;
     std::fs::write(&file, scaffold(&a.name, harness.as_str(), &quoted))
         .with_context(|| format!("could not write {}", file.display()))?;
+    ctx.refresh_skill();
     ctx.emit_ok(
         json!({ "name": a.name, "path": file }),
         &format!("created {}", file.display()),
     )?;
     if interactive() && !ctx.json {
         open_editor(&file)?;
+        ctx.refresh_skill();
     }
     Ok(())
 }
@@ -230,6 +232,7 @@ fn edit(ctx: &Ctx, name: &str) -> Result<()> {
     let a = find(ctx, name)?;
     editable(&a, "edit")?;
     open_editor(&a.file)?;
+    ctx.refresh_skill();
     // Re-parse so a broken edit is reported right away.
     let re = find(ctx, name)
         .with_context(|| format!("{} is invalid after editing", a.file.display()))?;
@@ -255,5 +258,6 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
         }
     }
     so_agents::remove_files(&a)?;
+    ctx.refresh_skill();
     ctx.emit_ok(json!({ "name": name }), &format!("removed {name}"))
 }

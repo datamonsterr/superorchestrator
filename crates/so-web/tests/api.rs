@@ -2063,3 +2063,73 @@ async fn workflow_names_are_validated_and_cancel_needs_a_running_workflow() {
     let (s, v) = post(&f.app, "/api/v1/workflows/runs/wf-done-1/cancel", None).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
 }
+
+// ----------------------------------------------------------------- skill refresh
+
+#[tokio::test]
+async fn mutations_refresh_an_installed_skill_and_only_an_installed_one() {
+    let f = fx().await;
+    let home = f.dir.path().join("home");
+    let files = so_agents::skill::skill_files(&home);
+    // Not installed: nothing is created.
+    let (s, _) = post(
+        &f.app,
+        "/api/v1/accounts",
+        Some(json!({"harness": "codex", "name": "codex-acc1"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert!(!home.join(".claude").exists());
+
+    for p in &files {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, format!("stale\n{}\n", so_agents::skill::MARKER)).unwrap();
+    }
+    let skill = || std::fs::read_to_string(&files[0]).unwrap();
+
+    let (s, _) = post(
+        &f.app,
+        "/api/v1/accounts",
+        Some(json!({"harness": "codex", "name": "codex-acc2"})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert!(skill().contains("`codex-acc2`"));
+
+    let (s, _) = send_json(
+        &f.app,
+        "PATCH",
+        "/api/v1/accounts/codex-acc2",
+        json!({"enabled": false}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(skill().contains("`codex-acc2`: codex, cap 2 (disabled)"));
+
+    let (s, _) = send_json_empty(&f.app, "DELETE", "/api/v1/accounts/codex-acc2").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(!skill().contains("`codex-acc2`"));
+    assert!(skill().contains("`codex-acc1`"));
+
+    let (s, _) = post(
+        &f.app,
+        "/api/v1/agents",
+        Some(json!({"name": "reviewer", "source": AGENT})),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    assert!(skill().contains("- `reviewer` (claude): Reviews diffs"));
+    let (s, _) = send_json_empty(&f.app, "DELETE", "/api/v1/agents/reviewer").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(!skill().contains("`reviewer`"));
+
+    let body = json!({
+        "choices": [{"id": "codex-high", "harness": "codex", "model": "gpt", "effort": "high", "roles": ["worker"], "description": "d", "enabled": true}],
+        "routing_instruction": "be cheap",
+    });
+    let (s, _) = send_json(&f.app, "PUT", "/api/v1/choices", body).await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(skill().contains("`codex-high`: codex / gpt (high), roles: worker. d"));
+    // Both files follow.
+    assert_eq!(skill(), std::fs::read_to_string(&files[1]).unwrap());
+}

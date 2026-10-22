@@ -4,10 +4,10 @@
 //! Logging: this crate only uses `tracing`; the caller must install a subscriber that writes
 //! to stderr, because stdout is the MCP channel.
 //!
-//! Tasks (SEP-2663): not exposed. rmcp 3.6 models tasks as an extension with a
-//! `tasks/get`/`tasks/update`/`tasks/cancel` polling protocol and `CreateTaskResult`, which
-//! needs a server-side task store; SPEC 13 allows the fallback, so the long tools block and
-//! stream MCP progress notifications instead.
+//! Tasks (SEP-2663): `spawn_agent` with `wait`, `wait_agent` and `run_workflow` return a task
+//! when the client declares the tasks extension. The bridge keeps them in rmcp's
+//! `TaskManager` and writes progress to the task's status message. Clients without tasks
+//! block on the call and get MCP progress notifications instead.
 //!
 //! Elicitation: `wait_agent` surfaces a run's questions to the person through MCP
 //! elicitation when the client supports it (`bridge.rs`).
@@ -56,9 +56,12 @@ pub async fn serve_stdio(opts: McpOptions) -> anyhow::Result<()> {
     let subagent = hello.run_id.is_some() || opts.run_id.is_some();
     let bridge = McpBridge::new(client, subagent);
     let service = bridge
+        .clone()
         .serve(rmcp::transport::stdio())
         .await
         .context("starting the MCP server")?;
-    service.waiting().await.context("MCP server task failed")?;
+    let waited = service.waiting().await.context("MCP server task failed");
+    bridge.shutdown();
+    waited?;
     Ok(())
 }

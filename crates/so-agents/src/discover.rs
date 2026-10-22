@@ -34,8 +34,17 @@ pub fn search_dirs(cwd: &Path, paths: &Paths) -> [(PathBuf, AgentSource); 3] {
 }
 
 pub fn discover(cwd: &Path, paths: &Paths) -> Discovery {
+    discover_in(search_dirs(cwd, paths))
+}
+
+/// Only the agents in the config dir: those that do not depend on a working directory.
+pub fn discover_user(paths: &Paths) -> Discovery {
+    discover_in([(paths.agents_dir(), AgentSource::User)])
+}
+
+fn discover_in(dirs: impl IntoIterator<Item = (PathBuf, AgentSource)>) -> Discovery {
     let mut out = Discovery::default();
-    for (dir, source) in search_dirs(cwd, paths) {
+    for (dir, source) in dirs {
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
