@@ -231,7 +231,7 @@ impl RunManager {
                     effort: effort.clone(),
                     allow_accounts: allow,
                 };
-                let routed = self.route_run(&prompt, &pins, &[], None).await?;
+                let routed = self.route_run(&prompt, &pins, &[], None, true).await?;
                 let mut found = None;
                 let mut last = rpc(UNAVAILABLE, "no usable account");
                 for name in &routed.result.ranked_accounts {

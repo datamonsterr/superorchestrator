@@ -171,7 +171,7 @@ impl RunManager {
         let mut moved = None;
         for _ in 0..MAX_ROUTE_TRIES {
             let routed = self
-                .route_run(&prompt, &pins, &tried, row.choice_id.as_deref())
+                .route_run(&prompt, &pins, &tried, row.choice_id.as_deref(), false)
                 .await
                 .map_err(|e| {
                     format!(

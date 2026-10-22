@@ -112,8 +112,14 @@ const V4: &str = "
 ALTER TABLE run_meta ADD COLUMN route_json TEXT;
 ";
 
+const V5: &str = "
+-- A workflow run keeps its result (or why it failed) so `workflow_status` can report it later.
+ALTER TABLE workflow_runs ADD COLUMN result_json TEXT;
+ALTER TABLE workflow_runs ADD COLUMN error TEXT;
+";
+
 /// Ordered migrations; entry `i` brings the database to version `i + 1`.
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
 
 /// Latest schema version known to this build.
 pub fn latest_version() -> i64 {

@@ -747,7 +747,7 @@ impl RunManager {
         matches!(self.db(move |s| s.get_run(&id)).await, Ok(Some(r)) if r.state.is_terminal())
     }
 
-    async fn maybe_end_session(&self, session_id: &str) {
+    pub(crate) async fn maybe_end_session(&self, session_id: &str) {
         if lock(&self.inner.connected).contains(session_id) {
             return;
         }

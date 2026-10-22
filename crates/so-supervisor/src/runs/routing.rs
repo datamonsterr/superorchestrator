@@ -41,24 +41,29 @@ pub(crate) struct Routed {
 }
 
 impl RunManager {
-    fn route_env(&self) -> RouteEnv<'_> {
+    fn route_env(&self, ignore_caps: bool) -> RouteEnv<'_> {
         RouteEnv {
             store: &self.inner.store,
             config: &self.inner.config,
             paths: &self.inner.paths,
             http: &self.inner.http,
+            ignore_caps,
         }
     }
 
     /// Routes `prompt` within `pins`, skipping `exclude_accounts`. With `only_choice` the
     /// same choice is tried first (SPEC 8.5: the next account of the same choice) and the
     /// whole set only when that has no account left.
+    ///
+    /// With `queue_over_cap`, a choice whose accounts are all at their cap is still routed
+    /// to (the run waits in the queue); a failover cannot wait, so it does not set it.
     pub(crate) async fn route_run(
         &self,
         prompt: &str,
         pins: &RoutePins,
         exclude_accounts: &[String],
         only_choice: Option<&str>,
+        queue_over_cap: bool,
     ) -> R<Routed> {
         let role = pins.role.clone().unwrap_or_else(|| "worker".into());
         let mut skip = exclude_accounts.to_vec();
@@ -85,7 +90,7 @@ impl RunManager {
             model: pins.model.clone(),
             effort: pins.effort.clone(),
         };
-        let env = self.route_env();
+        let env = self.route_env(false);
         let mut attempt = None;
         if let Some(cid) = only_choice {
             params.exclude = self
@@ -98,13 +103,16 @@ impl RunManager {
             attempt = Some(route_decide(&env, &params).await);
             params.exclude.clear();
         }
-        let outcome = match attempt {
+        let mut outcome = match attempt {
             Some(Ok(o)) => Ok(o),
             _ => route_decide(&env, &params).await,
         };
+        if queue_over_cap && outcome.as_ref().is_err_and(|e| e.code == UNAVAILABLE) {
+            outcome = route_decide(&self.route_env(true), &params).await;
+        }
         let outcome = match outcome {
             Err(e) if e.code == UNAVAILABLE && pins.harness.is_some() => {
-                self.fallback_route(&params, &e).await?
+                self.fallback_route(&params, &e, queue_over_cap).await?
             }
             other => other?,
         };
@@ -118,7 +126,12 @@ impl RunManager {
     /// The caller named a harness but no enabled choice matches it (choices of a harness the
     /// operator keeps for itself are off by default): take the best usable account of that
     /// harness directly. A pin is honoured even when no choice covers it.
-    async fn fallback_route(&self, params: &RouteParams, why: &RpcError) -> R<RouteOutcome> {
+    async fn fallback_route(
+        &self,
+        params: &RouteParams,
+        why: &RpcError,
+        queue_over_cap: bool,
+    ) -> R<RouteOutcome> {
         let harness: Harness = params
             .harness
             .as_deref()
@@ -138,8 +151,11 @@ impl RunManager {
             .blocking(move || -> Result<Vec<String>, String> {
                 let accounts = AccountFile::list(&paths).map_err(|e| e.to_string())?;
                 let catalog = Catalog::load(&paths).map_err(|e| e.to_string())?;
-                let snap = Snapshot::collect(&store, &accounts, low, Utc::now())
+                let mut snap = Snapshot::collect(&store, &accounts, low, Utc::now())
                     .map_err(|e| e.to_string())?;
+                if queue_over_cap {
+                    snap.accounts.iter_mut().for_each(|a| a.active = 0);
+                }
                 let pool = catalog.pool_for(harness, model.as_deref().unwrap_or_default());
                 let usable: Vec<_> = so_router::eligible::usable_accounts(&snap, harness, &pool)
                     .into_iter()

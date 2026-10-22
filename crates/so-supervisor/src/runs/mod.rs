@@ -20,6 +20,7 @@ mod review;
 mod routing;
 mod spawn;
 mod view;
+mod workflow;
 pub mod worktree;
 
 use std::collections::{HashMap, HashSet};
@@ -128,6 +129,8 @@ struct Inner {
     fault_gate_result: std::sync::atomic::AtomicBool,
     /// Runs whose process died, to be resumed by the resumer task.
     resume_tx: tokio::sync::mpsc::UnboundedSender<reconcile::ResumeRequest>,
+    /// Workflow run and step changes, for the web stream.
+    workflow_bus: tokio::sync::broadcast::Sender<so_core::proto::WorkflowEventData>,
     /// Runs to move to another account after a quota or auth error.
     failover_tx: tokio::sync::mpsc::UnboundedSender<failover::FailoverRequest>,
     notifications: Notifications,
@@ -190,6 +193,7 @@ impl RunManager {
             msg_tick: watch::channel(0).0,
             resume_tx,
             failover_tx,
+            workflow_bus: tokio::sync::broadcast::channel(256).0,
             locks: Mutex::default(),
             gate_delay_ms: AtomicU64::new(0),
             fault_gate_result: std::sync::atomic::AtomicBool::new(false),

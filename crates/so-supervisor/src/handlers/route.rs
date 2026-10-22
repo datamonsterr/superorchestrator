@@ -13,6 +13,9 @@ use so_store::Store;
 use crate::dispatch::internal;
 use crate::server::SupervisorState;
 
+/// `RpcError::data["reason"]` of the error raised when no choice has an account to run on.
+pub const NO_ELIGIBLE: &str = "no_eligible";
+
 /// What `route` reads: the supervisor's live state, without the supervisor itself, so the
 /// run manager can route a spawn or a failover.
 pub struct RouteEnv<'a> {
@@ -20,6 +23,9 @@ pub struct RouteEnv<'a> {
     pub config: &'a Config,
     pub paths: &'a Paths,
     pub http: &'a reqwest::Client,
+    /// Treat every account as idle, so a choice whose accounts are all at their cap can
+    /// still be picked: a spawn then waits in the queue (SPEC 7.7) instead of failing.
+    pub ignore_caps: bool,
 }
 
 /// Runs the routing procedure (SPEC 8.3) and returns the outcome without recording it.
@@ -29,17 +35,21 @@ pub async fn route_decide(
     params: &RouteParams,
 ) -> Result<RouteOutcome, RpcError> {
     let (store, config, paths) = (env.store.clone(), env.config.clone(), env.paths.clone());
+    let ignore_caps = env.ignore_caps;
     let (catalog, snapshot) =
         tokio::task::spawn_blocking(move || -> Result<(Catalog, Snapshot), String> {
             let accounts = AccountFile::list(&paths).map_err(|e| e.to_string())?;
             let catalog = Catalog::load(&paths).map_err(|e| e.to_string())?;
-            let snap = Snapshot::collect(
+            let mut snap = Snapshot::collect(
                 &store,
                 &accounts,
                 f64::from(config.usage.low_pct),
                 Utc::now(),
             )
             .map_err(|e| e.to_string())?;
+            if ignore_caps {
+                snap.accounts.iter_mut().for_each(|a| a.active = 0);
+            }
             Ok((catalog, snap))
         })
         .await
@@ -53,7 +63,11 @@ pub async fn route_decide(
         env: so_router::jev::process_env,
     };
     route_with(&rc, params).await.map_err(|e| match e {
-        RouterError::NoEligible(m) => RpcError::new(UNAVAILABLE, m),
+        RouterError::NoEligible(m) => RpcError {
+            code: UNAVAILABLE,
+            message: m,
+            data: Some(json!({"reason": NO_ELIGIBLE})),
+        },
         RouterError::Invalid(m) => RpcError::new(INVALID_PARAMS, m),
         other => internal(other),
     })
@@ -82,6 +96,7 @@ pub async fn route_for(
         config: &state.config,
         paths: &state.paths,
         http: &state.http,
+        ignore_caps: false,
     };
     let outcome = route_decide(&env, params).await?;
     if let Some(session_id) = session_id {

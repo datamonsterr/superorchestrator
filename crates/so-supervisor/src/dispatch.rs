@@ -113,6 +113,18 @@ impl ConnCtx {
         }
     }
 
+    /// The same caller, but its disconnecting no longer ends what it started: for a workflow
+    /// that keeps running after the call that began it has gone. Notifications still go to
+    /// the client while it is there.
+    pub fn detached(&self) -> Self {
+        let (closed_tx, closed) = watch::channel(false);
+        Self {
+            closed,
+            _keep: Some(Arc::new(closed_tx)),
+            ..self.clone()
+        }
+    }
+
     /// Resolves when the client has disconnected (read EOF or write failure) or the
     /// supervisor is shutting down. Long-running handlers (for example `wait_agent`)
     /// should `select!` on this to stop waiting.

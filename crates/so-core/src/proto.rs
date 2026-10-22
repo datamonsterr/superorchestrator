@@ -563,38 +563,130 @@ pub struct AgentsView {
     pub agents: Vec<AgentView>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+fn yes() -> bool {
+    true
+}
+
+/// Parameters of `run_workflow` (SPEC 11): a saved workflow by `name`, or an inline `script`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RunWorkflowParams {
+    /// A saved workflow (`<config>/workflows/<name>.js` or `.superorchestrator/workflows`).
     #[serde(default)]
     pub name: Option<String>,
+    /// Inline JavaScript instead of a saved one.
     #[serde(default)]
     pub script: Option<String>,
+    /// Passed to the script as `args`.
     #[serde(default)]
     pub args: Option<Value>,
+    /// Block until the workflow finishes (default). With `false` the id comes back at once;
+    /// follow it with `workflow_status`.
+    #[serde(default = "yes")]
+    pub wait: bool,
+}
+
+impl Default for RunWorkflowParams {
+    fn default() -> Self {
+        Self {
+            name: None,
+            script: None,
+            args: None,
+            wait: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RunWorkflowResult {
     pub id: String,
+    /// `running`, `succeeded`, `failed` or `cancelled`.
     #[serde(default)]
     pub state: Option<String>,
+    /// The script's return value, when it finished successfully.
     #[serde(default)]
     pub result: Option<Value>,
+    /// Why it failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkflowStatusParams {
+    /// A workflow run id or a unique prefix of it.
     pub id: String,
 }
 
+/// One `agent()` call of a workflow run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowStep {
+    /// Order in which the script started the step.
+    pub index: u32,
+    /// The phase the step ran in, or `step N`.
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
+    /// `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`.
+    pub state: String,
+    /// The run behind the step; none for a cached step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// A workflow run in a list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowRunView {
+    pub id: String,
+    pub name: String,
+    pub state: String,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+}
+
+/// State, steps and result of a workflow run (`workflow_status`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct WorkflowStatusResult {
     pub id: String,
+    #[serde(default)]
+    pub name: String,
+    /// `running`, `succeeded`, `failed` or `cancelled`.
     pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     #[serde(default)]
     pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<WorkflowStep>,
+}
+
+/// The payload of the `workflow` message on the web stream: a run changed state or one of
+/// its steps did.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowEventData {
+    pub id: String,
+    pub name: String,
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<WorkflowStep>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub ts: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

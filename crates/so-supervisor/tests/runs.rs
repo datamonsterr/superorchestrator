@@ -12,8 +12,8 @@ use so_core::proto::{
     CAP_EXCEEDED, DEPTH_LIMIT, JoinResult, METHOD_CANCEL_AGENT, METHOD_JOIN_RUN,
     METHOD_SPAWN_AGENT, RunRef, RunView, SpawnResult, UNAVAILABLE,
 };
-use so_core::{EventType, Harness, RunState, SessionKind, new_id};
-use so_store::{RunRow, SessionRow, Store};
+use so_core::{EventType, RunState, new_id};
+use so_store::RunRow;
 use so_supervisor::SupervisorClient;
 
 use common::*;
@@ -205,54 +205,6 @@ async fn account_cap_queues_fifo() {
     assert!(started(&b.run_id) >= finished(&a.run_id));
     assert!(started(&d.run_id) >= finished(&b.run_id));
     h.shutdown().await;
-}
-
-fn insert_session_and_run(store: &Store, depth: i64, state: RunState) -> RunRow {
-    let session = SessionRow {
-        id: new_id(),
-        kind: SessionKind::Orchestrator,
-        client: "t".into(),
-        cwd: None,
-        account: None,
-        pid: None,
-        started_at: chrono::Utc::now(),
-        ended_at: None,
-        status: "active".into(),
-    };
-    store.insert_session(&session).unwrap();
-    let row = RunRow {
-        id: new_id(),
-        session_id: session.id,
-        parent_run_id: None,
-        depth,
-        name: None,
-        agent: None,
-        choice_id: None,
-        harness: Harness::Claude,
-        account: None,
-        model: None,
-        effort: None,
-        cwd: None,
-        worktree_path: None,
-        branch: None,
-        native_session_id: None,
-        state,
-        review: false,
-        output_schema: None,
-        result_json: None,
-        error_kind: None,
-        prompt: None,
-        isolation: so_core::Isolation::None,
-        max_turns: None,
-        worktree_base: None,
-        worktree_repo: None,
-        timeout_ms: None,
-        created_at: chrono::Utc::now(),
-        started_at: None,
-        finished_at: None,
-    };
-    store.insert_run(&row).unwrap();
-    row
 }
 
 #[tokio::test]
