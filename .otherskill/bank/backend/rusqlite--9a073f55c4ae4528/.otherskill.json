@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "logicalId": "9a073f55c4ae4528b9784b6b8702e32f70e6a0aedbe11549ae1df1dea303e86c",
-  "source": "https://github.com/claude-dev-suite/claude-dev-suite/tree/HEAD/skills/databases/rusqlite",
-  "ref": "HEAD",
-  "revision": "c9145f88f077e4fb279e8c8632f62e73af8c6a0d",
-  "category": "backend",
-  "installedAt": "2026-10-22T08:34:56.599Z"
-}

@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "logicalId": "583cf392476e2e6c48459a667a73a96d7a0fa682d7a9865afde2293769a0861d",
-  "source": "https://github.com/anthropics/skills/tree/HEAD/skills/theme-factory",
-  "ref": "HEAD",
-  "revision": "dbd4588f9e1033efb41dad4bef2f7947c8993d44",
-  "category": "frontend/ui-ux",
-  "installedAt": "2026-10-22T11:57:22.998Z"
-}
