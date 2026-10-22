@@ -2,6 +2,7 @@
 
 mod common;
 
+use assert_cmd::Command;
 use common::{Env, stdout};
 use serde_json::Value;
 
@@ -119,8 +120,18 @@ fn running_twice_adds_nothing_unless_counts_are_asked() {
     let first = accounts(&e);
     let out = cmd(&e).args(args).assert().success();
     assert_eq!(accounts(&e), first);
+    let t = stdout(&out);
     assert!(
-        stdout(&out).contains("no accounts added"),
+        t.contains("2 accounts already set up: codex-1, opencode-1"),
+        "{t}"
+    );
+    // Existing accounts that are still signed out get their sign-in command again.
+    let out = cmd(&e)
+        .args(["setup", "--yes", "--no-install"])
+        .assert()
+        .success();
+    assert!(
+        stdout(&out).contains("account login codex-1"),
         "{}",
         stdout(&out)
     );
@@ -129,14 +140,16 @@ fn running_twice_adds_nothing_unless_counts_are_asked() {
 }
 
 #[test]
-fn a_requested_harness_that_is_not_installed_is_skipped_with_a_message() {
+fn a_requested_harness_that_is_not_installed_fails_at_the_end_with_a_message() {
     let e = Env::new();
     let out = cmd(&e)
         .args(["setup", "--yes", "--no-login", "--no-install", "--agy", "1"])
         .assert()
-        .success();
+        .failure()
+        .stderr(predicates::str::contains(
+            "agy was requested but its binary is not on PATH",
+        ));
     let s = stdout(&out);
-    assert!(s.contains("skipping agy"), "{s}");
     assert!(accounts(&e).is_empty(), "{:?} {s}", accounts(&e));
 }
 
@@ -195,4 +208,70 @@ fn help_hides_internal_commands_orders_the_rest_and_points_at_setup() {
     for c in ["exec", "daemon", "mcp"] {
         cmd(&e).args([c, "--help"]).assert().success();
     }
+}
+
+#[test]
+fn json_with_yes_prints_one_summary_object_and_nothing_else() {
+    let e = env_with_harnesses();
+    let out = cmd(&e)
+        .args(["--json", "setup", "--yes", "--no-login"])
+        .assert()
+        .success();
+    let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["created"], serde_json::json!(["codex-1", "opencode-1"]));
+    assert_eq!(v["installed"], true);
+    assert_eq!(v["signed_in_needed"].as_array().unwrap().len(), 2);
+    assert!(v["doctor"]["ok"].is_number());
+    assert!(
+        e.home
+            .join(".claude/skills/superorchestrator/SKILL.md")
+            .is_file()
+    );
+}
+
+#[test]
+fn json_without_yes_and_without_a_tty_still_prints_the_plan() {
+    let e = env_with_harnesses();
+    let out = cmd(&e).args(["--json", "setup"]).assert().success();
+    let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["dry_run"], true);
+}
+
+#[test]
+fn setup_leaves_a_poisoned_parent_environment_alone() {
+    let e = env_with_harnesses();
+    let poison = e.tmp.path().join("poison");
+    let dirs: Vec<_> = ["config", "data", "state", "cache", "claude", "runtime"]
+        .iter()
+        .map(|n| poison.join(n))
+        .collect();
+    for d in &dirs {
+        std::fs::create_dir_all(d).unwrap();
+    }
+    // A command whose environment carries the poison, as a parent shell's would...
+    let mut c = Command::cargo_bin("superorchestrator").unwrap();
+    c.env("XDG_CONFIG_HOME", &dirs[0])
+        .env("XDG_DATA_HOME", &dirs[1])
+        .env("XDG_STATE_HOME", &dirs[2])
+        .env("XDG_CACHE_HOME", &dirs[3])
+        .env("CLAUDE_CONFIG_DIR", &dirs[4])
+        .env("XDG_RUNTIME_DIR", &dirs[5]);
+    // ...is isolated the way `Env::cmd` isolates every test command.
+    common::scrub(&mut c);
+    c.arg("--config-dir")
+        .arg(&e.cfg)
+        .env("HOME", &e.home)
+        .env("PATH", &e.bin)
+        .args(["setup", "--yes", "--no-login"])
+        .assert()
+        .success();
+    for d in &dirs {
+        assert_eq!(std::fs::read_dir(d).unwrap().count(), 0, "{}", d.display());
+    }
+    assert!(
+        e.home
+            .join(".claude/skills/superorchestrator/SKILL.md")
+            .is_file()
+    );
 }

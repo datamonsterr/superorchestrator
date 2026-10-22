@@ -439,3 +439,41 @@ fn account_add_with_login_but_no_tty_prints_the_commands() {
     assert!(s.contains("account login codex-1"), "{s}");
     assert!(s.contains("account login codex-2"), "{s}");
 }
+
+#[test]
+fn account_add_partial_failure_keeps_hints_and_exits_non_zero() {
+    let e = Env::new();
+    e.init();
+    e.script("codex", "exit 0");
+    // A file where the second credential home must go makes the second add fail.
+    std::fs::write(e.home.join(".codex-2"), "").unwrap();
+    let out = e
+        .cmd()
+        .args(["account", "add", "codex", "--count", "3"])
+        .assert()
+        .code(1);
+    let s = stdout(&out);
+    assert!(s.contains("added account codex-1"), "{s}");
+    assert!(s.contains("account login codex-1"), "{s}");
+    assert!(e.cfg.join("accounts/codex-1.toml").is_file());
+    assert!(!e.cfg.join("accounts/codex-3.toml").exists());
+
+    e.cmd()
+        .args(["--yes", "account", "remove", "codex-1"])
+        .assert()
+        .success();
+    // With --json: one object on stdout, ok false, the error inside, nothing else.
+    let out = e
+        .cmd()
+        .args(["--json", "account", "add", "codex", "--count", "3"])
+        .assert()
+        .code(1);
+    let v: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(v["ok"], false, "{v}");
+    assert_eq!(v["accounts"].as_array().unwrap().len(), 1, "{v}");
+    assert!(v["error"].as_str().unwrap().contains(".codex-2"), "{v}");
+    assert!(
+        !String::from_utf8_lossy(&out.get_output().stderr).contains("error:"),
+        "no second error print"
+    );
+}

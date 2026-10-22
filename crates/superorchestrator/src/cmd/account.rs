@@ -92,7 +92,10 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
     let mut out = accounts[0].clone();
     out["ok"] = json!(error.is_none());
     out["accounts"] = json!(accounts);
-    let do_login = a.login && stdin_is_tty();
+    if let Some(e) = &error {
+        out["error"] = json!(e.to_string());
+    }
+    let do_login = a.login && interactive();
     ctx.emit(&out, |w| {
         for (acc, login) in created.iter().zip(&logins) {
             writeln!(
@@ -111,17 +114,32 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
         }
         Ok(())
     })?;
+    let mut failed = false;
     if let Some(e) = error {
-        return Err(e.into());
+        // With --json the object above already carries the error.
+        if ctx.json {
+            return Ok(ExitCode::FAILURE);
+        }
+        eprintln!("error: {e}");
+        failed = true;
     }
     if do_login {
+        // A failed sign-in does not stop the remaining accounts.
         for acc in &created {
             if !run_login(ctx, acc, &host)? {
-                return Ok(ExitCode::FAILURE);
+                eprintln!(
+                    "sign-in failed for {}; retry: superorchestrator account login {}",
+                    acc.name, acc.name
+                );
+                failed = true;
             }
         }
     }
-    Ok(ExitCode::SUCCESS)
+    Ok(if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
 }
 
 /// The login command for an account as `{ command, cli, note }`; `cli` is the
@@ -188,6 +206,48 @@ fn describe(c: &ImportCandidate, host: &HostEnv) -> String {
     format!("{} ({}) at {}", c.name, c.harness, host.tildify(&c.home))
 }
 
+/// What `ask_and_import` did.
+pub(crate) struct Imported {
+    pub names: Vec<String>,
+    pub failed: bool,
+}
+
+/// Asks about each candidate (`--yes` takes them all) and imports the ones taken. A failed
+/// import is reported on stderr and skipped. Shared by `account import --scan` and `setup`.
+pub(crate) fn ask_and_import(
+    ctx: &Ctx,
+    cfg: &Config,
+    host: &HostEnv,
+    found: &[ImportCandidate],
+) -> Result<Imported> {
+    let mut out = Imported {
+        names: Vec::new(),
+        failed: false,
+    };
+    for c in found {
+        let take = ctx.yes
+            || Confirm::new()
+                .with_prompt(format!("import {}?", describe(c, host)))
+                .default(true)
+                .interact()?;
+        if !take {
+            continue;
+        }
+        let home = host.tildify(&c.home);
+        match manage::import(&ctx.paths, cfg, host, &c.name, c.harness, &home) {
+            Ok(acc) => out.names.push(acc.name),
+            Err(e) => {
+                eprintln!("could not import {}: {e}", c.name);
+                out.failed = true;
+            }
+        }
+    }
+    if !out.names.is_empty() {
+        ctx.refresh_skill();
+    }
+    Ok(out)
+}
+
 pub fn import_scan(ctx: &Ctx, cfg: &Config, host: &HostEnv) -> Result<ExitCode> {
     let found = so_accounts::scan_new(&ctx.paths, host)?;
     let candidates = |found: &[ImportCandidate]| -> Vec<Value> {
@@ -196,8 +256,7 @@ pub fn import_scan(ctx: &Ctx, cfg: &Config, host: &HostEnv) -> Result<ExitCode> 
             .map(|c| json!({ "name": c.name, "harness": c.harness.as_str(), "home": host.tildify(&c.home) }))
             .collect()
     };
-    let tty = interactive();
-    if found.is_empty() || (!ctx.yes && !tty) {
+    if found.is_empty() || (!ctx.yes && !interactive()) {
         ctx.emit(
             &json!({ "ok": true, "imported": [], "candidates": candidates(&found) }),
             |w| {
@@ -216,33 +275,9 @@ pub fn import_scan(ctx: &Ctx, cfg: &Config, host: &HostEnv) -> Result<ExitCode> 
         )?;
         return Ok(ExitCode::SUCCESS);
     }
-    let mut imported = Vec::new();
-    let mut failed = false;
-    for c in &found {
-        let take = ctx.yes
-            || Confirm::new()
-                .with_prompt(format!("import {}?", describe(c, host)))
-                .default(true)
-                .interact()?;
-        if !take {
-            continue;
-        }
-        let home = host.tildify(&c.home);
-        match manage::import(&ctx.paths, cfg, host, &c.name, c.harness, &home) {
-            Ok(acc) => imported.push(acc.name),
-            Err(e) => {
-                eprintln!("could not import {}: {e}", c.name);
-                failed = true;
-            }
-        }
-    }
-    if !imported.is_empty() {
-        ctx.refresh_skill();
-    }
-    ctx.emit(&json!({ "ok": !failed, "imported": imported }), |w| {
-        imported
-            .iter()
-            .try_for_each(|n| writeln!(w, "imported {n}"))
+    let Imported { names, failed } = ask_and_import(ctx, cfg, host, &found)?;
+    ctx.emit(&json!({ "ok": !failed, "imported": names }), |w| {
+        names.iter().try_for_each(|n| writeln!(w, "imported {n}"))
     })?;
     Ok(if failed {
         ExitCode::FAILURE

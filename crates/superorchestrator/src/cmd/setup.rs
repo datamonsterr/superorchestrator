@@ -1,25 +1,24 @@
 //! `setup`: the first command a new user runs. Idempotent.
 //!
-//! The work is split into step functions (`step_init`, `detect_harnesses`,
-//! `scan_candidates`, `add_accounts`, `login_accounts`, `run_install`,
-//! `doctor_summary`) so a terminal UI can call them one by one; `run` drives them
-//! with prompts.
+//! The work is split into steps the CLI and the terminal UI drive: `step_init`,
+//! `detect_harnesses`, `scan_candidates`, `default_count`, `signed_out`, `doctor_summary`.
+//! `run` drives them with prompts.
 
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use dialoguer::{Confirm, Input};
-use serde_json::json;
-use so_accounts::{HostEnv, ImportCandidate, manage, resolve_binary};
-use so_core::{AccountFile, Config, Harness, Platform};
+use serde_json::{Value, json};
+use so_accounts::{HostEnv, ImportCandidate, SignIn, manage, resolve_binary, sign_in_state};
+use so_core::{AccountFile, Harness};
 use so_supervisor::doctor::{Status, run_checks};
 
 use crate::cli::SetupArgs;
-use crate::cmd::account::{login_json, run_login, write_login_hint};
+use crate::cmd::account::{ask_and_import, login_json, run_login, write_login_hint};
 use crate::cmd::init;
 use crate::ctx::{Ctx, interactive};
+use crate::exit::CliError;
 
 /// Harness order used for listing and prompting.
 const ORDER: [Harness; 4] = [
@@ -31,7 +30,7 @@ const ORDER: [Harness; 4] = [
 
 /// One harness as `setup` sees it.
 #[derive(Debug, Clone)]
-pub struct HarnessInfo {
+pub(crate) struct HarnessInfo {
     pub harness: Harness,
     /// The binary on PATH, when installed.
     pub binary: Option<PathBuf>,
@@ -41,17 +40,8 @@ pub struct HarnessInfo {
     pub importable: usize,
 }
 
-/// What `setup` would add for one harness.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Addition {
-    pub harness: Harness,
-    pub count: u32,
-    /// Why the count differs from what was asked, or a hint worth printing.
-    pub note: Option<String>,
-}
-
 /// Creates what `init` creates. Returns how many items were created (0 when all existed).
-pub fn step_init(ctx: &Ctx) -> Result<usize> {
+pub(crate) fn step_init(ctx: &Ctx) -> Result<usize> {
     let report = init::init(&ctx.paths)?;
     Ok(report
         .iter()
@@ -60,7 +50,7 @@ pub fn step_init(ctx: &Ctx) -> Result<usize> {
 }
 
 /// Finds the harness binaries on PATH and the accounts that exist. Writes nothing.
-pub fn detect_harnesses(
+pub(crate) fn detect_harnesses(
     ctx: &Ctx,
     host: &HostEnv,
     candidates: &[ImportCandidate],
@@ -82,129 +72,38 @@ pub fn detect_harnesses(
 }
 
 /// Logins found on disk that are not accounts yet.
-pub fn scan_candidates(ctx: &Ctx, host: &HostEnv) -> Result<Vec<ImportCandidate>> {
+pub(crate) fn scan_candidates(ctx: &Ctx, host: &HostEnv) -> Result<Vec<ImportCandidate>> {
     Ok(so_accounts::scan_new(&ctx.paths, host)?)
-}
-
-/// Imports the chosen candidates. Returns the names imported; failures are reported
-/// on stderr and skipped.
-pub fn import_candidates(
-    ctx: &Ctx,
-    cfg: &Config,
-    host: &HostEnv,
-    chosen: &[ImportCandidate],
-) -> Vec<String> {
-    let mut done = Vec::new();
-    for c in chosen {
-        let home = host.tildify(&c.home);
-        match manage::import(&ctx.paths, cfg, host, &c.name, c.harness, &home) {
-            Ok(a) => done.push(a.name),
-            Err(e) => eprintln!("could not import {}: {e}", c.name),
-        }
-    }
-    done
 }
 
 /// How many accounts to add by default: one when the harness is installed and has no
 /// account (or importable login) yet. Claude defaults to none: its accounts are kept for
 /// the orchestrator (SPEC 8.2), so adding one is a deliberate choice.
-pub fn default_count(info: &HarnessInfo) -> u32 {
+pub(crate) fn default_count(info: &HarnessInfo) -> u32 {
     let has_any = !info.accounts.is_empty() || info.importable > 0;
     u32::from(info.binary.is_some() && !has_any && info.harness != Harness::Claude)
 }
 
-/// Applies the macOS rule that only one agy account may be enabled (ADR-0005).
-pub fn cap_for_platform(
-    info: &HarnessInfo,
-    platform: Platform,
-    asked: u32,
-    paths: &so_core::Paths,
-) -> Addition {
-    let mut add = Addition {
-        harness: info.harness,
-        count: asked,
-        note: None,
-    };
-    if info.harness == Harness::Agy && platform == Platform::MacOs && asked > 0 {
-        let enabled_agy = AccountFile::list(paths)
-            .unwrap_or_default()
-            .iter()
-            .any(|a| a.harness == Harness::Agy && a.enabled);
-        let cap = u32::from(!enabled_agy);
-        if asked > cap {
-            add.count = cap;
-            add.note = Some(if enabled_agy {
-                "agy allows one enabled account on macOS and one exists; none added".to_string()
-            } else {
-                "agy allows one enabled account on macOS; adding one".to_string()
-            });
-        }
-    }
-    add
+/// Accounts that are known to be signed out (unknown states are left alone).
+pub(crate) fn signed_out(ctx: &Ctx, host: &HostEnv) -> Result<Vec<AccountFile>> {
+    Ok(AccountFile::list(&ctx.paths)?
+        .into_iter()
+        .filter(|a| a.enabled && sign_in_state(a, host).is_ok_and(|s| s == SignIn::SignedOut))
+        .collect())
 }
 
 /// The note printed after adding claude accounts.
-pub const CLAUDE_NOTE: &str = "claude accounts are kept for the orchestrator: the claude choices are disabled, so routing never spends them. To let routing use them, run `superorchestrator config edit` and set `enabled = true` on claude-sonnet and claude-haiku.";
-
-/// Adds accounts with the lowest free `<harness>-<n>` names. A mid-batch failure keeps
-/// what was created and is returned beside it.
-pub fn add_accounts(
-    ctx: &Ctx,
-    cfg: &Config,
-    host: &HostEnv,
-    harness: Harness,
-    count: u32,
-) -> (Vec<AccountFile>, Option<so_accounts::AccountsError>) {
-    let batch = manage::add_numbered(&ctx.paths, cfg, host, harness, count);
-    (batch.created, batch.error)
-}
-
-/// Signs in to each account in turn, or prints the commands when there is no terminal.
-/// Returns false when a login exited non-zero.
-pub fn login_accounts(
-    ctx: &Ctx,
-    host: &HostEnv,
-    accounts: &[AccountFile],
-    tty: bool,
-) -> Result<bool> {
-    let mut all_ok = true;
-    for a in accounts {
-        let run = tty
-            && (ctx.yes
-                || Confirm::new()
-                    .with_prompt(format!("sign in to {} now?", a.name))
-                    .default(true)
-                    .interact()?);
-        if run {
-            all_ok &= run_login(ctx, a, host)?;
-        } else {
-            let login = login_json(a, host)?;
-            let mut out = std::io::stdout().lock();
-            writeln!(out, "{}:", a.name)?;
-            write_login_hint(
-                &mut out,
-                &login,
-                matches!(a.harness, Harness::Codex | Harness::Opencode),
-            )?;
-        }
-    }
-    Ok(all_ok)
-}
-
-/// Registers the MCP server and skill. The one call site of `install` in this module.
-pub fn run_install(ctx: &Ctx) -> Result<()> {
-    crate::cmd::install::install(ctx, false, false)
-}
+pub(crate) const CLAUDE_NOTE: &str = "claude accounts are kept for the orchestrator: the claude choices are disabled, so routing never spends them. To let routing use them, run `superorchestrator config edit` and set `enabled = true` on claude-sonnet and claude-haiku.";
 
 /// Counts of doctor checks by status, plus the lines worth reading.
-pub struct DoctorSummary {
+pub(crate) struct DoctorSummary {
     pub ok: usize,
     pub warn: usize,
     pub fail: usize,
     pub lines: Vec<String>,
 }
 
-pub fn doctor_summary(ctx: &Ctx, host: &HostEnv) -> DoctorSummary {
+pub(crate) fn doctor_summary(ctx: &Ctx, host: &HostEnv) -> DoctorSummary {
     let report = run_checks(&ctx.paths, host);
     let mut s = DoctorSummary {
         ok: 0,
@@ -242,25 +141,22 @@ fn asked(args: &SetupArgs, h: Harness) -> Option<u32> {
     }
 }
 
-/// What `setup` would add without prompting: the flag count, else the default.
-fn planned(ctx: &Ctx, host: &HostEnv, args: &SetupArgs, infos: &[HarnessInfo]) -> Vec<Addition> {
-    infos
-        .iter()
-        .map(|i| {
-            let n = asked(args, i.harness).unwrap_or_else(|| default_count(i));
-            cap_for_platform(i, host.platform, n, &ctx.paths)
-        })
-        .collect()
-}
-
 fn print_plan(
     ctx: &Ctx,
     infos: &[HarnessInfo],
     candidates: &[ImportCandidate],
-    adds: &[Addition],
     args: &SetupArgs,
     host: &HostEnv,
 ) -> Result<()> {
+    let adds: Vec<(Harness, u32)> = infos
+        .iter()
+        .map(|i| {
+            (
+                i.harness,
+                asked(args, i.harness).unwrap_or_else(|| default_count(i)),
+            )
+        })
+        .collect();
     let value = json!({
         "ok": true,
         "dry_run": true,
@@ -268,7 +164,7 @@ fn print_plan(
             "harness": i.harness.as_str(), "installed": i.binary.is_some(), "accounts": i.accounts,
         })).collect::<Vec<_>>(),
         "import": candidates.iter().map(|c| c.name.clone()).collect::<Vec<_>>(),
-        "add": adds.iter().map(|a| json!({"harness": a.harness.as_str(), "count": a.count})).collect::<Vec<_>>(),
+        "add": adds.iter().map(|(h, n)| json!({"harness": h.as_str(), "count": n})).collect::<Vec<_>>(),
         "login": !args.no_login,
         "install": !args.no_install,
     });
@@ -303,17 +199,13 @@ fn print_plan(
             }
         }
         writeln!(w, "  4. add accounts:")?;
-        for a in adds {
-            write!(w, "       {:<9} {}", a.harness.as_str(), a.count)?;
-            if let Some(n) = &a.note {
-                write!(w, "  ({n})")?;
-            }
-            writeln!(w)?;
+        for (h, n) in &adds {
+            writeln!(w, "       {:<9} {n}", h.as_str())?;
         }
         let login = if args.no_login {
             "skipped (--no-login)"
         } else {
-            "print the sign-in commands (no terminal)"
+            "sign in to accounts that are signed out, or print the commands (no terminal)"
         };
         writeln!(w, "  5. sign in: {login}")?;
         let install = if args.no_install {
@@ -331,132 +223,239 @@ fn print_plan(
 }
 
 pub fn run(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
+    match run_steps(ctx, args) {
+        Err(e) if interrupted(&e) => {
+            eprintln!("setup cancelled; re-run it to continue (safe to repeat)");
+            Ok(ExitCode::from(130))
+        }
+        r => r,
+    }
+}
+
+/// True when a prompt was cancelled with Ctrl-C.
+fn interrupted(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        matches!(c.downcast_ref::<dialoguer::Error>(), Some(dialoguer::Error::IO(io))
+            if io.kind() == std::io::ErrorKind::Interrupted)
+            || c.downcast_ref::<std::io::Error>()
+                .is_some_and(|io| io.kind() == std::io::ErrorKind::Interrupted)
+    })
+}
+
+fn run_steps(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
     let host = ctx.host()?;
     let tty = interactive();
+    // Human output only; with --json the final summary is the only thing on stdout.
+    macro_rules! say {
+        ($($t:tt)*) => { if !ctx.json { println!($($t)*); } };
+    }
 
     // Read-only first: the plan is also what a run without a terminal prints.
     let candidates = scan_candidates(ctx, &host)?;
     let infos = detect_harnesses(ctx, &host, &candidates)?;
     if !ctx.yes && !tty {
-        let adds = planned(ctx, &host, &args, &infos);
-        print_plan(ctx, &infos, &candidates, &adds, &args, &host)?;
+        print_plan(ctx, &infos, &candidates, &args, &host)?;
         return Ok(ExitCode::SUCCESS);
     }
-    if ctx.json {
-        bail!("`setup --json` only prints the plan; run it without a terminal and without --yes");
+    if ctx.json && !ctx.yes {
+        return Err(CliError::new(
+            crate::exit::USAGE,
+            "setup --json needs --yes (without it, run without a terminal to print the plan)",
+        )
+        .into());
     }
 
     if step_init(ctx)? > 0 {
-        println!("created the config dir {}", ctx.paths.config_dir.display());
+        say!("created the config dir {}", ctx.paths.config_dir.display());
     }
     let cfg = ctx.config()?;
 
-    println!("harnesses:");
+    say!("harnesses:");
     for i in &infos {
         match &i.binary {
-            Some(p) => println!("  {:<9} {}", i.harness, p.display()),
-            None => println!("  {:<9} not installed", i.harness),
+            Some(p) => say!("  {:<9} {}", i.harness, p.display()),
+            None => say!("  {:<9} not installed", i.harness),
         }
     }
 
-    // Import before counting, so a harness that has a login of its own gets no extra account.
-    let mut chosen = Vec::new();
-    for c in &candidates {
-        let take = ctx.yes
-            || Confirm::new()
-                .with_prompt(format!(
-                    "import {} ({}) at {}?",
-                    c.name,
-                    c.harness,
-                    host.tildify(&c.home)
-                ))
-                .default(true)
-                .interact()?;
-        if take {
-            chosen.push(c.clone());
-        }
-    }
-    for name in import_candidates(ctx, &cfg, &host, &chosen) {
-        println!("imported {name}");
-    }
+    let mut failed = false;
+    let imported = ask_and_import(ctx, &cfg, &host, &candidates)?;
+    failed |= imported.failed;
+    imported.names.iter().for_each(|n| say!("imported {n}"));
     let infos = detect_harnesses(ctx, &host, &[])?;
 
-    let mut created = Vec::new();
-    let mut failed = false;
+    let mut created: Vec<AccountFile> = Vec::new();
     for i in &infos {
-        let default = asked(&args, i.harness).unwrap_or_else(|| default_count(i));
-        let want = if i.binary.is_none() && asked(&args, i.harness).is_none() {
+        let flag = asked(&args, i.harness);
+        let default = flag.unwrap_or_else(|| default_count(i));
+        let want = if i.binary.is_none() && flag.is_none() {
             0
-        } else if ctx.yes || asked(&args, i.harness).is_some() {
+        } else if ctx.yes || flag.is_some() {
             default
         } else {
             Input::<u32>::new()
                 .with_prompt(format!(
-                    "how many {} accounts to add ({} now)?",
+                    "how many {} accounts to add ({} now, 0-99)?",
                     i.harness,
                     i.accounts.len()
                 ))
                 .default(default)
+                .validate_with(|n: &u32| -> Result<(), &str> {
+                    if *n <= 99 {
+                        Ok(())
+                    } else {
+                        Err("enter a number from 0 to 99")
+                    }
+                })
                 .interact_text()?
         };
         if want == 0 {
             continue;
         }
         if i.binary.is_none() {
-            println!(
-                "skipping {}: the binary is not on PATH; install it and re-run setup",
+            eprintln!(
+                "{} was requested but its binary is not on PATH; install it and re-run setup",
                 i.harness
             );
+            failed = true;
             continue;
         }
-        let add = cap_for_platform(i, host.platform, want, &ctx.paths);
-        if let Some(n) = &add.note {
-            println!("{}: {n}", i.harness);
+        // On macOS a second enabled agy account is refused by `add_numbered`; that error
+        // is reported below like any other.
+        let batch = manage::add_numbered(&ctx.paths, &cfg, &host, i.harness, want);
+        for a in &batch.created {
+            say!("added account {} ({}) at {}", a.name, a.harness, a.home);
         }
-        if add.count == 0 {
-            continue;
+        if !batch.created.is_empty() && i.harness == Harness::Claude {
+            say!("{CLAUDE_NOTE}");
         }
-        let (accounts, error) = add_accounts(ctx, &cfg, &host, i.harness, add.count);
-        for a in &accounts {
-            println!("added account {} ({}) at {}", a.name, a.harness, a.home);
-        }
-        if !accounts.is_empty() && i.harness == Harness::Claude {
-            println!("{CLAUDE_NOTE}");
-        }
-        if let Some(e) = error {
+        if let Some(e) = batch.error {
             eprintln!("could not add every {} account: {e}", i.harness);
             failed = true;
         }
-        created.extend(accounts);
+        created.extend(batch.created);
     }
     if created.is_empty() {
-        println!("no accounts added");
-    } else {
-        ctx.refresh_skill();
-        if !args.no_login && !login_accounts(ctx, &host, &created, tty)? {
-            failed = true;
+        let all = AccountFile::list(&ctx.paths)?;
+        let names: Vec<_> = all.iter().map(|a| a.name.as_str()).collect();
+        say!(
+            "{} accounts already set up: {}",
+            names.len(),
+            names.join(", ")
+        );
+    }
+
+    // Sign-in covers new accounts and old ones that are still signed out.
+    let pending = signed_out(ctx, &host)?;
+    let mut needed: Vec<Value> = Vec::new();
+    for a in &pending {
+        let run = tty
+            && !args.no_login
+            && (ctx.yes
+                || Confirm::new()
+                    .with_prompt(format!("sign in to {} now?", a.name))
+                    .default(true)
+                    .interact()?);
+        if run {
+            if !run_login(ctx, a, &host)? {
+                failed = true;
+            }
+            continue;
+        }
+        let login = login_json(a, &host)?;
+        needed.push(json!({ "name": a.name, "login": login }));
+        if !args.no_login {
+            say!("{}:", a.name);
+            if !ctx.json {
+                let via_cli = matches!(a.harness, Harness::Codex | Harness::Opencode);
+                write_login_hint(&mut std::io::stdout().lock(), &login, via_cli)?;
+            }
         }
     }
 
+    let mut installed = Value::Null;
     if !args.no_install {
-        println!("\ninstall:");
-        if let Err(e) = run_install(ctx) {
+        say!("\ninstall:");
+        // The one call into `install`; the install options are decided here.
+        let result = if ctx.json {
+            crate::cmd::install::install_quiet(ctx, false)
+        } else {
+            crate::cmd::install::install(ctx, false, false).map(|()| Value::Null)
+        };
+        installed = json!(result.is_ok());
+        if let Err(e) = result {
             eprintln!("install failed: {e:#}");
             failed = true;
         }
     }
 
     let d = doctor_summary(ctx, &host);
-    println!(
+    say!(
         "\ndoctor: {} ok, {} warning(s), {} failure(s)",
-        d.ok, d.warn, d.fail
+        d.ok,
+        d.warn,
+        d.fail
     );
-    d.lines.iter().for_each(|l| println!("  {l}"));
+    if !ctx.json {
+        d.lines.iter().for_each(|l| println!("  {l}"));
+    }
+    say!("\nnext: open Claude Code and ask it to delegate a task");
 
-    println!("\nnext: open Claude Code and ask it to delegate a task");
+    if ctx.json {
+        ctx.emit(
+            &json!({
+                "ok": !failed,
+                "created": created.iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
+                "imported": imported.names,
+                "installed": installed,
+                "signed_in_needed": needed,
+                "doctor": { "ok": d.ok, "warn": d.warn, "fail": d.fail, "lines": d.lines },
+            }),
+            |_| Ok(()),
+        )?;
+    }
     Ok(if failed {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(harness: Harness, installed: bool, accounts: usize, importable: usize) -> HarnessInfo {
+        HarnessInfo {
+            harness,
+            binary: installed.then(|| PathBuf::from("/bin/x")),
+            accounts: (0..accounts).map(|n| format!("a-{n}")).collect(),
+            importable,
+        }
+    }
+
+    #[test]
+    fn default_is_one_for_an_installed_harness_with_nothing() {
+        assert_eq!(default_count(&info(Harness::Codex, true, 0, 0)), 1);
+    }
+
+    #[test]
+    fn default_is_zero_when_not_installed_or_already_set_up() {
+        assert_eq!(default_count(&info(Harness::Codex, false, 0, 0)), 0);
+        assert_eq!(default_count(&info(Harness::Codex, true, 1, 0)), 0);
+        assert_eq!(default_count(&info(Harness::Opencode, true, 0, 2)), 0);
+    }
+
+    #[test]
+    fn ctrl_c_in_a_prompt_is_recognised() {
+        let io = std::io::Error::from(std::io::ErrorKind::Interrupted);
+        let e = anyhow::Error::from(dialoguer::Error::IO(io));
+        assert!(interrupted(&e));
+        assert!(!interrupted(&anyhow::anyhow!("other")));
+    }
+
+    #[test]
+    fn claude_defaults_to_none() {
+        assert_eq!(default_count(&info(Harness::Claude, true, 0, 0)), 0);
+    }
 }

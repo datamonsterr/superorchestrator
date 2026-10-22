@@ -522,7 +522,8 @@ fn print(ctx: &Ctx, outcomes: &[Outcome], dry_run: bool) -> Result<()> {
 /// One step's result, keyed by the target it acted on so errors name it.
 pub(crate) type Step = (String, Result<Outcome>);
 
-fn finish(ctx: &Ctx, results: Vec<Step>, dry_run: bool) -> Result<()> {
+/// Turns step results into outcomes (an error becomes an `error` outcome) and counts failures.
+fn collect(results: Vec<Step>) -> (Vec<Outcome>, usize) {
     let mut outcomes = Vec::new();
     let mut failures = 0usize;
     for (target, r) in results {
@@ -534,6 +535,21 @@ fn finish(ctx: &Ctx, results: Vec<Step>, dry_run: bool) -> Result<()> {
             }
         }
     }
+    (outcomes, failures)
+}
+
+/// `install` without printing: the outcomes as JSON, or an error when a step failed.
+pub(crate) fn install_quiet(ctx: &Ctx, force: bool) -> Result<serde_json::Value> {
+    let w = Writer::new(&ctx.paths, false);
+    let (outcomes, failures) = collect(install_steps(ctx, &w, force)?);
+    if failures > 0 {
+        return Err(anyhow!("{failures} step(s) failed"));
+    }
+    Ok(serde_json::to_value(&outcomes)?)
+}
+
+fn finish(ctx: &Ctx, results: Vec<Step>, dry_run: bool) -> Result<()> {
+    let (outcomes, failures) = collect(results);
     print(ctx, &outcomes, dry_run)?;
     if failures > 0 {
         return Err(anyhow!("{failures} step(s) failed"));
