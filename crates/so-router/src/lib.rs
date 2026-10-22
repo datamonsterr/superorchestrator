@@ -1,10 +1,19 @@
 //! Catalog, choices, scorer, Jev decider, account selection and failover.
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn dummy() {
-        assert_eq!(1 + 1, 2);
-    }
-}
+pub mod catalog;
+pub mod eligible;
+pub mod error;
+pub mod eval;
+pub mod heuristic;
+mod http;
+pub mod jev;
+pub mod route;
+pub mod select;
+
+pub use catalog::{Catalog, Cost, Tier};
+pub use eligible::{AccountState, Candidate, PoolState, Snapshot};
+pub use error::{Result, RouterError};
+pub use route::{
+    RouteCtx, RouteInputs, RouteOutcome, config_fingerprint, route, route_detailed, route_with,
+};

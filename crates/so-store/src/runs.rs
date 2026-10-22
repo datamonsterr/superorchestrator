@@ -389,6 +389,16 @@ impl Store {
         Ok(id)
     }
 
+    /// Start of the most recent attempt on `account`, for least-recently-used ranking.
+    pub fn last_attempt_started(&self, account: &str) -> Result<Option<DateTime<Utc>>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(
+            "SELECT started_at FROM attempts WHERE account = ?1 ORDER BY started_at DESC LIMIT 1",
+        )?;
+        let mut rows = st.query_map([account], |r| get_ts(r, 0))?;
+        Ok(rows.next().transpose()?)
+    }
+
     pub fn finish_attempt(&self, id: &str, outcome: &str, now: DateTime<Utc>) -> Result<()> {
         let n = self.conn().execute(
             "UPDATE attempts SET ended_at = ?2, outcome = ?3 WHERE id = ?1",
@@ -913,5 +923,20 @@ pub(crate) mod tests {
             InsertRun::ChildCap { active: 2 }
         );
         assert_eq!(s.list_child_runs(&parent.id, 10).unwrap().len(), 3);
+    }
+
+    #[test]
+    fn last_attempt_started_is_the_newest() {
+        let (s, sid) = setup();
+        let r = run(&sid, None);
+        s.insert_run(&r).unwrap();
+        let now = crate::codec::now();
+        assert_eq!(s.last_attempt_started("acc").unwrap(), None);
+        s.start_attempt(&r.id, "acc", None, now - chrono::Duration::hours(2))
+            .unwrap();
+        s.start_attempt(&r.id, "acc", None, now).unwrap();
+        s.start_attempt(&r.id, "other", None, now + chrono::Duration::hours(1))
+            .unwrap();
+        assert_eq!(s.last_attempt_started("acc").unwrap(), Some(now));
     }
 }
