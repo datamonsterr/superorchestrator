@@ -2374,3 +2374,72 @@ async fn get_run_survives_a_diff_that_cannot_be_made() {
     assert!(d.patch.is_empty());
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn send_message_during_an_accept_merge_waits_for_it() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    let resume = script(
+        &[expect("one more thing")]
+            .into_iter()
+            .chain(turn())
+            .collect::<Vec<_>>(),
+    );
+    env.account(
+        "claude-a",
+        2,
+        &ok_script(&[write_step("b.txt", "b", true)]),
+        Some(&resume),
+        None,
+    );
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = env.params("claude-a");
+    p.review = true;
+    p.isolation = Some(Isolation::Worktree);
+    let id = spawn(&c, p).await;
+    wait_state(&c, &id, RunState::PendingReview).await;
+    // A merge commit with a slow hook keeps the accept in flight for a moment.
+    commit_in(&env.repo, "c.txt", "c");
+    let hook = env.repo.join(".git/hooks/pre-merge-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\nsleep 2\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let acc = accept(&c, &id, true);
+    let msg = async {
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        c.call::<_, AckResult>(
+            METHOD_SEND_MESSAGE,
+            SendMessageParams {
+                run: id.clone(),
+                text: "one more thing".into(),
+                kind: None,
+            },
+        )
+        .await
+    };
+    let (a, m) = tokio::join!(acc, msg);
+    assert!(
+        a.unwrap().merged,
+        "the accept must not lose its run to the message"
+    );
+    m.unwrap();
+    assert!(env.repo.join("b.txt").is_file());
+    // The message was handled after the accept: the resume comes after `review_accepted`.
+    let v = loop {
+        let v = view(&c, &id).await;
+        if count(&v, EventType::AttemptStarted) == 2 {
+            break v;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert_eq!(count(&v, EventType::ReviewAccepted), 1);
+    let pos = |t: EventType| {
+        v.recent_events
+            .iter()
+            .rposition(|e| e.event_type == t)
+            .unwrap()
+    };
+    assert!(pos(EventType::ReviewAccepted) < pos(EventType::AttemptStarted));
+    h.shutdown().await;
+}
