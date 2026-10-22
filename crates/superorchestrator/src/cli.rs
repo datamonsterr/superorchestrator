@@ -30,9 +30,9 @@ pub enum Command {
     /// Create the config dir, seed config, choices and catalog
     Init,
     /// Register the MCP server with Claude Code and other harnesses
-    Install,
+    Install(InstallArgs),
     /// Remove what `install` registered
-    Uninstall,
+    Uninstall(UninstallArgs),
     /// Check binaries, config, database, socket, UI port and sign-ins
     Doctor,
     /// Show accounts, headroom and supervisor state
@@ -69,9 +69,33 @@ pub enum Command {
     /// Launch an account's harness (used by wrappers)
     Exec(ExecArgs),
     /// Run the MCP server on stdio
-    Mcp,
+    Mcp(McpArgs),
     /// Move from the legacy setup
     Migrate(MigrateArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct InstallArgs {
+    /// Re-register the Claude Code entry even when it looks current.
+    #[arg(long)]
+    pub force: bool,
+    /// Print what would change and write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct UninstallArgs {
+    /// Print what would change and write nothing.
+    #[arg(long)]
+    pub dry_run: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct McpArgs {
+    /// Client name reported to the supervisor.
+    #[arg(long, default_value = "mcp")]
+    pub client: String,
 }
 
 #[derive(Subcommand, Debug)]

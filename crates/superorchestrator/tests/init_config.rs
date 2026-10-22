@@ -139,11 +139,9 @@ fn config_edit_validates_after_editor() {
 fn unimplemented_commands_exit_4_and_name_the_command() {
     let e = Env::new();
     for args in [
-        vec!["install"],
         vec!["runs", "list"],
         vec!["route", "do a thing"],
         vec!["route", "eval"],
-        vec!["mcp"],
         vec!["migrate", "--apply"],
         vec!["workflow", "list"],
     ] {

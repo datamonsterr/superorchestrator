@@ -6,6 +6,8 @@ mod ctx;
 mod exit;
 mod output;
 mod redact;
+mod register;
+mod skill;
 mod views;
 
 use std::process::ExitCode;
@@ -70,6 +72,9 @@ fn dispatch(cli: Cli, path: &str) -> Result<ExitCode> {
         Command::Exec(e) => match cmd::exec::run(&ctx, &e.account, &e.args)? {},
         Command::Daemon(d) => ok(cmd::daemon::run(&ctx, d.foreground)),
         Command::Status => ok(cmd::status::run(&ctx)),
+        Command::Install(a) => ok(cmd::install::install(&ctx, a.force, a.dry_run)),
+        Command::Uninstall(a) => ok(cmd::install::uninstall(&ctx, a.dry_run)),
+        Command::Mcp(a) => ok(cmd::mcp::run(&ctx, &a.client)),
         Command::Doctor => cmd::doctor::run(&ctx),
         // Commands without an arm yet; later tasks add only their own arm above.
         _ => Err(CliError::not_implemented(path).into()),
