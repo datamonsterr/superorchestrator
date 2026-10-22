@@ -8,3 +8,18 @@ cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 ```
+
+## Layout
+
+- `crates/`: the Rust workspace. `superorchestrator` is the binary; the `so-*` crates hold the libraries.
+- `web/`: the React + Vite + TypeScript frontend, embedded into the binary at release.
+- `docs/`: architecture decision records and plans.
+
+## Development
+
+```sh
+scripts/setup-hooks.sh   # once: enables the pre-commit and pre-push hooks
+scripts/check.sh         # full gate; --rust-only or --web-only to narrow
+```
+
+Set `SKIP_PREPUSH=1` to bypass the pre-push gate (CI still runs it).
