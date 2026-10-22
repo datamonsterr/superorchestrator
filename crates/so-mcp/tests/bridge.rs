@@ -10,7 +10,7 @@ use rmcp::model::{
 use rmcp::service::{NotificationContext, PeerRequestOptions, RunningService};
 use rmcp::{ClientHandler, RoleClient, ServiceExt};
 use serde_json::json;
-use so_core::proto::{DEPTH_LIMIT, HarnessesView, RpcError};
+use so_core::proto::{DECIDER_UNREACHABLE, DEPTH_LIMIT, HarnessesView, RpcError};
 use so_core::{Config, Paths};
 use so_mcp::McpBridge;
 use so_supervisor::{Supervisor, SupervisorClient, SupervisorHandle, SupervisorOptions};
@@ -55,6 +55,12 @@ async fn fixture(subagent: bool) -> Fixture {
         .with_setup(|st| {
             st.router.register("list_harnesses", |_c, _p| async {
                 Ok(serde_json::to_value(fixed_view()).unwrap())
+            });
+            st.router.register("route", |_c, _p| async {
+                Err(RpcError::new(
+                    DECIDER_UNREACHABLE,
+                    "decider unreachable: model `m`: HTTP 503",
+                ))
             });
             st.router.register("fork_agent", |_c, _p| async {
                 Err(RpcError::new(DEPTH_LIMIT, "depth limit reached"))
@@ -189,6 +195,18 @@ async fn forwards_result_and_maps_rpc_error_to_tool_error() {
         .unwrap();
     assert_eq!(r.is_error, Some(true));
     assert!(text(&r).contains("depth limit reached"));
+
+    // An unreachable decider is a tool error that carries the message.
+    let r = f
+        .client
+        .call_tool(
+            CallToolRequestParams::new("route")
+                .with_arguments(json!({"task": "x"}).as_object().unwrap().clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(true));
+    assert!(text(&r).contains("decider unreachable"), "{}", text(&r));
 
     // Unknown tool is a protocol error.
     assert!(

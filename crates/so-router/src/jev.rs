@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use so_core::config::{Jev, Policy};
+use so_core::config::{Jev, JevModels, Policy};
 use so_core::expand_tilde;
 use so_core::proto::RouteUsage;
 
@@ -97,6 +97,10 @@ pub struct JevFailure {
     pub usage: RouteUsage,
     /// The model that gave the rejected answer; `None` when no model answered.
     pub model: Option<String>,
+    /// The decider could not be reached or refused the request (transport error, timeout,
+    /// 429, 5xx, a missing model, or a rejected key), as opposed to an answer that validation
+    /// or the gate rejected. `reason` then names the models, the cause and the next step.
+    pub unreachable: bool,
 }
 
 impl JevFailure {
@@ -215,9 +219,20 @@ enum Attempt {
     Done(Value),
     /// Worth one retry after the given pause.
     Transient(String, Duration),
-    /// Not retried. The flag says the model itself cannot be used (HTTP 400/404 for a
-    /// missing model, or a request that never completed), so the fallback model may try.
-    Permanent(String, bool),
+    /// Not retried.
+    Permanent(String, Perm),
+}
+
+/// Why a failure is permanent.
+#[derive(Clone, Copy)]
+enum Perm {
+    /// The model cannot be used (HTTP 400/404 for a missing model, or a request that never
+    /// completed): the fallback model may try.
+    Model,
+    /// The key was refused (HTTP 401/403): another model would be refused too.
+    Auth,
+    /// Anything else, such as an unreadable or oversized response.
+    Other,
 }
 
 fn retry_after(resp: &reqwest::Response) -> Duration {
@@ -268,7 +283,7 @@ async fn attempt(
                 BACKOFF,
             );
         }
-        Err(_) => return Attempt::Permanent("Jev request failed".into(), true),
+        Err(_) => return Attempt::Permanent("Jev request failed".into(), Perm::Model),
     };
     let status = resp.status();
     // 408 and 429 say "try again": 429 may carry Retry-After.
@@ -279,19 +294,26 @@ async fn attempt(
         );
     }
     if !status.is_success() {
-        let missing = matches!(status.as_u16(), 400 | 404);
-        return Attempt::Permanent(
-            format!("Jev request failed (HTTP {})", status.as_u16()),
-            missing,
-        );
+        let code = status.as_u16();
+        return match code {
+            400 | 404 => Attempt::Permanent(
+                format!("Jev request failed (HTTP {code}; the model id may not exist)"),
+                Perm::Model,
+            ),
+            401 | 403 => Attempt::Permanent(
+                format!("Jev request failed (HTTP {code}; the key was refused)"),
+                Perm::Auth,
+            ),
+            _ => Attempt::Permanent(format!("Jev request failed (HTTP {code})"), Perm::Other),
+        };
     }
     match read_capped(resp, MAX_RESPONSE).await {
         Ok(body) => match serde_json::from_slice(&body) {
             Ok(v) => Attempt::Done(v),
-            Err(_) => Attempt::Permanent("Jev returned an invalid response".into(), false),
+            Err(_) => Attempt::Permanent("Jev returned an invalid response".into(), Perm::Other),
         },
         Err(e) if e.contains("size limit") => {
-            Attempt::Permanent("Jev response exceeds the size limit".into(), false)
+            Attempt::Permanent("Jev response exceeds the size limit".into(), Perm::Other)
         }
         Err(_) => Attempt::Transient("Jev response could not be read".into(), BACKOFF),
     }
@@ -305,8 +327,8 @@ const PRIMARY_SHARE: (u32, u32) = (3, 5);
 enum Failed {
     /// The model could not be reached or refused the request: the fallback may try.
     Unusable(JevFailure),
-    /// An answer arrived but validation or the gate rejected it, or the failure is
-    /// permanent and not about the model: the fallback is not asked.
+    /// An answer arrived but validation or the gate rejected it, or the key was refused, or
+    /// the failure is permanent and not about the model: the fallback is not asked.
     Final(JevFailure),
 }
 
@@ -359,15 +381,19 @@ async fn decide_model(
                         probabilities: validated.probabilities,
                         usage,
                         model: Some(answered),
+                        unreachable: false,
                     })),
                 };
             }
-            Attempt::Permanent(r, unusable) => {
-                let f = JevFailure::new(r);
-                return Err(if unusable {
-                    Failed::Unusable(f)
-                } else {
-                    Failed::Final(f)
+            Attempt::Permanent(r, why) => {
+                let mut f = JevFailure::new(r);
+                return Err(match why {
+                    Perm::Model => Failed::Unusable(f),
+                    Perm::Auth => {
+                        f.unreachable = true;
+                        Failed::Final(f)
+                    }
+                    Perm::Other => Failed::Final(f),
                 });
             }
             Attempt::Transient(r, wait) => {
@@ -382,14 +408,39 @@ async fn decide_model(
     Err(Failed::Unusable(JevFailure::new(last)))
 }
 
+const NEXT_STEP: &str = "Check the OpenRouter key, the model id and the network, or choose another model with router.jev.model (or SUPERORCHESTRATOR_ROUTER_MODEL).";
+
+/// The error text for a decider that could not be reached. Names every model tried and the
+/// cause; never the key.
+fn unreachable_reason(key_env: &str, tried: &[(&str, &str, bool)]) -> String {
+    let parts: Vec<String> = tried
+        .iter()
+        .enumerate()
+        .map(|(i, (model, cause, _))| {
+            let who = if i == 0 { "model" } else { "fallback model" };
+            format!("{who} `{model}`: {cause}")
+        })
+        .collect();
+    let auth = tried.iter().any(|t| t.2);
+    let next = if auth {
+        format!("Check {key_env} or router.jev.key_file.")
+    } else {
+        NEXT_STEP.to_string()
+    };
+    format!("decider unreachable: {}. {next}", parts.join("; "))
+}
+
 /// Asks the decider. A transient failure (5xx, 429, timeout, connection) is retried once.
 /// When the primary model is unusable (transport error, timeout, 429, 5xx, or 400/404 for a
-/// missing model) the configured fallback model is tried; a rejection by validation or the
-/// gate is final and never reaches the fallback. The whole call stays within
-/// `router.jev.timeout`. Rejections keep the usage the call cost.
+/// missing model) the fallback model is tried; a rejection by validation or the gate is final
+/// and never reaches the fallback, and a refused key (401/403) does not either, since the
+/// fallback would be refused too. The whole call stays within `router.jev.timeout`.
+/// Failures where no model could be reached carry `unreachable`. Rejections keep the usage
+/// the call cost.
 pub async fn decide(
     http: &reqwest::Client,
     cfg: &Jev,
+    models: &JevModels,
     policy: &Policy,
     key: &str,
     req: &JevRequest<'_>,
@@ -401,27 +452,48 @@ pub async fn decide(
     }
     let start = Instant::now();
     let total = cfg.timeout.as_duration();
-    let fallback = cfg.fallback();
+    let fallback = models.fallback.as_deref();
     let primary_end = match fallback {
         Some(_) => start + total * PRIMARY_SHARE.0 / PRIMARY_SHARE.1,
         None => start + total,
     };
-    let first = decide_model(http, cfg, &cfg.model, policy, key, req, primary_end).await;
-    let first = match first {
+    let primary = models.primary.as_str();
+    let first = match decide_model(http, cfg, primary, policy, key, req, primary_end).await {
         Ok(d) => return Ok(d),
-        Err(Failed::Final(f)) => return Err(f),
+        Err(Failed::Final(mut f)) => {
+            if f.unreachable {
+                f.reason = unreachable_reason(&cfg.key_env, &[(primary, &f.reason, true)]);
+            }
+            return Err(f);
+        }
         Err(Failed::Unusable(f)) => f,
     };
+    let unreachable = |reason: String| JevFailure {
+        reason,
+        unreachable: true,
+        ..JevFailure::default()
+    };
     let Some(fb) = fallback else {
-        return Err(first);
+        return Err(unreachable(unreachable_reason(
+            &cfg.key_env,
+            &[(primary, &first.reason, false)],
+        )));
     };
     match decide_model(http, cfg, fb, policy, key, req, start + total).await {
         Ok(d) => Ok(d),
-        Err(Failed::Final(f)) => Err(f),
-        Err(Failed::Unusable(f)) => Err(JevFailure {
-            reason: format!("{}; fallback model also failed: {}", first.reason, f.reason),
-            ..f
-        }),
+        Err(Failed::Final(mut f)) => {
+            if f.unreachable {
+                f.reason = unreachable_reason(
+                    &cfg.key_env,
+                    &[(primary, &first.reason, false), (fb, &f.reason, true)],
+                );
+            }
+            Err(f)
+        }
+        Err(Failed::Unusable(f)) => Err(unreachable(unreachable_reason(
+            &cfg.key_env,
+            &[(primary, &first.reason, false), (fb, &f.reason, false)],
+        ))),
     }
 }
 

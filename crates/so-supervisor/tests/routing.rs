@@ -855,3 +855,63 @@ async fn an_opencode_http_429_at_launch_fails_over() {
     }
     h.shutdown().await;
 }
+
+/// Two choices and a key, so the decider is asked; its endpoint refuses connections.
+fn unreachable_decider_env() -> Env {
+    let mut env = Env::new();
+    env.config.choices = vec![
+        choice("claude-a-choice", "claude-sonnet-5-5"),
+        choice("claude-b-choice", "claude-haiku-5-5"),
+    ];
+    let key = env.dir.path().join("jev.env");
+    std::fs::write(&key, "SO_ROUTING_TEST_DECIDER_KEY=sk-test-secret\n").unwrap();
+    env.config.router.jev.key_env = "SO_ROUTING_TEST_DECIDER_KEY".into();
+    env.config.router.jev.key_file = Some(key.to_string_lossy().into_owned());
+    env.config.router.jev.endpoint = "http://127.0.0.1:1/decisions".into();
+    env
+}
+
+#[tokio::test]
+async fn auto_spawn_with_an_unreachable_decider_errors_and_inserts_no_run() {
+    let env = unreachable_decider_env();
+    env.account("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let err = c
+        .call::<_, Value>(so_core::proto::METHOD_SPAWN_AGENT, auto_params(&env))
+        .await
+        .unwrap_err();
+    let so_supervisor::client::ClientError::Rpc(e) = err else {
+        panic!("expected an rpc error, got {err:?}");
+    };
+    assert_eq!(e.code, so_core::proto::DECIDER_UNREACHABLE);
+    assert!(e.message.contains("decider unreachable"), "{}", e.message);
+    assert!(
+        e.message.contains("inception/mercury-decide:free"),
+        "{}",
+        e.message
+    );
+    assert!(!e.message.contains("sk-test-secret"), "{}", e.message);
+
+    let store = env.store();
+    let runs: usize = store
+        .list_sessions(so_store::SessionFilter::All, 100)
+        .unwrap()
+        .iter()
+        .map(|s| store.list_runs_by_session(&s.id, 100).unwrap().len())
+        .sum();
+    assert_eq!(runs, 0, "no run is inserted");
+    assert!(env.launches("claude-a").is_empty());
+
+    // The same call with the opt-out degrades to the heuristic and spawns.
+    h.shutdown().await;
+    let mut env = unreachable_decider_env();
+    env.config.router.jev.on_unreachable = so_core::config::OnUnreachable::Heuristic;
+    env.account("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    h.shutdown().await;
+}

@@ -83,6 +83,7 @@ pub fn run_checks(paths: &Paths, host: &HostEnv) -> DoctorReport {
 
     check_binaries(&mut c, host, &accounts);
     let cfg = check_config(&mut c, paths);
+    check_decider(&mut c, cfg.as_ref());
     check_db(&mut c, paths);
     let supervisor_up = check_socket(&mut c);
     check_ui_port(&mut c, cfg.as_ref(), supervisor_up);
@@ -94,6 +95,32 @@ pub fn run_checks(paths: &Paths, host: &HostEnv) -> DoctorReport {
     DoctorReport {
         ok: report.failures() == 0,
         ..report
+    }
+}
+
+/// The routing decider: the models in effect (env > config > default), the fallback and
+/// whether a key is present. Environment variables are read from this process, so a
+/// supervisor started with a different environment may differ.
+fn check_decider(c: &mut Checks, cfg: Option<&Config>) {
+    let Some(cfg) = cfg else { return };
+    let jev = &cfg.router.jev;
+    let models = jev.resolve_models(so_router::jev::process_env);
+    let has_key = so_router::jev::resolve_key(jev, so_router::jev::process_env).is_some();
+    let policy = match jev.on_unreachable {
+        so_core::config::OnUnreachable::Error => "error",
+        so_core::config::OnUnreachable::Heuristic => "heuristic",
+    };
+    let detail = format!("{}; on_unreachable = {policy}", models.describe());
+    if has_key {
+        c.ok("router decider", detail);
+    } else {
+        c.warn(
+            "router decider",
+            format!(
+                "no OpenRouter key ({} or router.jev.key_file): routing uses the heuristic only; {detail}",
+                jev.key_env
+            ),
+        );
     }
 }
 

@@ -106,6 +106,8 @@ pub struct EvalReport {
     /// Cases where the decider was wanted but its answer was not used.
     pub fallback_count: usize,
     pub errors_count: usize,
+    /// The decider models in effect (env > config > default) and where each came from.
+    pub decider_models: so_core::config::JevModels,
     pub sources: BTreeMap<String, usize>,
     pub latency_ms: Latency,
     pub total_cost: f64,
@@ -203,6 +205,7 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
                     error: Some(match e {
                         crate::RouterError::NoEligible(_) => "no_eligible_choice".into(),
                         crate::RouterError::Invalid(_) => "invalid_request".into(),
+                        crate::RouterError::DeciderUnreachable(_) => "decider_unreachable".into(),
                         _ => "router_error".into(),
                     }),
                 }
@@ -219,6 +222,7 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
         eligible_compliance: records.iter().filter(|r| r.eligible).count() as f64 / n,
         fallback_count: fallbacks,
         errors_count: errors,
+        decider_models: ctx.config.router.jev.resolve_models(ctx.env),
         sources,
         latency_ms: Latency {
             p50: percentile(&latencies, 0.5),

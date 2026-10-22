@@ -101,19 +101,102 @@ pub struct Jev {
     pub model: String,
     /// Tried only when the primary model cannot be reached; `none` or empty disables it.
     pub fallback_model: Option<String>,
+    /// What `route` does when a configured decider cannot be reached (after the fallback).
+    pub on_unreachable: OnUnreachable,
     pub key_env: String,
     /// Optional dotenv file holding the key.
     pub key_file: Option<String>,
     pub timeout: HumanDuration,
 }
 
+/// Behaviour when the decider is configured but cannot be reached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OnUnreachable {
+    /// `route` fails with an error that names the models and the cause.
+    Error,
+    /// `route` degrades to the heuristic and records why.
+    Heuristic,
+}
+
+/// Environment variable that overrides `router.jev.model`.
+pub const ENV_ROUTER_MODEL: &str = "SUPERORCHESTRATOR_ROUTER_MODEL";
+/// Environment variable that overrides `router.jev.fallback_model` (`none` disables it).
+pub const ENV_ROUTER_FALLBACK_MODEL: &str = "SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL";
+
+/// Where an effective decider model came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelSource {
+    Env,
+    Config,
+    Default,
+}
+
+impl std::fmt::Display for ModelSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Env => "env",
+            Self::Config => "config",
+            Self::Default => "default",
+        })
+    }
+}
+
+/// The decider models in effect, with where each came from (env > config > default).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct JevModels {
+    pub primary: String,
+    pub primary_source: ModelSource,
+    /// `None` when there is no fallback.
+    pub fallback: Option<String>,
+    pub fallback_source: ModelSource,
+}
+
+impl JevModels {
+    /// One line for `route --explain`, `doctor` and the eval summary.
+    pub fn describe(&self) -> String {
+        let fb = match &self.fallback {
+            Some(m) => format!("{m} ({})", self.fallback_source),
+            None => format!("none ({})", self.fallback_source),
+        };
+        format!("{} ({}); fallback {fb}", self.primary, self.primary_source)
+    }
+}
+
 impl Jev {
-    /// The fallback model, or `None` when unset, empty, `none`, or the same as the primary.
-    pub fn fallback(&self) -> Option<&str> {
-        self.fallback_model
-            .as_deref()
-            .map(str::trim)
-            .filter(|m| !m.is_empty() && !m.eq_ignore_ascii_case("none") && *m != self.model)
+    /// The models in effect: an environment variable beats the config value, which beats the
+    /// default. An empty value counts as unset. A fallback of `none` (any case) disables it,
+    /// and so does a fallback equal to the primary.
+    pub fn resolve_models(&self, env: impl Fn(&str) -> Option<String>) -> JevModels {
+        let clean = |name: &str| {
+            env(name)
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty())
+        };
+        let default = Self::default();
+        let (primary, primary_source) = match clean(ENV_ROUTER_MODEL) {
+            Some(m) => (m, ModelSource::Env),
+            None if self.model.trim().is_empty() => (default.model.clone(), ModelSource::Default),
+            None if self.model == default.model => (self.model.clone(), ModelSource::Default),
+            None => (self.model.clone(), ModelSource::Config),
+        };
+        let (fallback, fallback_source) = match clean(ENV_ROUTER_FALLBACK_MODEL) {
+            Some(m) => (Some(m), ModelSource::Env),
+            None if self.fallback_model == default.fallback_model => {
+                (self.fallback_model.clone(), ModelSource::Default)
+            }
+            None => (self.fallback_model.clone(), ModelSource::Config),
+        };
+        let fallback = fallback
+            .map(|m| m.trim().to_string())
+            .filter(|m| !m.is_empty() && !m.eq_ignore_ascii_case("none") && *m != primary);
+        JevModels {
+            primary,
+            primary_source,
+            fallback,
+            fallback_source,
+        }
     }
 }
 
@@ -123,6 +206,7 @@ impl Default for Jev {
             endpoint: "https://openrouter.ai/api/alpha/decisions".to_string(),
             model: "inception/mercury-decide:free".to_string(),
             fallback_model: Some("~typesafe/jev-latest".to_string()),
+            on_unreachable: OnUnreachable::Error,
             key_env: "OPENROUTER_API_KEY".to_string(),
             key_file: None,
             timeout: HumanDuration::from_secs(20),
@@ -661,6 +745,7 @@ mod tests {
             c.router.jev.endpoint,
             "https://openrouter.ai/api/alpha/decisions"
         );
+        assert_eq!(c.router.jev.on_unreachable, OnUnreachable::Error);
         assert_eq!(c.router.jev.model, "inception/mercury-decide:free");
         assert_eq!(
             c.router.jev.fallback_model.as_deref(),
@@ -981,5 +1066,90 @@ mod tests {
         std::fs::write(paths.config_toml(), "[limits]\nglobal_cap = 0\n").unwrap();
         assert!(Config::load(&paths).is_err());
         assert!(Config::set_in_file(&paths, "limits.max_children", "0").is_err());
+    }
+
+    fn envmap(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let m: std::collections::BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |k| m.get(k).cloned()
+    }
+
+    #[test]
+    fn decider_models_precedence_is_env_then_config_then_default() {
+        let mut j = Jev::default();
+        let m = j.resolve_models(envmap(&[]));
+        assert_eq!(
+            (m.primary.as_str(), m.primary_source),
+            ("inception/mercury-decide:free", ModelSource::Default)
+        );
+        assert_eq!(m.fallback.as_deref(), Some("~typesafe/jev-latest"));
+        assert_eq!(m.fallback_source, ModelSource::Default);
+
+        j.model = "acme/decider".into();
+        j.fallback_model = Some("acme/backup".into());
+        let m = j.resolve_models(envmap(&[]));
+        assert_eq!(
+            (m.primary.as_str(), m.primary_source),
+            ("acme/decider", ModelSource::Config)
+        );
+        assert_eq!(
+            (m.fallback.as_deref(), m.fallback_source),
+            (Some("acme/backup"), ModelSource::Config)
+        );
+
+        let m = j.resolve_models(envmap(&[
+            (ENV_ROUTER_MODEL, " env/model "),
+            (ENV_ROUTER_FALLBACK_MODEL, "env/backup"),
+        ]));
+        assert_eq!(
+            (m.primary.as_str(), m.primary_source),
+            ("env/model", ModelSource::Env)
+        );
+        assert_eq!(
+            (m.fallback.as_deref(), m.fallback_source),
+            (Some("env/backup"), ModelSource::Env)
+        );
+        assert!(m.describe().contains("env/model (env)"));
+    }
+
+    #[test]
+    fn empty_env_is_unset_and_none_disables_the_fallback() {
+        let mut j = Jev::default();
+        let m = j.resolve_models(envmap(&[
+            (ENV_ROUTER_MODEL, "  "),
+            (ENV_ROUTER_FALLBACK_MODEL, ""),
+        ]));
+        assert_eq!(m.primary_source, ModelSource::Default);
+        assert_eq!(m.fallback_source, ModelSource::Default);
+        assert!(m.fallback.is_some());
+
+        for v in ["none", "NONE", "None"] {
+            let m = j.resolve_models(envmap(&[(ENV_ROUTER_FALLBACK_MODEL, v)]));
+            assert_eq!(m.fallback, None, "{v}");
+            assert_eq!(m.fallback_source, ModelSource::Env);
+        }
+        // `none` in the config, empty, or equal to the primary also disable it.
+        for v in ["none", "", "inception/mercury-decide:free"] {
+            j.fallback_model = Some(v.into());
+            assert_eq!(j.resolve_models(envmap(&[])).fallback, None, "{v:?}");
+        }
+        j.fallback_model = None;
+        let m = j.resolve_models(envmap(&[]));
+        assert_eq!((m.fallback, m.fallback_source), (None, ModelSource::Config));
+        // The env fallback can bring one back.
+        let m = j.resolve_models(envmap(&[(ENV_ROUTER_FALLBACK_MODEL, "x/y")]));
+        assert_eq!(m.fallback.as_deref(), Some("x/y"));
+    }
+
+    #[test]
+    fn on_unreachable_parses_from_toml() {
+        let c: Config = toml::from_str(
+            "[router.jev]\non_unreachable = \"heuristic\"\nfallback_model = \"none\"",
+        )
+        .unwrap();
+        assert_eq!(c.router.jev.on_unreachable, OnUnreachable::Heuristic);
+        assert!(toml::from_str::<Config>("[router.jev]\non_unreachable = \"maybe\"").is_err());
     }
 }

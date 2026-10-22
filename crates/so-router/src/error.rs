@@ -7,6 +7,10 @@ pub enum RouterError {
     /// Nothing can take the task: the message says why (no choice, no account, all excluded).
     #[error("{0}")]
     NoEligible(String),
+    /// A decider is configured but no model could be reached; the message names the models,
+    /// the cause and the next step, never the key.
+    #[error("{0}")]
+    DeciderUnreachable(String),
     #[error("invalid route request: {0}")]
     Invalid(String),
     #[error("could not read {path}: {reason}")]

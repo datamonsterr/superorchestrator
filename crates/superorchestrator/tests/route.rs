@@ -260,3 +260,40 @@ async fn codex_choices_the_user_disabled_stay_out_of_routing() {
     let out = route_after_adding_codex(true).await;
     assert!(!out.status.success());
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn route_fails_when_the_decider_is_unreachable() {
+    let e = setup();
+    let key = e.tmp.path().join("jev.env");
+    std::fs::write(&key, "SO_CLI_TEST_NO_KEY=sk-test-secret\n").unwrap();
+    for (k, v) in [
+        ("router.jev.key_file", key.to_str().unwrap()),
+        ("router.jev.endpoint", "http://127.0.0.1:1/decisions"),
+    ] {
+        e.cmd().args(["config", "set", k, v]).assert().success();
+    }
+    let host = HostEnv {
+        home: e.home.clone(),
+        path_var: Some("/usr/bin:/bin".into()),
+        platform: Platform::current(),
+    };
+    let config = Config::load(&e.paths()).unwrap();
+    let opts = SupervisorOptions::new(e.paths(), config, e.tmp.path().join("so.sock"))
+        .with_host(host)
+        .with_idle_exit(Duration::from_secs(600))
+        .with_setup(default_handlers);
+    let sup = Supervisor::start(opts).await.unwrap();
+
+    let mut cmd = e.cmd();
+    cmd.args(["route", "--explain", "rename a variable in one file"]);
+    let out = tokio::task::spawn_blocking(move || cmd.output().unwrap())
+        .await
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("decider unreachable"), "{err}");
+    assert!(err.contains("inception/mercury-decide:free"), "{err}");
+    assert!(!err.contains("sk-test-secret"), "{err}");
+
+    sup.shutdown().await;
+}

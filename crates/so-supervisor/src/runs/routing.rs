@@ -7,7 +7,9 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use so_core::proto::{RouteParams, RouteResult, RouteSource, RpcError, UNAVAILABLE};
+use so_core::proto::{
+    DECIDER_UNREACHABLE, RouteParams, RouteResult, RouteSource, RpcError, UNAVAILABLE,
+};
 use so_core::{AccountFile, Harness};
 use so_router::{Catalog, RouteOutcome, Snapshot, route::MAX_PROMPT_CHARS};
 
@@ -112,6 +114,8 @@ impl RunManager {
         }
         let mut outcome = match attempt {
             Some(Ok(o)) => Ok(o),
+            // An unreachable decider fails the same way on the wider route: do not ask again.
+            Some(Err(e)) if e.code == DECIDER_UNREACHABLE => Err(e),
             _ => route_decide(&env, &params).await,
         };
         if queue_over_cap && outcome.as_ref().is_err_and(|e| e.code == UNAVAILABLE) {
@@ -196,6 +200,7 @@ impl RunManager {
                 alternatives: Vec::new(),
                 config_fingerprint: so_router::config_fingerprint(self.config()),
                 decider_model: None,
+                decider_models: None,
                 ranked_accounts: ranked,
             },
             fallback_reason: Some(why.message.clone()),

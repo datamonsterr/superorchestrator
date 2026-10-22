@@ -7,6 +7,7 @@ use std::str::FromStr;
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use so_core::config::OnUnreachable;
 use so_core::proto::{RouteAlternative, RouteParams, RouteResult, RouteSource, RouteUsage};
 use so_core::{AccountFile, Choice, Config, Harness};
 use so_store::Store;
@@ -385,6 +386,7 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                 alternatives,
                 config_fingerprint: fingerprint.clone(),
                 decider_model,
+                decider_models: None,
                 ranked_accounts,
             },
             fallback_reason,
@@ -459,9 +461,11 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
         context: jev_context(ctx.snapshot),
         criteria: &criteria,
     };
+    let models = ctx.config.router.jev.resolve_models(ctx.env);
     match decide(
         ctx.http,
         &ctx.config.router.jev,
+        &models,
         &ctx.config.router.policy,
         &key,
         &request,
@@ -492,7 +496,7 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                 "Jev selected the configured choice (confidence {:.2}).",
                 d.validated.confidence
             );
-            Ok(finish(
+            let mut out = finish(
                 pick,
                 RouteSource::Jev,
                 why,
@@ -501,11 +505,18 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                 Some(by_prob),
                 None,
                 Some(d.model),
-            ))
+            );
+            out.result.decider_models = Some(models);
+            Ok(out)
+        }
+        Err(f) if f.unreachable && ctx.config.router.jev.on_unreachable == OnUnreachable::Error => {
+            Err(RouterError::DeciderUnreachable(f.reason))
         }
         Err(f) => {
             let reason = f.reason.clone();
-            Ok(heuristic(Some(reason.clone()), Some(&f), &reason))
+            let mut out = heuristic(Some(reason.clone()), Some(&f), &reason);
+            out.result.decider_models = Some(models);
+            Ok(out)
         }
     }
 }

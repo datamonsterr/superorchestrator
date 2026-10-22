@@ -23,6 +23,8 @@ pub const NOT_FOUND: i64 = -32003;
 pub const UNAVAILABLE: i64 = -32004;
 /// A call took longer than its deadline.
 pub const TIMEOUT: i64 = -32005;
+/// A configured routing decider could not be reached (after its fallback model).
+pub const DECIDER_UNREACHABLE: i64 = -32006;
 
 // Method names.
 pub const METHOD_HELLO: &str = "hello";
@@ -256,6 +258,10 @@ pub struct RouteResult {
     /// Also set when its answer was rejected; absent for pinned and key-less routing.
     #[serde(default)]
     pub decider_model: Option<String>,
+    /// The decider models in effect for this call and where each came from. Absent when no
+    /// decider was configured (no key) and for pinned calls.
+    #[serde(default)]
+    pub decider_models: Option<crate::config::JevModels>,
     /// Usable accounts of the chosen choice, best first (`account` is the first). Failover
     /// walks this list, then re-routes with `exclude_accounts`.
     #[serde(default)]
@@ -840,6 +846,7 @@ mod tests {
             alternatives: vec![],
             config_fingerprint: "f".into(),
             decider_model: None,
+            decider_models: None,
             ranked_accounts: vec![],
         };
         let j = serde_json::to_string(&r).unwrap();
