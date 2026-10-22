@@ -15,4 +15,5 @@ pub mod route;
 pub mod runs;
 pub mod status;
 pub mod ui;
+pub mod workflow;
 pub mod worktrees;

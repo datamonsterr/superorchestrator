@@ -138,36 +138,12 @@ fn config_edit_validates_after_editor() {
 #[test]
 fn unimplemented_commands_exit_4_and_name_the_command() {
     let e = Env::new();
-    for args in [
-        vec!["workflow", "status", "x"],
-        vec!["migrate", "--apply"],
-        vec!["workflow", "list"],
-    ] {
-        e.cmd()
-            .args(&args)
-            .assert()
-            .code(4)
-            .stderr(predicate::str::contains("is not implemented yet"));
-    }
-}
-
-#[test]
-fn unimplemented_message_names_the_full_path() {
-    let e = Env::new();
+    // `migrate` is the one command left; it lands on its own branch.
     e.cmd()
-        .args(["workflow", "status", "x"])
+        .args(["migrate", "--apply"])
         .assert()
         .code(4)
-        .stderr(predicate::str::contains(
-            "`workflow status` is not implemented yet",
-        ));
-    e.cmd()
-        .args(["workflow", "list"])
-        .assert()
-        .code(4)
-        .stderr(predicate::str::contains(
-            "`workflow list` is not implemented yet",
-        ));
+        .stderr(predicate::str::contains("`migrate` is not implemented yet"));
 }
 
 #[test]
