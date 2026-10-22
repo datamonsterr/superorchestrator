@@ -97,9 +97,8 @@ pub fn init(paths: &Paths) -> Result<Vec<(std::path::PathBuf, Outcome)>> {
 }
 
 /// What to do after `init`, in order. Printed at the end of `init`.
-pub const NEXT_STEPS: [&str; 4] = [
-    "superorchestrator account import --scan    link the logins you already have (or: account add <harness> --name <name>)",
-    "superorchestrator install                  register the MCP server and the skill with Claude Code",
+pub const NEXT_STEPS: [&str; 3] = [
+    "superorchestrator setup                    add accounts, sign in and register with Claude Code in one guided run",
     "superorchestrator doctor                   check binaries, sign-ins and the database",
     "then start Claude Code and ask it to delegate a task",
 ];

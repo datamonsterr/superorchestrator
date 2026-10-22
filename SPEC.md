@@ -38,7 +38,7 @@ Terms used here are defined in [CONTEXT.md](CONTEXT.md). Architectural decisions
 | HTTP (UI and API) | `axum`, server-sent events for live updates |
 | Frontend | React + Vite + TypeScript, built at release time and embedded with `rust-embed` |
 | Workflows | QuickJS through `rquickjs` |
-| CLI | `clap`, plus an interactive menu (`dialoguer` or equivalent) |
+| CLI | `clap`; `dialoguer` for prompts in plain commands; `ratatui` with `crossterm` for the terminal UI |
 | HTTP client | `reqwest` (OpenRouter, models.dev) |
 | Process isolation | agy accounts select their state with `--gemini_dir`; supervised agy runs use `bwrap` (Linux, optional) only for `--die-with-parent --new-session` |
 | Distribution | GitHub `datamonsterr/superorchestrator`. Release binaries built by cargo-dist for linux x86_64/aarch64 and macOS aarch64/x86_64. An `install.sh` curl installer, with `cargo install` as a fallback. |
@@ -90,7 +90,7 @@ Before coding against `rmcp`, `axum`, `rquickjs` or any harness protocol, check 
 | `so-supervisor` | Run lifecycle, caps, stall watcher, notifications, socket API |
 | `so-mcp` | rmcp server, tool definitions, tasks and progress |
 | `so-web` | axum API, SSE, embedded frontend |
-| `superorchestrator` | Binary: clap CLI and interactive menu |
+| `superorchestrator` | Binary: clap CLI and terminal UI |
 | `web/` | React frontend source |
 
 ## 4. Harness drivers
@@ -254,6 +254,7 @@ Worktree isolation is the default. The supervisor creates `git worktree add -b <
 Rules:
 - When the cwd's tree is dirty, the parent is warned that uncommitted changes are not carried over.
 - When `cwd` is not a git repository, isolation falls back to `none`, with a warning.
+- `accept_run` with `merge: true` lands the branch in the base checkout (7.5).
 - After the run: a worktree with no commits and a clean tree is removed. Otherwise it is kept until `accept_run`, after which it is removed when its branch is merged or pushed, or until `superorchestrator worktrees prune`.
 
 ### 7.4 Child instructions
@@ -276,13 +277,15 @@ A run with `review: true`:
    - `pr_threads`: no unresolved review threads and no outstanding `CHANGES_REQUESTED`
    - `cmd:`: the command exits 0 in the run cwd
 2. Enters `pending_review` when the checks pass. A failed check is sent back to the child as a message once, then the run is reported to the parent.
-3. Waits for the parent. `accept_run` marks it `succeeded`. `reject_run(feedback)` sends the feedback on the same native session and returns the run to `running`.
+3. Waits for the parent. The parent reviews the work with `get_run(run, diff: true)` (7.5 notes). `accept_run` marks it `succeeded`. `reject_run(feedback)` sends the feedback on the same native session and returns the run to `running`.
 
 Notes on the implementation:
 - `cmd:<shell>` runs with `sh -c` in the run's worktree (or cwd) with a 10 minute limit, in its own process group (killed whole on timeout or cancel), with at most 64 KiB of output kept. The command is chosen by the orchestrator in the `checks` of its `spawn_agent` call; it is never built from task text or run output. It runs with the daemon's privileges, outside the harness sandbox, so treat `checks` like any command you would run yourself.
 - `ci` and `pr_threads` use `gh` against the pull request of the run's branch. `ci` is green when every check is SUCCESS, SKIPPED or NEUTRAL.
 - At `pending_review` the harness process is stopped and its slot is freed; the native session stays so `reject_run` (or `send_message`, which counts as a rejection) can resume it. A resume claims a slot like a new start; with none free the run goes back to `queued` and resumes when one frees. A worktree run resumes in its worktree. If the directory is gone it is recreated from the run's branch; if the branch went with an untouched worktree, it is recreated at the run's base commit. A run that still cannot be resumed keeps its state and the caller gets the error.
 - `accept_run` removes the run's worktree and branch when the branch is merged into the repository's `HEAD` or contained in a remote branch, and the tree is clean (7.3). Otherwise the worktree stays until `worktrees prune`.
+- `get_run` with `diff: true` adds `diff = {base, branch, stat, patch, truncated}` for a run with a worktree: `base` is the merge base of the run's branch, `patch` is `git diff <base>` of the worktree (committed and uncommitted changes) plus untracked files, cut at 64 KiB (`truncated: true`). It is absent for a run without a worktree, and carries `error` instead (with empty fields) when it cannot be made, so `get_run` itself does not fail. Git runs with `--no-ext-diff --no-textconv` and is stopped at the cap rather than read to the end; at most 100 untracked files are listed (`(+N more files)` after that); binary files show as git's `Binary files ... differ`. The web API's run view omits it.
+- `accept_run(run, merge)` with `merge: true` also lands the work. The run must have a worktree branch; the base checkout (the repository the run was spawned from) must be on the branch it was on at spawn (recorded in `worktree_created.base_branch`; for older runs, any branch that contains the run's base commit) with no changes to tracked files (untracked files are fine). Work the run left uncommitted in its worktree (tracked or untracked, `.gitignore` respected) is first committed there with `git add -A` and the message `<run title> (<short run id>)` (the title is sanitised like the merge commit's), using the repository's git identity or `-c user.name=superorchestrator -c user.email=superorchestrator@localhost` when it has none; the repository's hooks run for it under the same no-prompt environment and 120 second limit as the merge, and a hook failure or timeout fails the call with the hook's output, leaves the run `pending_review` and merges nothing. The result's `note` then starts `committed uncommitted work as <sha>`. The branch is merged with `git merge` (fast-forward when possible, otherwise a merge commit with the message `merge: <run title> (<short run id>)`), then the worktree and branch are removed as above. On a refusal or a conflict (the merge is aborted) the call fails with an `INVALID_REQUEST` error that names the branch and, for a conflict, the files; nothing changes and the run stays `pending_review`. With isolation `none`, or when the run has no branch left, `merge` is a successful no-op with `merged: false` and a `note`. The result is `{ok, merged, branch?, merge_command?, note?}`; when the work is not merged and its branch exists, `branch` and `merge_command` (`git -C <repo> merge <branch>`) say how to land it. Details: the merge is refused while a merge, rebase, cherry-pick or revert is in progress in the base checkout (it is never aborted, because it is the person's); only a merge this call started is aborted, and nothing is ever reset or discarded: after a killed merge the error says what state the checkout is in and gives `git -C <repo> status`, `merge --abort` and `reset --merge` to inspect or undo it (a stale `index.lock` is removed only when it is newer than the merge and no other git process runs, otherwise reported). A `send_message` to a run at the gate takes the same per-run turn as accept and reject. Merges into one repository run one at a time, and `accept_run` and `reject_run` of one run take turns (the second sees the new state). The merge runs in its own task, so a dropped request cannot leave it half done. **Hooks:** the repository's own git hooks run (`pre-merge-commit`, `post-merge`, signing), because the merge happens in the person's repository. The merge has no stdin, `GIT_EDITOR=true`, `GIT_TERMINAL_PROMPT=0` and `GIT_ASKPASS`/`SSH_ASKPASS=true`, and a 120 second limit; on a timeout the process group is killed and the error says `merge timed out (hooks or signing?)`. A hook that refuses the merge gives an error with the hook's output, and the merge is undone. A held `index.lock` gives `another git operation is running in <repo>; try again`. A run whose base checkout was on a detached `HEAD` is never merged: the error gives the command to run by hand. The result's `note` says whether the merge was a fast-forward or a merge commit. Nothing is merged without the flag, and nothing is pushed. The web UI accepts without `merge`.
 - Failed checks are sent to the child once. If they fail again the run still goes to `pending_review`, and the parent gets a `result` message that lists the failed checks.
 
 ### 7.6 Stall handling
@@ -444,7 +447,7 @@ System prompt body…
 
 `run_workflow(name|script, args)` runs a JavaScript workflow in embedded QuickJS. The API matches Claude Code workflow scripts:
 - `agent(prompt, opts)`: opts are the spawn options from 7.2, so any harness can be used.
-- `parallel([...])`: defaults to `isolation: worktree`.
+- `parallel([...])`: defaults to `isolation: worktree`. A failed agent gives `null`.
 - `pipeline([...])`
 - `phase(name, fn)`
 - `log(msg)`
@@ -482,17 +485,37 @@ Full transcripts are stored as files under `runs/<run_id>/transcript.jsonl`, in 
 | `route` | Preview a route decision (8.3). Runs nothing. |
 | `spawn_agent` | Start a run (7.2). Returns the run id, or the result when `wait: true`. |
 | `wait_agent` | Wait on runs, with a timeout. Streams progress notifications. |
-| `get_run` | State, recent events, final result, usage, worktree, join command |
+| `get_run` | State, result, branch, worktree, usage and the last key events; `diff: true` adds the run's changes (7.5); `verbose: true` returns the full record |
 | `send_message` | Message a run. Resumes a finished run. |
 | `read_messages` | Unread messages for the caller |
 | `cancel_agent` | Cancel a run and its subtree |
-| `accept_run`, `reject_run` | Review gate (7.5) |
+| `accept_run`, `reject_run` | Review gate (7.5); `accept_run` with `merge: true` lands the branch |
 | `fork_agent` | Fork a finished run (9) |
-| `list_harnesses` | Accounts, signed-in state, headroom, active runs, choices |
+| `list_harnesses` | One short row per account and per choice, and the free models (13.1) |
 | `list_agents` | Custom agents |
 | `run_workflow`, `workflow_status` | Workflows (11) |
 
 **Subagents only:** `report_progress`, `ask_parent`.
+
+### 13.1 Tool surface and reply shapes
+
+Every orchestrator session pays for `tools/list` and for each reply, so both are kept short (`docs/plans/2026-10-23-token-tuning.md` has the measured sizes, from `cargo test -p so-supervisor --test token_report -- --nocapture`). Input schemas carry no defaults, format hints or `additionalProperties`; parameter descriptions appear only where the name and type do not say enough. The supervisor still validates every call.
+
+The supervisor's replies stay complete, because the CLI and the web UI read them. The MCP bridge (`so-mcp`, `compact.rs`) projects what the orchestrator sees. In every projection a missing key means null, empty or false, timestamps are cut to seconds and ids are not repeated inside nested objects. The agent's own `result` is never altered.
+
+| Tool | MCP reply |
+|---|---|
+| `spawn_agent`, `fork_agent` | `{run_id, state, result?, warnings?, error_kind?}`. With `wait`, `result` is set once the run finished or reached the review gate (`state: pending_review`). |
+| `wait_agent` | `{finished: [{run_id, name?, state, result?, error_kind?, branch?, failed_checks?, failover?, question?}], updates: [...], timed_out?}`. The bridge reads each finished run, so no `get_run` is needed to act; a run it cannot read is `{run_id, state: "unknown", error}`. An update is an event with its data flattened: `{run_id, type: "question", question, options?}` for a question, `{run_id, type: "progress", step?, status?}` for progress. |
+| `get_run` | `{run_id, name?, state, harness, account, model?, result?, error_kind?, branch?, worktree?, parent_run?, usage?, finished_at?, question?, events?, diff?}`. `events` are the last 5 of the significant ones (failover, stall, nudge, escalation, questions, check results, review decisions, run end, progress; at most the last 2 progress events), plus the latest check result, failed-check gate, failover, escalation and stall even when older; each is `{ts, type, data}` with strings cut at 300 characters (2000 for a check result). `question` is set while the run waits. `diff` is `{base (10 characters), stat, patch, truncated?, error?}`; the branch is above. `verbose: true` returns the supervisor's full `RunView`. |
+| `route` | `{choice_id, harness, account, model, effort?, source, rationale, alternatives: [choice ids], ranked_accounts? (when more than one)}`. |
+| `accept_run` | `{merged, branch?, merge_command?, note?}`. A refused merge is an error. |
+| `list_harnesses` | `{accounts: [{name, harness, signed_in?, disabled?, load: "active/cap", headroom?, cooldown?, error?}], choices: [{id, harness, model, effort?, roles?, description?, free?, eligible?: false, why?}], free_models?: {opencode: [...]}}`. `headroom` is `status 5hN wkN` per pool (remaining percent; `pool:` prefix unless `default`), left out when unknown, as is `signed_in`. `cooldown` is the latest `until`. `roles` is left out when it is `["worker"]`. A choice is eligible when the router would take it; otherwise `eligible: false` and `why` is `disabled`, `no account`, `account disabled`, `at cap`, `cooldown`, `no headroom` or `not eligible` (the router found no usable account for a reason the view cannot name). A choice is `free` when the catalog entry says `cost = "free"`; a model the catalog does not list is free when its id ends in `-free` or `:free` (one rule, `so_core::model_name_is_free`, shared with the generated skill). `free_models` lists the free catalog models of each harness that has an enabled account (opencode; `models refresh` updates the catalog, which is cached by file time). The supervisor builds this view when `list_harnesses` is called with `{"brief": true}`, which the bridge always does; without it the reply is the full `HarnessesView`. |
+| `read_messages` | `{messages: [{from_run, kind, body, created_at}]}`. |
+| `run_workflow` | `{id, state, result?, error?}`. |
+| `workflow_status` | `{id, name, state, result?, error?, started_at, finished_at?, steps: [{name, state, run_id?, phase?}]}`, steps in start order. |
+
+`spawn_agent` accepts `model` to pin a model, so an orchestrator can pick one of `free_models` for a simple task.
 
 Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tasks when the client declares the tasks extension. Progress goes to the task's status message, and `tasks/cancel` stops the wait without cancelling the runs. Otherwise the tools block, with progress notifications.
 
@@ -523,21 +546,25 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
 
 ## 15. CLI
 
-`superorchestrator` with no arguments opens an interactive menu: init, accounts, agents, status, open web UI, install into Claude Code, migrate. Every menu item is also a subcommand:
+`superorchestrator` with no arguments on a terminal opens the terminal UI (`tui`, below); without a terminal it prints the help. Every action in it is also a subcommand:
 
 ```
+setup [--codex N] [--claude N] [--opencode N] [--agy N] [--no-login] [--no-install] [--no-claude-md]
+                          first-run guide: init, detect harnesses, offer account import --scan,
+                          add N accounts per harness, sign in, install, doctor summary
 init                      create config dir, seed config, choices, catalog, starter agents
 install                   register the MCP server with Claude Code (claude mcp add) and other harnesses, install skills
 uninstall
 doctor                    binaries on PATH, versions, bwrap, sign-ins, socket, db, UI port
 status                    accounts and headroom, active runs, supervisor state
-account add|import|login|list|remove|enable|disable|flag
+account add [--name N] [--count K] [--login]|import|login|list|remove|enable|disable|flag
 agent create|list|show|edit|remove
 models refresh|list
 route "<task>" [--role R] [--explain]
 route eval [...]
 runs list|show|watch|cancel
 join <run> [--exec]
+tui                       full-screen terminal UI: overview, accounts, runs, setup
 worktrees list|prune
 workflow run|list|status
 config get|set|edit
@@ -547,6 +574,14 @@ exec <account> -- <args>
 mcp
 migrate [--apply]
 ```
+
+`tui` (also the bare command on a terminal) is a ratatui UI with four tabs: Overview (setup checklist with the fix for each missing item, account and run counts), Accounts (add, sign in (claude and agy in a session of their wrapper), enable or disable, flag a cooldown, remove with a typed-name confirmation, import scan), Runs (recent runs from the store refreshed every 2 s, a detail pane with the diff of a run waiting for review, cancel, open session (`o`), accept (`a` accepts and merges a run with a worktree, `A` only accepts) and reject) and Setup (the `setup` steps one at a time with live status, plus `install` and `doctor`). `?` opens help, `Tab` and `1` to `4` switch tabs, `j`/`k`/`g`/`G` or the arrow keys move, `q` or `Esc` quits from the top level. It calls the same library functions as the commands above and adds no business logic. Sign-in and join hand the terminal to the child process and restore it afterwards. The diff, cancel, open session, accept and reject use the supervisor socket and never start it; when it is not running they report that. It honors `NO_COLOR`, needs at least 60x16, redraws on resize and restores the terminal on every exit path. Without a terminal `tui` exits 2.
+
+`setup` is the first command a new user runs and is idempotent. It runs `init` (silent when nothing is created), prints the installed harnesses, offers the `account import --scan` results, asks for each installed harness how many accounts to add (default 0, or 1 when the harness has no account or importable login; claude defaults to 0 because its accounts are kept for the orchestrator and its choices are disabled, 8.2), signs in to the new accounts on a terminal (otherwise prints the commands), runs `install`, and prints a short `doctor` summary. `--yes` takes the defaults, `--codex N --claude N --opencode N --agy N` set the counts, `--no-login` and `--no-install` skip those steps, and `--no-claude-md` is passed to `install`. Accounts that are still signed out, new or from an earlier run, are offered a sign-in on a terminal and get their `account login` command printed otherwise. A run that adds nothing prints which accounts are already set up. A harness whose count was asked for but whose binary is not on `PATH` fails the run (exit 1) after the other steps. Ctrl-C at a prompt exits 130. `setup --yes --json` prints one summary object (`ok`, `created`, `imported`, `installed`, `signed_in_needed`, `doctor`). Without a terminal and without `--yes` it prints the plan and exits 0. Counts that are not asked are never added twice, so a second run changes nothing. On macOS only one agy account is added (ADR-0005).
+
+`account add <harness>` without `--name` names the account `<harness>-<n>` with the lowest free `n` from 1; a name is skipped when the account exists or when it would shadow a command on `PATH`. `--count K` creates K accounts; `--name` with `--count` above 1 is a usage error (exit 2). `--login` signs in to each new account in turn on a terminal, and prints the commands otherwise. With `--json` the result lists every created account under `accounts`.
+
+`exec`, `daemon` and `mcp` are internal (wrappers, the supervisor and MCP clients start them): they work but are hidden from `--help`, which ends with "Get started: superorchestrator setup".
 
 ## 16. Configuration
 
@@ -647,13 +682,19 @@ The supervisor sends notifications for the events listed in `notifications.on`, 
 
 ### 19.1 Skill
 
-`install` writes a `superorchestrator` skill to `~/.claude/skills/superorchestrator/` and `~/.agents/skills/superorchestrator/`. It is regenerated whenever accounts, choices or agents change. It explains:
+`install` writes two skills, each to `~/.claude/skills/<name>/` and `~/.agents/skills/<name>/`, both carrying the `<!-- superorchestrator:managed -->` marker. It removes the older single `superorchestrator` skill only when its `SKILL.md` carries the marker. `uninstall` removes both (marker-checked).
+
+`superorchestrator-cli` is static text: a guide to the command line for people and agents (setup, accounts, `status`, `doctor`, runs, `join`, `ui`, workflows, `route`, config and where troubleshooting is documented).
+
+`use-superorchestrator-mcp` is regenerated whenever accounts, choices or agents change (a refresh also writes the CLI skill when it is missing). It explains:
 - the accounts and choices that exist
 - when to call `route` versus `spawn_agent`
 - how to write a task brief with acceptance criteria and out-of-scope items
 - how to wait, message and review runs
 - how a subagent talks to its parent
 - how to check `superorchestrator status`
+
+`install` also adds a short managed block to `~/.claude/CLAUDE.md` (created if missing) between `<!-- superorchestrator:begin -->` and `<!-- superorchestrator:end -->`. It says to delegate implementation through superorchestrator, to load `use-superorchestrator-mcp` before the first delegation, and to use `superorchestrator-cli` for accounts, status and runs. Re-installing replaces the block in place, text outside it is never touched, `--no-claude-md` skips it, and `uninstall` removes only the block. The edit goes through the same backup, atomic write and `--dry-run` path as the other files.
 
 `install` also runs `claude mcp add superorchestrator -- superorchestrator mcp`. It adds the same MCP entry to the Codex, OpenCode and agy configs, without touching unrelated entries, and writes a backup of every file it changes.
 

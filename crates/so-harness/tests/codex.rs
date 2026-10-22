@@ -855,3 +855,16 @@ async fn concurrent_sends_start_one_turn_and_steer_the_other() {
         .collect();
     assert_eq!(&methods[4..], ["turn/start", "turn/steer"]);
 }
+
+#[tokio::test]
+async fn effort_thinking_is_refused_before_spawn() {
+    let rig = Rig::new();
+    let mut spec = rig.spec(&[]);
+    spec.effort = Some("thinking".into());
+    let err = driver().launch(spec).await.err().unwrap();
+    assert!(
+        err.to_string()
+            .contains("effort `thinking` is not valid for codex"),
+        "{err}"
+    );
+}

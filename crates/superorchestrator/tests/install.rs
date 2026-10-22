@@ -180,10 +180,15 @@ fn install_registers_everywhere_and_is_idempotent_then_uninstall_reverses() {
 
     // skills
     for d in [".claude", ".agents"] {
-        let skill = read(&e.home.join(d).join("skills/superorchestrator/SKILL.md"));
-        assert!(skill.starts_with("---\nname: superorchestrator\n"));
-        assert!(skill.contains("codex-acc2"));
+        let skills = e.home.join(d).join("skills");
+        let mcp = read(&skills.join("use-superorchestrator-mcp/SKILL.md"));
+        assert!(mcp.starts_with("---\nname: use-superorchestrator-mcp\n"));
+        assert!(mcp.contains("codex-acc2"));
+        let cli = read(&skills.join("superorchestrator-cli/SKILL.md"));
+        assert!(cli.starts_with("---\nname: superorchestrator-cli\n"));
+        assert!(!skills.join("superorchestrator").exists());
     }
+    assert!(read(&e.home.join(".claude/CLAUDE.md")).contains("<!-- superorchestrator:begin -->"));
 
     // backups: one per pre-existing changed file (files we created have none), mirrored under legacy-backup/<ts>/
     let b = backups(&e);
@@ -228,8 +233,15 @@ fn install_registers_everywhere_and_is_idempotent_then_uninstall_reverses() {
     assert!(v["mcpServers"].get("superorchestrator").is_none());
     assert_eq!(v["mcpServers"]["hr"]["command"], "h");
     for d in [".claude", ".agents"] {
-        assert!(!e.home.join(d).join("skills/superorchestrator").exists());
+        for n in [
+            "superorchestrator",
+            "use-superorchestrator-mcp",
+            "superorchestrator-cli",
+        ] {
+            assert!(!e.home.join(d).join("skills").join(n).exists());
+        }
     }
+    assert!(!e.home.join(".claude/CLAUDE.md").exists());
 }
 
 #[test]
@@ -268,6 +280,218 @@ fn foreign_skill_is_left_alone_and_missing_claude_is_skipped() {
             .read_dir()
             .is_err()
     );
+}
+
+/// A skill of the new name that we did not write is left alone too.
+#[test]
+fn foreign_new_named_skill_is_left_alone() {
+    let e = Env::new();
+    e.init();
+    let skill = e.home.join(".claude/skills/superorchestrator-cli/SKILL.md");
+    std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
+    std::fs::write(&skill, "mine").unwrap();
+    let out = cmd(&e).arg("install").assert().success();
+    assert!(stdout(&out).contains("not managed"), "{}", stdout(&out));
+    assert_eq!(read(&skill), "mine");
+    cmd(&e).arg("uninstall").assert().success();
+    assert_eq!(read(&skill), "mine");
+    // The managed MCP skill beside it was still written and removed.
+    assert!(
+        !e.home
+            .join(".claude/skills/use-superorchestrator-mcp")
+            .exists()
+    );
+}
+
+#[test]
+fn the_old_skill_is_removed_only_when_it_carries_our_marker() {
+    let e = Env::new();
+    e.init();
+    let marker = so_agents::skill::MARKER;
+    let managed = e.home.join(".claude/skills/superorchestrator/SKILL.md");
+    let foreign = e.home.join(".agents/skills/superorchestrator/SKILL.md");
+    for (p, text) in [
+        (&managed, format!("old\n{marker}\n")),
+        (&foreign, "my own skill\n".to_string()),
+    ] {
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, text).unwrap();
+    }
+    cmd(&e).arg("install").assert().success();
+    assert!(!managed.parent().unwrap().exists());
+    assert_eq!(read(&foreign), "my own skill\n");
+    assert!(
+        e.home
+            .join(".claude/skills/use-superorchestrator-mcp/SKILL.md")
+            .is_file()
+    );
+    // The removed file was backed up.
+    assert!(
+        backups(&e)
+            .iter()
+            .any(|p| p.ends_with("skills/superorchestrator/SKILL.md"))
+    );
+}
+
+// ------------------------------------------------------------ the CLAUDE.md block
+
+const BEGIN: &str = "<!-- superorchestrator:begin -->";
+const END: &str = "<!-- superorchestrator:end -->";
+
+fn claude_md(e: &Env) -> PathBuf {
+    e.home.join(".claude/CLAUDE.md")
+}
+
+#[test]
+fn claude_md_block_is_created_with_its_parent_dir() {
+    let e = Env::new();
+    e.init();
+    assert!(!e.home.join(".claude").exists());
+    let out = cmd(&e).arg("install").assert().success();
+    let text = stdout(&out);
+    assert!(text.contains("claude.md"), "{text}");
+    let md = read(&claude_md(&e));
+    assert!(
+        md.starts_with(&format!("{BEGIN}\n## Delegation\n\n")),
+        "{md}"
+    );
+    assert!(md.contains("Load the `use-superorchestrator-mcp` skill before the first delegation."));
+    assert!(md.contains("Use the `superorchestrator-cli` skill for accounts, status and runs"));
+    assert!(md.contains("leave `harness: auto` unless there is a reason."));
+    assert!(md.ends_with(&format!("{END}\n")));
+}
+
+#[test]
+fn claude_md_block_goes_after_existing_text_and_an_empty_file_gets_only_the_block() {
+    let e = Env::new();
+    e.init();
+    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
+    std::fs::write(claude_md(&e), "").unwrap();
+    cmd(&e).arg("install").assert().success();
+    assert!(read(&claude_md(&e)).starts_with(BEGIN));
+
+    std::fs::write(claude_md(&e), "# Mine\n\n- keep\n").unwrap();
+    cmd(&e).arg("install").assert().success();
+    let md = read(&claude_md(&e));
+    assert!(
+        md.starts_with(&format!("# Mine\n\n- keep\n\n{BEGIN}\n")),
+        "{md}"
+    );
+}
+
+#[test]
+fn claude_md_block_is_replaced_in_place_and_is_idempotent() {
+    let e = Env::new();
+    e.init();
+    let before = format!("top\n\n{BEGIN}\nstale\n{END}\n\nbottom\n");
+    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
+    std::fs::write(claude_md(&e), &before).unwrap();
+    cmd(&e).arg("install").assert().success();
+    let md = read(&claude_md(&e));
+    assert!(
+        md.starts_with("top\n\n") && md.ends_with("\n\nbottom\n"),
+        "{md}"
+    );
+    assert!(!md.contains("stale") && md.contains("## Delegation"));
+    assert_eq!(md.matches(BEGIN).count(), 1);
+
+    let backups_before = backups(&e).len();
+    let out = cmd(&e).arg("install").assert().success();
+    assert_eq!(read(&claude_md(&e)), md);
+    assert!(
+        stdout(&out)
+            .lines()
+            .any(|l| l.starts_with("unchanged") && l.contains("claude.md")),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(
+        backups(&e).len(),
+        backups_before,
+        "an unchanged file is not backed up again"
+    );
+}
+
+#[test]
+fn claude_md_edit_is_backed_up_and_uninstall_removes_only_the_block() {
+    let e = Env::new();
+    e.init();
+    let original = "# Mine\n\n- keep\n";
+    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
+    std::fs::write(claude_md(&e), original).unwrap();
+    cmd(&e).arg("install").assert().success();
+    let backup = backups(&e)
+        .into_iter()
+        .find(|p| p.ends_with(".claude/CLAUDE.md"))
+        .unwrap();
+    assert_eq!(read(&backup), original);
+
+    cmd(&e).arg("uninstall").assert().success();
+    assert_eq!(read(&claude_md(&e)), original);
+
+    // Text added after the block survives too, and a file with no block is not touched.
+    cmd(&e).arg("install").assert().success();
+    let with_tail = format!("{}\n- later\n", read(&claude_md(&e)));
+    std::fs::write(claude_md(&e), &with_tail).unwrap();
+    cmd(&e).arg("uninstall").assert().success();
+    assert_eq!(read(&claude_md(&e)), format!("{original}\n- later\n"));
+    let out = cmd(&e).arg("uninstall").assert().success();
+    assert!(stdout(&out).contains("unchanged"));
+}
+
+#[test]
+fn uninstall_deletes_a_claude_md_that_only_held_the_block() {
+    let e = Env::new();
+    e.init();
+    cmd(&e).arg("install").assert().success();
+    assert!(claude_md(&e).is_file());
+    cmd(&e).arg("uninstall").assert().success();
+    assert!(!claude_md(&e).exists());
+}
+
+#[test]
+fn no_claude_md_skips_the_block() {
+    let e = Env::new();
+    e.init();
+    let out = cmd(&e)
+        .args(["install", "--no-claude-md"])
+        .assert()
+        .success();
+    assert!(!stdout(&out).contains("claude.md"));
+    assert!(!claude_md(&e).exists());
+    assert!(
+        e.home
+            .join(".claude/skills/use-superorchestrator-mcp/SKILL.md")
+            .is_file()
+    );
+}
+
+#[test]
+fn dry_run_reports_the_claude_md_block_without_writing() {
+    let e = Env::new();
+    e.init();
+    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
+    std::fs::write(claude_md(&e), "# Mine\n").unwrap();
+    let out = cmd(&e).args(["install", "--dry-run"]).assert().success();
+    let text = stdout(&out);
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("update") && l.contains("claude.md")),
+        "{text}"
+    );
+    assert_eq!(read(&claude_md(&e)), "# Mine\n");
+    assert!(backups(&e).is_empty());
+}
+
+#[test]
+fn an_unterminated_block_is_reported_and_the_file_kept() {
+    let e = Env::new();
+    e.init();
+    let broken = format!("{BEGIN}\nno end\n");
+    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
+    std::fs::write(claude_md(&e), &broken).unwrap();
+    cmd(&e).arg("install").assert().failure();
+    assert_eq!(read(&claude_md(&e)), broken);
 }
 
 #[test]
@@ -438,4 +662,58 @@ fn arguments_must_match_exactly_to_count_as_registered() {
     .unwrap();
     cmd(&e).arg("install").assert().success();
     assert!(!log_lines(&log).is_empty());
+}
+
+#[test]
+fn ambiguous_markers_are_reported_and_the_file_kept() {
+    let e = Env::new();
+    e.init();
+    let text = format!("```\n{BEGIN}\n```\n\n{BEGIN}\nx\n{END}\n");
+    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
+    std::fs::write(claude_md(&e), &text).unwrap();
+    let out = cmd(&e).arg("install").assert().failure();
+    assert!(
+        stdout(&out).contains("found 2 superorchestrator blocks"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(read(&claude_md(&e)), text);
+    cmd(&e).arg("uninstall").assert().failure();
+    assert_eq!(read(&claude_md(&e)), text);
+}
+
+#[test]
+fn uninstall_empties_a_symlinked_claude_md_instead_of_unlinking_it() {
+    let e = Env::new();
+    e.init();
+    let real = e.home.join("dotfiles/CLAUDE.md");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::write(&real, "").unwrap();
+    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&real, claude_md(&e)).unwrap();
+    cmd(&e).arg("install").assert().success();
+    assert!(read(&real).contains(BEGIN));
+    cmd(&e).arg("uninstall").assert().success();
+    assert!(claude_md(&e).is_symlink());
+    assert!(real.is_file());
+    assert_eq!(read(&real), "");
+}
+
+#[test]
+fn a_crlf_claude_md_keeps_its_line_endings_and_reinstall_changes_nothing() {
+    let e = Env::new();
+    e.init();
+    std::fs::create_dir_all(e.home.join(".claude")).unwrap();
+    std::fs::write(claude_md(&e), "# Mine\r\n- keep\r\n").unwrap();
+    cmd(&e).arg("install").assert().success();
+    let md = read(&claude_md(&e));
+    assert_eq!(
+        md.matches("\r\n").count(),
+        md.matches('\n').count(),
+        "{md:?}"
+    );
+    cmd(&e).arg("install").assert().success();
+    assert_eq!(read(&claude_md(&e)), md);
+    cmd(&e).arg("uninstall").assert().success();
+    assert_eq!(read(&claude_md(&e)), "# Mine\r\n- keep\r\n");
 }

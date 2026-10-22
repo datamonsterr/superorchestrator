@@ -15,7 +15,7 @@ pub use codex::{CodexControl, CodexDriver};
 pub use driver::{
     AgentLaunch, AnyDriver, Channel, Driver, DriverConfig, DriverError, Endpoint, HarnessEvent,
     JoinCommand, JoinInfo, LaunchSpec, McpServerSpec, RateLimits, RunControl, RunHandle,
-    ShutdownOutcome, classify_common,
+    ShutdownOutcome, check_effort, classify_common,
 };
 pub use opencode::{EventMapper, OpencodeControl, OpencodeDriver};
 pub use process::{

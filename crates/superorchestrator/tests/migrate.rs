@@ -37,6 +37,7 @@ fn seed(e: &Env) {
         "#!/bin/sh\nexec codex-old\n",
     );
     // Old tooling to remove.
+    std::fs::create_dir_all(h.join(".claude/projects")).unwrap(); // history of real use
     write(&h.join(".claude/orchestrator/run.sh"), "old orchestrate");
     write(&h.join(".claude/orchestrator-state.json"), "{}");
     write(&h.join(".claude/orchestrator-state-2.json"), "{}");
@@ -267,11 +268,11 @@ fn apply_performs_every_step_with_backups() {
 
     // MCP and skill installed.
     assert!(
-        h.join(".claude/skills/superorchestrator/SKILL.md")
+        h.join(".claude/skills/use-superorchestrator-mcp/SKILL.md")
             .is_file()
     );
     assert!(
-        h.join(".agents/skills/superorchestrator/SKILL.md")
+        h.join(".agents/skills/use-superorchestrator-mcp/SKILL.md")
             .is_file()
     );
 
@@ -616,7 +617,7 @@ fn installing_the_skill_does_not_create_a_claude_account_on_the_next_run() {
         .success();
     assert!(
         e.home
-            .join(".claude/skills/superorchestrator/SKILL.md")
+            .join(".claude/skills/use-superorchestrator-mcp/SKILL.md")
             .is_file()
     );
     let before = snapshot(&e);

@@ -13,7 +13,7 @@ use so_core::{AccountFile, Choice, Config, Harness};
 use so_store::Store;
 
 use crate::catalog::Catalog;
-use crate::eligible::{Candidate, Snapshot, apply_claude_rank, candidate, eligible};
+use crate::eligible::{Candidate, Snapshot, apply_claude_rank, candidate, effort_skips, eligible};
 use crate::error::{Result, RouterError};
 use crate::heuristic::{
     Complexity, ScoreInputs, effort_gap, estimate_complexity, harness_priority, score,
@@ -166,6 +166,7 @@ fn pinned_candidates<'a>(
                 .role
                 .as_ref()
                 .is_none_or(|r| c.roles.iter().any(|x| x == r))
+            && c.effort_problem().is_none()
             && pins.harness.is_none_or(|h| c.harness == h)
             && pins.model.as_ref().is_none_or(|m| &c.model == m)
             && pins
@@ -286,6 +287,30 @@ fn alternative(cand: &Candidate<'_>, score: Option<f64>) -> RouteAlternative {
 }
 
 pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<RouteOutcome> {
+    let role = params.role.clone().unwrap_or_else(|| "worker".to_string());
+    let skips = if parse_pins(params).is_ok_and(|p| p.any()) {
+        Vec::new()
+    } else {
+        effort_skips(&ctx.config.choices, &role, &params.exclude)
+    };
+    let note =
+        (!skips.is_empty()).then(|| format!(" Skipped, invalid effort: {}.", skips.join("; ")));
+    match route_inner(ctx, params).await {
+        Ok(mut out) => {
+            if let Some(n) = &note {
+                out.result.rationale.push_str(n);
+            }
+            Ok(out)
+        }
+        Err(RouterError::NoEligible(m)) => Err(RouterError::NoEligible(match &note {
+            Some(n) => format!("{m}{n}"),
+            None => m,
+        })),
+        Err(e) => Err(e),
+    }
+}
+
+async fn route_inner(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<RouteOutcome> {
     if params.prompt.trim().is_empty() || params.prompt.chars().count() > MAX_PROMPT_CHARS {
         return Err(RouterError::Invalid(format!(
             "prompt must be 1 to {MAX_PROMPT_CHARS} characters"

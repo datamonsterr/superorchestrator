@@ -758,6 +758,14 @@ impl Store {
         )
     }
 
+    /// The newest runs across all sessions, newest first.
+    pub fn list_recent_runs(&self, limit: usize) -> Result<Vec<RunRow>> {
+        self.query_runs(
+            &format!("SELECT {COLS} FROM runs ORDER BY created_at DESC, id DESC LIMIT ?1"),
+            [limit as i64],
+        )
+    }
+
     /// Runs not in a terminal state, including `queued` (unlike the slot counts).
     pub fn list_active_runs(&self, limit: usize) -> Result<Vec<RunRow>> {
         let active = &*ACTIVE;
@@ -975,6 +983,30 @@ pub(crate) mod tests {
         let sess = session(None);
         s.insert_session(&sess).unwrap();
         (s, sess.id)
+    }
+
+    #[test]
+    fn recent_runs_are_newest_first_across_sessions_and_limited() {
+        let (s, sid) = setup();
+        let other = session(None);
+        s.insert_session(&other).unwrap();
+        let base = crate::codec::now();
+        let mut ids = Vec::new();
+        for (i, sess) in [&sid, &other.id, &sid].into_iter().enumerate() {
+            let mut r = run(sess, None);
+            r.created_at = base + chrono::Duration::seconds(i as i64);
+            s.insert_run(&r).unwrap();
+            ids.push(r.id);
+        }
+        let got: Vec<String> = s
+            .list_recent_runs(10)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        assert_eq!(got, vec![ids[2].clone(), ids[1].clone(), ids[0].clone()]);
+        assert_eq!(s.list_recent_runs(2).unwrap().len(), 2);
+        assert!(s.list_recent_runs(0).unwrap().is_empty());
     }
 
     #[test]

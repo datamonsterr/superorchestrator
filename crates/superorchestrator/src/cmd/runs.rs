@@ -6,8 +6,8 @@ use std::process::{Command, ExitCode};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use so_core::proto::{
-    JoinResult, METHOD_CANCEL_AGENT, METHOD_GET_RUN, METHOD_JOIN_RUN, METHOD_WAIT_AGENT, NOT_FOUND,
-    Notification, RunRef, RunView, WaitParams, WaitResult,
+    GetRunParams, JoinResult, METHOD_CANCEL_AGENT, METHOD_GET_RUN, METHOD_JOIN_RUN,
+    METHOD_WAIT_AGENT, NOT_FOUND, Notification, RunRef, RunView, WaitParams, WaitResult,
 };
 use so_core::{Event, Paths, RunState};
 use so_store::{RunRow, SessionFilter};
@@ -78,8 +78,8 @@ pub(crate) fn rpc(e: ClientError) -> anyhow::Error {
 pub fn run(ctx: &Ctx, cmd: RunsCmd) -> Result<ExitCode> {
     match cmd {
         RunsCmd::List { all } => list(ctx, all).map(|()| ExitCode::SUCCESS),
-        RunsCmd::Show { run } => runtime()?
-            .block_on(show(ctx, &run))
+        RunsCmd::Show { run, diff } => runtime()?
+            .block_on(show(ctx, &run, diff))
             .map(|()| ExitCode::SUCCESS),
         RunsCmd::Watch(WatchArgs {
             workflow: Some(id), ..
@@ -161,8 +161,19 @@ fn list(ctx: &Ctx, all: bool) -> Result<()> {
 }
 
 async fn get(client: &SupervisorClient, run: &str) -> Result<RunView> {
+    get_with(client, run, false).await
+}
+
+async fn get_with(client: &SupervisorClient, run: &str, diff: bool) -> Result<RunView> {
     client
-        .call(METHOD_GET_RUN, RunRef { run: run.into() })
+        .call(
+            METHOD_GET_RUN,
+            GetRunParams {
+                run: run.into(),
+                diff,
+                verbose: false,
+            },
+        )
         .await
         .map_err(rpc)
 }
@@ -200,9 +211,9 @@ fn message_line(m: &so_core::proto::MessageView, run: &str) -> String {
     )
 }
 
-async fn show(ctx: &Ctx, run: &str) -> Result<()> {
+async fn show(ctx: &Ctx, run: &str, diff: bool) -> Result<()> {
     let client = connect(ctx).await?;
-    let v = get(&client, run).await?;
+    let v = get_with(&client, run, diff).await?;
     ctx.emit(&v, |w| {
         writeln!(w, "run:      {}", v.run_id)?;
         writeln!(w, "state:    {}", v.state)?;
@@ -242,6 +253,14 @@ async fn show(ctx: &Ctx, run: &str) -> Result<()> {
         writeln!(w, "events:")?;
         for e in &v.recent_events {
             writeln!(w, "  {}", event_line(e))?;
+        }
+        if let Some(d) = &v.diff {
+            writeln!(w, "diff:     {} since {}", d.branch, d.base)?;
+            writeln!(w, "{}", d.stat)?;
+            writeln!(w, "{}", d.patch)?;
+            if d.truncated {
+                writeln!(w, "(patch truncated at 64 KiB)")?;
+            }
         }
         Ok(())
     })

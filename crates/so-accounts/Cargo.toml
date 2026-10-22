@@ -12,6 +12,7 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+so-agents = { path = "../so-agents" }
 so-core = { path = "../so-core" }
 thiserror.workspace = true
 toml.workspace = true

@@ -41,13 +41,16 @@ fn init_prints_the_next_steps_in_order() {
         tail.find(needle)
             .unwrap_or_else(|| panic!("{needle} missing: {tail}"))
     };
-    assert!(at("account import --scan") < at("superorchestrator install"));
-    assert!(at("superorchestrator install") < at("superorchestrator doctor"));
+    assert!(
+        tail.trim_start().starts_with("1. superorchestrator setup"),
+        "{tail}"
+    );
+    assert!(at("superorchestrator setup") < at("superorchestrator doctor"));
     assert!(at("superorchestrator doctor") < at("Claude Code and ask"));
     // JSON output carries them too, and a repeat run still prints them.
     let json = stdout(&e.cmd().args(["--json", "init"]).assert().success());
     let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-    assert_eq!(v["next_steps"].as_array().unwrap().len(), 4);
+    assert_eq!(v["next_steps"].as_array().unwrap().len(), 3);
     assert!(stdout(&e.cmd().arg("init").assert().success()).contains("Next steps:"));
 }
 

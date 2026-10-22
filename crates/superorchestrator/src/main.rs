@@ -9,6 +9,7 @@ mod output;
 mod redact;
 mod register;
 mod skill;
+mod tui;
 mod views;
 
 use std::process::ExitCode;
@@ -44,7 +45,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     let ctx = Ctx::new(config_dir, json, yes)?;
     let Some(command) = command else {
         if interactive() {
-            cmd::menu::run(&ctx)?;
+            tui::run(&ctx)?;
         } else {
             Cli::command().print_help()?;
             println!();
@@ -53,6 +54,8 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     };
     let ok = |r: Result<()>| r.map(|()| ExitCode::SUCCESS);
     match command {
+        Command::Setup(a) => cmd::setup::run(&ctx, a),
+        Command::Tui => ok(tui::run(&ctx)),
         Command::Init => ok(cmd::init::run(&ctx)),
         Command::Config(c) => cmd::config::run(&ctx, c),
         Command::Account(a) => cmd::account::run(&ctx, a),
@@ -62,7 +65,12 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Exec(e) => match cmd::exec::run(&ctx, &e.account, &e.args)? {},
         Command::Daemon(d) => ok(cmd::daemon::run(&ctx, d.foreground)),
         Command::Status => ok(cmd::status::run(&ctx)),
-        Command::Install(a) => ok(cmd::install::install(&ctx, a.force, a.dry_run)),
+        Command::Install(a) => ok(cmd::install::install(
+            &ctx,
+            a.force,
+            a.dry_run,
+            !a.no_claude_md,
+        )),
         Command::Uninstall(a) => ok(cmd::install::uninstall(&ctx, a.dry_run)),
         Command::Mcp(a) => ok(cmd::mcp::run(&ctx, &a.client)),
         Command::Doctor => cmd::doctor::run(&ctx),

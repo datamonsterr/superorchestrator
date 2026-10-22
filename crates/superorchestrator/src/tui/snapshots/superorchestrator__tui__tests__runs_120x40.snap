@@ -1,0 +1,44 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(& mut a, w, h)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs !1     4 Setup
+    RUN      STATE            ACCOUNT            AGE   TITLE
+    0190aaaa ● running        codex-1            45s   Refactor the parser
+  ▸ 0190bbbb ! pending_review codex-2            6m    Add retry to the HTTP client
+    0190cccc ✓ succeeded      opencode-1         2h    Write the changelog entry for 0.1.0
+    0190dddd ✗ failed         codex-1            1d    Migrate the schema
+    0190eeee ✓ succeeded      codex-1            1d    Fix the flaky timer test
+    0190eeee ✓ succeeded      codex-1            1d    Bump the lockfile
+    0190eeee - cancelled      codex-1            1d    Try the new parser
+    0190eeee ✓ succeeded      codex-1            1d    Document the CLI flags
+    0190eeee ✗ failed         codex-1            1d    Port the build script
+    0190eeee ✓ succeeded      codex-1            1d    Rename the config keys
+    0190eeee ✓ succeeded      codex-1            1d    Add a smoke test
+    0190eeee ✓ succeeded      codex-1            1d    Tidy the imports
+    0190eeee ✓ succeeded      codex-1            2d    Update the README
+    0190eeee ✓ succeeded      codex-1            2d    Remove dead code
+    0190eeee ✓ succeeded      codex-1            2d    Split the big module
+    0190eeee ✓ succeeded      codex-1            2d    Speed up the tests
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ updated 3s ago
+ j/k move  Enter detail  o join  a accept  r reject  c cancel  ? help  q quit

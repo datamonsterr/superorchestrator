@@ -100,10 +100,7 @@ fn setting_choices_refreshes_the_skill() {
         ],
     );
     let s = skill(&e);
-    assert!(
-        s.contains("`mine`: codex / m1 (high), roles: worker. Custom"),
-        "{s}"
-    );
+    assert!(s.contains("`mine`: codex / m1 (high). Custom"), "{s}");
 }
 
 #[test]

@@ -153,7 +153,7 @@ async fn wait(f: &Fixture) -> Value {
 async fn an_answered_question_is_sent_back_and_the_wait_resumes() {
     let f = fixture(Some(ElicitationAction::Accept)).await;
     let r = wait(&f).await;
-    assert_eq!(r["finished"], json!(["abcdefgh1234"]));
+    assert_eq!(r["finished"][0]["run_id"], "abcdefgh1234");
     let asked = f.person.asked.lock().unwrap().clone();
     assert_eq!(asked.len(), 1);
     assert!(asked[0].contains("Which database?") && asked[0].contains("abcdefgh"));
@@ -171,7 +171,7 @@ async fn an_answered_question_is_sent_back_and_the_wait_resumes() {
 async fn a_declined_question_stays_in_the_updates() {
     let f = fixture(Some(ElicitationAction::Decline)).await;
     let r = wait(&f).await;
-    assert_eq!(r["updates"][0]["type"], "question_asked");
+    assert_eq!(r["updates"][0]["type"], "question");
     assert!(f.sent.lock().unwrap().is_empty());
     assert_eq!(*f.waits.lock().unwrap(), 1);
     f.sup.shutdown().await;
@@ -181,7 +181,8 @@ async fn a_declined_question_stays_in_the_updates() {
 async fn a_client_without_elicitation_gets_the_question() {
     let f = fixture(None).await;
     let r = wait(&f).await;
-    assert_eq!(r["updates"][0]["data"]["question"], "Which database?");
+    assert_eq!(r["updates"][0]["question"], "Which database?");
+    assert_eq!(r["updates"][0]["options"], json!(["a", "b"]));
     assert!(f.person.asked.lock().unwrap().is_empty());
     assert!(f.sent.lock().unwrap().is_empty());
     f.sup.shutdown().await;

@@ -10,7 +10,7 @@ use so_core::{EventType, MessageKind, RunState, new_id};
 use so_store::{MessageRow, RunRow};
 
 use super::lifecycle::excerpt;
-use super::{R, RunManager, lock, rpc};
+use super::{LockKind, R, RunManager, lock, rpc};
 use crate::dispatch::ConnCtx;
 
 const MESSAGES_LIMIT: usize = 1000;
@@ -210,6 +210,19 @@ impl RunManager {
         }
         let row = self.resolve_run(&p.run).await?;
         Self::same_session(ctx, &row)?;
+        // A message to a run at the review gate acts like a reject: it takes the run's
+        // review turn (always before the gate lock), so it waits for an accept or reject
+        // in flight and then sees the state that left behind.
+        let _review_turn = if row.state == RunState::PendingReview {
+            Some(self.lock_run(LockKind::Review, &row.id).await)
+        } else {
+            None
+        };
+        let row = if _review_turn.is_some() {
+            self.resolve_run(&row.id).await?
+        } else {
+            row
+        };
         if row.state == RunState::Cancelled {
             return Err(rpc(INVALID_REQUEST, "the run was cancelled"));
         }

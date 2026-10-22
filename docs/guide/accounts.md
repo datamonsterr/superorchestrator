@@ -17,7 +17,7 @@ enabled = true
 pools = ["default"]          # agy: ["gemini", "claude"]
 ```
 
-A name matches `^[a-z][a-z0-9-]{1,31}$`. The name is also the wrapper command, so it must not be `codex`, `agy`, `opencode` or `claude`.
+A name matches `^[a-z][a-z0-9-]{1,31}$`. The name is also the wrapper command, so it must not be `codex`, `agy`, `opencode` or `claude`, and it must not shadow another command: `account add` and `account import` fail when the name already resolves on `PATH` to an executable that is not one of our wrappers (for example `ls`).
 
 ## Credential homes
 
@@ -45,7 +45,7 @@ The wrapper sets the account's environment, records an interactive session, and 
 
 | Command | What it does |
 |---|---|
-| `account add <harness> --name <name> [--home PATH]` | Creates the home, the file and the wrapper |
+| `account add <harness> [--name <name>] [--count K] [--home PATH] [--login]` | Creates the home, the file and the wrapper. Without `--name`, names are `<harness>-<n>` with the lowest free `n`. |
 | `account import <name> --harness H --home PATH` | Links an existing home |
 | `account import --scan` | Finds existing homes and offers to import each (`--yes` imports all) |
 | `account login <name>` | Runs the harness login with the account's environment |
@@ -54,7 +54,21 @@ The wrapper sets the account's environment, records an interactive session, and 
 | `account enable <name>`, `account disable <name>` | Switch routing on or off |
 | `account flag <name> [--pool P] --hours N` | Manual cooldown. Also `--until <RFC 3339>` and `--clear`. |
 
-`--scan` looks for `~/.codex`, `~/.codex-accN`, `~/.agent-farm/profiles/agy_worker_N/.gemini`, `~/.local/share/opencode` and `~/.claude`.
+`account add codex --count 3` creates `codex-1`, `codex-2` and `codex-3`; a later run fills the first free number. A number is skipped when the account exists or the name would shadow a command on `PATH`. `--name` names one account, so it cannot be combined with `--count` above 1. `--login` signs in to each new account in turn when stdin is a terminal, and prints the commands otherwise.
+
+## Setup
+
+`superorchestrator setup` does the first-run work in one guided pass: it creates the config, lists the installed harnesses, offers the logins it finds (`account import --scan`), asks how many accounts to add for each harness, signs in, runs `install` and prints a `doctor` summary. Run it again any time; it adds nothing unless you ask for more.
+
+```
+superorchestrator setup                       # prompts (needs a terminal)
+superorchestrator setup --yes                 # one account for each harness that has none
+superorchestrator setup --yes --codex 3 --opencode 2 --no-login
+```
+
+Claude accounts are kept for the orchestrator. `setup` adds none by default (`--claude N` adds them), and the `claude-sonnet` and `claude-haiku` choices stay disabled, so routing never spends them. To let routing use them as a last resort, run `superorchestrator config edit` and set `enabled = true` on those choices. Without a terminal and without `--yes`, `setup` prints what it would do and changes nothing.
+
+`--scan` looks for `~/.codex`, `~/.codex-accN`, `~/.agent-farm/profiles/agy_worker_N/.gemini`, `~/.local/share/opencode` and `~/.claude`. `--scan` offers homes you have signed in to: a home counts only when it holds the harness's auth file (checked by existence, never read). Directories that `install` or a harness probe leave behind, such as `~/.claude/backups` or `~/.local/share/opencode/log`, are not offered. Claude may keep its login in the keychain, so `~/.claude` also counts when it has a `projects` directory.
 
 ## Logging in, per harness
 

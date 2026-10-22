@@ -19,7 +19,7 @@ enabled = true
 
 `init` seeds a set of choices. Codex choices start enabled. A choice with no signed-in account is skipped at routing time, so adding a Codex account is enough to use them. Claude choices start disabled. Set `enabled = true` to let auto routing use them as a last resort. Only you change `enabled`; `init` never rewrites it after the first run.
 
-Edit choices with `superorchestrator config edit`, or on the Choices page of the web UI. The installed skill lists enabled choices and refreshes when they change.
+Edit choices with `superorchestrator config edit`, or on the Choices page of the web UI. The installed `use-superorchestrator-mcp` skill lists enabled choices and refreshes when they change.
 
 ## Previewing a route
 
@@ -27,7 +27,7 @@ Edit choices with `superorchestrator config edit`, or on the Choices page of the
 superorchestrator route "Rename the foo module to bar" --explain
 ```
 
-`route` previews only. It reserves nothing. Use `--role` to route for another role (default `worker`). The MCP tool `route` does the same.
+`route` previews only. It reserves nothing. The task needs no quotes: `route fix a typo in README` routes "fix a typo in README". A task that starts with `eval` or `-` needs `--` first, as in `route -- eval the parser`, because `route eval` is the evaluation command. Use `--role` to route for another role (default `worker`). The MCP tool `route` does the same.
 
 ## How the router decides
 
@@ -88,6 +88,12 @@ When a run fails with a quota, rate-limit or auth error, that account (and pool)
 To test it by hand, flag an account: `superorchestrator account flag codex-acc1 --hours 1`. The router skips it.
 
 ## Models catalog
+
+### Effort values
+
+The router checks each choice's `effort` against what its harness accepts: claude and agy take `low|medium|high|xhigh|max`, codex takes `minimal|low|medium|high|xhigh|max|ultra`, and opencode passes it on as a provider-specific variant without checking. A choice with any other value is skipped when routing (the route rationale names it) and `superorchestrator doctor` reports it under "choice efforts". Change the value in `config.toml` to fix it.
+
+`thinking` is a special value for agy. Some agy models are the thinking variant themselves (`claude-sonnet-4-6` is "Claude Sonnet 4.6 (Thinking)"), so there is no effort to pass. `effort = "thinking"` tells the router to rank the choice with the top effort tier, and the agy driver launches without `--effort`. Use it only on agy choices.
 
 `models.toml` lists known models per harness, with tier, efforts, pool and cost. A default ships in the binary. `superorchestrator models refresh` collects models from the harness CLIs and models.dev. `superorchestrator models list` prints them. The catalog is for discovery and validation. It never edits your choices, and `models refresh` tells you about models that no choice uses.
 

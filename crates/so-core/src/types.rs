@@ -68,6 +68,55 @@ str_enum!(Harness, CoreError::UnknownHarness, {
     Claude => "claude",
 });
 
+/// The router-level effort hint for a model that reasons by itself (its model id is the
+/// thinking variant). No harness takes it as a flag value: `agy` drivers launch without
+/// `--effort` (ADR-0004), and the router ranks it with the top effort tier.
+pub const EFFORT_THINKING: &str = "thinking";
+
+impl Harness {
+    /// Efforts the harness CLI accepts as a flag or config value, from its help on this
+    /// machine (ADR-0004). `None` means the value is provider-specific and not validated
+    /// (opencode `--variant`).
+    pub fn accepted_efforts(self) -> Option<&'static [&'static str]> {
+        match self {
+            Harness::Claude => Some(&["low", "medium", "high", "xhigh", "max"]),
+            // `thinking` is the hint above, dropped at launch.
+            Harness::Agy => Some(&["low", "medium", "high", "xhigh", "max", EFFORT_THINKING]),
+            Harness::Codex => Some(&["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]),
+            Harness::Opencode => None,
+        }
+    }
+
+    /// Why `effort` cannot be used with this harness, or `None` when it can.
+    pub fn effort_problem(self, effort: &str) -> Option<String> {
+        let ok = self.accepted_efforts()?;
+        if ok.contains(&effort) {
+            return None;
+        }
+        let list = ok
+            .iter()
+            .filter(|e| **e != EFFORT_THINKING)
+            .copied()
+            .collect::<Vec<_>>()
+            .join("|");
+        Some(format!(
+            "effort `{effort}` is not valid for {self} ({list})"
+        ))
+    }
+
+    /// The effort to pass to the harness CLI: the router hint is dropped.
+    pub fn launch_effort(self, effort: Option<&str>) -> Option<&str> {
+        effort.filter(|e| *e != EFFORT_THINKING)
+    }
+}
+
+impl Choice {
+    /// Why this choice cannot launch because of its effort, or `None`.
+    pub fn effort_problem(&self) -> Option<String> {
+        self.harness.effort_problem(self.effort.as_deref()?)
+    }
+}
+
 /// Lifecycle state of a run (SPEC 7.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -172,6 +221,13 @@ pub struct Choice {
     pub description: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+/// Whether a model id names itself free: a `-free` or `:free` suffix. The one name rule behind
+/// the catalog's cost inference and the generated skill; a catalog entry with an explicit cost
+/// overrides it (see `Catalog::is_free`).
+pub fn model_name_is_free(model: &str) -> bool {
+    model.ends_with("-free") || model.ends_with(":free")
 }
 
 /// Health of an (account, pool) headroom record.
@@ -372,6 +428,25 @@ pub struct Event {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn effort_validation_per_harness() {
+        assert!(Harness::Agy.effort_problem("thinking").is_none());
+        assert!(Harness::Agy.effort_problem("max").is_none());
+        assert_eq!(
+            Harness::Claude.effort_problem("thinking").unwrap(),
+            "effort `thinking` is not valid for claude (low|medium|high|xhigh|max)"
+        );
+        assert_eq!(
+            Harness::Agy.effort_problem("bogus").unwrap(),
+            "effort `bogus` is not valid for agy (low|medium|high|xhigh|max)"
+        );
+        assert!(Harness::Codex.effort_problem("minimal").is_none());
+        assert!(Harness::Codex.effort_problem("thinking").is_some());
+        assert!(Harness::Opencode.effort_problem("anything").is_none());
+        assert_eq!(Harness::Agy.launch_effort(Some("thinking")), None);
+        assert_eq!(Harness::Agy.launch_effort(Some("high")), Some("high"));
+    }
+
     use super::*;
     use RunState::*;
 

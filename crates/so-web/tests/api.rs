@@ -2131,7 +2131,7 @@ async fn mutations_refresh_an_installed_skill_and_only_an_installed_one() {
     });
     let (s, _) = send_json(&f.app, "PUT", "/api/v1/choices", body).await;
     assert_eq!(s, StatusCode::OK);
-    assert!(skill().contains("`codex-high`: codex / gpt (high), roles: worker. d"));
+    assert!(skill().contains("`codex-high`: codex / gpt (high). d"));
     // Both files follow.
     assert_eq!(skill(), std::fs::read_to_string(&files[1]).unwrap());
 }

@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 80, 24)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs !1     4 Setup
+    RUN      STATE            ACCOUNT            AGE   TITLE
+    0190aaaa ● running        codex-1            45s   Refactor the parser
+  ▸ 0190bbbb ! pending_review codex-2            6m    Add retry to the HTTP …
+    0190cccc ✓ succeeded      opencode-1         2h    Write the changelog en…
+    0190dddd ✗ failed         codex-1            1d    Migrate the schema
+    0190╭ Input ───────────────────────────────────────────────────────╮er te…
+    0190│                                                              │
+    0190│ Feedback for run 0190bbbb (what to change)                   │r
+    0190│                                                              │flags
+    0190│ > use jitter                                                 │ript
+    0190│                                                              │ keys
+    0190│ Enter submit   Esc cancel                                    │
+    0190│                                                              │
+    0190╰──────────────────────────────────────────────────────────────╯
+    0190eeee ✓ succeeded      codex-1            2d    Remove dead code
+    0190eeee ✓ succeeded      codex-1            2d    Split the big module
+    0190eeee ✓ succeeded      codex-1            2d    Speed up the tests
+
+
+
+ updated 3s ago
+ Esc close

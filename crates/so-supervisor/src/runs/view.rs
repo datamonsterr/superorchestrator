@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use so_core::proto::{JoinResult, RunView, UNAVAILABLE, UsageTotals};
+use so_core::proto::{JoinResult, RunDiff, RunView, UNAVAILABLE, UsageTotals};
 use so_core::{Event, EventType};
 use so_harness::{AnyDriver, Driver, JoinCommand, JoinInfo};
 use so_store::RunRow;
@@ -14,6 +14,8 @@ use crate::dispatch::ConnCtx;
 
 const RECENT_EVENTS: usize = 50;
 const ALL_EVENTS: usize = 1_000_000;
+/// Longest patch `get_run` returns with `diff`.
+pub(crate) const DIFF_CAP: usize = 64 * 1024;
 const POLL: Duration = Duration::from_secs(1);
 
 /// What ends a wait besides the timeout.
@@ -58,6 +60,20 @@ impl RunManager {
     }
 
     pub async fn run_view(&self, row: RunRow) -> R<RunView> {
+        self.run_view_with(row, false).await
+    }
+
+    /// `get_run`; with `diff` also what the run changed in its worktree.
+    pub async fn run_view_with(&self, row: RunRow, diff: bool) -> R<RunView> {
+        self.run_view_capped(row, diff, DIFF_CAP).await
+    }
+
+    pub(crate) async fn run_view_capped(&self, row: RunRow, diff: bool, cap: usize) -> R<RunView> {
+        let diff = if diff {
+            self.run_diff(&row, cap).await?
+        } else {
+            None
+        };
         let id = row.id.clone();
         let events = self
             .db(move |s| s.list_events_by_run(&id, ALL_EVENTS))
@@ -93,6 +109,7 @@ impl RunManager {
             usage,
             worktree: row.worktree_path,
             branch: row.branch,
+            diff,
             join_command: join.as_ref().map(|j| display_argv(&j.argv)),
             join_cwd: join.as_ref().map(|j| j.cwd.to_string_lossy().into_owned()),
             join_env: join
@@ -108,6 +125,46 @@ impl RunManager {
             finished_at: row.finished_at,
             messages,
         })
+    }
+
+    /// The diff of a run with a worktree branch; `None` for a run without one. A diff that
+    /// cannot be made is reported in `error`, never as a failure of `get_run`.
+    async fn run_diff(&self, row: &RunRow, cap: usize) -> R<Option<RunDiff>> {
+        let Some(created) = crate::services::worktrees::created_of(row) else {
+            return Ok(None);
+        };
+        let branch = created.branch.clone();
+        let failed = |error: String| RunDiff {
+            base: String::new(),
+            branch: branch.clone(),
+            stat: String::new(),
+            patch: String::new(),
+            truncated: false,
+            error: Some(error),
+        };
+        let out = self
+            .blocking(move || {
+                if !super::worktree::branch_exists(&created.repo, &created.branch) {
+                    return Err(format!(
+                        "branch {} no longer exists (merged and removed, or pruned)",
+                        created.branch
+                    ));
+                }
+                super::worktree::diff(&created, cap)
+            })
+            .await;
+        Ok(Some(match out {
+            Ok(Ok(d)) => RunDiff {
+                base: d.base,
+                branch: branch.clone(),
+                stat: d.stat,
+                patch: d.patch,
+                truncated: d.truncated,
+                error: None,
+            },
+            Ok(Err(e)) => failed(e),
+            Err(e) => failed(e.message),
+        }))
     }
 
     /// The command to join a run, with its environment values. Records

@@ -370,7 +370,7 @@ fn import_accounts(
     r: &mut Report,
 ) -> Vec<String> {
     const STEP: &str = "accounts";
-    let all = scan(&host.home);
+    let all = scan(host);
     let new = match scan_new(&ctx.paths, host) {
         Ok(n) => n,
         Err(e) => {
@@ -778,7 +778,7 @@ fn remove_jev_entries(ctx: &Ctx, host: &HostEnv, w: &Writer, r: &mut Report) {
 /// Registers the MCP server and ships the skill, as `install` does.
 fn install_step(ctx: &Ctx, host: &HostEnv, w: &Writer, r: &mut Report) {
     const STEP: &str = "install";
-    match install::install_steps(ctx, w, false) {
+    match install::install_steps(ctx, w, false, false) {
         Ok(results) => {
             for (target, res) in results {
                 match res {

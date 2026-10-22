@@ -212,9 +212,8 @@ impl Env {
 
     /// The `argv` of every launch of the account's harness, oldest first.
     pub fn launches(&self, name: &str) -> Vec<Vec<String>> {
-        let text = std::fs::read_to_string(self.launch_log(name)).unwrap_or_default();
-        text.lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        self.log_records(name)
+            .into_iter()
             .filter_map(|v| {
                 v["argv"].as_array().map(|a| {
                     a.iter()
@@ -227,10 +226,40 @@ impl Env {
 
     /// Every line the fake harness of `name` read from its stdin (prompts and messages).
     pub fn stdin_lines(&self, name: &str) -> Vec<String> {
-        let text = std::fs::read_to_string(self.launch_log(name)).unwrap_or_default();
-        text.lines()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        self.log_records(name)
+            .into_iter()
             .filter_map(|v| v["stdin"].as_str().map(String::from))
+            .collect()
+    }
+
+    /// Polls (bounded) until the fake harness of `name` has read at least `min` stdin
+    /// lines, then returns them. The harness writes its log after the run is already
+    /// `Running`, so a read right after a state change can come up empty.
+    pub async fn wait_stdin_lines(&self, name: &str, min: usize) -> Vec<String> {
+        for _ in 0..400 {
+            let said = self.stdin_lines(name);
+            if said.len() >= min {
+                return said;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!(
+            "{name} never read {min} stdin line(s): {:?}",
+            self.stdin_lines(name)
+        );
+    }
+
+    /// The complete JSON lines of the launch log; a partial trailing line (the fake
+    /// harness may still be writing) is ignored.
+    fn log_records(&self, name: &str) -> Vec<Value> {
+        let text = std::fs::read_to_string(self.launch_log(name)).unwrap_or_default();
+        let complete = match text.rfind('\n') {
+            Some(i) => &text[..=i],
+            None => "",
+        };
+        complete
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
             .collect()
     }
 
