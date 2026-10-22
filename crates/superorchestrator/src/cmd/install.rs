@@ -74,6 +74,12 @@ fn config_files(host: &HostEnv, accounts: &[AccountFile]) -> Result<Vec<FileTarg
     for a in accounts {
         let home = host.expand(&a.home)?;
         let label = format!("{} ({})", a.harness.as_str(), a.name);
+        // The default opencode home uses the real XDG config, covered by the global entry.
+        if a.harness == Harness::Opencode
+            && same_dir(&home, &host.home.join(".local/share/opencode"))
+        {
+            continue;
+        }
         match a.harness {
             Harness::Codex => out.push(FileTarget {
                 label,
@@ -97,9 +103,25 @@ fn config_files(host: &HostEnv, accounts: &[AccountFile]) -> Result<Vec<FileTarg
             Harness::Claude => {}
         }
     }
+    // Dedupe by resolved path (an account may point at a default home or a symlink).
     let mut seen = std::collections::HashSet::new();
-    out.retain(|t| seen.insert(t.path.clone()));
+    out.retain(|t| seen.insert(resolve(&t.path)));
     Ok(out)
+}
+
+/// Canonical path, resolving the nearest existing ancestor when the file is missing.
+fn resolve(p: &Path) -> PathBuf {
+    if let Ok(c) = p.canonicalize() {
+        return c;
+    }
+    match (p.parent(), p.file_name()) {
+        (Some(parent), Some(name)) => resolve(parent).join(name),
+        _ => p.to_path_buf(),
+    }
+}
+
+fn same_dir(a: &Path, b: &Path) -> bool {
+    resolve(a) == resolve(b)
 }
 
 fn xdg_config_home(host: &HostEnv) -> PathBuf {

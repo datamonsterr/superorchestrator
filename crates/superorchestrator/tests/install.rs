@@ -283,3 +283,36 @@ fn invalid_config_is_reported_and_not_overwritten() {
     e.cmd().arg("install").assert().failure();
     assert_eq!(read(&p), "= not toml");
 }
+
+#[test]
+fn default_home_accounts_are_not_edited_twice() {
+    let e = Env::new();
+    fake_claude(&e);
+    e.init();
+    let h = &e.home;
+    account(
+        &e,
+        "oc-default",
+        Harness::Opencode,
+        &h.join(".local/share/opencode"),
+        "opencode",
+    );
+    account(
+        &e,
+        "codex-default",
+        Harness::Codex,
+        &h.join(".codex"),
+        "codex",
+    );
+    let global = h.join(".config/opencode/opencode.json");
+    std::fs::create_dir_all(global.parent().unwrap()).unwrap();
+    std::fs::write(&global, "{}").unwrap();
+    std::fs::create_dir_all(h.join(".codex")).unwrap();
+    let out = e.cmd().arg("install").assert().success();
+    let text = stdout(&out);
+    assert!(!h.join(".local/share/opencode/config").exists());
+    assert!(!text.contains("opencode (oc-default)"), "{text}");
+    assert!(!text.contains("codex (codex-default)"), "{text}");
+    assert!(json_at(&global)["mcp"]["superorchestrator"].is_object());
+    assert_eq!(text.matches(".codex/config.toml").count(), 1, "{text}");
+}
