@@ -91,9 +91,12 @@ async fn main() {
     let listener = TcpListener::bind(&addr).await.expect("bind");
     let port = listener.local_addr().unwrap().port();
     let host = std::env::var("FAKE_CODEX_BANNER_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    eprintln!("codex app-server (WebSockets)");
-    eprintln!("  listening on: ws://{host}:{port}");
-    eprintln!("  readyz: http://127.0.0.1:{port}/readyz");
+    // The reader of stderr may stop after the listening line and close the
+    // pipe; eprintln! would then panic with EPIPE and kill the server.
+    let mut err = std::io::stderr();
+    let _ = writeln!(err, "codex app-server (WebSockets)");
+    let _ = writeln!(err, "  listening on: ws://{host}:{port}");
+    let _ = writeln!(err, "  readyz: http://127.0.0.1:{port}/readyz");
     loop {
         let (stream, _) = listener.accept().await.expect("accept");
         tokio::spawn(serve(stream, token.clone(), l.clone(), script.clone()));
