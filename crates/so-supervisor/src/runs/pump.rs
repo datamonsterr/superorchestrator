@@ -16,7 +16,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use so_core::{MessageKind, RunState};
 
 use super::RunManager;
-use super::lifecycle::{Outcome, excerpt};
+use super::lifecycle::{Limit, Outcome, excerpt};
 use super::review::Gate;
 
 /// Re-prompts allowed when the final result does not match `output_schema`.
@@ -58,6 +58,8 @@ struct State {
     pending_error: Option<(ErrorKind, String)>,
     stage: Stage,
     nudges: u32,
+    /// When the harness last said the window it ran out of resets.
+    reset: Option<chrono::DateTime<Utc>>,
     /// Times the review checks failed and were sent back to the run.
     review_failures: u32,
 }
@@ -170,6 +172,11 @@ impl RunManager {
                 cost,
                 rate_limits,
             } => {
+                if let Some(r) = &rate_limits
+                    && let Some(t) = exhausted_reset(r)
+                {
+                    st.reset = Some(t);
+                }
                 self.emit_run(
                     pc,
                     st,
@@ -250,10 +257,15 @@ impl RunManager {
     ) {
         st.done = true;
         // A limit on the account may only mean another account should take over (SPEC 8.5).
-        if self.begin_failover(pc, control, kind, text).await {
+        let limit = Limit {
+            pool: Some(pc.pool.clone()),
+            reset: st.reset,
+        };
+        if self.begin_failover(pc, control, kind, text, &limit).await {
             return;
         }
-        let o = Outcome::failed(kind, text, Some(control.clone()));
+        let mut o = Outcome::failed(kind, text, Some(control.clone()));
+        o.limit = Some(limit);
         self.finish(&pc.run_id, o).await;
     }
 
@@ -384,13 +396,19 @@ impl RunManager {
             return;
         }
         st.done = true;
+        let mut limit_out = None;
         let text = match st.pending_error.take() {
             // A quota, auth or similar error: resuming would only repeat it, but another
             // account may take the run over.
             Some((kind, text)) => {
-                if self.begin_failover(pc, control, kind, &text).await {
+                let limit = Limit {
+                    pool: Some(pc.pool.clone()),
+                    reset: st.reset,
+                };
+                if self.begin_failover(pc, control, kind, &text, &limit).await {
                     return;
                 }
+                limit_out = Some(limit);
                 (kind, text)
             }
             None => {
@@ -413,7 +431,9 @@ impl RunManager {
                 (ErrorKind::Other, text)
             }
         };
-        self.fail_run(&pc.run_id, text.0, &text.1).await;
+        let mut o = Outcome::failed(text.0, &text.1, None);
+        o.limit = limit_out;
+        self.finish(&pc.run_id, o).await;
     }
 
     /// Checks that a run whose process died can be resumed (once, SPEC 7.6) and gets it
@@ -521,6 +541,17 @@ impl RunManager {
     }
 }
 
+/// The reset time of a window that is used up, in the harness's own report.
+fn exhausted_reset(r: &so_harness::RateLimits) -> Option<chrono::DateTime<Utc>> {
+    let at = |pct: Option<f64>, resets: Option<i64>| {
+        pct.filter(|p| *p >= 99.5)
+            .and(resets)
+            .and_then(|t| chrono::DateTime::from_timestamp(t, 0))
+    };
+    // The longer window decides when both are used up.
+    at(r.weekly_used_pct, r.weekly_resets_at).or(at(r.five_hour_used_pct, r.five_hour_resets_at))
+}
+
 /// A JSON value from a final message, tolerating a Markdown code fence around it.
 fn parse_json_result(text: &str) -> Option<Value> {
     let t = text.trim();
@@ -534,6 +565,23 @@ fn parse_json_result(text: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_exhausted_window_gives_the_reset_time() {
+        let r = so_harness::RateLimits {
+            five_hour_used_pct: Some(100.0),
+            five_hour_resets_at: Some(1_800_000_000),
+            weekly_used_pct: Some(40.0),
+            weekly_resets_at: Some(1_900_000_000),
+        };
+        assert_eq!(exhausted_reset(&r).unwrap().timestamp(), 1_800_000_000);
+        let both = so_harness::RateLimits {
+            weekly_used_pct: Some(100.0),
+            ..r.clone()
+        };
+        assert_eq!(exhausted_reset(&both).unwrap().timestamp(), 1_900_000_000);
+        assert!(exhausted_reset(&so_harness::RateLimits::default()).is_none());
+    }
 
     #[test]
     fn json_result_parsing() {

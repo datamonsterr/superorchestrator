@@ -118,8 +118,15 @@ ALTER TABLE workflow_runs ADD COLUMN result_json TEXT;
 ALTER TABLE workflow_runs ADD COLUMN error TEXT;
 ";
 
+const V6: &str = "
+-- The prompt of a run's current turn (start, resume, review feedback), so a failover
+-- re-sends that and not the first prompt; and a failover that is waiting for a free slot.
+ALTER TABLE run_meta ADD COLUMN turn_prompt TEXT;
+ALTER TABLE run_meta ADD COLUMN failover_json TEXT;
+";
+
 /// Ordered migrations; entry `i` brings the database to version `i + 1`.
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6];
 
 /// Latest schema version known to this build.
 pub fn latest_version() -> i64 {

@@ -216,6 +216,12 @@ async fn quota_error_fails_over_to_the_next_account() {
     // The run kept its id; the second account was launched once, the first once.
     assert_eq!(env.launches("claude-a").len(), 1);
     assert_eq!(env.launches("claude-b").len(), 1);
+    // The new account was told what happened, after the original task.
+    let said = env.stdin_lines("claude-b");
+    assert!(
+        said[0].contains(PROMPT) && said[0].contains("ran out of quota"),
+        "{said:?}"
+    );
     h.shutdown().await;
 }
 
@@ -247,7 +253,7 @@ async fn failover_stops_when_no_account_is_left() {
 }
 
 #[tokio::test]
-async fn failover_respects_the_cap_of_the_next_account() {
+async fn failover_with_every_target_full_waits_in_the_queue_and_starts_on_the_freed_account() {
     let env = routed_env();
     env.account("claude-a", 2, &quota_script());
     env.account("claude-b", 1, &idle_script());
@@ -260,19 +266,32 @@ async fn failover_respects_the_cap_of_the_next_account() {
     let occupant = spawn(&c, occupant).await;
     wait_state(&c, &occupant.run_id, RunState::Running).await;
 
-    let r = spawn(&c, auto_params(&env)).await;
-    assert_eq!(r.state, RunState::Failed, "{r:?}");
-    assert_eq!(r.error_kind, Some(ErrorKind::Quota));
+    let mut p = auto_params(&env);
+    p.wait = false;
+    let r = spawn(&c, p).await;
+    // It hits the limit on `claude-a` and, with nowhere to go, waits with its failover pending.
+    wait_state(&c, &r.run_id, RunState::Queued).await;
     let v = view(&c, &r.run_id).await;
-    assert_eq!(v.account.as_deref(), Some("claude-a"));
-    assert!(events(&v, "failover").is_empty());
+    assert_eq!(v.account.as_deref(), Some("claude-b"));
+    assert!(
+        events(&v, "failover").is_empty(),
+        "announced only once it starts"
+    );
+    assert!(
+        env.store()
+            .get_failover_pending(&r.run_id)
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(
         env.store()
-            .count_active_runs_by_account("claude-b")
+            .count_active_runs_by_account("claude-a")
             .unwrap(),
-        1
+        0
     );
 
+    // The occupant ends; the queued run starts on the freed account, fresh, with the note.
+    // (An account's native session is not portable to another account.)
     let _: RunView = c
         .call(
             METHOD_CANCEL_AGENT,
@@ -282,6 +301,184 @@ async fn failover_respects_the_cap_of_the_next_account() {
         )
         .await
         .unwrap();
+    wait_state(&c, &r.run_id, RunState::Running).await;
+    let v = view(&c, &r.run_id).await;
+    let f = events(&v, "failover");
+    assert_eq!(f.len(), 1, "{:?}", types(&v));
+    assert_eq!(
+        (f[0].data["from"].as_str(), f[0].data["to"].as_str()),
+        (Some("claude-a"), Some("claude-b"))
+    );
+    assert!(
+        env.store()
+            .get_failover_pending(&r.run_id)
+            .unwrap()
+            .is_none()
+    );
+    let said = env.stdin_lines("claude-b");
+    assert!(
+        said.iter().any(|l| l.contains("ran out of quota")),
+        "{said:?}"
+    );
+    let attempts = env.store().list_attempts(&r.run_id, 10).unwrap();
+    assert_eq!(attempts[0].outcome.as_deref(), Some("failover"));
+    assert_eq!(attempts.len(), 2);
+    let _: RunView = c
+        .call(METHOD_CANCEL_AGENT, RunRef { run: r.run_id })
+        .await
+        .unwrap();
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_over_cap_auto_spawn_moves_to_the_account_that_frees_up() {
+    let env = routed_env();
+    env.account("claude-a", 1, &idle_script());
+    env.account("claude-b", 1, &idle_script());
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut hold = |acct: &str| {
+        let mut p = env.spawn_params(acct);
+        p.isolation = Some(Isolation::None);
+        p
+    };
+    let r1 = spawn(&c, hold("claude-a")).await;
+    let r2 = spawn(&c, hold("claude-b")).await;
+    wait_state(&c, &r1.run_id, RunState::Running).await;
+    wait_state(&c, &r2.run_id, RunState::Running).await;
+
+    // Both accounts are full: the spawn queues (on the best one, `claude-a`).
+    let mut p = auto_params(&env);
+    p.wait = false;
+    let q = spawn(&c, p).await;
+    assert_eq!(q.state, RunState::Queued);
+    assert_eq!(
+        view(&c, &q.run_id).await.account.as_deref(),
+        Some("claude-a")
+    );
+
+    // `claude-b` frees up first: the queued run takes it instead of waiting for `claude-a`.
+    let _: RunView = c
+        .call(METHOD_CANCEL_AGENT, RunRef { run: r2.run_id })
+        .await
+        .unwrap();
+    wait_state(&c, &q.run_id, RunState::Running).await;
+    let v = view(&c, &q.run_id).await;
+    assert_eq!(v.account.as_deref(), Some("claude-b"));
+    assert_eq!(
+        events(&v, "route_decision").len(),
+        2,
+        "the move is recorded"
+    );
+    assert_eq!(
+        env.store()
+            .count_active_runs_by_account("claude-a")
+            .unwrap(),
+        1
+    );
+    for r in [q.run_id, r1.run_id] {
+        let _: RunView = c
+            .call(METHOD_CANCEL_AGENT, RunRef { run: r })
+            .await
+            .unwrap();
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_resumed_run_fails_over_with_the_resume_prompt() {
+    let env = routed_env();
+    env.account("claude-a", 2, &ok_script(&[]));
+    env.account(
+        "claude-b",
+        2,
+        &script(&[
+            // Only the resume message gets this account going.
+            json!({"expect_stdin_contains": "again please"}),
+            json!({"stdout": init_msg()}),
+            json!({"stdout": result_msg(json!({"result": "second"}))}),
+        ]),
+    );
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+
+    // The next turn on `claude-a` hits its limit.
+    env.account("claude-a", 2, &quota_script_for("again please"));
+    let _: Value = c
+        .call(
+            so_core::proto::METHOD_SEND_MESSAGE,
+            json!({"run": r.run_id, "text": "again please"}),
+        )
+        .await
+        .unwrap();
+    for _ in 0..400 {
+        let v = view(&c, &r.run_id).await;
+        if v.state == RunState::Succeeded && v.account.as_deref() == Some("claude-b") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    let v = view(&c, &r.run_id).await;
+    assert_eq!(v.account.as_deref(), Some("claude-b"), "{:?}", types(&v));
+    assert_eq!(v.result, Some(json!("second")));
+    let said = env.stdin_lines("claude-b");
+    assert!(
+        said[0].contains("again please") && !said[0].contains(PROMPT),
+        "{said:?}"
+    );
+    h.shutdown().await;
+}
+
+fn quota_script_for(prompt: &str) -> String {
+    script(&[
+        json!({"expect_stdin_contains": prompt}),
+        json!({"stdout": init_msg()}),
+        json!({"stdout": result_msg(json!({"is_error": true, "result": "Claude AI usage limit reached"}))}),
+    ])
+}
+
+#[tokio::test]
+async fn cancelling_while_a_run_fails_over_leaves_nothing_running() {
+    let env = routed_env();
+    env.account("claude-a", 2, &quota_script());
+    env.account("claude-b", 2, &idle_script());
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    h.state()
+        .runs
+        .set_launch_delay(std::time::Duration::from_millis(600));
+
+    let mut p = auto_params(&env);
+    p.wait = false;
+    let r = spawn(&c, p).await;
+    // As soon as the slot has moved to `claude-b` (its launch is still delayed), cancel.
+    for _ in 0..800 {
+        if view(&c, &r.run_id).await.account.as_deref() == Some("claude-b") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let _: RunView = c
+        .call(
+            METHOD_CANCEL_AGENT,
+            RunRef {
+                run: r.run_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    let v = view(&c, &r.run_id).await;
+    assert_eq!(v.state, RunState::Cancelled, "{:?}", types(&v));
+    assert_eq!(h.state().runs.live_count(), 0);
+    assert_eq!(
+        env.store()
+            .count_active_runs_by_account("claude-b")
+            .unwrap(),
+        0
+    );
     h.shutdown().await;
 }
 

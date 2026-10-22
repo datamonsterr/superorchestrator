@@ -75,11 +75,46 @@ pub async fn route_decide(
 
 /// The `route_decision` event data: the result (the shape `GET /runs/:id/route` and the
 /// routing log parse), the role and the fallback reason. No task text.
-pub fn decision_data(outcome: &RouteOutcome, role: &str) -> Result<Value, RpcError> {
+///
+/// `task` is the prompt that was routed: any run of its words that came back in the
+/// rationale (a decider can echo the task) is cut out before the event is stored.
+pub fn decision_data(outcome: &RouteOutcome, role: &str, task: &str) -> Result<Value, RpcError> {
     let mut data = serde_json::to_value(&outcome.result).map_err(internal)?;
+    data["rationale"] = json!(scrub_task(&outcome.result.rationale, task));
     data["role"] = json!(role);
-    data["fallback_reason"] = json!(outcome.fallback_reason);
+    data["fallback_reason"] = json!(
+        outcome
+            .fallback_reason
+            .as_deref()
+            .map(|r| scrub_task(r, task))
+    );
     Ok(data)
+}
+
+/// Words of `task` per run that counts as quoting it.
+const QUOTE_WORDS: usize = 4;
+
+/// `text` with every stretch that repeats `QUOTE_WORDS` or more consecutive words of `task`
+/// replaced by `[task text]`.
+pub fn scrub_task(text: &str, task: &str) -> String {
+    let words: Vec<&str> = task.split_whitespace().collect();
+    if words.len() < QUOTE_WORDS {
+        return if !task.trim().is_empty() {
+            text.replace(task.trim(), "[task text]")
+        } else {
+            text.to_string()
+        };
+    }
+    let mut out = text.to_string();
+    // Longest quotes first would be ideal; shingles of the minimum length, applied in
+    // order, also remove the longer ones piece by piece.
+    for w in words.windows(QUOTE_WORDS) {
+        let quote = w.join(" ");
+        if out.contains(&quote) {
+            out = out.replace(&quote, "[task text]");
+        }
+    }
+    out
 }
 
 /// Runs the routing procedure against the supervisor's live state and, when `session_id` is
@@ -106,7 +141,7 @@ pub async fn route_for(
             run_id: run_id.map(String::from),
             ts: Utc::now(),
             event_type: EventType::RouteDecision,
-            data: decision_data(&outcome, &role)?,
+            data: decision_data(&outcome, &role, &params.prompt)?,
         };
         state.db(move |s| s.append_event(&ev).map(|_| ())).await?;
     }
@@ -133,4 +168,58 @@ pub(super) fn register_route(state: &Arc<SupervisorState>) {
                 serde_json::to_value(&out.result).map_err(internal)
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use so_core::proto::{RouteResult, RouteSource};
+
+    fn outcome(rationale: &str, fallback: Option<&str>) -> RouteOutcome {
+        RouteOutcome {
+            result: RouteResult {
+                choice_id: "c".into(),
+                harness: so_core::Harness::Claude,
+                account: "a".into(),
+                model: "m".into(),
+                effort: None,
+                source: RouteSource::Jev,
+                rationale: rationale.into(),
+                confidence: None,
+                probabilities: Default::default(),
+                usage: Default::default(),
+                alternatives: vec![],
+                config_fingerprint: "f".into(),
+                ranked_accounts: vec![],
+            },
+            fallback_reason: fallback.map(String::from),
+        }
+    }
+
+    #[test]
+    fn a_decider_that_echoes_the_task_leaves_no_task_text_in_the_event() {
+        let task = "Refactor the payment reconciliation job to stop double charging customers";
+        let data = decision_data(
+            &outcome(
+                "Chose c because: Refactor the payment reconciliation job to stop looks hard",
+                Some("rejected: customers 'stop double charging customers' was echoed"),
+            ),
+            "worker",
+            task,
+        )
+        .unwrap();
+        let text = data.to_string();
+        for leak in ["payment reconciliation", "double charging"] {
+            assert!(!text.contains(leak), "{leak}: {text}");
+        }
+        assert!(
+            data["rationale"]
+                .as_str()
+                .unwrap()
+                .contains("Chose c because")
+        );
+        // Unrelated text and short tasks are left alone.
+        assert_eq!(scrub_task("fine as is", task), "fine as is");
+        assert_eq!(scrub_task("fix typo here", "fix typo"), "[task text] here");
+    }
 }

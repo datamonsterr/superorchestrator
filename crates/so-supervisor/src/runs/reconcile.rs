@@ -54,11 +54,13 @@ impl RunManager {
         let resumable = row.native_session_id.is_some()
             && row.account.is_some()
             && AnyDriver::for_harness(row.harness, self.inner.driver_cfg).is_ok()
+            // One resume per death (SPEC 7.6): attempts that ended in a failover or a
+            // review do not count.
             && self
                 .inner
                 .store
-                .list_attempts(&row.id, 10)
-                .is_ok_and(|a| a.len() < 2);
+                .list_attempts(&row.id, 1000)
+                .is_ok_and(|a| !a.iter().any(|x| x.outcome.as_deref() == Some("died")));
         if !resumable {
             return false;
         }

@@ -6,6 +6,8 @@ mod common;
 use common::*;
 use serde_json::{Value, json};
 use so_core::proto::{AgentsView, METHOD_LIST_AGENTS, METHOD_SPAWN_AGENT, NOT_FOUND, SpawnParams};
+use std::time::Duration;
+
 use so_core::{Choice, Harness, Isolation, RunState};
 
 fn write_agent(env: &Env, file: &str, text: &str) {
@@ -248,5 +250,115 @@ async fn a_named_account_overrides_the_agents_fixed_harness() {
         view(&c, &r.run_id).await.account.as_deref(),
         Some("claude-a")
     );
+    h.shutdown().await;
+}
+
+fn quota_script() -> String {
+    script(&[
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"stdout": init_msg()}),
+        json!({"stdout": result_msg(json!({"is_error": true, "result": "Claude AI usage limit reached"}))}),
+    ])
+}
+
+#[tokio::test]
+async fn an_agent_run_that_fails_over_is_materialised_again_and_keeps_its_allow_list() {
+    let env = env();
+    write_agent(
+        &env,
+        "picky.md",
+        "---\nname: picky\ndescription: d\nharness: claude\ntools: [Read]\naccounts: [claude-a, claude-c]\n---\nYou are picky.\n",
+    );
+    env.account("claude-a", 2, &quota_script());
+    // Next alphabetically but not on the agent's list.
+    env.account("claude-b", 2, &ok_script(&[]));
+    env.account("claude-c", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = agent_params(&env, "picky");
+    p.prompt = Some(PROMPT.into());
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let v = view(&c, &r.run_id).await;
+    assert_eq!(v.account.as_deref(), Some("claude-c"));
+    assert!(
+        env.launches("claude-b").is_empty(),
+        "outside the allow-list"
+    );
+    // The second launch got the agent's controls and instructions too.
+    let argv = &env.launches("claude-c")[0];
+    assert_eq!(flag_value(argv, "--tools"), ["Read"]);
+    let system = std::fs::read_to_string(env.paths.run_dir(&r.run_id).join("system.md")).unwrap();
+    assert!(system.contains("You are picky."));
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_tool_restricted_agent_does_not_fail_over_to_a_harness_that_cannot_enforce_them() {
+    let mut env = env();
+    env.config.choices.push(Choice {
+        id: "codex-big".into(),
+        harness: Harness::Codex,
+        model: "gpt-6.1-sol".into(),
+        effort: None,
+        roles: vec!["worker".into()],
+        description: "d".into(),
+        enabled: true,
+    });
+    write_agent(
+        &env,
+        "careful.md",
+        "---\nname: careful\ndescription: d\ntools: [Read]\n---\nbody\n",
+    );
+    // A claude account that fails after a moment, and a codex account (never launched).
+    env.account(
+        "claude-a",
+        2,
+        &script(&[
+            json!({"expect_stdin_contains": PROMPT}),
+            json!({"sleep_ms": 600}),
+            json!({"stdout": init_msg()}),
+            json!({"stdout": result_msg(json!({"is_error": true, "result": "Claude AI usage limit reached"}))}),
+        ]),
+    );
+    so_core::AccountFile::new("codex-a", Harness::Codex, "/h/codex", "/nonexistent/codex")
+        .unwrap()
+        .save(&env.paths)
+        .unwrap();
+    // The codex account is out of rotation while the run is routed, so it starts on claude.
+    let store = env.store();
+    so_usage::mark_exhausted(
+        &store,
+        "codex-a",
+        "default",
+        Some(chrono::Utc::now() + chrono::Duration::hours(1)),
+        Duration::from_secs(3600),
+        "t",
+        chrono::Utc::now(),
+    )
+    .unwrap();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = agent_params(&env, "careful");
+    p.prompt = Some(PROMPT.into());
+    p.wait = false;
+    let r = spawn(&c, p).await;
+    wait_state(&c, &r.run_id, RunState::Running).await;
+    // Now codex is available: a failover could go there, but codex cannot enforce `tools`.
+    store.clear_flag("codex-a", "default").unwrap();
+    for _ in 0..800 {
+        if view(&c, &r.run_id).await.state == RunState::Failed {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let v = view(&c, &r.run_id).await;
+    assert_eq!(v.state, RunState::Failed, "{:?}", v.recent_events);
+    assert_eq!(
+        v.error_kind,
+        Some(so_core::ErrorKind::Quota),
+        "not a codex launch failure"
+    );
+    assert_eq!(v.account.as_deref(), Some("claude-a"));
     h.shutdown().await;
 }

@@ -3,19 +3,26 @@
 //!
 //! The failing account is marked exhausted (SPEC 6.3), the run is routed again within the
 //! pins it was spawned under (never onto an account it already failed on), and a new
-//! attempt starts there. Runs whose account the caller named, and runs that were not routed,
-//! fail as before.
+//! attempt starts there with the prompt of the run's current turn. When every other account
+//! is full the run goes back to the queue with its failover pending and starts on the first
+//! account that frees a slot. Runs whose account the caller named, and runs that were not
+//! routed, fail as before.
+//!
+//! A native session lives in its account's credential home, so it is never portable to
+//! another account: a failed-over run always starts fresh there (with a note saying that
+//! part of the work may be in the working tree).
 
 use std::sync::Arc;
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use so_core::{AccountFile, ErrorKind, EventType, Harness};
+use so_core::{AccountFile, ErrorKind, EventType, Harness, RunState};
 use so_harness::RunControl;
-use so_store::Reassign;
+use so_store::{Reassign, RunRow};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::lifecycle::{Outcome, excerpt};
+use super::lifecycle::{Limit, Outcome, excerpt};
 use super::pump::PumpCtx;
 use super::routing::RoutePins;
 use super::{Inner, RunManager, SHUTDOWN_DEADLINE, lock};
@@ -26,12 +33,45 @@ pub(crate) const MAX_FAILOVERS: usize = 3;
 /// Times the new account is looked for again when another run takes its last slot first.
 const MAX_ROUTE_TRIES: usize = 3;
 
+/// Appended to the prompt of a run that starts on another account.
+pub(crate) const FAILOVER_NOTE: &str = "\n\nThis task was started on another account that ran out of \
+    quota; the working tree may already hold part of the work. Check what is there before you \
+    continue.";
+
 /// A run to move because its account hit a limit.
 pub(super) struct FailoverRequest {
     run_id: String,
     kind: ErrorKind,
     reason: String,
     control: RunControl,
+    limit: Limit,
+}
+
+/// A failover that has been decided and is announced once the run is launched.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Pending {
+    from: String,
+    from_harness: Harness,
+    reason: String,
+    error_kind: ErrorKind,
+    /// The `route_decision` event data of the move.
+    decision: Value,
+}
+
+/// What came of looking for another account.
+enum Moved {
+    /// The run ended meanwhile.
+    Gone,
+    /// The run holds a slot on its new account and is to be started there.
+    Started(Box<Next>),
+    /// Every candidate is full: the run waits in the queue.
+    Queued,
+}
+
+/// Where a failed-over run goes.
+struct Next {
+    account: AccountFile,
+    pending: Pending,
 }
 
 /// Starts the task that fails runs over. It holds only a weak reference, so it ends with
@@ -54,6 +94,14 @@ fn failover_kind(kind: ErrorKind) -> bool {
     )
 }
 
+/// The tool controls of an agent that `harness` cannot enforce (SPEC 10: gaps).
+fn tool_gaps(def: &so_agents::AgentDef, harness: Harness) -> bool {
+    (!def.tools.is_empty() || !def.disallowed_tools.is_empty())
+        && so_agents::gaps(def, harness)
+            .iter()
+            .any(|g| g.starts_with("tools") || g.starts_with("disallowedTools"))
+}
+
 impl RunManager {
     /// Called by a run's pump when the run failed with `kind`. Returns `true` when a
     /// failover has been started: the pump must then leave the run alone. `false` means the
@@ -65,6 +113,7 @@ impl RunManager {
         control: &RunControl,
         kind: ErrorKind,
         reason: &str,
+        limit: &Limit,
     ) -> bool {
         if !failover_kind(kind) || self.is_cancelling(&pc.run_id) {
             return false;
@@ -93,6 +142,7 @@ impl RunManager {
                 kind,
                 reason: reason.to_string(),
                 control: control.clone(),
+                limit: limit.clone(),
             })
             .is_ok()
     }
@@ -100,13 +150,17 @@ impl RunManager {
     async fn failover(&self, req: FailoverRequest) {
         let run_id = req.run_id.clone();
         let (kind, why) = match self.move_to_next_account(&req).await {
-            Ok(Some(next)) => match self.start_on(&req, next).await {
+            Ok(Moved::Started(next)) => match self.start_on(&req, *next).await {
                 Ok(()) => return,
                 // The run is on the new account but its harness did not come up: that is
                 // not a limit, so it does not claim to be one.
                 Err(why) => (ErrorKind::Other, why),
             },
-            Ok(None) => return,
+            Ok(Moved::Queued) => {
+                self.request_drain();
+                return;
+            }
+            Ok(Moved::Gone) => return,
             Err(why) => (req.kind, why),
         };
         let reason = format!("{why}; last error: {}", excerpt(&req.reason, 200));
@@ -117,9 +171,48 @@ impl RunManager {
         self.finish(&run_id, o).await;
     }
 
-    /// Marks the failing account, stops its process and takes a slot on the next account.
-    /// `None` when the run ended meanwhile.
-    async fn move_to_next_account(&self, req: &FailoverRequest) -> Result<Option<Next>, String> {
+    /// The prompt of the run's current turn: what a failover must send again.
+    pub(crate) async fn turn_prompt(&self, row: &RunRow) -> String {
+        let id = row.id.clone();
+        self.db(move |s| s.get_run_turn_prompt(&id))
+            .await
+            .ok()
+            .flatten()
+            .or_else(|| row.prompt.clone())
+            .unwrap_or_default()
+    }
+
+    /// Accounts a failed-over agent run must not go to: those of a harness that cannot
+    /// enforce the agent's tool controls, unless it is the harness the run is on (SPEC 10).
+    async fn tool_ineligible_accounts(&self, row: &RunRow) -> Vec<String> {
+        let Some(name) = row.agent.clone() else {
+            return Vec::new();
+        };
+        let (cwd, paths) = (
+            row.cwd.clone().map(std::path::PathBuf::from),
+            self.inner.paths.clone(),
+        );
+        let on = row.harness;
+        self.blocking(move || {
+            let cwd = cwd?;
+            let def = so_agents::resolve_for_spawn(&cwd, &paths, &name).ok()?;
+            let all = AccountFile::list(&paths).ok()?;
+            Some(
+                all.into_iter()
+                    .filter(|a| a.harness != on && tool_gaps(&def, a.harness))
+                    .map(|a| a.name)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+    }
+
+    /// Marks the failing account, stops its process and takes a slot on the next account
+    /// (or queues the run when all are full).
+    async fn move_to_next_account(&self, req: &FailoverRequest) -> Result<Moved, String> {
         let id = req.run_id.clone();
         let (row, route, attempts) = {
             let id2 = id.clone();
@@ -134,156 +227,236 @@ impl RunManager {
             .map_err(|e| e.message)?
         };
         let row = row.ok_or("the run is gone")?;
-        if !row.state.is_active() || self.is_cancelling(&id) {
+        // Only a run with a process of its own moves: anything else is already done with.
+        let working = matches!(
+            row.state,
+            RunState::Running | RunState::Waiting | RunState::Stalled | RunState::Escalated
+        );
+        if !working || self.is_cancelling(&id) {
             let _ = req.control.shutdown(SHUTDOWN_DEADLINE).await;
-            return Ok(None);
+            return Ok(Moved::Gone);
         }
         let pins: RoutePins = route
             .and_then(|j| serde_json::from_str(&j).ok())
             .ok_or("the run has no route to repeat")?;
         let from = row.account.clone().ok_or("the run has no account")?;
-        let from_harness = row.harness;
 
-        // 1. The account that hit the limit is marked, and its attempt closed.
-        self.flag_account(&id, &req.reason).await;
-        {
-            let open = attempts.iter().rev().find(|a| a.ended_at.is_none());
-            if let Some(a) = open {
-                let aid = a.id.clone();
-                let _ = self
-                    .db(move |s| s.finish_attempt(&aid, "failover", Utc::now()))
-                    .await;
-            }
-        }
-        // 2. Its process goes away before another one starts for the same run.
+        // The account that hit the limit is marked, and its process goes away before
+        // another one starts for the same run.
+        self.flag_account(&id, &req.reason, Some(&req.limit)).await;
         if let Some(rt) = lock(&self.inner.runs).get_mut(&id) {
             rt.live = None;
         }
         let _ = req.control.shutdown(SHUTDOWN_DEADLINE).await;
 
-        // 3. The next account: the same choice first, then any eligible choice, never an
-        //    account this run already failed on. Taking the slot is one atomic step.
         let mut tried: Vec<String> = attempts.iter().map(|a| a.account.clone()).collect();
         tried.push(from.clone());
+        tried.extend(self.tool_ineligible_accounts(&row).await);
         tried.sort();
         tried.dedup();
         let prompt = row.prompt.clone().unwrap_or_default();
-        let mut moved = None;
+        let fail = |tried: &[String], why: String| {
+            format!(
+                "failover found no account to continue on (tried {}): {why}",
+                tried.join(", ")
+            )
+        };
+
+        // The next account: the same choice first, then any eligible choice, never an
+        // account this run already failed on. Taking the slot is one atomic step.
+        let mut chosen = None;
         for _ in 0..MAX_ROUTE_TRIES {
-            let routed = self
+            let routed = match self
                 .route_run(&prompt, &pins, &tried, row.choice_id.as_deref(), false)
                 .await
-                .map_err(|e| {
-                    format!(
-                        "failover found no account to continue on (tried {}): {}",
-                        tried.join(", "),
-                        e.message
-                    )
-                })?;
-            let mut chosen = None;
-            for name in &routed.result.ranked_accounts {
-                let Ok(account) = self.load_account(name).await else {
-                    tried.push(name.clone());
-                    continue;
-                };
-                if !account.enabled || self.launch_for(&account).is_err() {
-                    tried.push(name.clone());
-                    continue;
+            {
+                Ok(r) => r,
+                // Nothing has a free slot: wait in the queue for one, if any could take it.
+                Err(e) => {
+                    let queued = self
+                        .route_run(&prompt, &pins, &tried, row.choice_id.as_deref(), true)
+                        .await
+                        .map_err(|_| fail(&tried, e.message.clone()))?;
+                    return self.requeue(req, &row, &from, queued, &mut tried).await;
                 }
-                let to = Reassign {
-                    account: name.clone(),
-                    harness: routed.result.harness,
-                    choice_id: Some(routed.result.choice_id.clone()),
-                    model: Some(routed.result.model.clone()).filter(|m| !m.is_empty()),
-                    effort: routed.result.effort.clone(),
+            };
+            let mut picked = None;
+            for name in &routed.result.ranked_accounts {
+                let account = match self.usable_account(name, Some(routed.result.harness)).await {
+                    Ok(a) => a,
+                    Err(_) => {
+                        tried.push(name.clone());
+                        continue;
+                    }
                 };
+                let to = reassign_of(&routed.result, &account);
                 let (rid, f, cap) = (id.clone(), from.clone(), i64::from(account.cap));
-                let t = to.clone();
                 match self
-                    .db_raw(move |s| s.reassign_run(&rid, &f, &t, cap))
+                    .db_raw(move |s| s.reassign_run(&rid, &f, &to, cap))
                     .await
                 {
                     Ok(true) => {
-                        chosen = Some((account, to));
+                        picked = Some(account);
                         break;
                     }
                     // Another run took its last slot first: look at the next one.
                     Ok(false) => {}
+                    // The run ended (or was cancelled) while we looked.
+                    Err(so_store::StoreError::StateConflict { .. }) => return Ok(Moved::Gone),
                     Err(e) => return Err(format!("could not move the run: {e}")),
                 }
             }
-            if let Some(c) = chosen {
-                moved = Some((c, routed));
+            if let Some(account) = picked {
+                chosen = Some((account, routed));
                 break;
             }
         }
-        let ((account, to), routed) = moved.ok_or_else(|| {
-            format!(
-                "failover found no account with a free slot (tried {})",
-                tried.join(", ")
-            )
-        })?;
-
-        Ok(Some(Next {
-            from,
-            from_harness,
+        let (account, routed) =
+            chosen.ok_or_else(|| fail(&tried, "no account with a free slot".to_string()))?;
+        // Only now is the old attempt over.
+        self.close_attempt(&id, "failover").await;
+        Ok(Moved::Started(Box::new(Next {
             account,
-            to,
-            decision: routed.decision,
-        }))
+            pending: Pending {
+                from,
+                from_harness: row.harness,
+                reason: excerpt(&req.reason, 200),
+                error_kind: req.kind,
+                decision: routed.decision,
+            },
+        })))
     }
 
-    /// Records the move and starts the run on its new account.
-    async fn start_on(&self, req: &FailoverRequest, next: Next) -> Result<(), String> {
-        let id = req.run_id.clone();
-        let row = {
-            let id = id.clone();
-            self.db(move |s| s.get_run(&id))
-                .await
-                .map_err(|e| e.message)?
-                .ok_or("the run is gone")?
+    async fn close_attempt(&self, run_id: &str, outcome: &'static str) {
+        let id = run_id.to_string();
+        let _ = self
+            .db(move |s| {
+                let open = s
+                    .list_attempts(&id, 1000)?
+                    .into_iter()
+                    .rev()
+                    .find(|a| a.ended_at.is_none());
+                match open {
+                    Some(a) => s.finish_attempt(&a.id, outcome, Utc::now()),
+                    None => Ok(()),
+                }
+            })
+            .await;
+    }
+
+    /// Every other account is full: the run goes back to the queue, on the account that is
+    /// best otherwise, with its failover pending.
+    async fn requeue(
+        &self,
+        req: &FailoverRequest,
+        row: &RunRow,
+        from: &str,
+        routed: super::routing::Routed,
+        tried: &mut Vec<String>,
+    ) -> Result<Moved, String> {
+        let mut target = None;
+        for name in &routed.result.ranked_accounts {
+            match self.usable_account(name, Some(routed.result.harness)).await {
+                Ok(a) => {
+                    target = Some(a);
+                    break;
+                }
+                Err(_) => tried.push(name.clone()),
+            }
+        }
+        let account = target.ok_or("no account can take the run")?;
+        let pending = Pending {
+            from: from.to_string(),
+            from_harness: row.harness,
+            reason: excerpt(&req.reason, 200),
+            error_kind: req.kind,
+            decision: routed.decision,
         };
-        let sid = row.session_id.clone();
+        let to = reassign_of(&routed.result, &account);
+        let (rid, f, json) = (
+            row.id.clone(),
+            from.to_string(),
+            serde_json::to_string(&pending).map_err(|e| e.to_string())?,
+        );
+        match self
+            .db_raw(move |s| s.requeue_for_failover(&rid, &f, &to, &json))
+            .await
+        {
+            Ok(()) => {}
+            Err(so_store::StoreError::StateConflict { .. }) => return Ok(Moved::Gone),
+            Err(e) => return Err(format!("could not queue the run: {e}")),
+        }
+        self.close_attempt(&row.id, "failover").await;
         self.emit(
-            &sid,
-            Some(&id),
-            EventType::Failover,
+            &row.session_id,
+            Some(&row.id),
+            EventType::StateChanged,
             json!({
-                "from": next.from,
-                "to": next.account.name,
-                "from_harness": next.from_harness,
-                "to_harness": next.to.harness,
-                "reason": excerpt(&req.reason, 200),
-                "error_kind": req.kind,
+                "from": row.state,
+                "to": RunState::Queued,
+                "reason": "failover: waiting for a free slot",
             }),
         )
         .await;
-        self.emit(&sid, Some(&id), EventType::RouteDecision, next.decision)
-            .await;
-        // The old account has a free slot now.
-        self.request_drain();
+        Ok(Moved::Queued)
+    }
 
+    /// Starts the run on its new account; the failover is announced once the launch
+    /// succeeded, so a failover that never started leaves no trace.
+    async fn start_on(&self, req: &FailoverRequest, next: Next) -> Result<(), String> {
+        let id = req.run_id.clone();
+        let row = self
+            .db(move |s| s.get_run(&id))
+            .await
+            .map_err(|e| e.message)?
+            .ok_or("the run is gone")?;
         let cwd = self.resume_cwd(&row).await?;
-        let mut prompt = row.prompt.clone().unwrap_or_default();
+        let mut prompt = self.turn_prompt(&row).await;
         prompt.push_str(FAILOVER_NOTE);
         let spec = self
             .build_spec(&row, &next.account, cwd, prompt, None, false)
             .await?;
         let handle = self.launch_harness(&row, spec).await?;
+        self.announce_failover(&row, &next.pending).await;
+        // The old account has a free slot now.
+        self.request_drain();
         self.go_live(&row, &next.account, handle, true).await;
         Ok(())
     }
+
+    /// The `failover` and `route_decision` events of a move, for the run's current account.
+    pub(crate) async fn announce_failover(&self, row: &RunRow, p: &Pending) {
+        let sid = &row.session_id;
+        self.emit(
+            sid,
+            Some(&row.id),
+            EventType::Failover,
+            json!({
+                "from": p.from,
+                "to": row.account,
+                "from_harness": p.from_harness,
+                "to_harness": row.harness,
+                "reason": p.reason,
+                "error_kind": p.error_kind,
+            }),
+        )
+        .await;
+        self.emit(
+            sid,
+            Some(&row.id),
+            EventType::RouteDecision,
+            p.decision.clone(),
+        )
+        .await;
+    }
 }
 
-/// Where a failed-over run goes.
-struct Next {
-    from: String,
-    from_harness: Harness,
-    account: AccountFile,
-    to: Reassign,
-    decision: Value,
+fn reassign_of(r: &so_core::proto::RouteResult, account: &AccountFile) -> Reassign {
+    Reassign {
+        account: account.name.clone(),
+        harness: r.harness,
+        choice_id: Some(r.choice_id.clone()),
+        model: Some(r.model.clone()).filter(|m| !m.is_empty()),
+        effort: r.effort.clone(),
+    }
 }
-
-const FAILOVER_NOTE: &str = "\n\nThis task was started on another account that ran out of \
-    quota; the working tree may already hold part of the work. Check what is there before you \
-    continue.";

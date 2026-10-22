@@ -116,7 +116,7 @@ impl RunManager {
             }
             other => other?,
         };
-        let decision = decision_data(&outcome, &role)?;
+        let decision = decision_data(&outcome, &role, &params.prompt)?;
         Ok(Routed {
             result: outcome.result,
             decision,
@@ -192,5 +192,67 @@ impl RunManager {
             },
             fallback_reason: Some(why.message.clone()),
         })
+    }
+
+    /// A queued run waits for a slot on an account that is full. When it was routed (not
+    /// pinned to its account) and has not started, look for an account with a free slot
+    /// within its pins and move it there. Returns whether it moved.
+    pub(crate) async fn reroute_queued(&self, run: &so_store::RunRow) -> bool {
+        if run.native_session_id.is_some() {
+            return false;
+        }
+        let id = run.id.clone();
+        let Ok(Some(pins)) = self.db(move |s| s.get_run_route(&id)).await else {
+            return false;
+        };
+        let Ok(pins) = serde_json::from_str::<RoutePins>(&pins) else {
+            return false;
+        };
+        let Some(from) = run.account.clone() else {
+            return false;
+        };
+        if pins.account.is_some() {
+            return false;
+        }
+        // The whole system being full is not something another account fixes.
+        let global = i64::from(self.config().limits.global_cap);
+        if self
+            .db(|s| s.count_active_runs_total())
+            .await
+            .is_ok_and(|n| n >= global)
+        {
+            return false;
+        }
+        let prompt = self.turn_prompt(run).await;
+        let Ok(routed) = self.route_run(&prompt, &pins, &[], None, false).await else {
+            return false;
+        };
+        for name in &routed.result.ranked_accounts {
+            if *name == from {
+                continue;
+            }
+            let Ok(account) = self.usable_account(name, Some(routed.result.harness)).await else {
+                continue;
+            };
+            let to = so_store::Reassign {
+                account: account.name.clone(),
+                harness: routed.result.harness,
+                choice_id: Some(routed.result.choice_id.clone()),
+                model: Some(routed.result.model.clone()).filter(|m| !m.is_empty()),
+                effort: routed.result.effort.clone(),
+            };
+            let (rid, f) = (run.id.clone(), from.clone());
+            if let Ok(true) = self.db_raw(move |s| s.retarget_queued(&rid, &f, &to)).await {
+                self.emit(
+                    &run.session_id,
+                    Some(&run.id),
+                    so_core::EventType::RouteDecision,
+                    routed.decision.clone(),
+                )
+                .await;
+                return true;
+            }
+        }
+        false
     }
 }

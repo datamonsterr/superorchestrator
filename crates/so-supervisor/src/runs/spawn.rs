@@ -83,7 +83,11 @@ impl RunManager {
 
     /// An account a run can start on now: it exists, is enabled, matches `harness` when one
     /// is given, and its harness can be launched.
-    async fn usable_account(&self, name: &str, harness: Option<Harness>) -> R<AccountFile> {
+    pub(super) async fn usable_account(
+        &self,
+        name: &str,
+        harness: Option<Harness>,
+    ) -> R<AccountFile> {
         let account = self.load_account(name).await?;
         if let Some(h) = harness
             && account.harness != h
@@ -362,9 +366,13 @@ impl RunManager {
             ),
             None => (None, None),
         };
-        if !checks.is_empty() || fork_from.is_some() || pins.is_some() {
+        let turn_prompt = row.prompt.clone();
+        {
             let (rid, fork) = (id.clone(), fork_from);
             self.db(move |s| {
+                if let Some(p) = &turn_prompt {
+                    s.set_run_turn_prompt(&rid, p)?;
+                }
                 if !checks.is_empty() {
                     s.set_run_checks(&rid, &checks)?;
                 }

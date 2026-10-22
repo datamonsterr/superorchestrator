@@ -200,6 +200,15 @@ impl Env {
             .collect()
     }
 
+    /// Every line the fake harness of `name` read from its stdin (prompts and messages).
+    pub fn stdin_lines(&self, name: &str) -> Vec<String> {
+        let text = std::fs::read_to_string(self.launch_log(name)).unwrap_or_default();
+        text.lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter_map(|v| v["stdin"].as_str().map(String::from))
+            .collect()
+    }
+
     pub fn set_enabled(&self, name: &str, enabled: bool) {
         let path = self.paths.account_file(name);
         let text = std::fs::read_to_string(&path).unwrap();

@@ -129,6 +129,42 @@ impl Store {
         Ok(n)
     }
 
+    /// Newest first, after the `(started_at, id)` position `after` when given.
+    pub fn list_workflow_runs_page(
+        &self,
+        after: Option<(DateTime<Utc>, &str)>,
+        limit: usize,
+    ) -> Result<Vec<WorkflowRunRow>> {
+        let conn = self.conn();
+        let rows = match after {
+            Some((ts, id)) => {
+                let mut st = conn.prepare(&format!(
+                    "SELECT {COLS} FROM workflow_runs WHERE (started_at, id) < (?1, ?2) \
+                     ORDER BY started_at DESC, id DESC LIMIT ?3"
+                ))?;
+                st.query_map(params![ts_to_sql(&ts), id, limit as i64], map)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            }
+            None => {
+                let mut st = conn.prepare(&format!(
+                    "SELECT {COLS} FROM workflow_runs ORDER BY started_at DESC, id DESC LIMIT ?1"
+                ))?;
+                st.query_map([limit as i64], map)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?
+            }
+        };
+        Ok(rows)
+    }
+
+    /// Whether `session_id` has a workflow that is still running.
+    pub fn session_has_running_workflow(&self, session_id: &str) -> Result<bool> {
+        Ok(self.conn().query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE session_id = ?1 AND state = 'running')",
+            [session_id],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Finds the single workflow run whose id starts with `prefix`.
     pub fn get_workflow_run_by_prefix(&self, prefix: &str) -> Result<WorkflowRunRow> {
         let not_found = || StoreError::NotFound {
@@ -500,5 +536,37 @@ mod tests {
                 .result_json
                 .is_none()
         );
+    }
+
+    #[test]
+    fn paging_and_running_check() {
+        let s = Store::open_in_memory().unwrap();
+        let mk = |id: &str, age: i64, state: &str| WorkflowRunRow {
+            id: id.into(),
+            name: id.into(),
+            session_id: Some("s1".into()),
+            state: state.into(),
+            args_json: "null".into(),
+            started_at: crate::codec::now() - chrono::Duration::seconds(age),
+            finished_at: None,
+            result_json: None,
+            error: None,
+        };
+        s.insert_workflow_run(&mk("a", 30, "succeeded")).unwrap();
+        s.insert_workflow_run(&mk("b", 20, "succeeded")).unwrap();
+        s.insert_workflow_run(&mk("c", 10, "running")).unwrap();
+        let first = s.list_workflow_runs_page(None, 2).unwrap();
+        assert_eq!(
+            first.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            ["c", "b"]
+        );
+        let last = &first[1];
+        let rest = s
+            .list_workflow_runs_page(Some((last.started_at, &last.id)), 2)
+            .unwrap();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].id, "a");
+        assert!(s.session_has_running_workflow("s1").unwrap());
+        assert!(!s.session_has_running_workflow("other").unwrap());
     }
 }
