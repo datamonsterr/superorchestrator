@@ -274,6 +274,63 @@ pub fn uncommitted(dir: &Path) -> Option<String> {
     Some(text)
 }
 
+/// Commits everything uncommitted in the run worktree `dir` (`git add -A`, so untracked
+/// files count and `.gitignore` is respected) with `message`. `Ok(None)` when the tree is
+/// clean, otherwise the new commit's short sha. The user's hooks run (same timeout and
+/// no-prompt environment as the merge); an identity is supplied only when git has none.
+/// Every error is a message for the orchestrator; the run's branch is left as it was.
+pub fn commit_all(dir: &Path, message: &str) -> Result<Option<String>, String> {
+    commit_all_with(dir, message, MERGE_TIMEOUT)
+}
+
+pub fn commit_all_with(
+    dir: &Path,
+    message: &str,
+    timeout: Duration,
+) -> Result<Option<String>, String> {
+    if uncommitted(dir).is_none() {
+        return Ok(None);
+    }
+    git(dir, &["add", "-A"])?;
+    let mut cmd = git_command(dir);
+    if git(dir, &["config", "--get", "user.name"]).is_err()
+        || git(dir, &["config", "--get", "user.email"]).is_err()
+    {
+        cmd.args([
+            "-c",
+            "user.name=superorchestrator",
+            "-c",
+            "user.email=superorchestrator@localhost",
+        ]);
+    }
+    cmd.args(["commit", "-q", "-m", message])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_EDITOR", "true")
+        .env("GIT_ASKPASS", "true")
+        .env("SSH_ASKPASS", "true");
+    let ran = run_with_timeout(cmd, timeout)?;
+    let reset = || {
+        let _ = git(dir, &["reset", "-q"]);
+    };
+    let Some(status) = ran.status else {
+        reset();
+        return Err(format!(
+            "committing the run's uncommitted work timed out (hooks or signing?) after {}s in {}; nothing was merged",
+            timeout.as_secs(),
+            dir.display()
+        ));
+    };
+    if !status.success() {
+        reset();
+        return Err(format!(
+            "committing the run's uncommitted work in {} failed (a hook may have refused it): {}. Nothing was merged; the run is still pending_review",
+            dir.display(),
+            ran.out.trim()
+        ));
+    }
+    git(dir, &["rev-parse", "--short", "HEAD"]).map(Some)
+}
+
 /// True when the local branch exists in `repo`.
 pub fn branch_exists(repo: &Path, branch: &str) -> bool {
     git(

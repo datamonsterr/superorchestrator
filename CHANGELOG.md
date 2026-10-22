@@ -30,8 +30,10 @@ First release. Pending the `v0.1.0` tag.
   `install.sh` ends with the same hint.
 - Landing finished work: `accept_run` takes `merge: true` to merge the run's branch into the
   checkout it was started from (fast-forward, else a `merge: <title> (<id>)` commit) and remove
-  the worktree. A dirty or different-branch base checkout, uncommitted work in the run's
-  worktree, or a conflict (aborted) fails the call and leaves the run at the review gate. The
+  the worktree. Work the run left uncommitted (untracked files included, `.gitignore` respected) is
+  first committed in its worktree as `<title> (<id>)` (the repo's hooks run; the note says
+  `committed uncommitted work as <sha>`). A dirty or different-branch base checkout, a failing
+  commit hook, or a conflict (aborted) fails the call and leaves the run at the review gate. The
   result reports `merged`, and `branch` with the merge command when the work is not merged.
 - `get_run` takes `diff: true` to return a run's changes (`base`, `branch`, `stat`, `patch`, cut
   at 64 KiB); `superorchestrator runs show <id> --diff` prints them.

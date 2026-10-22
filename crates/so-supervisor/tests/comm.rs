@@ -2030,17 +2030,76 @@ async fn accept_merge_refuses_another_branch() {
 }
 
 #[tokio::test]
-async fn accept_merge_refuses_uncommitted_work_in_the_run_worktree() {
+async fn accept_merge_commits_uncommitted_work_in_the_run_worktree() {
     let env = Env::new();
     let h = env.start().await;
     let c = env.client(&h).await;
     let steps = [
         write_step("b.txt", "b", true),
+        json!({"shell": "printf x > tracked.txt && git add tracked.txt && git -c user.name=t -c user.email=t@e commit -q -m t && printf y > tracked.txt"}),
         write_step("loose.txt", "l", false),
+        json!({"shell": "printf 'ign.txt\\n' > .gitignore && printf z > ign.txt"}),
     ];
     let v = gated(&env, &c, &steps, "loose").await;
+    let r = accept(&c, &v.run_id, true).await.unwrap();
+    assert!(r.merged, "{r:?}");
+    let note = r.note.unwrap();
+    assert!(note.contains("committed uncommitted work as "), "{note}");
+    assert_eq!(
+        std::fs::read_to_string(env.repo.join("loose.txt")).unwrap(),
+        "l"
+    );
+    assert_eq!(
+        std::fs::read_to_string(env.repo.join("tracked.txt")).unwrap(),
+        "y"
+    );
+    assert!(env.repo.join(".gitignore").exists());
+    assert!(!env.repo.join("ign.txt").exists());
+    let log = git(&env.repo, &["log", "--format=%s", "-n", "5"]);
+    assert!(log.contains("loose ("), "{log}");
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_commits_without_a_git_identity() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("loose.txt", "l", false)], "noid").await;
+    for k in ["user.name", "user.email"] {
+        git(&env.repo, &["config", "--unset", k]);
+    }
+    let name_set = so_supervisor::runs::worktree::git_command(&env.repo)
+        .args(["config", "--get", "user.name"])
+        .output()
+        .unwrap()
+        .status
+        .success();
+    let r = accept(&c, &v.run_id, true).await.unwrap();
+    assert!(r.merged, "{r:?}");
+    assert!(env.repo.join("loose.txt").exists());
+    if !name_set {
+        let author = git(&env.repo, &["log", "--format=%an", "-n", "2"]);
+        assert!(author.contains("superorchestrator"), "{author}");
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_reports_a_failing_pre_commit_hook_and_merges_nothing() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let v = gated(&env, &c, &[write_step("loose.txt", "l", false)], "hookc").await;
+    let hook = env.repo.join(".git/hooks/pre-commit");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, "#!/bin/sh\necho 'lint failed' >&2\nexit 1\n").unwrap();
+    std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let head = git(&env.repo, &["rev-parse", "HEAD"]);
     let msg = rpc_message(accept(&c, &v.run_id, true).await.unwrap_err());
-    assert!(msg.contains("uncommitted"), "{msg}");
+    assert!(msg.contains("lint failed") && msg.contains("hook"), "{msg}");
+    assert_eq!(git(&env.repo, &["rev-parse", "HEAD"]), head);
+    assert!(!env.repo.join("loose.txt").exists());
     assert_eq!(view(&c, &v.run_id).await.state, RunState::PendingReview);
     h.shutdown().await;
 }
