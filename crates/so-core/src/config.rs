@@ -297,11 +297,31 @@ fn to_edit_value(v: &toml::Value) -> toml_edit::Value {
 }
 
 impl Config {
+    fn validate(&self) -> std::result::Result<(), String> {
+        if self.limits.global_cap == 0 {
+            return Err("limits.global_cap must be at least 1".into());
+        }
+        if self.limits.max_children == 0 {
+            return Err("limits.max_children must be at least 1".into());
+        }
+        Ok(())
+    }
+
     /// Loads `config.toml`; a missing file yields the defaults.
     pub fn load(paths: &Paths) -> Result<Self> {
         let path = paths.config_toml();
         match std::fs::read_to_string(&path) {
-            Ok(text) => toml::from_str(&text).map_err(|source| CoreError::TomlDe { path, source }),
+            Ok(text) => {
+                let cfg: Config = toml::from_str(&text).map_err(|source| CoreError::TomlDe {
+                    path: path.clone(),
+                    source,
+                })?;
+                cfg.validate().map_err(|reason| CoreError::InvalidValue {
+                    key: path.display().to_string(),
+                    reason,
+                })?;
+                Ok(cfg)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(CoreError::io(path, e)),
         }
@@ -437,11 +457,17 @@ impl Config {
                 table.remove(last);
             }
         }
-        root.try_into::<Config>()
+        let cfg = root
+            .try_into::<Config>()
             .map_err(|e| CoreError::InvalidValue {
                 key: key_path.to_string(),
                 reason: e.message().to_string(),
-            })
+            })?;
+        cfg.validate().map_err(|reason| CoreError::InvalidValue {
+            key: key_path.to_string(),
+            reason,
+        })?;
+        Ok(cfg)
     }
 
     /// Sets a key in `config.toml`, keeping comments and ordering, and writes it atomically.
@@ -785,5 +811,54 @@ mod tests {
         let paths = Paths::from_dir(d.path().join("new"));
         Config::set_in_file(&paths, "limits.global_cap", "2").unwrap();
         assert_eq!(Config::load(&paths).unwrap().limits.global_cap, 2);
+    }
+
+    fn leaf_paths(v: &toml::Value, prefix: &str, out: &mut Vec<String>) {
+        match v {
+            toml::Value::Table(t) => {
+                for (k, v) in t {
+                    let p = if prefix.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{prefix}.{k}")
+                    };
+                    leaf_paths(v, &p, out);
+                }
+            }
+            _ => out.push(prefix.to_string()),
+        }
+    }
+
+    #[test]
+    fn option_keys_lists_every_option_field() {
+        let mut full = Config::default();
+        full.ui.token = Some("t".into());
+        full.router.jev.key_file = Some("f".into());
+        full.defaults = Defaults {
+            harness: Some(Harness::Agy),
+            model: Some("m".into()),
+            effort: Some("e".into()),
+        };
+        let (mut with, mut without) = (Vec::new(), Vec::new());
+        leaf_paths(&full.to_value().unwrap(), "", &mut with);
+        leaf_paths(&Config::default().to_value().unwrap(), "", &mut without);
+        // `choices` is an array leaf in both; options are the paths only present when set.
+        let mut only_when_set: Vec<_> = with.into_iter().filter(|p| !without.contains(p)).collect();
+        only_when_set.sort();
+        let mut known: Vec<_> = OPTION_KEYS.iter().map(|s| s.to_string()).collect();
+        known.sort();
+        assert_eq!(only_when_set, known);
+    }
+
+    #[test]
+    fn caps_reject_zero() {
+        let mut c = Config::default();
+        assert!(c.set("limits.global_cap", "0").is_err());
+        assert!(c.set("limits.max_children", "0").is_err());
+        assert_eq!(c, Config::default());
+        let (_d, paths) = tmp();
+        std::fs::write(paths.config_toml(), "[limits]\nglobal_cap = 0\n").unwrap();
+        assert!(Config::load(&paths).is_err());
+        assert!(Config::set_in_file(&paths, "limits.max_children", "0").is_err());
     }
 }

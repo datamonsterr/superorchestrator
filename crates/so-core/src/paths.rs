@@ -1,6 +1,5 @@
 //! Filesystem layout of the superorchestrator config directory (SPEC 16) and the supervisor socket.
 
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::error::{CoreError, Result};
@@ -150,10 +149,7 @@ pub fn socket_path_with(env: EnvFn<'_>, platform: Platform) -> Result<PathBuf> {
             {
                 return Ok(PathBuf::from(rt).join("superorchestrator.sock"));
             }
-            // The owner of /proc/self is the process's effective uid.
-            let uid = std::fs::metadata("/proc/self")
-                .map_err(|e| CoreError::io("/proc/self", e))?
-                .uid();
+            let uid = rustix::process::geteuid().as_raw();
             Ok(PathBuf::from(format!("/tmp/superorchestrator-{uid}"))
                 .join("superorchestrator.sock"))
         }

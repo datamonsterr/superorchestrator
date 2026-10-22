@@ -18,6 +18,7 @@ toml.workspace = true
 toml_edit = "0.25"
 thiserror.workspace = true
 uuid.workspace = true
+rustix = { version = "1", default-features = false, features = ["process"] }
 chrono.workspace = true
 schemars = { workspace = true, features = ["chrono04"] }
 

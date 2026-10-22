@@ -735,6 +735,7 @@ name = "so-core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",
