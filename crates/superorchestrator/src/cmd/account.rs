@@ -49,29 +49,78 @@ fn load_account(paths: &Paths, name: &str) -> Result<AccountFile> {
 
 fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
     let harness = parse_harness(&a.harness)?;
+    if a.name.is_some() && a.count > 1 {
+        return Err(CliError::new(
+            crate::exit::USAGE,
+            "--name names one account; drop it to create several with --count",
+        )
+        .into());
+    }
     let cfg = ctx.config()?;
     let host = ctx.host()?;
-    let account = manage::add(&ctx.paths, &cfg, &host, harness, &a.name, a.home.as_deref())?;
+    let (created, error) = match &a.name {
+        Some(name) => {
+            match manage::add(&ctx.paths, &cfg, &host, harness, name, a.home.as_deref()) {
+                Ok(acc) => (vec![acc], None),
+                Err(e) => (Vec::new(), Some(e)),
+            }
+        }
+        None => {
+            let batch = manage::add_numbered(&ctx.paths, &cfg, &host, harness, a.count);
+            (batch.created, batch.error)
+        }
+    };
+    if created.is_empty() {
+        return Err(error.map_or_else(|| anyhow::anyhow!("no account was created"), Into::into));
+    }
     ctx.refresh_skill();
-    let login = login_json(&account, &host)?;
-    ctx.emit(
-        &json!({
-            "ok": true, "name": account.name, "harness": account.harness.as_str(),
-            "home": account.home, "login": login,
-        }),
-        |w| {
+    let logins = created
+        .iter()
+        .map(|acc| login_json(acc, &host))
+        .collect::<Result<Vec<_>>>()?;
+    let accounts: Vec<Value> = created
+        .iter()
+        .zip(&logins)
+        .map(|(acc, login)| {
+            json!({
+                "name": acc.name, "harness": acc.harness.as_str(),
+                "home": acc.home, "login": login,
+            })
+        })
+        .collect();
+    // The first account's fields stay at the top level for single-account callers.
+    let mut out = accounts[0].clone();
+    out["ok"] = json!(error.is_none());
+    out["accounts"] = json!(accounts);
+    let do_login = a.login && stdin_is_tty();
+    ctx.emit(&out, |w| {
+        for (acc, login) in created.iter().zip(&logins) {
             writeln!(
                 w,
                 "added account {} ({}) at {}",
-                account.name, account.harness, account.home
+                acc.name, acc.harness, acc.home
             )?;
+            if do_login {
+                continue;
+            }
             // codex and opencode sign in through `account login`; claude and agy
             // sign in inside their wrapper, which `account login` cannot drive
             // without a terminal.
-            let via_cli = matches!(account.harness, Harness::Codex | Harness::Opencode);
-            write_login_hint(w, &login, via_cli)
-        },
-    )?;
+            let via_cli = matches!(acc.harness, Harness::Codex | Harness::Opencode);
+            write_login_hint(w, login, via_cli)?;
+        }
+        Ok(())
+    })?;
+    if let Some(e) = error {
+        return Err(e.into());
+    }
+    if do_login {
+        for acc in &created {
+            if !run_login(ctx, acc, &host)? {
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -202,7 +251,7 @@ fn login(ctx: &Ctx, name: &str) -> Result<ExitCode> {
     let account = load_account(&ctx.paths, name)?;
     let host = ctx.host()?;
     let tty = stdin_is_tty();
-    let plan = manage::login_command(&account, &host, tty)?;
+    manage::login_command(&account, &host, tty)?; // fails early when the harness binary is missing
     let runnable = tty || account.harness == Harness::Codex;
     if !runnable {
         let login = login_json(&account, &host)?;
@@ -211,6 +260,19 @@ fn login(ctx: &Ctx, name: &str) -> Result<ExitCode> {
         })?;
         return Ok(ExitCode::SUCCESS);
     }
+    if !run_login(ctx, &account, &host)? {
+        return Ok(ExitCode::FAILURE);
+    }
+    ctx.emit_ok(
+        json!({ "name": name }),
+        &format!("login finished for {name}"),
+    )?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Runs the account's login command on the terminal. `Ok(false)` when it exited non-zero.
+pub fn run_login(ctx: &Ctx, account: &AccountFile, host: &HostEnv) -> Result<bool> {
+    let plan = manage::login_command(account, host, stdin_is_tty())?;
     if let Some(note) = &plan.note
         && !ctx.json
     {
@@ -226,14 +288,7 @@ fn login(ctx: &Ctx, name: &str) -> Result<ExitCode> {
     let status = cmd
         .status()
         .with_context(|| format!("could not run `{program}`"))?;
-    if !status.success() {
-        return Ok(ExitCode::FAILURE);
-    }
-    ctx.emit_ok(
-        json!({ "name": name }),
-        &format!("login finished for {name}"),
-    )?;
-    Ok(ExitCode::SUCCESS)
+    Ok(status.success())
 }
 
 fn remove(ctx: &Ctx, a: AccountRemove) -> Result<ExitCode> {

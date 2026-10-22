@@ -3,8 +3,7 @@
 use std::fmt;
 
 pub const FAILURE: u8 = 1;
-/// Reserved for clap usage errors (clap exits with it by itself).
-#[allow(dead_code)]
+/// Usage errors: clap exits with it by itself, and commands use it for bad flag combinations.
 pub const USAGE: u8 = 2;
 pub const NOT_FOUND: u8 = 3;
 

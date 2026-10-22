@@ -122,11 +122,18 @@ pub enum AccountCmd {
 pub struct AccountAdd {
     /// codex, agy, opencode or claude
     pub harness: String,
+    /// Account name (default: <harness>-<n> with the lowest free n)
     #[arg(long)]
-    pub name: String,
-    /// Credential home (default: ~/.<name>)
-    #[arg(long)]
+    pub name: Option<String>,
+    /// Create this many accounts, named <harness>-<n>
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=99))]
+    pub count: u32,
+    /// Credential home (default: ~/.<name>); needs --name
+    #[arg(long, requires = "name")]
     pub home: Option<String>,
+    /// Sign in to each new account in turn (needs a terminal; otherwise prints the commands)
+    #[arg(long)]
+    pub login: bool,
 }
 
 #[derive(Args, Debug)]
