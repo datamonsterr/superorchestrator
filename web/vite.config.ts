@@ -49,7 +49,7 @@ export default defineConfig({
             vendor('react', ['react', 'react-dom', 'scheduler']),
             vendor('radix', ['radix-ui', '@radix-ui', '@floating-ui', 'aria-hidden', 'react-remove-scroll']),
             vendor('router', ['react-router']),
-            vendor('query', ['@tanstack']),
+            vendor('query', ['@tanstack/react-query', '@tanstack/query-core']),
           ],
         },
       },
