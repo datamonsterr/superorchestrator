@@ -38,12 +38,16 @@ pub fn open_existing_store(paths: &Paths) -> Option<Store> {
 }
 
 pub fn collect_views(ctx: &Ctx) -> Result<Vec<AccountView>> {
-    let host = ctx.host()?;
+    collect_views_with(ctx, &ctx.host()?)
+}
+
+/// [`collect_views`] against a given host (the terminal UI holds one; tests pass a fake).
+pub fn collect_views_with(ctx: &Ctx, host: &so_accounts::HostEnv) -> Result<Vec<AccountView>> {
     let store = open_existing_store(&ctx.paths);
     let now = Utc::now();
     let mut out = Vec::new();
     for account in AccountFile::list(&ctx.paths)? {
-        let signed_in = so_accounts::sign_in_state(&account, &host)?;
+        let signed_in = so_accounts::sign_in_state(&account, host)?;
         let active_runs = store
             .as_ref()
             .and_then(|s| s.count_active_runs_by_account(&account.name).ok());

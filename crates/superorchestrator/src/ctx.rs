@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use so_accounts::HostEnv;
 use so_core::{Config, Paths, expand_tilde};
 
+#[derive(Clone)]
 pub struct Ctx {
     pub paths: Paths,
     pub json: bool,
@@ -30,10 +31,18 @@ impl Ctx {
     /// Does nothing when the skill is not installed. A failure is a warning: the change
     /// that called this already succeeded.
     pub fn refresh_skill(&self) {
-        let Ok(host) = self.host() else { return };
-        for e in so_agents::skill::refresh(&self.paths, &host.home).errors {
+        for e in self.refresh_skill_errors() {
             eprintln!("warning: {e}");
         }
+    }
+
+    /// [`refresh_skill`](Self::refresh_skill) without printing: the terminal UI owns the
+    /// screen, so it shows these itself.
+    pub fn refresh_skill_errors(&self) -> Vec<String> {
+        let Ok(host) = self.host() else {
+            return Vec::new();
+        };
+        so_agents::skill::refresh(&self.paths, &host.home).errors
     }
 
     pub fn host(&self) -> Result<HostEnv> {

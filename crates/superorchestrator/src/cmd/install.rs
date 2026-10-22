@@ -535,6 +535,11 @@ fn claude_entry(host: &HostEnv) -> Result<Option<serde_json::Value>> {
     Ok(v.get("mcpServers").and_then(|m| m.get(NAME)).cloned())
 }
 
+/// Whether Claude Code has our MCP server registered at user scope.
+pub(crate) fn claude_registered(host: &HostEnv) -> bool {
+    claude_entry(host).is_ok_and(|e| e.is_some())
+}
+
 fn entry_matches(entry: &serde_json::Value, exe: &str) -> bool {
     entry.get("command").and_then(|c| c.as_str()) == Some(exe)
         && entry.get("args") == Some(&serde_json::json!(["mcp"]))
