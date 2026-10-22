@@ -205,6 +205,61 @@ async fn hello_creates_session_row() {
 }
 
 #[tokio::test]
+async fn inspect_hello_opens_no_session_and_refuses_spawns() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = connect(&h).await;
+    c.hello_inspect("cli", "/w", Some(7)).await.unwrap();
+    // Reads work without a session.
+    let st: StatusResult = c.call("status", json!({})).await.unwrap();
+    assert_eq!(st.sessions, 0);
+    assert!(
+        env.store()
+            .list_sessions(so_store::SessionFilter::All, 100)
+            .unwrap()
+            .is_empty()
+    );
+    // Spawning needs a session.
+    for m in ["spawn_agent", "run_workflow"] {
+        let e = c.call::<_, Value>(m, json!({})).await.unwrap_err();
+        assert!(
+            matches!(e, ClientError::Rpc(ref r) if r.code == INVALID_REQUEST),
+            "{m}: {e:?}"
+        );
+    }
+    // Only an explicit allowlist of reads and controls is open to it.
+    for m in ["send_message", "accept_run", "reject_run", "fork_agent"] {
+        let e = c.call::<_, Value>(m, json!({})).await.unwrap_err();
+        assert!(
+            matches!(&e, ClientError::Rpc(r) if r.code == INVALID_REQUEST && r.message.contains("read-only")),
+            "{m}: {e:?}"
+        );
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn inspect_hello_with_a_run_id_still_gets_the_run_session() {
+    let env = Env::new();
+    let store = env.store();
+    let s = session_row();
+    store.insert_session(&s).unwrap();
+    let run = run_row(&s.id, RunState::Running, 0);
+    store.insert_run(&run).unwrap();
+    let h = env.start().await;
+    let c = connect(&h).await;
+    let r = c
+        .call::<_, HelloResult>(
+            "hello",
+            json!({"client": "x", "cwd": "/w", "run_id": run.id, "inspect": true}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.session_id, s.id);
+    h.shutdown().await;
+}
+
+#[tokio::test]
 async fn hello_with_run_id_attaches_to_run_session() {
     let env = Env::new();
     let store = env.store();

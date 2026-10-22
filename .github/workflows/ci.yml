@@ -36,6 +36,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # `e2e-seed` is behind the test-support feature, so the run above skips it.
+      - run: cargo clippy -p superorchestrator --features test-support --all-targets --locked -- -D warnings
       # taiki-e/install-action does not list actionlint, and its cargo-binstall fallback fails.
       # actionlint is pinned to 1.7.12 and its tarball is checked against the sha256 below.
       # shellcheck comes from apt.
@@ -215,6 +217,38 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The same specs' blind spot: MSW mocks cannot catch a response shape or CSP problem that only the real server
+  # shows. This builds web/dist and the debug binary, seeds a supervisor through the scripted fake harness (no real
+  # harness CLI is installed or run) and drives the built UI in Chromium.
+  browser-e2e-real:
+    name: browser e2e (real server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup show
+      - uses: Swatinem/rust-cache@v2
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm -C web install --frozen-lockfile
+      - run: pnpm -C web e2e:install
+      - run: pnpm -C web e2e:real
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-real
           path: |
             web/playwright-report
             web/test-results

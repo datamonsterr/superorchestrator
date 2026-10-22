@@ -75,7 +75,7 @@ export function briefFrom(events: readonly Event[]): Brief | null {
   const { brief, output_schema, ...rest } = d
   return {
     brief: str(brief) ?? str(d.prompt),
-    options: Object.entries(rest).filter(([k]) => k !== 'prompt'),
+    options: Object.entries(rest).filter(([k, v]) => k !== 'prompt' && v != null),
     outputSchema: output_schema,
     isolation: str(d.isolation),
   }

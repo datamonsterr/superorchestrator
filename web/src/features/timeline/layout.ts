@@ -34,7 +34,7 @@ export function accountAt(lane: RunLane, t: number): string | undefined {
     if (a.start <= t) found = a.account
     else break
   }
-  return found ?? lane.run?.account
+  return found ?? lane.run?.account ?? undefined
 }
 
 const span = (a: number, b: number) => `${formatClock(a, true)} to ${formatClock(b, true)}`

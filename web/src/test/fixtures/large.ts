@@ -83,6 +83,7 @@ export function makeLargeSession({
     windows.push({ id, start, end })
     runs.push({
       run_id: id,
+      session_id: LARGE_SESSION_ID,
       state: finalState,
       harness,
       account,

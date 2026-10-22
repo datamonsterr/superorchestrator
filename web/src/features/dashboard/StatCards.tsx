@@ -23,11 +23,11 @@ function todayCost(daily: DashboardView['daily']): number {
 }
 
 export function StatCards({ data }: { data: DashboardView }) {
-  const { status, caps, live_runs, escalations, daily } = data
+  const { status, live_runs, escalations, daily } = data
   return (
     <section aria-label="Overview" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
       <Stat label="Cap" hint="active runs against the global cap">
-        <CapMeterView active={status.active_runs} cap={caps.global} />
+        <CapMeterView active={status.active_runs} cap={status.caps.global} />
       </Stat>
       <Stat label="Live runs" hint={`${status.sessions} sessions`}>
         {live_runs.length}

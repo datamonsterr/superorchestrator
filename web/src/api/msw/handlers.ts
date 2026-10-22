@@ -54,7 +54,7 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
       const list = sessionList().filter(
         (s) =>
           (!status || s.status === status) &&
-          (!q || [s.client, s.cwd, s.id].some((v) => v.toLowerCase().includes(q)) || fx.runs.some((r) => s.id === 'sess-1' && (r.name ?? '').toLowerCase().includes(q))),
+          (!q || [s.client, s.cwd, s.id].some((v) => (v ?? '').toLowerCase().includes(q)) || fx.runs.some((r) => s.id === 'sess-1' && (r.name ?? '').toLowerCase().includes(q))),
       )
       return HttpResponse.json(paginate(list, url, 200))
     }),

@@ -12,7 +12,7 @@ use so_core::proto::{
 use so_workflow::{SavedSource, SavedWorkflows};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::runs::{connect, rpc, runtime};
+use super::runs::{connect, connect_session, rpc, runtime};
 use crate::cli::{WorkflowCmd, WorkflowRun};
 use crate::ctx::Ctx;
 use crate::exit::FAILURE;
@@ -79,7 +79,7 @@ async fn run_workflow(ctx: &Ctx, a: WorkflowRun) -> Result<ExitCode> {
         wait: !a.detach,
         fresh: a.fresh,
     };
-    let client = connect(ctx).await?;
+    let client = connect_session(ctx).await?;
     let mut notes: Option<UnboundedReceiver<Notification>> = client.notifications();
     let call = client.call::<_, RunWorkflowResult>(METHOD_RUN_WORKFLOW, &params);
     tokio::pin!(call);

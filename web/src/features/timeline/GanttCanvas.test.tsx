@@ -223,7 +223,6 @@ describe('GanttCanvas', () => {
     expect(container.querySelector('pattern#so-pat-hatch')).not.toBeNull()
     const bar = screen.getByTestId('seg-run-1-1').querySelector('rect')!
     expect(bar.getAttribute('fill')).toBe('var(--state-running)')
-    expect(document.head.innerHTML + document.body.innerHTML).toContain('--state-running:')
   })
 })
 

@@ -226,7 +226,8 @@ export interface Headroom {
   account: string;
   five_hour_remaining_pct?: number | null;
   five_hour_resets_at?: string | null;
-  observed_at: string;
+  /** When the numbers were measured. The Unix epoch is the internal "never observed" sentinel (always stale); on the wire that is `null`. */
+  observed_at?: string | null;
   pool: string;
   source: HeadroomSource;
   status: HeadroomStatus;

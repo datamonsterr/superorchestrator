@@ -1,3 +1,4 @@
+import '@/lib/zod-setup'
 import { z } from 'zod'
 import type { Choice, RouteParams } from '@/api/types'
 

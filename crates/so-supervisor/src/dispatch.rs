@@ -9,8 +9,11 @@ use serde::Serialize;
 use serde_json::Value;
 use so_core::SessionKind;
 use so_core::proto::{
-    HelloParams, HelloResult, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
-    METHOD_STATUS, NOT_FOUND, Notification, Request, Response, RpcError, StatusResult,
+    HelloParams, HelloResult, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_CANCEL_AGENT,
+    METHOD_CANCEL_WORKFLOW, METHOD_GET_RUN, METHOD_JOIN_RUN, METHOD_LIST_AGENTS,
+    METHOD_LIST_HARNESSES, METHOD_NOT_FOUND, METHOD_READ_MESSAGES, METHOD_ROUTE, METHOD_STATUS,
+    METHOD_UI_START, METHOD_WAIT_AGENT, METHOD_WORKFLOW_STATUS, NOT_FOUND, Notification, Request,
+    Response, RpcError, StatusResult,
 };
 use so_store::SessionRow;
 use tokio::sync::{mpsc, watch};
@@ -63,7 +66,10 @@ impl Notifier {
 /// Per-connection context handed to every handler.
 #[derive(Debug, Clone)]
 pub struct ConnCtx {
+    /// `None` until `hello`, and after an `inspect` hello (no session was opened).
     pub session_id: Option<String>,
+    /// `hello` has completed.
+    pub(crate) greeted: bool,
     pub run_id: Option<String>,
     pub depth: u8,
     pub notifier: Notifier,
@@ -78,6 +84,7 @@ impl ConnCtx {
     pub(crate) fn new(notifier: Notifier, closed: watch::Receiver<bool>) -> Self {
         Self {
             session_id: None,
+            greeted: false,
             run_id: None,
             depth: 0,
             notifier,
@@ -104,6 +111,7 @@ impl ConnCtx {
         let (closed_tx, closed) = watch::channel(false);
         Self {
             session_id: Some(session_id.to_string()),
+            greeted: true,
             run_id: None,
             depth: 0,
             notifier: Notifier::new(tx),
@@ -200,6 +208,24 @@ pub(crate) async fn handle_hello(
     into_response(req.id, r)
 }
 
+/// What a connection that opened no session (`hello` with `inspect`) may call: reads, plus the
+/// controls the CLI offers on any run (`runs cancel`, `join`), `ui_start` and `status`.
+/// Everything else (spawning, messaging, review, fork) belongs to a session.
+const INSPECT_METHODS: &[&str] = &[
+    METHOD_STATUS,
+    METHOD_ROUTE,
+    METHOD_GET_RUN,
+    METHOD_WAIT_AGENT,
+    METHOD_READ_MESSAGES,
+    METHOD_LIST_HARNESSES,
+    METHOD_LIST_AGENTS,
+    METHOD_WORKFLOW_STATUS,
+    METHOD_CANCEL_AGENT,
+    METHOD_CANCEL_WORKFLOW,
+    METHOD_JOIN_RUN,
+    METHOD_UI_START,
+];
+
 /// Every other method, run on a clone of the context.
 pub(crate) async fn handle_other(
     state: &Arc<SupervisorState>,
@@ -207,8 +233,16 @@ pub(crate) async fn handle_other(
     req: Request,
 ) -> Response {
     // `hello` never gets here: the connection loop runs it through `handle_hello`.
-    let r = if ctx.session_id.is_none() {
+    let r = if !ctx.greeted {
         Err(RpcError::new(INVALID_REQUEST, "hello required"))
+    } else if ctx.session_id.is_none() && !INSPECT_METHODS.contains(&req.method.as_str()) {
+        Err(RpcError::new(
+            INVALID_REQUEST,
+            format!(
+                "this connection is read-only (inspect hello opened no session): {} needs one",
+                req.method
+            ),
+        ))
     } else if req.method == METHOD_STATUS {
         status_result(state)
             .await
@@ -229,11 +263,21 @@ async fn hello(
     ctx: &mut ConnCtx,
     params: Value,
 ) -> Result<Value, RpcError> {
-    if ctx.session_id.is_some() {
+    if ctx.greeted {
         return Err(RpcError::new(INVALID_REQUEST, "hello already completed"));
     }
     let p: HelloParams = serde_json::from_value(params)
         .map_err(|e| RpcError::new(INVALID_PARAMS, format!("invalid hello params: {e}")))?;
+    if p.inspect && p.run_id.is_none() {
+        // Inspection only: no session row, so a `status` or `runs show` leaves no trace.
+        ctx.greeted = true;
+        return serde_json::to_value(HelloResult {
+            session_id: String::new(),
+            run_id: None,
+            depth: 0,
+        })
+        .map_err(internal);
+    }
     let result = if let Some(run_id) = p.run_id {
         let id = run_id.clone();
         let run = state
@@ -265,6 +309,7 @@ async fn hello(
             depth: 0,
         }
     };
+    ctx.greeted = true;
     ctx.session_id = Some(result.session_id.clone());
     ctx.run_id = result.run_id.clone();
     ctx.depth = u8::try_from(result.depth).unwrap_or(u8::MAX);

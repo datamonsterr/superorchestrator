@@ -32,7 +32,7 @@ describe('makeLargeSession', () => {
   it('references only known runs and builds a parent tree', () => {
     const { events, session } = makeLargeSession({ events: 2000, runs: 20, seed: 2 })
     const ids = new Set(session.runs.map((r) => r.run_id))
-    expect(events.every((e) => e.run_id === null || ids.has(e.run_id))).toBe(true)
+    expect(events.every((e) => e.run_id == null || ids.has(e.run_id))).toBe(true)
     expect(session.runs.filter((r) => !r.parent_run)).toHaveLength(1)
     expect(session.runs.every((r) => !r.parent_run || ids.has(r.parent_run))).toBe(true)
   })

@@ -11,7 +11,7 @@ import { qk, type SessionFilter } from './keys'
 import { useStreamState } from './stream'
 
 export { qk, type SessionFilter }
-import type { ChoicesView, ConfigPatch, PruneRequest, ModelCatalog, EventType, Harness, RouteParams, SendMessageParams } from './types'
+import type { ChoicesPut, ConfigPatch, PruneRequest, ModelCatalog, EventType, Harness, RouteParams, SendMessageParams } from './types'
 
 /** 5 s polling while the SSE stream is down (design 2.3), otherwise false. */
 export function usePollingInterval(ms = 5000): number | false {
@@ -170,7 +170,7 @@ export const useRejectRun = () =>
 /** Records a `join_command_issued` audit event server side, so the run's events are stale afterwards. */
 export const useJoinRun = () => useApiMutation(({ id }: Id) => endpoints.joinRun(id), ({ id }) => [qk.runEvents(id)])
 export const useRoutePreview = () => useApiMutation((params: RouteParams) => endpoints.route(params))
-export const usePutChoices = () => useApiMutation((body: ChoicesView) => endpoints.putChoices(body), () => [qk.choices(), qk.harnesses()])
+export const usePutChoices = () => useApiMutation((body: ChoicesPut) => endpoints.putChoices(body), () => [qk.choices(), qk.harnesses()])
 export const useRefreshModels = () => useApiMutation<void, ModelCatalog>(() => endpoints.refreshModels(), () => [qk.models()])
 export const useCreateAccount = () =>
   useApiMutation((v: { harness: Harness; name: string; home?: string }) => endpoints.createAccount(v), ACCOUNT_KEYS)

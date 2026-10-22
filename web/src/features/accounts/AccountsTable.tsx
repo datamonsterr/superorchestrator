@@ -75,7 +75,7 @@ export function AccountsTable({ accounts, actions }: { accounts: AccountView[]; 
                   </Badge>
                 ))}
                 {(a.flags ?? []).map((f) => (
-                  <Badge key={`${f.pool ?? 'all'}-${f.until}`} variant="destructive" title={f.reason}>
+                  <Badge key={`${f.pool ?? 'all'}-${f.until}`} variant="destructive" title={f.reason ?? undefined}>
                     cooldown {f.pool ?? 'all'} <RelativeTime value={f.until} />
                   </Badge>
                 ))}

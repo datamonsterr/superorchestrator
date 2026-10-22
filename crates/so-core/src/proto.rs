@@ -157,6 +157,10 @@ pub struct HelloParams {
     pub run_id: Option<String>,
     #[serde(default)]
     pub pid: Option<u32>,
+    /// Read or control calls only: no session row is opened (SPEC 3.1: only `mcp` opens a
+    /// session at startup), so `spawn_agent` and `run_workflow` are refused on the connection.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inspect: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

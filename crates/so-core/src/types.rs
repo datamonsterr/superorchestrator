@@ -221,7 +221,27 @@ pub struct Headroom {
     pub weekly_resets_at: Option<DateTime<Utc>>,
     pub status: HeadroomStatus,
     pub source: HeadroomSource,
+    /// When the numbers were measured. The Unix epoch is the internal "never observed" sentinel
+    /// (always stale); on the wire that is `null`.
+    #[serde(with = "observed_at_wire")]
+    #[schemars(with = "Option<DateTime<Utc>>")]
     pub observed_at: DateTime<Utc>,
+}
+
+/// `observed_at` as JSON: the epoch sentinel is `null`, so clients never show 1970.
+mod observed_at_wire {
+    use chrono::{DateTime, Utc};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(t: &DateTime<Utc>, s: S) -> Result<S::Ok, S::Error> {
+        (*t != DateTime::<Utc>::UNIX_EPOCH)
+            .then_some(t)
+            .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<DateTime<Utc>, D::Error> {
+        Ok(Option::<DateTime<Utc>>::deserialize(d)?.unwrap_or(DateTime::UNIX_EPOCH))
+    }
 }
 
 /// Classification of a failed run's error.
@@ -500,5 +520,41 @@ mod tests {
         assert!(j.contains("\"type\":\"state_changed\""));
         assert_eq!(serde_json::from_str::<Event>(&j).unwrap(), e);
         assert_ne!(new_id(), new_id());
+    }
+}
+
+#[cfg(test)]
+mod headroom_wire_tests {
+    use super::*;
+
+    fn headroom(observed_at: DateTime<Utc>) -> Headroom {
+        Headroom {
+            account: "a".into(),
+            pool: "p".into(),
+            five_hour_remaining_pct: None,
+            five_hour_resets_at: None,
+            weekly_remaining_pct: None,
+            weekly_resets_at: None,
+            status: HeadroomStatus::Unknown,
+            source: HeadroomSource::Ledger,
+            observed_at,
+        }
+    }
+
+    #[test]
+    fn never_observed_is_null_on_the_wire_and_round_trips() {
+        let v = serde_json::to_value(headroom(DateTime::UNIX_EPOCH)).unwrap();
+        assert!(v["observed_at"].is_null(), "{v}");
+        let back: Headroom = serde_json::from_value(v).unwrap();
+        assert_eq!(back.observed_at, DateTime::UNIX_EPOCH);
+    }
+
+    #[test]
+    fn a_real_timestamp_is_kept() {
+        let t = Utc::now();
+        let v = serde_json::to_value(headroom(t)).unwrap();
+        assert!(v["observed_at"].is_string(), "{v}");
+        let back: Headroom = serde_json::from_value(v).unwrap();
+        assert_eq!(back.observed_at, t);
     }
 }

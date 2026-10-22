@@ -88,6 +88,16 @@ async fn runs_list_show_and_join_print() {
 
     let (out, ok) = cli(&e, &["runs", "show", "ffffffff-no-such-run"]).await;
     assert!(!ok && out.is_empty());
+    // Inspection-only commands (SPEC 3.1: only `mcp` opens a session) left no session behind:
+    // the one session is this test's own client.
+    let (_, ok) = cli(&e, &["status"]).await;
+    assert!(ok);
+    let sessions = e
+        .store()
+        .list_sessions(so_store::SessionFilter::All, 100)
+        .unwrap();
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    assert_eq!(sessions[0].client, "test");
     sup.shutdown().await;
 }
 

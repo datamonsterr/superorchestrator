@@ -17,7 +17,7 @@ const ev = (type: EventType, run: string | null, s: number, data: unknown = {}, 
   data,
 })
 const run = (id: string, extra: Partial<RunViewPublic> = {}): RunViewPublic => ({
-  run_id: id, state: 'running', recent_events: [], usage: { input_tokens: 0, output_tokens: 0, cost: 0 }, depth: 0, created_at: iso(0), ...extra,
+  run_id: id, session_id: 's', state: 'running', recent_events: [], usage: { input_tokens: 0, output_tokens: 0, cost: 0 }, depth: 0, created_at: iso(0), ...extra,
 })
 const lane = (m: TimelineModel, id: string): RunLane => m.lanes[m.index[id]]
 const NOW = T0 + 100_000
