@@ -20,21 +20,31 @@ fn account(e: &Env, name: &str, harness: Harness, home: &Path, bin: &str) {
         .unwrap();
 }
 
-/// A fake `claude` that logs its argv and remembers `mcp add`.
+/// `install` command with PATH limited to the test bin dir (so only the fake `claude`
+/// can be found, never a real one).
+fn cmd(e: &Env) -> assert_cmd::Command {
+    let mut c = e.cmd();
+    c.env("PATH", &e.bin).env_remove("CLAUDE_CONFIG_DIR");
+    c
+}
+
+/// A fake `claude` that logs its argv and keeps its user-scope MCP entry in `$HOME/.claude.json`
+/// like the real one (`mcp add` fails when the name exists). Uses only builtins and absolute
+/// paths, since PATH holds nothing else.
 fn fake_claude(e: &Env) -> PathBuf {
     let log = e.tmp.path().join("claude.log");
-    let mark = e.tmp.path().join("claude.mark");
     e.script(
         "claude",
         &format!(
             "echo \"$@\" >> {log}\n\
+             CFG=\"$HOME/.claude.json\"\n\
              case \"$1 $2\" in\n\
-             \"mcp get\") [ -f {mark} ] && {{ cat {mark}; exit 0; }}; exit 1;;\n\
-             \"mcp add\") echo \"$@\" > {mark}; exit 0;;\n\
-             \"mcp remove\") rm -f {mark}; exit 0;;\n\
+             \"mcp add\")\n\
+               if [ -f \"$CFG\" ]; then echo 'MCP server superorchestrator already exists in user config' >&2; exit 1; fi\n\
+               printf '{{\"mcpServers\":{{\"superorchestrator\":{{\"command\":\"%s\",\"args\":[\"%s\"]}}}}}}' \"$7\" \"$8\" > \"$CFG\"; exit 0;;\n\
+             \"mcp remove\") /bin/rm -f \"$CFG\"; exit 0;;\n\
              esac",
             log = log.display(),
-            mark = mark.display()
         ),
     );
     log
@@ -135,7 +145,7 @@ fn install_registers_everywhere_and_is_idempotent_then_uninstall_reverses() {
     let exe = exe();
     let exe_s = exe.to_string_lossy().into_owned();
 
-    e.cmd().arg("install").assert().success();
+    cmd(&e).arg("install").assert().success();
 
     // claude
     let lines = log_lines(&log);
@@ -191,7 +201,7 @@ fn install_registers_everywhere_and_is_idempotent_then_uninstall_reverses() {
         .map(|p| read(p))
         .collect();
     let n_log = log_lines(&log).len();
-    let out = e.cmd().arg("install").assert().success();
+    let out = cmd(&e).arg("install").assert().success();
     assert!(stdout(&out).contains("unchanged"));
     let after: Vec<String> = [&s.codex_default, &s.opencode_acc, &s.agy_acc]
         .iter()
@@ -199,14 +209,11 @@ fn install_registers_everywhere_and_is_idempotent_then_uninstall_reverses() {
         .collect();
     assert_eq!(before, after);
     assert_eq!(backups(&e).len(), 4);
-    let new_lines = &log_lines(&log)[n_log..];
-    assert!(
-        new_lines.iter().all(|l| l.starts_with("mcp get")),
-        "{new_lines:?}"
-    );
+    // The registration is recognised from ~/.claude.json: claude is not run again.
+    assert_eq!(log_lines(&log).len(), n_log);
 
     // uninstall removes only ours
-    e.cmd().arg("uninstall").assert().success();
+    cmd(&e).arg("uninstall").assert().success();
     assert!(log_lines(&log).contains(&"mcp remove --scope user superorchestrator".to_string()));
     let c = read(&s.codex_default);
     assert!(c.contains("# keep me") && c.contains("[mcp_servers.other]"));
@@ -231,14 +238,14 @@ fn dry_run_changes_nothing() {
     let log = fake_claude(&e);
     let s = seed(&e);
     let before = read(&s.codex_default);
-    let out = e.cmd().args(["install", "--dry-run"]).assert().success();
+    let out = cmd(&e).args(["install", "--dry-run"]).assert().success();
     let text = stdout(&out);
     assert!(text.contains("dry run"), "{text}");
     assert!(text.contains("create") || text.contains("update"), "{text}");
     assert_eq!(read(&s.codex_default), before);
     assert!(backups(&e).is_empty());
     assert!(!e.home.join(".claude/skills").exists());
-    assert!(log_lines(&log).iter().all(|l| l.starts_with("mcp get")));
+    assert!(log_lines(&log).is_empty());
 }
 
 #[test]
@@ -249,20 +256,11 @@ fn foreign_skill_is_left_alone_and_missing_claude_is_skipped() {
     std::fs::create_dir_all(skill.parent().unwrap()).unwrap();
     std::fs::write(&skill, "mine").unwrap();
     // A PATH without any `claude`.
-    let out = e
-        .cmd()
-        .env("PATH", &e.bin)
-        .arg("install")
-        .assert()
-        .success();
+    let out = cmd(&e).arg("install").assert().success();
     let text = stdout(&out);
     assert!(text.contains("claude is not on PATH"), "{text}");
     assert_eq!(read(&skill), "mine");
-    e.cmd()
-        .env("PATH", &e.bin)
-        .arg("uninstall")
-        .assert()
-        .success();
+    cmd(&e).arg("uninstall").assert().success();
     assert_eq!(read(&skill), "mine");
     assert!(
         e.home
@@ -280,7 +278,7 @@ fn invalid_config_is_reported_and_not_overwritten() {
     let p = e.home.join(".codex/config.toml");
     std::fs::create_dir_all(p.parent().unwrap()).unwrap();
     std::fs::write(&p, "= not toml").unwrap();
-    e.cmd().arg("install").assert().failure();
+    cmd(&e).arg("install").assert().failure();
     assert_eq!(read(&p), "= not toml");
 }
 
@@ -308,11 +306,136 @@ fn default_home_accounts_are_not_edited_twice() {
     std::fs::create_dir_all(global.parent().unwrap()).unwrap();
     std::fs::write(&global, "{}").unwrap();
     std::fs::create_dir_all(h.join(".codex")).unwrap();
-    let out = e.cmd().arg("install").assert().success();
+    let out = cmd(&e).arg("install").assert().success();
     let text = stdout(&out);
     assert!(!h.join(".local/share/opencode/config").exists());
     assert!(!text.contains("opencode (oc-default)"), "{text}");
     assert!(!text.contains("codex (codex-default)"), "{text}");
     assert!(json_at(&global)["mcp"]["superorchestrator"].is_object());
     assert_eq!(text.matches(".codex/config.toml").count(), 1, "{text}");
+}
+
+fn mode(p: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+}
+
+#[test]
+fn writes_are_atomic_keep_mode_and_symlinks_and_new_files_are_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new();
+    fake_claude(&e);
+    let s = seed(&e);
+    // The default codex config is a symlink to a dotfiles repo, with a looser mode.
+    let real = e.home.join("dotfiles/codex.toml");
+    std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+    std::fs::rename(&s.codex_default, &real).unwrap();
+    std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o640)).unwrap();
+    std::os::unix::fs::symlink(&real, &s.codex_default).unwrap();
+
+    cmd(&e).arg("install").assert().success();
+
+    assert!(s.codex_default.is_symlink());
+    assert!(read(&real).contains("[mcp_servers.superorchestrator]"));
+    assert_eq!(mode(&real), 0o640);
+    // Files and directories install created are private.
+    assert_eq!(mode(&s.opencode_acc), 0o600);
+    assert_eq!(mode(s.opencode_acc.parent().unwrap()), 0o700);
+    let b = backups(&e);
+    let root = b[0]
+        .ancestors()
+        .find(|p| p.parent().is_some_and(|q| q.ends_with("legacy-backup")))
+        .unwrap();
+    assert_eq!(mode(root), 0o700);
+    // The backup directory name is unique per run: <ts>-<millis>-<pid>.
+    let name = root.file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(name.split('-').count(), 3, "{name}");
+    // No temp files are left behind.
+    for d in [real.parent().unwrap(), s.opencode_acc.parent().unwrap()] {
+        for f in std::fs::read_dir(d).unwrap() {
+            let n = f.unwrap().file_name().to_string_lossy().into_owned();
+            assert!(!n.contains(".tmp."), "{n}");
+        }
+    }
+}
+
+#[test]
+fn backups_never_overwrite_an_earlier_run() {
+    let e = Env::new();
+    fake_claude(&e);
+    let s = seed(&e);
+    cmd(&e).arg("install").assert().success();
+    cmd(&e).arg("uninstall").assert().success();
+    cmd(&e).arg("install").assert().success();
+    // Three runs changed the default codex config: three distinct backups of it.
+    let n = backups(&e)
+        .iter()
+        .filter(|p| p.ends_with(s.codex_default.strip_prefix("/").unwrap()))
+        .count();
+    assert_eq!(n, 3);
+}
+
+#[test]
+fn jsonc_config_is_not_shadowed_by_a_new_json() {
+    let e = Env::new();
+    e.init();
+    let dir = e.home.join(".config/opencode");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("opencode.jsonc"), "{ // mine\n}").unwrap();
+    let out = cmd(&e).arg("install").assert().success();
+    assert!(stdout(&out).contains(".jsonc config exists"));
+    assert!(!dir.join("opencode.json").exists());
+}
+
+#[test]
+fn stale_claude_entry_is_replaced_and_a_failed_readd_is_reported_loudly() {
+    let e = Env::new();
+    let log = fake_claude(&e);
+    e.init();
+    std::fs::write(
+        e.home.join(".claude.json"),
+        r#"{"mcpServers":{"superorchestrator":{"command":"/old","args":["mcp"]}}}"#,
+    )
+    .unwrap();
+    cmd(&e).arg("install").assert().success();
+    let lines = log_lines(&log);
+    assert_eq!(lines.len(), 3, "{lines:?}");
+    assert!(lines[0].starts_with("mcp add"));
+    assert_eq!(lines[1], "mcp remove --scope user superorchestrator");
+    assert!(lines[2].starts_with("mcp add"));
+    assert!(read(&e.home.join(".claude.json")).contains(&exe().to_string_lossy().into_owned()));
+
+    // A claude whose add always fails: the removal must be reported, not hidden.
+    let e = Env::new();
+    e.init();
+    e.script(
+        "claude",
+        "case \"$2\" in add) echo 'already exists' >&2; exit 1;; *) exit 0;; esac",
+    );
+    std::fs::write(
+        e.home.join(".claude.json"),
+        r#"{"mcpServers":{"superorchestrator":{"command":"/old","args":["mcp"]}}}"#,
+    )
+    .unwrap();
+    let assert = cmd(&e).arg("install").assert().failure();
+    let text = stdout(&assert);
+    assert!(
+        text.contains("registration removed but re-add failed"),
+        "{text}"
+    );
+}
+
+#[test]
+fn arguments_must_match_exactly_to_count_as_registered() {
+    let e = Env::new();
+    let log = fake_claude(&e);
+    e.init();
+    let exe_s = exe().to_string_lossy().into_owned();
+    std::fs::write(
+        e.home.join(".claude.json"),
+        format!(r#"{{"mcpServers":{{"superorchestrator":{{"command":"{exe_s}","args":["mcp","--x"]}}}}}}"#),
+    )
+    .unwrap();
+    cmd(&e).arg("install").assert().success();
+    assert!(!log_lines(&log).is_empty());
 }

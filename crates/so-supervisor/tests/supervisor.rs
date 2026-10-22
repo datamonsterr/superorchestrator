@@ -730,6 +730,9 @@ async fn list_harnesses_reports_accounts_load_and_choices() {
     b.enabled = false;
     b.save(&env.paths).unwrap();
 
+    // A broken account file degrades to an entry with `error`; the others still list.
+    std::fs::write(env.paths.accounts_dir().join("zeta.toml"), "not = [valid").unwrap();
+
     let store = env.store();
     let session = session_row();
     store.insert_session(&session).unwrap();
@@ -753,6 +756,11 @@ async fn list_harnesses_reports_accounts_load_and_choices() {
     let opts = SupervisorOptions::new(env.paths.clone(), config, env.sock.clone())
         .with_idle_exit(Duration::from_secs(600))
         .with_lock_wait(Duration::ZERO)
+        .with_host(so_accounts::HostEnv {
+            home: env.dir.path().join("fakehome"),
+            path_var: None,
+            platform: so_core::Platform::Linux,
+        })
         .with_setup(so_supervisor::default_handlers);
     let h = Supervisor::start(opts).await.unwrap();
     let c = connect(&h).await;
@@ -763,20 +771,25 @@ async fn list_harnesses_reports_accounts_load_and_choices() {
     store.insert_run(&run).unwrap();
     let v: HarnessesView = c.call("list_harnesses", json!({})).await.unwrap();
 
-    assert_eq!(v.accounts.len(), 2);
+    assert_eq!(v.accounts.len(), 3);
     let alpha = &v.accounts[0];
     assert_eq!(alpha.name, "alpha");
     assert_eq!(alpha.cap, 3);
-    assert_eq!(alpha.signed_in, "signed_in");
+    assert_eq!(alpha.signed_in, so_core::proto::SignInState::SignedIn);
     assert_eq!(alpha.active_runs, 2);
     assert!(alpha.enabled);
     assert!(!alpha.headroom.is_empty());
     assert_eq!(alpha.headroom[0].status, so_core::HeadroomStatus::Unknown);
     let beta = &v.accounts[1];
     assert_eq!(beta.name, "beta");
-    assert_eq!(beta.signed_in, "signed_out");
+    assert_eq!(beta.signed_in, so_core::proto::SignInState::SignedOut);
     assert!(!beta.enabled);
     assert_eq!(beta.active_runs, 0);
+    let zeta = &v.accounts[2];
+    assert_eq!(zeta.name, "zeta");
+    assert!(zeta.error.is_some());
+    assert!(alpha.error.is_none());
+    assert_eq!(alpha.headroom[0].observed_at, chrono::DateTime::UNIX_EPOCH);
     assert_eq!(v.choices.len(), 2);
     assert!(v.choices.iter().any(|c| c.id == "c2" && !c.enabled));
     h.shutdown().await;

@@ -1,13 +1,17 @@
 //! `install` and `uninstall`: register the MCP server with every harness and ship the
 //! skill (SPEC 19.1).
 
+use std::io::Write as _;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use chrono::Utc;
 use serde::Serialize;
-use so_accounts::HostEnv;
+use so_accounts::{HostEnv, resolve_binary};
 use so_core::{AccountFile, Harness, Paths};
 
 use crate::ctx::Ctx;
@@ -99,7 +103,8 @@ fn config_files(host: &HostEnv, accounts: &[AccountFile]) -> Result<Vec<FileTarg
                 kind: Kind::Json(JsonKind::Agy),
                 needs_dir: home.join(".gemini"),
             }),
-            // Claude is registered through `claude mcp add --scope user`.
+            // Claude's MCP registration is user-scope and global (`~/.claude.json`), so
+            // no account home needs an entry of its own.
             Harness::Claude => {}
         }
     }
@@ -137,34 +142,113 @@ fn skill_files(host: &HostEnv) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Writes files with a backup of what they replace.
-struct Writer<'a> {
-    dry_run: bool,
-    backup_root: PathBuf,
-    paths: &'a Paths,
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Private directories (0700), created recursively.
+fn create_private_dirs(dir: &Path) -> Result<()> {
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .with_context(|| format!("could not create {}", dir.display()))
 }
 
-impl<'a> Writer<'a> {
-    fn new(paths: &'a Paths, dry_run: bool) -> Self {
-        let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+/// Writes `bytes` over `path` atomically: a temp file next to the target (`create_new`),
+/// the original's mode (0600 for a new file), fsync, then rename. A symlink is followed so
+/// the link itself survives.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let dir = target.parent().unwrap_or_else(|| Path::new("."));
+    create_private_dirs(dir)?;
+    let mode = std::fs::metadata(&target).map_or(0o600, |m| m.mode() & 0o7777);
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!(".{name}.tmp.{}.{n}", std::process::id()));
+    let result = (|| -> std::io::Result<()> {
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(mode)
+            .open(&tmp)?;
+        // The umask may have cut the mode at creation.
+        f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(mode))?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, &target)
+    })();
+    if let Err(e) = result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(anyhow!(e).context(format!("could not write {}", path.display())));
+    }
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
+/// Writes files with a backup of what they replace.
+struct Writer {
+    dry_run: bool,
+    backup_root: PathBuf,
+}
+
+impl Writer {
+    fn new(paths: &Paths, dry_run: bool) -> Self {
+        let now = Utc::now();
+        let id = format!(
+            "{}-{}-{}",
+            now.format("%Y%m%dT%H%M%SZ"),
+            now.timestamp_subsec_millis(),
+            std::process::id()
+        );
         Self {
             dry_run,
-            backup_root: paths.legacy_backup_dir(&ts),
-            paths,
+            backup_root: paths.legacy_backup_dir(&id),
         }
     }
 
+    /// Copies `path` into the backup tree (mirroring its absolute path) without ever
+    /// overwriting an existing backup.
     fn backup(&self, path: &Path) -> Result<()> {
+        let src = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let mode = std::fs::metadata(&src).map_or(0o600, |m| m.mode() & 0o777);
         let rel = path.strip_prefix("/").unwrap_or(path);
-        let dest = self.backup_root.join(rel);
+        let mut dest = self.backup_root.join(rel);
         if let Some(dir) = dest.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("could not create {}", dir.display()))?;
+            create_private_dirs(dir)?;
         }
-        std::fs::copy(path, &dest)
-            .with_context(|| format!("could not back up {}", path.display()))?;
-        let _ = self.paths; // backups live under the config dir
-        Ok(())
+        let mut data = std::fs::File::open(&src)
+            .with_context(|| format!("could not read {}", path.display()))?;
+        for attempt in 0.. {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(mode)
+                .open(&dest)
+            {
+                Ok(mut out) => {
+                    std::io::copy(&mut data, &mut out)?;
+                    out.sync_all()?;
+                    return Ok(());
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let mut name = dest.file_name().unwrap_or_default().to_os_string();
+                    name.push(format!(".{attempt}"));
+                    dest.set_file_name(name);
+                }
+                Err(e) => {
+                    return Err(anyhow!(e).context(format!(
+                        "could not back up {} to {}",
+                        path.display(),
+                        dest.display()
+                    )));
+                }
+            }
+        }
+        unreachable!("the loop only exits by return")
     }
 
     /// Replaces `path` with `text` (backing up the old file first).
@@ -175,11 +259,7 @@ impl<'a> Writer<'a> {
         if path.exists() {
             self.backup(path)?;
         }
-        if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir)
-                .with_context(|| format!("could not create {}", dir.display()))?;
-        }
-        std::fs::write(path, text).with_context(|| format!("could not write {}", path.display()))
+        write_atomic(path, text.as_bytes())
     }
 
     fn remove_file(&self, path: &Path) -> Result<()> {
@@ -187,7 +267,8 @@ impl<'a> Writer<'a> {
             return Ok(());
         }
         self.backup(path)?;
-        std::fs::remove_file(path)?;
+        std::fs::remove_file(path)
+            .with_context(|| format!("could not remove {}", path.display()))?;
         if let Some(dir) = path.parent() {
             // Only succeeds when the directory is empty.
             let _ = std::fs::remove_dir(dir);
@@ -196,8 +277,13 @@ impl<'a> Writer<'a> {
     }
 }
 
-fn edit_file(w: &Writer<'_>, t: &FileTarget, exe: &str, add: bool) -> Result<Outcome> {
-    let exists = t.path.exists();
+fn edit_file(w: &Writer, t: &FileTarget, exe: &str, add: bool) -> Result<Outcome> {
+    let old = match std::fs::read_to_string(&t.path) {
+        Ok(s) => Some(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(anyhow!(e).context(format!("could not read {}", t.path.display()))),
+    };
+    let exists = old.is_some();
     if !exists && !add {
         return Ok(Outcome::new(&t.label, "unchanged", Some(&t.path), None));
     }
@@ -209,12 +295,19 @@ fn edit_file(w: &Writer<'_>, t: &FileTarget, exe: &str, add: bool) -> Result<Out
             Some(format!("{} does not exist", t.needs_dir.display())),
         ));
     }
-    let old = if exists {
-        std::fs::read_to_string(&t.path)
-            .with_context(|| format!("could not read {}", t.path.display()))?
-    } else {
-        String::new()
-    };
+    // opencode also reads `opencode.jsonc`; do not create a parallel `.json`.
+    if !exists && t.path.extension().is_some_and(|x| x == "json") {
+        let jsonc = t.path.with_extension("jsonc");
+        if jsonc.exists() {
+            return Ok(Outcome::new(
+                &t.label,
+                "skip",
+                Some(&jsonc),
+                Some("a .jsonc config exists; edit it by hand".into()),
+            ));
+        }
+    }
+    let old = old.unwrap_or_default();
     let new = match (t.kind, add) {
         (Kind::Codex, true) => register::codex_add(&old, exe),
         (Kind::Codex, false) => register::codex_remove(&old),
@@ -236,8 +329,12 @@ fn edit_file(w: &Writer<'_>, t: &FileTarget, exe: &str, add: bool) -> Result<Out
     }
 }
 
-fn edit_skill(w: &Writer<'_>, path: &Path, content: Option<&str>) -> Result<Outcome> {
-    let existing = std::fs::read_to_string(path).ok();
+fn edit_skill(w: &Writer, path: &Path, content: Option<&str>) -> Result<Outcome> {
+    let existing = match std::fs::read_to_string(path) {
+        Ok(s) => Some(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(anyhow!(e).context(format!("could not read {}", path.display()))),
+    };
     if let Some(old) = &existing
         && !old.contains(MARKER)
     {
@@ -265,27 +362,73 @@ fn edit_skill(w: &Writer<'_>, path: &Path, content: Option<&str>) -> Result<Outc
     }
 }
 
-/// Runs `claude` with `args`; `None` when it is not on `PATH`.
-fn claude(args: &[&str]) -> Result<Option<std::process::Output>> {
-    match Command::new("claude")
+const CLAUDE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Runs the resolved `claude` with `args`, killing it after [`CLAUDE_TIMEOUT`].
+fn run_claude(bin: &Path, args: &[&str]) -> Result<std::process::Output> {
+    let mut child = Command::new(bin)
         .args(args)
         .stdin(Stdio::null())
-        .output()
-    {
-        Ok(o) => Ok(Some(o)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(anyhow!("could not run claude: {e}")),
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| format!("could not run {}", bin.display()))?;
+    let deadline = Instant::now() + CLAUDE_TIMEOUT;
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(child.wait_with_output()?);
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow!(
+                "`claude {}` timed out after {}s",
+                args.join(" "),
+                CLAUDE_TIMEOUT.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
-fn claude_failure(what: &str, o: &std::process::Output) -> anyhow::Error {
-    let err = String::from_utf8_lossy(&o.stderr);
-    anyhow!("`claude mcp {what}` failed: {}", err.trim())
+fn stderr_of(o: &std::process::Output) -> String {
+    String::from_utf8_lossy(&o.stderr).trim().to_string()
 }
 
-fn claude_install(exe: &str, force: bool, dry_run: bool) -> Result<Outcome> {
+/// Claude Code's user-scope config: `$CLAUDE_CONFIG_DIR/.claude.json`, else `~/.claude.json`.
+fn claude_user_config(host: &HostEnv) -> PathBuf {
+    match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
+        Some(d) => PathBuf::from(d).join(".claude.json"),
+        None => host.home.join(".claude.json"),
+    }
+}
+
+/// Our user-scope entry in Claude's config, read directly (`claude mcp get` health-checks
+/// the server, which would spawn it).
+fn claude_entry(host: &HostEnv) -> Result<Option<serde_json::Value>> {
+    let path = claude_user_config(host);
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(anyhow!(e).context(format!("could not read {}", path.display()))),
+    };
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .with_context(|| format!("{} is not valid JSON", path.display()))?;
+    Ok(v.get("mcpServers").and_then(|m| m.get(NAME)).cloned())
+}
+
+fn entry_matches(entry: &serde_json::Value, exe: &str) -> bool {
+    entry.get("command").and_then(|c| c.as_str()) == Some(exe)
+        && entry.get("args") == Some(&serde_json::json!(["mcp"]))
+}
+
+fn claude_install(host: &HostEnv, exe: &str, force: bool, dry_run: bool) -> Result<Outcome> {
     let label = "claude";
-    let Some(get) = claude(&["mcp", "get", NAME])? else {
+    let entry = claude_entry(host)?;
+    if !force && entry.as_ref().is_some_and(|e| entry_matches(e, exe)) {
+        return Ok(Outcome::new(label, "unchanged", None, None));
+    }
+    let Ok(bin) = resolve_binary("claude", host.path_var.as_deref()) else {
         return Ok(Outcome::new(
             label,
             "skip",
@@ -293,35 +436,43 @@ fn claude_install(exe: &str, force: bool, dry_run: bool) -> Result<Outcome> {
             Some("claude is not on PATH".into()),
         ));
     };
-    let registered = get.status.success();
-    if registered && !force && String::from_utf8_lossy(&get.stdout).contains(exe) {
-        return Ok(Outcome::new(label, "unchanged", None, None));
+    let action = if entry.is_some() { "update" } else { "create" };
+    if dry_run {
+        return Ok(Outcome::new(label, action, None, None));
     }
-    let action = if registered { "update" } else { "create" };
-    if !dry_run {
-        if registered {
-            let rm = claude(&["mcp", "remove", "--scope", "user", NAME])?
-                .ok_or_else(|| anyhow!("claude disappeared"))?;
-            // A non-user-scope entry is not ours to remove; the add below still proceeds.
-            if !rm.status.success() {
-                tracing::debug!(
-                    "claude mcp remove failed: {}",
-                    claude_failure("remove", &rm)
-                );
-            }
-        }
-        let add = claude(&["mcp", "add", "--scope", "user", NAME, "--", exe, "mcp"])?
-            .ok_or_else(|| anyhow!("claude disappeared"))?;
-        if !add.status.success() {
-            return Err(claude_failure("add", &add));
-        }
+    let add_args = ["mcp", "add", "--scope", "user", NAME, "--", exe, "mcp"];
+    let add = run_claude(&bin, &add_args)?;
+    if add.status.success() {
+        return Ok(Outcome::new(label, action, None, None));
     }
-    Ok(Outcome::new(label, action, None, None))
+    let err = stderr_of(&add);
+    if !err.contains("already exists") && entry.is_none() {
+        return Err(anyhow!("`claude mcp add` failed: {err}"));
+    }
+    // The name is taken (a stale or forced entry): replace it.
+    let rm = run_claude(&bin, &["mcp", "remove", "--scope", "user", NAME])?;
+    if !rm.status.success() {
+        return Err(anyhow!(
+            "`claude mcp add` failed ({err}) and the existing entry could not be removed: {}",
+            stderr_of(&rm)
+        ));
+    }
+    let add = run_claude(&bin, &add_args)?;
+    if !add.status.success() {
+        return Err(anyhow!(
+            "registration removed but re-add failed: {}",
+            stderr_of(&add)
+        ));
+    }
+    Ok(Outcome::new(label, "update", None, None))
 }
 
-fn claude_uninstall(dry_run: bool) -> Result<Outcome> {
+fn claude_uninstall(host: &HostEnv, dry_run: bool) -> Result<Outcome> {
     let label = "claude";
-    let Some(get) = claude(&["mcp", "get", NAME])? else {
+    if claude_entry(host)?.is_none() {
+        return Ok(Outcome::new(label, "unchanged", None, None));
+    }
+    let Ok(bin) = resolve_binary("claude", host.path_var.as_deref()) else {
         return Ok(Outcome::new(
             label,
             "skip",
@@ -329,14 +480,10 @@ fn claude_uninstall(dry_run: bool) -> Result<Outcome> {
             Some("claude is not on PATH".into()),
         ));
     };
-    if !get.status.success() {
-        return Ok(Outcome::new(label, "unchanged", None, None));
-    }
     if !dry_run {
-        let rm = claude(&["mcp", "remove", "--scope", "user", NAME])?
-            .ok_or_else(|| anyhow!("claude disappeared"))?;
+        let rm = run_claude(&bin, &["mcp", "remove", "--scope", "user", NAME])?;
         if !rm.status.success() {
-            return Err(claude_failure("remove", &rm));
+            return Err(anyhow!("`claude mcp remove` failed: {}", stderr_of(&rm)));
         }
     }
     Ok(Outcome::new(label, "remove", None, None))
@@ -361,15 +508,18 @@ fn print(ctx: &Ctx, outcomes: &[Outcome], dry_run: bool) -> Result<()> {
     })
 }
 
-fn finish(ctx: &Ctx, results: Vec<Result<Outcome>>, dry_run: bool) -> Result<()> {
+/// One step's result, keyed by the target it acted on so errors name it.
+type Step = (String, Result<Outcome>);
+
+fn finish(ctx: &Ctx, results: Vec<Step>, dry_run: bool) -> Result<()> {
     let mut outcomes = Vec::new();
     let mut failures = 0usize;
-    for r in results {
+    for (target, r) in results {
         match r {
             Ok(o) => outcomes.push(o),
             Err(e) => {
                 failures += 1;
-                outcomes.push(Outcome::new("error", "error", None, Some(format!("{e:#}"))));
+                outcomes.push(Outcome::new(&target, "error", None, Some(format!("{e:#}"))));
             }
         }
     }
@@ -378,6 +528,14 @@ fn finish(ctx: &Ctx, results: Vec<Result<Outcome>>, dry_run: bool) -> Result<()>
         return Err(anyhow!("{failures} step(s) failed"));
     }
     Ok(())
+}
+
+fn file_step(w: &Writer, t: &FileTarget, exe: &str, add: bool) -> Step {
+    (t.label.clone(), edit_file(w, t, exe, add))
+}
+
+fn skill_step(w: &Writer, p: &Path, content: Option<&str>) -> Step {
+    ("skill".to_string(), edit_skill(w, p, content))
 }
 
 pub fn install(ctx: &Ctx, force: bool, dry_run: bool) -> Result<()> {
@@ -389,12 +547,15 @@ pub fn install(ctx: &Ctx, force: bool, dry_run: bool) -> Result<()> {
     let skill = render_skill(&accounts, &choices);
     let w = Writer::new(&ctx.paths, dry_run);
 
-    let mut results = vec![claude_install(&exe, force, dry_run)];
+    let mut results = vec![(
+        "claude".to_string(),
+        claude_install(&host, &exe, force, dry_run),
+    )];
     for t in config_files(&host, &accounts)? {
-        results.push(edit_file(&w, &t, &exe, true));
+        results.push(file_step(&w, &t, &exe, true));
     }
     for p in skill_files(&host) {
-        results.push(edit_skill(&w, &p, Some(&skill)));
+        results.push(skill_step(&w, &p, Some(&skill)));
     }
     finish(ctx, results, dry_run)
 }
@@ -404,12 +565,12 @@ pub fn uninstall(ctx: &Ctx, dry_run: bool) -> Result<()> {
     let accounts = AccountFile::list(&ctx.paths)?;
     let w = Writer::new(&ctx.paths, dry_run);
 
-    let mut results = vec![claude_uninstall(dry_run)];
+    let mut results = vec![("claude".to_string(), claude_uninstall(&host, dry_run))];
     for t in config_files(&host, &accounts)? {
-        results.push(edit_file(&w, &t, "", false));
+        results.push(file_step(&w, &t, "", false));
     }
     for p in skill_files(&host) {
-        results.push(edit_skill(&w, &p, None));
+        results.push(skill_step(&w, &p, None));
     }
     finish(ctx, results, dry_run)
 }

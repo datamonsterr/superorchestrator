@@ -15,7 +15,7 @@ use so_core::{Config, Paths};
 pub use client::{ClientError, SupervisorClient, spawn_daemon_process};
 pub use dispatch::{ConnCtx, HandlerFuture, Notifier, Router};
 pub use error::{Result, SupervisorError};
-pub use handlers::{build_harnesses_view, default_handlers, register_harnesses};
+pub use handlers::default_handlers;
 pub use lock::SupervisorLock;
 pub use reconcile::ReconcileHook;
 pub use server::{

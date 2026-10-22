@@ -399,18 +399,30 @@ pub struct ForkParams {
     pub prompt: String,
 }
 
+/// Sign-in state from an auth-file existence check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SignInState {
+    SignedIn,
+    SignedOut,
+    Unknown,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountView {
     pub name: String,
     pub harness: Harness,
-    /// "signed_in", "signed_out" or "unknown" (auth-file check only).
-    pub signed_in: String,
+    pub signed_in: SignInState,
     pub enabled: bool,
     pub cap: u32,
     /// Slot-holding runs plus active interactive sessions.
     pub active_runs: u32,
     #[serde(default)]
     pub headroom: Vec<Headroom>,
+    /// Set when this account could not be inspected (e.g. an unreadable account file);
+    /// the other fields are then placeholders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]

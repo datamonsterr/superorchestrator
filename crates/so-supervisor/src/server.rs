@@ -7,6 +7,7 @@ use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
+use so_accounts::HostEnv;
 use so_core::proto::{
     INTERNAL_ERROR, INVALID_REQUEST, METHOD_HELLO, PARSE_ERROR, Request, Response, RpcError,
     UNAVAILABLE,
@@ -58,6 +59,8 @@ pub struct SupervisorOptions {
     /// Runs after the state exists and before reconcile and bind: register methods, the
     /// activity probe and the reconcile hook here.
     pub setup: Option<Setup>,
+    /// Host environment for sign-in checks; default is [`HostEnv::detect`].
+    pub host: Option<HostEnv>,
 }
 
 impl SupervisorOptions {
@@ -72,6 +75,7 @@ impl SupervisorOptions {
             lock_wait: LOCK_WAIT,
             max_inflight: MAX_INFLIGHT,
             setup: None,
+            host: None,
         }
     }
 
@@ -95,6 +99,11 @@ impl SupervisorOptions {
         self
     }
 
+    pub fn with_host(mut self, host: HostEnv) -> Self {
+        self.host = Some(host);
+        self
+    }
+
     pub fn with_setup(mut self, f: impl FnOnce(&Arc<SupervisorState>) + Send + 'static) -> Self {
         self.setup = Some(Box::new(f));
         self
@@ -107,6 +116,8 @@ pub struct SupervisorState {
     pub config: Config,
     pub paths: Paths,
     pub router: Router,
+    /// `None` when the host environment could not be detected (no `HOME`).
+    pub host: Option<HostEnv>,
     max_inflight: usize,
     pub(crate) started: Instant,
     clients: AtomicUsize,
@@ -201,6 +212,7 @@ impl Supervisor {
             lock_wait,
             max_inflight,
             setup,
+            host,
         } = opts;
 
         let lock = acquire_lock(&paths.config_dir, lock_wait).await?;
@@ -216,6 +228,7 @@ impl Supervisor {
             config,
             paths,
             router: Router::default(),
+            host: host.or_else(|| HostEnv::detect().ok()),
             max_inflight,
             started: Instant::now(),
             clients: AtomicUsize::new(0),
