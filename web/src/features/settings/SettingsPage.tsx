@@ -33,13 +33,17 @@ export function SettingsPage() {
         </TabsList>
         <div className="mt-4">
           {tab === 'system' ? null : q.isError && !q.data ? (
-            <ErrorAlert error={q.error} title="Could not load settings" onRetry={() => void q.refetch()} />
+            <TabsContent value={tab}>
+              <ErrorAlert error={q.error} title="Could not load settings" onRetry={() => void q.refetch()} />
+            </TabsContent>
           ) : !q.data ? (
-            <div role="status" aria-busy="true" aria-label="Loading" className="max-w-xl space-y-3">
-              <Skeleton className="h-9 w-full" />
-              <Skeleton className="h-9 w-full" />
-              <Skeleton className="h-9 w-full" />
-            </div>
+            <TabsContent value={tab}>
+              <div role="status" aria-busy="true" aria-label="Loading" className="max-w-xl space-y-3">
+                <Skeleton className="h-9 w-full" />
+                <Skeleton className="h-9 w-full" />
+                <Skeleton className="h-9 w-full" />
+              </div>
+            </TabsContent>
           ) : (
             <ConfigForm view={q.data} />
           )}
