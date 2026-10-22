@@ -1,5 +1,5 @@
 //! `install` and `uninstall`: register the MCP server with every harness and ship the
-//! skill (SPEC 19.1).
+//! skills and the `CLAUDE.md` pointer (SPEC 19.1).
 
 use std::io::Write as _;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
@@ -16,7 +16,7 @@ use so_core::{AccountFile, Harness, Paths};
 
 use crate::ctx::Ctx;
 use crate::register::{self, JsonKind, NAME};
-use crate::skill::{MARKER, render_skill};
+use crate::skill::{MARKER, render_cli_skill, render_skill};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct Outcome {
@@ -135,8 +135,139 @@ fn xdg_config_home(host: &HostEnv) -> PathBuf {
         .map_or_else(|| host.home.join(".config"), PathBuf::from)
 }
 
-fn skill_files(host: &HostEnv) -> Vec<PathBuf> {
-    so_agents::skill::skill_files(&host.home)
+/// The `SKILL.md` files `install` manages, with their content: the MCP skill and the CLI
+/// skill in `~/.claude/skills` and `~/.agents/skills`.
+fn skill_targets(host: &HostEnv, mcp: &str) -> Vec<(PathBuf, String)> {
+    let cli = render_cli_skill();
+    let mut out: Vec<(PathBuf, String)> = so_agents::skill::skill_files(&host.home)
+        .into_iter()
+        .map(|p| (p, mcp.to_string()))
+        .collect();
+    out.extend(
+        so_agents::skill::cli_skill_files(&host.home)
+            .into_iter()
+            .map(|p| (p, cli.clone())),
+    );
+    out
+}
+
+/// Removes the old single `superorchestrator` skill when its `SKILL.md` carries [`MARKER`].
+/// A missing or hand-written one is left alone without an outcome.
+fn old_skill_step(w: &Writer, path: &Path) -> Option<Step> {
+    let text = std::fs::read_to_string(path).ok()?;
+    if !so_agents::skill::is_managed(&text) {
+        return None;
+    }
+    Some((
+        "skill".to_string(),
+        w.remove_file(path).map(|()| {
+            Outcome::new(
+                "skill",
+                "remove",
+                Some(path),
+                Some("replaced by use-superorchestrator-mcp and superorchestrator-cli".into()),
+            )
+        }),
+    ))
+}
+
+/// First and last line of the managed block in `~/.claude/CLAUDE.md`.
+pub(crate) const BLOCK_BEGIN: &str = "<!-- superorchestrator:begin -->";
+pub(crate) const BLOCK_END: &str = "<!-- superorchestrator:end -->";
+
+const BLOCK_BODY: &str = "## Delegation\n\n\
+- Delegate implementation through superorchestrator. Load the `use-superorchestrator-mcp` skill before the first delegation.\n\
+- Use the `superorchestrator-cli` skill for accounts, status and runs from the shell.\n\
+- Keep Claude accounts for the orchestrator; leave `harness: auto` unless there is a reason.\n";
+
+fn block_text() -> String {
+    format!("{BLOCK_BEGIN}\n{BLOCK_BODY}{BLOCK_END}\n")
+}
+
+/// Byte range of the managed block: from the start of the begin line to just after the end
+/// line (and its newline). `Err` when the begin line has no end line after it.
+fn block_range(text: &str) -> Result<Option<(usize, usize)>> {
+    let mut begin = None;
+    let mut pos = 0;
+    for line in text.split_inclusive('\n') {
+        let t = line.trim_end();
+        match begin {
+            None if t == BLOCK_BEGIN => begin = Some(pos),
+            Some(b) if t == BLOCK_END => return Ok(Some((b, pos + line.len()))),
+            _ => {}
+        }
+        pos += line.len();
+    }
+    match begin {
+        Some(_) => Err(anyhow!(
+            "found {BLOCK_BEGIN} without {BLOCK_END}; fix the file by hand"
+        )),
+        None => Ok(None),
+    }
+}
+
+/// `text` with the managed block added (after a blank line) or replaced in place.
+fn with_block(text: &str) -> Result<String> {
+    let block = block_text();
+    Ok(match block_range(text)? {
+        Some((b, e)) => format!("{}{block}{}", &text[..b], &text[e..]),
+        None if text.is_empty() => block,
+        None => {
+            let sep = if text.ends_with('\n') { "\n" } else { "\n\n" };
+            format!("{text}{sep}{block}")
+        }
+    })
+}
+
+/// `text` without the managed block and the blank line `install` put before it. `None` when
+/// there is no block.
+fn without_block(text: &str) -> Result<Option<String>> {
+    let Some((b, e)) = block_range(text)? else {
+        return Ok(None);
+    };
+    let before = &text[..b];
+    let before = before
+        .strip_suffix('\n')
+        .filter(|_| before.ends_with("\n\n"))
+        .unwrap_or(before);
+    Ok(Some(format!("{before}{}", &text[e..])))
+}
+
+fn claude_md_path(host: &HostEnv) -> PathBuf {
+    host.home.join(".claude/CLAUDE.md")
+}
+
+fn edit_claude_md(w: &Writer, host: &HostEnv, add: bool) -> Result<Outcome> {
+    const LABEL: &str = "claude.md";
+    let path = claude_md_path(host);
+    let old = match std::fs::read_to_string(&path) {
+        Ok(s) => Some(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => return Err(anyhow!(e).context(format!("could not read {}", path.display()))),
+    };
+    let unchanged = || Ok(Outcome::new(LABEL, "unchanged", Some(&path), None));
+    if add {
+        let new = with_block(old.as_deref().unwrap_or_default())
+            .with_context(|| format!("{}", path.display()))?;
+        if old.as_deref() == Some(new.as_str()) {
+            return unchanged();
+        }
+        w.write(&path, &new)?;
+        let action = if old.is_some() { "update" } else { "create" };
+        return Ok(Outcome::new(LABEL, action, Some(&path), None));
+    }
+    let Some(old) = old else {
+        return unchanged();
+    };
+    let Some(new) = without_block(&old).with_context(|| format!("{}", path.display()))? else {
+        return unchanged();
+    };
+    if new.is_empty() {
+        w.remove_file(&path)?;
+    } else {
+        w.write(&path, &new)?;
+    }
+    Ok(Outcome::new(LABEL, "remove", Some(&path), None))
 }
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -549,14 +680,20 @@ fn skill_step(w: &Writer, p: &Path, content: Option<&str>) -> Step {
     ("skill".to_string(), edit_skill(w, p, content))
 }
 
-pub fn install(ctx: &Ctx, force: bool, dry_run: bool) -> Result<()> {
+pub fn install(ctx: &Ctx, force: bool, dry_run: bool, claude_md: bool) -> Result<()> {
     let w = Writer::new(&ctx.paths, dry_run);
-    let results = install_steps(ctx, &w, force)?;
+    let results = install_steps(ctx, &w, force, claude_md)?;
     finish(ctx, results, dry_run)
 }
 
-/// The MCP registrations and skill files `install` manages, written through `w`.
-pub(crate) fn install_steps(ctx: &Ctx, w: &Writer, force: bool) -> Result<Vec<Step>> {
+/// The MCP registrations, skill files and (with `claude_md`) the `CLAUDE.md` block that
+/// `install` manages, written through `w`.
+pub(crate) fn install_steps(
+    ctx: &Ctx,
+    w: &Writer,
+    force: bool,
+    claude_md: bool,
+) -> Result<Vec<Step>> {
     let host = ctx.host()?;
     let exe = std::env::current_exe().context("could not find this executable")?;
     let exe = exe.to_string_lossy().into_owned();
@@ -572,8 +709,14 @@ pub(crate) fn install_steps(ctx: &Ctx, w: &Writer, force: bool) -> Result<Vec<St
     for t in config_files(&host, &accounts)? {
         results.push(file_step(w, &t, &exe, true));
     }
-    for p in skill_files(&host) {
-        results.push(skill_step(w, &p, Some(&skill)));
+    for (p, content) in skill_targets(&host, &skill) {
+        results.push(skill_step(w, &p, Some(&content)));
+    }
+    for p in so_agents::skill::old_skill_files(&host.home) {
+        results.extend(old_skill_step(w, &p));
+    }
+    if claude_md {
+        results.push(("claude.md".to_string(), edit_claude_md(w, &host, true)));
     }
     Ok(results)
 }
@@ -587,9 +730,13 @@ pub fn uninstall(ctx: &Ctx, dry_run: bool) -> Result<()> {
     for t in config_files(&host, &accounts)? {
         results.push(file_step(&w, &t, "", false));
     }
-    for p in skill_files(&host) {
+    for (p, _) in skill_targets(&host, "") {
         results.push(skill_step(&w, &p, None));
     }
+    for p in so_agents::skill::old_skill_files(&host.home) {
+        results.extend(old_skill_step(&w, &p));
+    }
+    results.push(("claude.md".to_string(), edit_claude_md(&w, &host, false)));
     finish(ctx, results, dry_run)
 }
 
@@ -597,6 +744,38 @@ pub fn uninstall(ctx: &Ctx, dry_run: bool) -> Result<()> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn block_is_added_replaced_and_removed_in_place() {
+        assert_eq!(with_block("").unwrap(), block_text());
+        let base = "# Mine\n\n- one\n";
+        let added = with_block(base).unwrap();
+        assert_eq!(added, format!("{base}\n{}", block_text()));
+        assert_eq!(with_block(&added).unwrap(), added, "idempotent");
+        assert_eq!(without_block(&added).unwrap().unwrap(), base);
+        assert_eq!(without_block(base).unwrap(), None);
+        // A changed block is replaced where it stands, text after it untouched.
+        let stale = format!("top\n\n{BLOCK_BEGIN}\nold\n{BLOCK_END}\nbottom\n");
+        assert_eq!(
+            with_block(&stale).unwrap(),
+            format!("top\n\n{}bottom\n", block_text())
+        );
+        // No trailing newline in the original.
+        assert_eq!(
+            without_block(&with_block("tail").unwrap())
+                .unwrap()
+                .unwrap(),
+            "tail\n"
+        );
+        assert_eq!(without_block(&block_text()).unwrap().unwrap(), "");
+    }
+
+    #[test]
+    fn an_unterminated_block_is_an_error() {
+        let t = format!("x\n{BLOCK_BEGIN}\nstuff\n");
+        assert!(with_block(&t).is_err());
+        assert!(without_block(&t).is_err());
+    }
 
     #[test]
     fn backup_id_pads_millis_so_ids_sort() {
