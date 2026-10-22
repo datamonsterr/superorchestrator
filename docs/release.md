@@ -54,7 +54,12 @@ The CI `e2e` job runs `scripts/smoke-ci.sh`, which fails if the binary serves th
 
 - `sh scripts/test-install.sh`: installer against a fake local release.
 - `scripts/smoke-ci.sh [binary]`: scripted smoke of a built binary with throwaway config.
-- `scripts/check-release-tag.sh vX.Y.Z`: the tag gate.
+- `scripts/check-release-tag.sh vX.Y.Z`: the tag gate. It also checks that
+  `plugin/.claude-plugin/plugin.json` carries the same version.
+- `claude plugin validate plugin --strict`: validates the Claude Code plugin. Bump its `version`
+  with the Cargo version.
+- `scripts/smoke.sh`: a manual test on a real machine. It runs real harnesses and spends real
+  quota, so it is never part of CI. Run it before tagging when you can.
 - `python3 scripts/test-release-gate.py` (needs PyYAML): simulates `release.yml` to prove `host` is gated.
 - `scripts/check-binary-size.sh target/release/superorchestrator`: binary size budget (52,000,000
   bytes: measured 41,603,680 plus 25%).

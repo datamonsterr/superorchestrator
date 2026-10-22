@@ -1,0 +1,90 @@
+# Routing and choices
+
+When a spawn uses `harness: auto` (the default), the router picks the account, model and effort. This page explains how, and how to tune it.
+
+## Choices
+
+A choice is one routable combination of harness, model and effort that you approved. A choice binds the three together, so the router can never produce an unsupported mix. Choices live in `config.toml`:
+
+```toml
+[[choices]]
+id = "agy-flash-medium"
+harness = "agy"
+model = "gemini-3.8-flash-medium"
+effort = "medium"
+roles = ["worker"]
+description = "Fast worker for bounded implementation, scripts, docs and routine UI work."
+enabled = true
+```
+
+`init` seeds a set of choices. Codex choices start enabled. A choice with no signed-in account is skipped at routing time, so adding a Codex account is enough to use them. Claude choices start disabled. Set `enabled = true` to let auto routing use them as a last resort. Only you change `enabled`; `init` never rewrites it after the first run.
+
+Edit choices with `superorchestrator config edit`, or on the Choices page of the web UI. The installed skill lists enabled choices and refreshes when they change.
+
+## Previewing a route
+
+```sh
+superorchestrator route "Rename the foo module to bar" --explain
+```
+
+`route` previews only. It reserves nothing. Use `--role` to route for another role (default `worker`). The MCP tool `route` does the same.
+
+## How the router decides
+
+1. **Eligible choices.** A choice is eligible when it is enabled, matches the role, and has an account that is signed in, not flagged, not exhausted and below its cap.
+2. **Decider.** If a Jev key is set (below), the router asks the decider to pick among the eligible choices.
+3. **Validation.** The answer is rejected unless it is a valid pick from the eligible set, with probabilities that sum to 1 and a confidence and margin above `router.policy.min_confidence` (0.6) and `router.policy.min_margin` (0.1).
+4. **Heuristic.** With no key, or when the decider fails or is rejected, a scorer picks: fit to the task, headroom, load, cost and harness priority. The weights are `router.weights`. The default priority is `agy`, `opencode`, `codex`, `claude`.
+5. **Account.** Among the chosen choice's accounts: most headroom first, then fewest active runs, then `priority`, then least recently used.
+
+Task text is data. It cannot change which choices are eligible.
+
+Claude ranks last. The router picks a Claude choice only when you name it, when nothing else has headroom, or when it is the only match for the role.
+
+## Jev key setup
+
+Jev is a routing model on OpenRouter. It is optional. Without a key the heuristic routes.
+
+Set the key with an environment variable. The default name is `OPENROUTER_API_KEY`:
+
+```sh
+export OPENROUTER_API_KEY=sk-or-...
+```
+
+Or keep it in a dotenv file and point the config at it:
+
+```sh
+superorchestrator config set router.jev.key_file '~/.config/jev/.env'
+```
+
+The file holds a line such as `OPENROUTER_API_KEY=sk-or-...`. To use another variable name, set `router.jev.key_env`. The environment wins over the file. The supervisor needs the variable in its own environment, so set it before the supervisor starts, or use the file. The web UI shows where the key comes from, never its value.
+
+Other keys: `router.jev.endpoint`, `router.jev.model` (default `~typesafe/jev-latest`) and `router.jev.timeout` (default `20s`).
+
+## Failover
+
+When a run fails with a quota, rate-limit or auth error, that account (and pool) is marked exhausted until its reset time. With no reset time, it is marked for `usage.default_cooldown` (5 hours). The run then restarts on the next account of the same choice, or on the next eligible choice. The run keeps its id. The timeline shows each attempt. Other non-zero exits are not retried.
+
+To test it by hand, flag an account: `superorchestrator account flag codex-acc1 --hours 1`. The router skips it.
+
+## Models catalog
+
+`models.toml` lists known models per harness, with tier, efforts, pool and cost. A default ships in the binary. `superorchestrator models refresh` collects models from the harness CLIs and models.dev. `superorchestrator models list` prints them. The catalog is for discovery and validation. It never edits your choices, and `models refresh` tells you about models that no choice uses.
+
+## Evaluating the router
+
+```sh
+superorchestrator route eval --require-live --min-accuracy 0.8
+```
+
+`route eval` replays labelled cases and reports accuracy, eligible-choice compliance, fallback count, source counts, p50 and p95 latency, and total cost. Reports never include task text or credentials. English and Vietnamese cases ship in the binary.
+
+- `--cases FILE` uses your cases instead. The file is JSON Lines, or one JSON array. Each case has `id`, `task`, `expected_choices` and an optional `role` (default `worker`) and `available_choice_ids`.
+- `--require-live` fails when there is no Jev key, and when any case fell back from Jev.
+- `--min-accuracy X` (0 to 1) fails when accuracy is lower.
+
+The command exits non-zero when a check fails. Tune `router.policy.min_confidence` and `router.policy.min_margin` from live results.
+
+## Defaults
+
+`defaults.harness`, `defaults.model` and `defaults.effort` apply when a spawn names none of them. Order of precedence: call argument, agent file, `defaults`, router.
