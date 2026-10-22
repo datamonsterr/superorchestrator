@@ -304,6 +304,21 @@ async fn wait_state(c: &SupervisorClient, run: &str, want: RunState) -> RunView 
     );
 }
 
+/// Reads the orchestrator's messages until the run's `result` message has arrived: it is
+/// stored just after the run's state changes to `pending_review`.
+async fn read_until_result(c: &SupervisorClient) -> ReadMessagesResult {
+    let mut all = ReadMessagesResult::default();
+    for _ in 0..200 {
+        let r: ReadMessagesResult = c.call(METHOD_READ_MESSAGES, json!({})).await.unwrap();
+        all.messages.extend(r.messages);
+        if all.messages.iter().any(|m| m.kind == MessageKind::Result) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    all
+}
+
 async fn send(c: &SupervisorClient, run: &str, text: &str, kind: Option<MessageKind>) {
     let r: AckResult = c
         .call(
@@ -571,7 +586,7 @@ async fn report_progress_wakes_wait_agent() {
 #[tokio::test]
 async fn ask_parent_blocks_until_answered() {
     let mut env = Env::new();
-    env.config.runs.stall_ms = 200;
+    env.config.runs.stall_ms = 400;
     env.simple("claude-a", 2, &idle_script());
     let h = env.start().await;
     let c = env.client(&h).await;
@@ -597,7 +612,7 @@ async fn ask_parent_blocks_until_answered() {
     assert_eq!(view(&c, &id).await.state, RunState::Waiting);
     // A waiting run is not stall-checked, however long it takes.
     // (three stall periods; the state is checked all along, not just at the end)
-    let until = tokio::time::Instant::now() + Duration::from_millis(700);
+    let until = tokio::time::Instant::now() + Duration::from_millis(1200);
     while tokio::time::Instant::now() < until {
         assert_eq!(view(&c, &id).await.state, RunState::Waiting);
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -614,9 +629,16 @@ async fn ask_parent_blocks_until_answered() {
         .unwrap();
     assert_eq!(answer.answer, "sqlite");
     assert!(!answer.timed_out);
-    let v = wait_state(&c, &id, RunState::Running).await;
+    wait_state(&c, &id, RunState::Running).await;
+    // (`question_answered` is recorded just after the run is running again.)
+    let v = loop {
+        let v = view(&c, &id).await;
+        if count(&v, EventType::QuestionAnswered) == 1 {
+            break v;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
     assert_eq!(count(&v, EventType::QuestionAsked), 1);
-    assert_eq!(count(&v, EventType::QuestionAnswered), 1);
     // Answered: the question no longer wakes a wait.
     let quiet = wait_for(&c, &[&id], 300).await;
     assert!(quiet.timed_out && quiet.updates.is_empty(), "{quiet:?}");
@@ -719,7 +741,7 @@ async fn review_passes_then_accept() {
     assert_eq!(check.data["name"], "cmd:true");
     assert_eq!(check.data["ok"], true);
     assert!(v.result.is_some());
-    let msgs: ReadMessagesResult = c.call(METHOD_READ_MESSAGES, json!({})).await.unwrap();
+    let msgs = read_until_result(&c).await;
     assert!(
         msgs.messages
             .iter()
@@ -775,7 +797,7 @@ async fn failed_check_is_sent_back_once_then_reported() {
         .collect();
     assert_eq!(sent.len(), 1, "the failure goes to the child once");
     assert!(sent[0].contains("broken"));
-    let msgs: ReadMessagesResult = c.call(METHOD_READ_MESSAGES, json!({})).await.unwrap();
+    let msgs = read_until_result(&c).await;
     let report = msgs
         .messages
         .iter()
@@ -814,7 +836,7 @@ async fn child_fixes_the_check_after_the_message() {
         .map(|e| e.data["ok"].as_bool().unwrap())
         .collect();
     assert_eq!(oks, [false, true]);
-    let msgs: ReadMessagesResult = c.call(METHOD_READ_MESSAGES, json!({})).await.unwrap();
+    let msgs = read_until_result(&c).await;
     assert!(
         msgs.messages
             .iter()
@@ -1344,7 +1366,15 @@ async fn a_run_that_cannot_be_resumed_keeps_its_state() {
     let mut p = env.params("claude-a");
     p.isolation = Some(Isolation::Worktree);
     let id = spawn(&c, p).await;
-    wait_state(&c, &id, RunState::Succeeded).await;
+    let v = wait_state(&c, &id, RunState::Succeeded).await;
+    // The wrap-up removes the untouched worktree just after the state changes.
+    let wt = v.worktree.unwrap();
+    for _ in 0..200 {
+        if !Path::new(&wt).exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     // Worktree and branch are gone, and the base commit cannot be found.
     env.store()
         .patch_run(
@@ -1420,7 +1450,99 @@ async fn a_reject_right_after_the_gate_resumes_cleanly() {
     assert_eq!(attempts[0].outcome.as_deref(), Some("pending_review"));
     assert!(attempts[1].ended_at.is_none());
     // And it runs on to the gate again.
+    let v = wait_state(&c, &id, RunState::PendingReview).await;
+    // The gate is announced before the reject: pending_review, then running again.
+    let moves: Vec<(String, String)> = v
+        .recent_events
+        .iter()
+        .filter(|e| e.event_type == EventType::StateChanged)
+        .map(|e| {
+            (
+                e.data["from"].as_str().unwrap_or("").to_string(),
+                e.data["to"].as_str().unwrap_or("").to_string(),
+            )
+        })
+        .collect();
+    let gate = moves.iter().position(|m| m.1 == "pending_review").unwrap();
+    let back = moves
+        .iter()
+        .position(|m| m == &("pending_review".to_string(), "running".to_string()))
+        .unwrap();
+    assert!(gate < back, "{moves:?}");
+    let events: Vec<EventType> = v.recent_events.iter().map(|e| e.event_type).collect();
+    let gate_at = events
+        .iter()
+        .position(|t| *t == EventType::StateChanged)
+        .unwrap();
+    let rejected_at = events
+        .iter()
+        .position(|t| *t == EventType::ReviewRejected)
+        .unwrap();
+    assert!(gate_at < rejected_at);
+    // The parent was told about the gate.
+    let msgs = read_until_result(&c).await;
+    assert!(msgs.messages.iter().any(|m| m.kind == MessageKind::Result));
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_message_sent_while_the_gate_tears_the_process_down_is_not_lost() {
+    let env = Env::new();
+    let first = script(
+        &[expect(PROMPT)]
+            .into_iter()
+            .chain(turn())
+            .chain([json!({"sleep_ms": 1200})])
+            .collect::<Vec<_>>(),
+    );
+    let resume = script(
+        &[expect("redo"), expect("late")]
+            .into_iter()
+            .chain(turn())
+            .collect::<Vec<_>>(),
+    );
+    env.account("claude-a", 2, &first, Some(&resume), None);
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = env.params("claude-a");
+    p.review = true;
+    let id = spawn(&c, p).await;
+    // The turn is over once its usage is reported; the process then lingers 1.2 s.
+    for _ in 0..400 {
+        if view(&c, &id)
+            .await
+            .recent_events
+            .iter()
+            .any(|e| e.event_type == EventType::Usage)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert_eq!(
+        view(&c, &id).await.state,
+        RunState::Running,
+        "still tearing down"
+    );
+    send(&c, &id, "late", None).await;
     wait_state(&c, &id, RunState::PendingReview).await;
+    let _: AckResult = c
+        .call(
+            METHOD_REJECT_RUN,
+            RejectParams {
+                run: id.clone(),
+                feedback: "redo".into(),
+            },
+        )
+        .await
+        .unwrap();
+    wait_state(&c, &id, RunState::PendingReview).await;
+    let launches = env.launches("claude-a");
+    assert_eq!(launches.len(), 2);
+    let stdin = &launches[1].1;
+    assert!(stdin.iter().any(|l| l.contains("redo")));
+    assert!(stdin.iter().any(|l| l.contains("late")), "{stdin:?}");
     h.shutdown().await;
 }
 

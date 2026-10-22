@@ -482,29 +482,51 @@ impl RunManager {
     }
 
     async fn flush_unread(&self, row: &RunRow, control: &RunControl) {
+        let batch = self.claim_input(row).await;
+        self.hand_over(batch, |text| {
+            let control = control.clone();
+            async move { control.send(&text).await.map_err(|e| e.to_string()) }
+        })
+        .await;
+    }
+
+    /// Claims the run's unread input messages. The claim is atomic, so two flushes racing
+    /// over the same messages each get a different share and none is delivered twice.
+    pub(crate) async fn claim_input(&self, row: &RunRow) -> Vec<so_store::MessageRow> {
         let (sid, id) = (row.session_id.clone(), row.id.clone());
-        let asking = self.is_asking(&row.id);
-        let pending = self
-            .db(move |s| s.unread_messages(&sid, Some(&id), 100))
-            .await
-            .unwrap_or_default();
         // An answer to a blocked `ask_parent` goes to that call.
-        let batch: Vec<_> = pending
-            .iter()
-            .filter(|m| is_input(m))
-            .filter(|m| !(m.kind == so_core::MessageKind::Answer && asking))
-            .collect();
-        if batch.is_empty() {
-            return;
-        }
-        // Marked read before sending, so a concurrent delivery cannot send them twice.
-        let ids: Vec<String> = batch.iter().map(|m| m.id.clone()).collect();
-        let _ = self
-            .db(move |s| s.mark_messages_read(&ids, Utc::now()))
-            .await;
-        for m in batch {
-            if let Err(e) = control.send(&m.body).await {
-                tracing::warn!(run_id = %row.id, error = %e, "could not hand over a message");
+        let asking = self.is_asking(&row.id);
+        self.db(move |s| {
+            let pending: Vec<_> = s
+                .unread_messages(&sid, Some(&id), 100)?
+                .into_iter()
+                .filter(is_input)
+                .filter(|m| !(m.kind == so_core::MessageKind::Answer && asking))
+                .collect();
+            let ids: Vec<String> = pending.iter().map(|m| m.id.clone()).collect();
+            let won = s.claim_messages(&ids, Utc::now())?;
+            Ok(pending
+                .into_iter()
+                .filter(|m| won.contains(&m.id))
+                .collect())
+        })
+        .await
+        .unwrap_or_default()
+    }
+
+    /// Sends claimed messages in order. At the first failure that message and the rest go
+    /// back to unread, for the next flush.
+    pub(crate) async fn hand_over<F, Fut>(&self, batch: Vec<so_store::MessageRow>, mut send: F)
+    where
+        F: FnMut(String) -> Fut,
+        Fut: std::future::Future<Output = Result<(), String>>,
+    {
+        for (i, m) in batch.iter().enumerate() {
+            if let Err(e) = send(m.body.clone()).await {
+                tracing::warn!(error = %e, "could not hand over a message; keeping it unread");
+                let rest: Vec<String> = batch[i..].iter().map(|m| m.id.clone()).collect();
+                let _ = self.db(move |s| s.mark_messages_unread(&rest)).await;
+                return;
             }
         }
     }
@@ -898,6 +920,88 @@ mod tests {
         assert!(m.store().get_flag("claude-t", "default").unwrap().is_some());
         assert_eq!(m.live_count(), 0);
         assert!(!m.busy());
+    }
+
+    async fn queue_messages(m: &RunManager, row: &RunRow, bodies: &[&str]) {
+        for b in bodies {
+            m.store_message(
+                &row.session_id,
+                None,
+                Some(&row.id),
+                so_core::MessageKind::Message,
+                b,
+                false,
+            )
+            .await
+            .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_flushes_deliver_each_message_once() {
+        use super::super::testutil::{insert_run, manager};
+        let (m, _dir) = manager();
+        let row = insert_run(&m, RunState::Running);
+        let bodies: Vec<String> = (0..20).map(|i| format!("note {i}")).collect();
+        queue_messages(
+            &m,
+            &row,
+            &bodies.iter().map(String::as_str).collect::<Vec<_>>(),
+        )
+        .await;
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let (m, row, sent) = (m.clone(), row.clone(), sent.clone());
+            tasks.push(tokio::spawn(async move {
+                let batch = m.claim_input(&row).await;
+                m.hand_over(batch, |text| {
+                    let sent = sent.clone();
+                    async move {
+                        sent.lock().unwrap().push(text);
+                        Ok(())
+                    }
+                })
+                .await;
+            }));
+        }
+        for t in tasks {
+            t.await.unwrap();
+        }
+        let mut got = sent.lock().unwrap().clone();
+        got.sort();
+        let mut want = bodies;
+        want.sort();
+        assert_eq!(got, want, "every message exactly once");
+    }
+
+    #[tokio::test]
+    async fn a_failed_send_leaves_the_message_unread_for_the_next_flush() {
+        use super::super::testutil::{insert_run, manager};
+        let (m, _dir) = manager();
+        let row = insert_run(&m, RunState::Running);
+        queue_messages(&m, &row, &["first", "second", "third"]).await;
+        let batch = m.claim_input(&row).await;
+        assert_eq!(batch.len(), 3);
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s2 = sent.clone();
+        m.hand_over(batch, move |text| {
+            let sent = s2.clone();
+            async move {
+                if text == "second" {
+                    return Err("pipe closed".to_string());
+                }
+                sent.lock().unwrap().push(text);
+                Ok(())
+            }
+        })
+        .await;
+        assert_eq!(*sent.lock().unwrap(), ["first"]);
+        // The failed one and the rest are unread again, in order.
+        let again = m.claim_input(&row).await;
+        let bodies: Vec<&str> = again.iter().map(|m| m.body.as_str()).collect();
+        assert_eq!(bodies, ["second", "third"]);
+        assert!(m.claim_input(&row).await.is_empty());
     }
 
     #[tokio::test]

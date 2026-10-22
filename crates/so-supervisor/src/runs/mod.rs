@@ -101,6 +101,11 @@ struct Inner {
     finished: watch::Sender<u64>,
     /// Bumped when a message is stored, so blocked `ask_parent` calls look again.
     msg_tick: watch::Sender<u64>,
+    /// Held while a run enters the review gate (state change, event, message), so a resume
+    /// of that run waits and sees them in order.
+    gate: tokio::sync::Mutex<()>,
+    /// Serialises recreating worktrees, so two resumes of one run do not both add it.
+    recreate: tokio::sync::Mutex<()>,
     /// Runs whose process died, to be resumed by the resumer task.
     resume_tx: tokio::sync::mpsc::UnboundedSender<reconcile::ResumeRequest>,
     notifications: Notifications,
@@ -157,6 +162,8 @@ impl RunManager {
             finished: watch::channel(0).0,
             msg_tick: watch::channel(0).0,
             resume_tx,
+            gate: tokio::sync::Mutex::new(()),
+            recreate: tokio::sync::Mutex::new(()),
             notifications,
             go_live_open: watch::channel(true).0,
             launch_timeout_ms: AtomicU64::new(

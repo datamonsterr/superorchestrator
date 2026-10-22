@@ -8,6 +8,8 @@ use so_core::proto::UNAVAILABLE;
 use so_core::{ErrorKind, EventType, RunState};
 use so_store::{ResumeClaim, RunRow};
 
+use std::path::Path;
+
 use super::lifecycle::excerpt;
 use super::{R, RunManager, lock, rpc, worktree};
 
@@ -77,9 +79,25 @@ impl RunManager {
         }
         // Make sure the run can work where it left off before it changes state: a run
         // that cannot be resumed stays as it is and the caller gets the error.
-        self.resume_cwd(row)
-            .await
-            .map_err(|e| rpc(UNAVAILABLE, e))?;
+        let (dir, recreated) = match self.resume_cwd_checked(row).await {
+            Ok(r) => r,
+            Err(e) => {
+                // Someone else may have resumed (or ended) the run meanwhile.
+                let id = row.id.clone();
+                let now = self.db(move |s| s.get_run(&id)).await?;
+                return match now {
+                    Some(r)
+                        if matches!(
+                            r.state,
+                            RunState::Succeeded | RunState::Failed | RunState::PendingReview
+                        ) =>
+                    {
+                        Err(rpc(UNAVAILABLE, e))
+                    }
+                    _ => Ok(Resumed::Skipped),
+                };
+            }
+        };
         let (id, name, prompt_owned) = (row.id.clone(), account_name, prompt.to_string());
         let caps = (
             i64::from(account.cap),
@@ -90,7 +108,17 @@ impl RunManager {
             .await?;
         let (from, to) = match claim {
             ResumeClaim::Moved { from, to } => (from, to),
-            ResumeClaim::Conflict(_) => return Ok(Resumed::Skipped),
+            ResumeClaim::Conflict(_) => {
+                if recreated {
+                    // Nobody will use the worktree this call put back.
+                    if let Some(repo) = row.worktree_repo.clone() {
+                        let _ = self
+                            .blocking(move || worktree::remove_dir(Path::new(&repo), &dir))
+                            .await;
+                    }
+                }
+                return Ok(Resumed::Skipped);
+            }
         };
         lock(&self.inner.runs).entry(row.id.clone()).or_default();
         if let Some(m) = msg_id {
@@ -128,6 +156,12 @@ impl RunManager {
     /// Where a resumed run works: its own worktree (recreated from its branch when the
     /// directory is gone), or its original directory when it has no worktree.
     pub(crate) async fn resume_cwd(&self, row: &RunRow) -> Result<std::path::PathBuf, String> {
+        self.resume_cwd_checked(row).await.map(|(dir, _)| dir)
+    }
+
+    /// Like [`RunManager::resume_cwd`]; also says whether the worktree was recreated by
+    /// this call. Recreating is serialised, so two resumes of one run cannot both add it.
+    async fn resume_cwd_checked(&self, row: &RunRow) -> Result<(std::path::PathBuf, bool), String> {
         let worktree_run = row.isolation == so_core::Isolation::Worktree;
         if !worktree_run {
             let dir = std::path::PathBuf::from(row.cwd.clone().ok_or("run has no directory")?);
@@ -137,7 +171,7 @@ impl RunManager {
                 .await
                 .map_err(|e| e.message)?
             {
-                Ok(dir)
+                Ok((dir, false))
             } else {
                 Err(format!("the run's directory {} is gone", dir.display()))
             };
@@ -151,13 +185,14 @@ impl RunManager {
             row.worktree_repo.clone().map(std::path::PathBuf::from),
             row.branch.clone(),
         );
+        let _serial = self.inner.recreate.lock().await;
         let probe = path.clone();
         if self
             .blocking(move || probe.is_dir())
             .await
             .map_err(|e| e.message)?
         {
-            return Ok(path);
+            return Ok((path, false));
         }
         let (Some(repo), Some(branch)) = (repo, branch) else {
             return Err("the run's worktree is gone and its branch is unknown".into());
@@ -174,7 +209,7 @@ impl RunManager {
             json!({"path": path, "branch": branch, "recreated": true}),
         )
         .await;
-        Ok(path)
+        Ok((path, true))
     }
 }
 
