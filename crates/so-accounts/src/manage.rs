@@ -34,14 +34,20 @@ fn create_account_file(paths: &Paths, account: &AccountFile) -> Result<()> {
     let dir = paths.accounts_dir();
     create_private_dir(&dir)?;
     let target = paths.account_file(&account.name);
-    let tmp = dir.join(format!(".{}.tmp.{}", account.name, std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
-    let mut f = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(&tmp)
-        .map_err(|e| AccountsError::io(&tmp, e))?;
+    let mut n = 0u32;
+    let (tmp, mut f) = loop {
+        let tmp = dir.join(format!(".{}.tmp.{}.{n}", account.name, std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+        {
+            Ok(f) => break (tmp, f),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+            Err(e) => return Err(AccountsError::io(&tmp, e)),
+        }
+    };
     let written = f.write_all(text.as_bytes()).and_then(|()| f.sync_all());
     // hard_link fails when the target exists, which makes this create-new.
     let linked = written.and_then(|()| std::fs::hard_link(&tmp, &target));
@@ -208,6 +214,15 @@ fn check_purge(
         }
         let oh = host.expand(&other.home)?;
         let oc = canon(&oh).map_err(|e| io("another account's home", e))?;
+        // An account on $HOME itself (agy with the real ~/.gemini) or on a
+        // harness default home contains everything; it is not an overlap.
+        let mut shared = vec![chost.clone()];
+        for p in default_homes(host) {
+            shared.push(canon(&p).map_err(|e| io("a harness default home", e))?);
+        }
+        if shared.contains(&oc) {
+            continue;
+        }
         if related(&chome, &oc) {
             return Err(refuse(format!(
                 "account `{}` has an overlapping home",
@@ -581,6 +596,29 @@ mod tests {
         remove(&f.paths, &f.cfg, &f.host, "agy-acc1", true).unwrap();
         assert!(!r.join(".agent-farm/profiles/agy_worker_1").exists());
         assert!(r.join(".agent-farm/profiles").is_dir());
+    }
+
+    #[test]
+    fn purge_allowed_alongside_home_dir_agy_account() {
+        let f = fx();
+        let r = f.d.path();
+        std::fs::create_dir_all(r.join(".gemini")).unwrap();
+        AccountFile::new("agy-acc1", Harness::Agy, "~", "agy")
+            .unwrap()
+            .save(&f.paths)
+            .unwrap();
+        add(
+            &f.paths,
+            &f.cfg,
+            &f.host,
+            Harness::Codex,
+            "codex-acc3",
+            None,
+        )
+        .unwrap();
+        remove(&f.paths, &f.cfg, &f.host, "codex-acc3", true).unwrap();
+        assert!(!r.join(".codex-acc3").exists());
+        assert!(f.paths.account_file("agy-acc1").exists());
     }
 
     #[test]
