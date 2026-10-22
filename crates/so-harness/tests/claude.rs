@@ -137,18 +137,32 @@ async fn normal_run_two_turns_and_transcript() {
     assert!(h.native_session_id.is_some());
 
     let first = until(&mut h, is_turn).await;
-    let pos = |pred: fn(&HarnessEvent) -> bool| first.iter().position(pred).unwrap();
-    let start = pos(|e| matches!(e, HarnessEvent::SessionStarted { .. }));
-    let msg = pos(|e| matches!(e, HarnessEvent::AssistantMessage { text } if text == "done"));
-    let usage = pos(|e| matches!(e, HarnessEvent::Usage { .. }));
-    assert!(start < msg && msg < usage && usage < first.len() - 1);
-    assert!(first.contains(&HarnessEvent::ToolCallStarted {
-        name: "Bash".into()
-    }));
-    assert!(first.contains(&HarnessEvent::ToolCallFinished {
-        name: "Bash".into(),
-        ok: true
-    }));
+    use HarnessEvent::*;
+    assert!(matches!(
+        &first[..],
+        [
+            SessionStarted { .. },
+            ToolCallStarted { .. },
+            ToolCallFinished { .. },
+            AssistantMessage { .. },
+            Usage { .. },
+            TurnFinished { .. }
+        ]
+    ));
+    assert_eq!(
+        first[1],
+        ToolCallStarted {
+            name: "Bash".into()
+        }
+    );
+    assert_eq!(
+        first[2],
+        ToolCallFinished {
+            name: "Bash".into(),
+            ok: true
+        }
+    );
+    assert!(matches!(&first[3], AssistantMessage { text } if text == "done"));
 
     h.control.send(SECOND).await.unwrap();
     let second = until(&mut h, is_turn).await;
@@ -390,4 +404,72 @@ fn join_command_uses_wrapper() {
         ClaudeDriver::default().join_command(&j),
         ["claude-acc1", "--resume", "abc"]
     );
+}
+
+#[tokio::test]
+async fn rejected_rate_limit_event_is_quota() {
+    let rig = Rig::new();
+    let script = [
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"stdout": {"type": "rate_limit_event", "rate_limit_info": {
+            "status": "rejected", "rateLimitType": "five_hour"}}}),
+    ]
+    .iter()
+    .map(|s| format!("{s}\n"))
+    .collect::<String>();
+    let mut h = ClaudeDriver::default()
+        .launch(rig.spec(&script))
+        .await
+        .unwrap();
+    let evs = until(&mut h, |e| matches!(e, HarnessEvent::Error { .. })).await;
+    assert!(matches!(
+        evs.last(),
+        Some(HarnessEvent::Error { kind: ErrorKind::Quota, message }) if message.contains("rejected")
+    ));
+    h.control.shutdown().await.unwrap();
+}
+
+fn process_gone(pid: u32) -> bool {
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Err(_) => true,
+        Ok(s) => s.rsplit(") ").next().is_some_and(|r| r.starts_with('Z')),
+    }
+}
+
+#[tokio::test]
+async fn shutdown_kills_grandchildren() {
+    let rig = Rig::new();
+    let script = [
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"spawn_sleep": 60}),
+        json!({"stderr": "ready"}),
+        json!({"sleep_ms": 60000}),
+    ]
+    .iter()
+    .map(|s| format!("{s}\n"))
+    .collect::<String>();
+    let mut h = ClaudeDriver::default()
+        .with_shutdown_grace(Duration::from_millis(200))
+        .launch(rig.spec(&script))
+        .await
+        .unwrap();
+    loop {
+        if matches!(next(&mut h).await, HarnessEvent::Stderr { line } if line == "ready") {
+            break;
+        }
+    }
+    let pid = rig
+        .log()
+        .iter()
+        .find_map(|l| l["grandchild"].as_u64())
+        .unwrap() as u32;
+    assert!(!process_gone(pid));
+    h.control.shutdown().await.unwrap();
+    for _ in 0..60 {
+        if process_gone(pid) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("grandchild {pid} survived shutdown");
 }

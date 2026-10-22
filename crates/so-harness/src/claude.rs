@@ -12,8 +12,8 @@ use tokio::process::{ChildStderr, ChildStdin, ChildStdout, Command};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::driver::{
-    Driver, DriverError, HarnessEvent, JoinInfo, LaunchSpec, RateLimits, RunControl, RunHandle,
-    classify_common,
+    Driver, DriverError, HarnessEvent, JoinInfo, LaunchSpec, ProcessGuard, RateLimits, RunControl,
+    RunHandle, classify_common,
 };
 use crate::transcript::{Dir, TranscriptWriter};
 
@@ -158,6 +158,7 @@ impl Driver for ClaudeDriver {
 
         let mut control = ClaudeControl {
             stdin,
+            guard: ProcessGuard::new(pid, exited_rx.clone()),
             pid,
             kill_tx: Some(kill_tx),
             exited: exited_rx,
@@ -192,6 +193,7 @@ impl Driver for ClaudeDriver {
 #[derive(Debug)]
 pub struct ClaudeControl {
     stdin: Option<ChildStdin>,
+    guard: ProcessGuard,
     pid: Option<u32>,
     kill_tx: Option<oneshot::Sender<()>>,
     exited: watch::Receiver<bool>,
@@ -231,6 +233,7 @@ impl ClaudeControl {
     pub async fn shutdown(&mut self) -> Result<(), DriverError> {
         self.stdin = None;
         if !self.wait_exit(self.grace).await {
+            self.guard.terminate(Duration::from_secs(2)).await;
             if let Some(k) = self.kill_tx.take() {
                 let _ = k.send(());
             }

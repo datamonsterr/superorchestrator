@@ -24,6 +24,7 @@ required-features = ["test-support"]
 so-core = { path = "../so-core" }
 so-accounts = { path = "../so-accounts" }
 chrono.workspace = true
+rustix = { version = "1", features = ["process"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

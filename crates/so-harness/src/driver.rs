@@ -8,11 +8,12 @@
 
 use std::future::Future;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::Serialize;
 use so_accounts::Launch;
 use so_core::{AccountFile, ErrorKind, Harness};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::claude::{ClaudeControl, ClaudeDriver};
 
@@ -231,6 +232,63 @@ impl Driver for AnyDriver {
     fn classify_error(&self, text: &str) -> ErrorKind {
         match self {
             AnyDriver::Claude(d) => d.classify_error(text),
+        }
+    }
+}
+
+/// Owns the process group of a harness started with `process_group(0)`, so
+/// grandchildren (tool subprocesses, wrappers) die with the harness. Shared by
+/// all process-based drivers. Dropping the guard SIGKILLs the group unless the
+/// leader is known to have exited (avoids signalling a reused pgid).
+#[derive(Debug)]
+pub struct ProcessGuard {
+    pgid: Option<rustix::process::Pid>,
+    exited: watch::Receiver<bool>,
+}
+
+impl ProcessGuard {
+    /// `pid` is the group leader's pid (== pgid); `exited` flips to true once
+    /// the leader has been reaped.
+    pub fn new(pid: Option<u32>, exited: watch::Receiver<bool>) -> Self {
+        let pgid = pid
+            .and_then(|p| i32::try_from(p).ok())
+            .and_then(rustix::process::Pid::from_raw);
+        Self { pgid, exited }
+    }
+
+    fn signal(&self, sig: rustix::process::Signal) {
+        if let Some(pgid) = self.pgid {
+            let _ = rustix::process::kill_process_group(pgid, sig);
+        }
+    }
+
+    fn group_gone(&self) -> bool {
+        match self.pgid {
+            Some(pgid) => rustix::process::test_kill_process_group(pgid).is_err(),
+            None => true,
+        }
+    }
+
+    /// SIGTERM the group, then SIGKILL after `grace` if any member remains.
+    pub async fn terminate(&self, grace: Duration) {
+        if *self.exited.borrow() && self.group_gone() {
+            return;
+        }
+        self.signal(rustix::process::Signal::TERM);
+        let deadline = tokio::time::Instant::now() + grace;
+        while !self.group_gone() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if !self.group_gone() {
+            self.signal(rustix::process::Signal::KILL);
+        }
+    }
+}
+
+impl Drop for ProcessGuard {
+    fn drop(&mut self) {
+        if !*self.exited.borrow() {
+            self.signal(rustix::process::Signal::KILL);
         }
     }
 }

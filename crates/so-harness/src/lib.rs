@@ -7,7 +7,7 @@ pub mod transcript;
 
 pub use claude::ClaudeDriver;
 pub use driver::{
-    AnyDriver, Driver, DriverError, HarnessEvent, JoinInfo, LaunchSpec, McpServerSpec, RateLimits,
-    RunControl, RunHandle, classify_common,
+    AnyDriver, Driver, DriverError, HarnessEvent, JoinInfo, LaunchSpec, McpServerSpec,
+    ProcessGuard, RateLimits, RunControl, RunHandle, classify_common,
 };
 pub use transcript::{Dir, TranscriptWriter};
