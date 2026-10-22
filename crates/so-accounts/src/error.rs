@@ -15,11 +15,9 @@ pub enum AccountsError {
         source: std::io::Error,
     },
     #[error(
-        "agy account `{0}` needs bwrap, which is Linux-only; on macOS only the default ~/.gemini works"
+        "agy account `{0}` is not supported on macOS yet; only the default ~/.gemini works there"
     )]
     AgyMultiAccountUnsupported(String),
-    #[error("agy account `{0}` needs `bwrap` on PATH (install bubblewrap)")]
-    BwrapMissing(String),
     #[error("binary `{0}` not found on PATH")]
     BinaryNotFound(String),
     #[error("account `{0}` already exists")]

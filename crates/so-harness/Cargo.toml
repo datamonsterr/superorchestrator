@@ -28,6 +28,7 @@ rustix = { version = "1", features = ["process"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+tracing.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 

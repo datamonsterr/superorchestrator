@@ -80,26 +80,30 @@ fn harness_vars(account: &AccountFile, host: &HostEnv, home: &Path) -> Vec<(Stri
 }
 
 /// Whether the launch is a supervised run or an interactive wrapper launch.
-/// Interactive launches keep the controlling TTY, so bwrap omits `--new-session`.
+/// Since ADR-0005 the recipe is the same for both: agy accounts are selected
+/// with `--gemini_dir` and never bwrapped here (the agy driver adds its own
+/// bwrap wrapper for supervised runs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchMode {
     Supervised,
     Interactive,
 }
 
-/// Builds the launch recipe. `bwrap_path` is the resolved `bwrap` binary, used
-/// only for agy accounts on Linux whose `.gemini` is not the real `~/.gemini`.
+/// Builds the launch recipe. `bwrap_path` and `mode` are kept for API
+/// stability and are unused: no recipe needs bwrap (ADR-0005), because agy
+/// reads its account from `--gemini_dir=<home>/.gemini` and never binds it
+/// over `~/.gemini`.
+// TODO(M9): remove unused bwrap/mode params
 pub fn build_launch(
     account: &AccountFile,
     host: &HostEnv,
-    bwrap_path: Option<&Path>,
-    mode: LaunchMode,
+    _bwrap_path: Option<&Path>,
+    _mode: LaunchMode,
 ) -> Result<Launch> {
     let home = host.expand(&account.home)?;
     let binary = resolve_binary(&account.binary, host.path_var.as_deref())?;
-    let s = |p: &Path| p.to_string_lossy().into_owned();
     let mut launch = Launch {
-        program: binary.clone(),
+        program: binary,
         vars: Vec::new(),
         argv_prefix: Vec::new(),
         extra_args: Vec::new(),
@@ -110,10 +114,9 @@ pub fn build_launch(
         Harness::Agy => {
             let gemini = home.join(".gemini");
             let real = host.home.join(".gemini");
-            launch
-                .extra_args
-                .push(format!("--gemini_dir={}", s(&gemini)));
             if !same_path(&gemini, &real) {
+                // Multi-account agy is Linux-only until checked on a Mac
+                // (SPEC 6.4).
                 if host.platform == Platform::MacOs {
                     return Err(AccountsError::AgyMultiAccountUnsupported(
                         account.name.clone(),
@@ -122,19 +125,10 @@ pub fn build_launch(
                 if !gemini.is_dir() {
                     return Err(AccountsError::HomeMissing(gemini));
                 }
-                let bwrap =
-                    bwrap_path.ok_or_else(|| AccountsError::BwrapMissing(account.name.clone()))?;
-                launch.program = bwrap.to_path_buf();
-                let mut argv = vec!["--die-with-parent".to_string()];
-                if mode == LaunchMode::Supervised {
-                    argv.push("--new-session".into());
-                }
-                argv.extend(
-                    ["--bind", "/", "/", "--dev-bind", "/dev", "/dev", "--bind"].map(String::from),
-                );
-                argv.extend([s(&gemini), s(&real), "--".into(), s(&binary)]);
-                launch.argv_prefix = argv;
             }
+            launch
+                .extra_args
+                .push(format!("--gemini_dir={}", gemini.to_string_lossy()));
         }
     }
     Ok(launch)
@@ -224,9 +218,9 @@ mod tests {
     }
 
     #[test]
-    fn agy_bwrap_argv_on_linux() {
+    fn agy_never_binds_gemini_over_home() {
         let d = tempfile::tempdir().unwrap();
-        stub_bin(d.path(), "agy");
+        let agy = stub_bin(d.path(), "agy");
         let bwrap = stub_bin(d.path(), "bwrap");
         let h = host(d.path(), Platform::Linux);
         let a = acct("agy-acc2", Harness::Agy, "~/.agy2");
@@ -235,36 +229,19 @@ mod tests {
             Err(AccountsError::HomeMissing(_))
         ));
         std::fs::create_dir_all(d.path().join(".agy2/.gemini")).unwrap();
-        let l = build_launch(&a, &h, Some(&bwrap), LaunchMode::Supervised).unwrap();
-        let i = build_launch(&a, &h, Some(&bwrap), LaunchMode::Interactive).unwrap();
-        assert!(!i.argv_prefix.contains(&"--new-session".to_string()));
-        assert_eq!(i.argv_prefix.len() + 1, l.argv_prefix.len());
-        let home = d.path().display();
-        assert_eq!(l.program, bwrap);
-        assert!(l.vars.is_empty(), "HOME must stay unchanged");
-        assert_eq!(
-            l.argv_prefix,
-            [
-                "--die-with-parent",
-                "--new-session",
-                "--bind",
-                "/",
-                "/",
-                "--dev-bind",
-                "/dev",
-                "/dev",
-                "--bind",
-                &format!("{home}/.agy2/.gemini"),
-                &format!("{home}/.gemini"),
-                "--",
-                &format!("{home}/bin/agy"),
-            ]
-        );
-        assert_eq!(l.extra_args, [format!("--gemini_dir={home}/.agy2/.gemini")]);
-        assert!(matches!(
-            build_launch(&a, &h, None, LaunchMode::Supervised),
-            Err(AccountsError::BwrapMissing(_))
-        ));
+        for mode in [LaunchMode::Supervised, LaunchMode::Interactive] {
+            // With or without bwrap on PATH the recipe is the same.
+            for bw in [Some(bwrap.as_path()), None] {
+                let l = build_launch(&a, &h, bw, mode).unwrap();
+                assert_eq!(l.program, agy);
+                assert!(l.argv_prefix.is_empty(), "no bwrap, no --bind");
+                assert!(l.vars.is_empty(), "HOME must stay unchanged");
+                assert_eq!(
+                    l.extra_args,
+                    [format!("--gemini_dir={}/.agy2/.gemini", d.path().display())]
+                );
+            }
+        }
     }
 
     #[test]

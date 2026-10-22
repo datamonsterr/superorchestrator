@@ -40,7 +40,7 @@ Terms used here are defined in [CONTEXT.md](CONTEXT.md). Architectural decisions
 | Workflows | QuickJS through `rquickjs` |
 | CLI | `clap`, plus an interactive menu (`dialoguer` or equivalent) |
 | HTTP client | `reqwest` (OpenRouter, models.dev) |
-| Process isolation | `bwrap` on Linux, for agy accounts only |
+| Process isolation | agy accounts select their state with `--gemini_dir`; supervised agy runs use `bwrap` (Linux, optional) only for `--die-with-parent --new-session` |
 | Distribution | GitHub `datamonsterr/superorchestrator`. Release binaries built by cargo-dist for linux x86_64/aarch64 and macOS aarch64/x86_64. An `install.sh` curl installer, with `cargo install` as a fallback. |
 
 Before coding against `rmcp`, `axum`, `rquickjs` or any harness protocol, check the current documentation. The flags in this spec were checked against codex-cli 0.163.0, Claude Code 2.1.308, opencode 1.18.35 and agy 1.4.4 on 2026-10-22.
@@ -58,7 +58,7 @@ Before coding against `rmcp`, `axum`, `rquickjs` or any harness protocol, check 
                                                   ├─► codex app-server (per run, account CODEX_HOME)
                                                   ├─► opencode serve   (per run, account XDG dirs)
                                                   ├─► claude -p stream-json (per run, CLAUDE_CONFIG_DIR)
-                                                  └─► bwrap … agy -p stream-json (per run, --gemini_dir)
+                                                  └─► [bwrap …] agy -p= stream-json (per run, --gemini_dir)
                                                         │
                                 each child has its own superorchestrator mcp,
                                 with SUPERORCHESTRATOR_RUN_ID set, so it can
@@ -102,7 +102,7 @@ Each driver implements: `launch(run) -> Handle`, an `events()` stream normalised
 | codex | `codex app-server --listen ws://127.0.0.1:<port> --ws-auth …`, one per run, with the account's `CODEX_HOME`. The supervisor starts a thread with `cwd`, `model`, `model_reasoning_effort`, sandbox `danger-full-access` and approval `never`. | thread id from `thread/started` | `turn/start` when idle, `turn/steer` while a turn runs, `turn/interrupt` to cancel | Live: `codex-acc2 resume --remote ws://127.0.0.1:<port> --remote-auth-token-env SO_WS_TOKEN <thread>`. After the run: `codex-acc2 resume <thread>`. |
 | opencode | `opencode serve --hostname 127.0.0.1 --port 0`, one per run, with `OPENCODE_SERVER_PASSWORD` and the account's XDG dirs. A session is created with `POST /session`. | opencode session id | `POST /session/{id}/prompt_async`. Cancel: `POST /session/{id}/abort`. Events: `GET /event` (SSE). | Live: `opencode attach <url> --session <id>`. After the run: `opencode-acc1 --session <id>`. |
 | claude | `claude -p --input-format stream-json --output-format stream-json --dangerously-skip-permissions --session-id <uuid> --mcp-config <run>/mcp.json --append-system-prompt-file <run>/system.md`, with the account's `CLAUDE_CONFIG_DIR` | the `--session-id` uuid | NDJSON user message on stdin | After the run pauses or ends: `claude-acc1 --resume <uuid>`, from the run's cwd |
-| agy | `bwrap --die-with-parent --new-session --bind / / --dev-bind /dev /dev -- agy --gemini_dir=<home>/.gemini -p --input-format stream-json --output-format stream-json --dangerously-skip-permissions --model M --effort E` | conversation id from the stream | NDJSON user message on stdin | After the run pauses or ends: `agy-acc1 --conversation <id>` |
+| agy | `[bwrap --die-with-parent --new-session --bind / / --dev-bind /dev /dev --] agy --gemini_dir=<run>/gemini -p= --input-format stream-json --output-format stream-json --dangerously-skip-permissions --model M --effort E` | conversation id from the stream | NDJSON user message on stdin | After the run pauses or ends: `agy-acc1 --conversation <id>` |
 
 Rules:
 
@@ -143,7 +143,7 @@ Account names match `^[a-z][a-z0-9-]{1,31}$`. The name doubles as the wrapper co
 | codex | `~/.<name>` | `CODEX_HOME=<home>` |
 | opencode | `~/.<name>` | `XDG_CONFIG_HOME=<home>/config`, `XDG_DATA_HOME=<home>/data`, `XDG_STATE_HOME=<home>/state` |
 | claude | `~/.<name>` | `CLAUDE_CONFIG_DIR=<home>` |
-| agy | `~/.<name>` holding `.gemini/` | `--gemini_dir=<home>/.gemini` under `bwrap`, with `HOME` unchanged ([ADR-0003](docs/adr/0003-agy-accounts-isolate-gemini-dir.md)) |
+| agy | `~/.<name>` holding `.gemini/` | `--gemini_dir=<home>/.gemini` (a per-run gemini dir for supervised runs), with `HOME` unchanged ([ADR-0003](docs/adr/0003-agy-accounts-isolate-gemini-dir.md), [ADR-0005](docs/adr/0005-agy-runs-use-per-run-gemini-dir.md)) |
 
 Credential homes live in `$HOME`, so a person can log in with the normal CLI through the wrapper. Superorchestrator only links to them.
 
@@ -202,7 +202,7 @@ When a run fails with a quota, rate-limit or auth error (`classify_error`), the 
 
 ### 6.4 macOS
 
-agy multi-account needs `bwrap`, which is Linux-only. On macOS, superorchestrator allows only one enabled agy account, and it uses the real `~/.gemini`. `doctor` reports this.
+agy multi-account is Linux-only until it is checked on a Mac (ADR-0005). On macOS, superorchestrator allows only one enabled agy account, and it uses the real `~/.gemini`. `doctor` reports this.
 
 ## 7. Runs
 
@@ -696,7 +696,7 @@ Each milestone is one or more PRs with `cargo test` coverage, and is usable by i
    - Scope: workspace, config dir and `init`, `config`, `doctor`, `state.db` with migrations, supervisor lifecycle with socket and idle exit, `mcp` thin client exposing `list_harnesses`, `install` (MCP registration), `install.sh`, release pipeline.
    - Done when: Claude Code lists the server and `list_harnesses` returns the configured accounts.
 2. **M2 Accounts and usage.**
-   - Scope: `account add|import|login|list|remove|enable|disable|flag`, wrappers and `exec` with interactive sessions, agy `bwrap` isolation, the codex and agy probes, ledger, headroom, `status`.
+   - Scope: `account add|import|login|list|remove|enable|disable|flag`, wrappers and `exec` with interactive sessions, agy per-run gemini dir, the codex and agy probes, ledger, headroom, `status`.
    - Done when: two Codex accounts and two agy accounts show correct headroom, and a wrapper launch appears as a session.
 3. **M3 Drivers and runs.**
    - Scope: the four drivers (after the section 4 spikes), `spawn_agent`, `wait_agent`, `get_run`, `cancel_agent`, worktree isolation, child instructions, structured output, events and transcripts, `join`, `runs list|show|watch`, `migrate`.

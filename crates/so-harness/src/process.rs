@@ -70,7 +70,7 @@ pub trait LineParser: Send + 'static {
 /// `None` while the leader runs, `Some(code)` once reaped.
 pub type ExitWatch = watch::Receiver<Option<Option<i32>>>;
 
-async fn exited(exit: &ExitWatch, within: Duration) -> Option<Option<i32>> {
+pub(crate) async fn exited(exit: &ExitWatch, within: Duration) -> Option<Option<i32>> {
     let mut rx = exit.clone();
     match tokio::time::timeout(within, rx.wait_for(|v| v.is_some())).await {
         Ok(Ok(v)) => *v,
