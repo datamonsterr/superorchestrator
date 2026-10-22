@@ -29,6 +29,7 @@ pub fn run(ctx: &Ctx, cmd: ConfigCmd) -> Result<ExitCode> {
         }
         ConfigCmd::Set { key, value } => {
             Config::set_in_file(&ctx.paths, &key, &value)?;
+            ctx.refresh_skill();
             ctx.emit_ok(json!({ "key": key, "value": value }), &format!("set {key}"))?;
             Ok(ExitCode::SUCCESS)
         }
@@ -62,6 +63,7 @@ fn edit(ctx: &Ctx) -> Result<ExitCode> {
     }
     match Config::load(&ctx.paths) {
         Ok(_) => {
+            ctx.refresh_skill();
             ctx.emit_ok(json!({ "path": path }), "config.toml is valid")?;
             Ok(ExitCode::SUCCESS)
         }

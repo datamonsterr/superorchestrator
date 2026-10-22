@@ -89,6 +89,7 @@ pub async fn add(
             &b.name,
             b.home.as_deref(),
         )?;
+        st.refresh_skill();
         Ok((StatusCode::CREATED, Json(publish_view(&st, &b.name)?)))
     })
     .await
@@ -104,6 +105,7 @@ pub async fn import(
         let cfg = Config::load(&st.sup.paths)?;
         let host = host(&st)?;
         manage::import(&st.sup.paths, &cfg, &host, &b.name, b.harness, &b.home)?;
+        st.refresh_skill();
         Ok((StatusCode::CREATED, Json(publish_view(&st, &b.name)?)))
     })
     .await
@@ -152,6 +154,7 @@ pub async fn patch(
             a.pools = pools;
         }
         a.save(&st.sup.paths)?;
+        st.refresh_skill();
         Ok(Json(publish_view(&st, &name)?))
     })
     .await
@@ -173,6 +176,7 @@ pub async fn remove(
         valid_name(&name)?;
         let cfg = Config::load(&st.sup.paths)?;
         manage::remove(&st.sup.paths, &cfg, &host(&st)?, &name, q.purge)?;
+        st.refresh_skill();
         Ok(Json(AckResult { ok: true }))
     })
     .await

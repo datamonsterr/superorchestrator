@@ -6,10 +6,12 @@ pub mod discover;
 mod error;
 pub mod materialise;
 pub mod parse;
+pub mod skill;
 pub mod starter;
 
 pub use discover::{
-    Discovery, discover, read_source_of, remove_files, resolve_for_spawn, search_dirs,
+    Discovery, discover, discover_user, read_source_of, remove_files, resolve_for_spawn,
+    search_dirs,
 };
 pub use error::{AgentError, Result};
 pub use materialise::{Materialised, McpExtra, gaps, materialise};

@@ -52,6 +52,7 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
     let cfg = ctx.config()?;
     let host = ctx.host()?;
     let account = manage::add(&ctx.paths, &cfg, &host, harness, &a.name, a.home.as_deref())?;
+    ctx.refresh_skill();
     let login = login_json(&account, &host)?;
     ctx.emit(
         &json!({
@@ -109,6 +110,7 @@ fn import(ctx: &Ctx, a: AccountImport) -> Result<ExitCode> {
         parse_harness(&harness)?,
         &home,
     )?;
+    ctx.refresh_skill();
     ctx.emit_ok(
         json!({ "name": acc.name, "harness": acc.harness.as_str(), "home": acc.home }),
         &format!(
@@ -170,6 +172,9 @@ pub fn import_scan(ctx: &Ctx, cfg: &Config, host: &HostEnv) -> Result<ExitCode> 
                 failed = true;
             }
         }
+    }
+    if !imported.is_empty() {
+        ctx.refresh_skill();
     }
     ctx.emit(&json!({ "ok": !failed, "imported": imported }), |w| {
         imported
@@ -240,6 +245,7 @@ fn remove(ctx: &Ctx, a: AccountRemove) -> Result<ExitCode> {
         }
     }
     manage::remove(&ctx.paths, &cfg, &host, &a.name, a.purge)?;
+    ctx.refresh_skill();
     ctx.emit_ok(
         json!({ "name": a.name, "purged": a.purge }),
         &format!("removed account {}", a.name),
@@ -249,6 +255,7 @@ fn remove(ctx: &Ctx, a: AccountRemove) -> Result<ExitCode> {
 
 fn set_enabled(ctx: &Ctx, name: &str, enabled: bool) -> Result<ExitCode> {
     manage::set_enabled(&ctx.paths, name, enabled)?;
+    ctx.refresh_skill();
     let word = if enabled { "enabled" } else { "disabled" };
     ctx.emit_ok(
         json!({ "name": name, "enabled": enabled }),

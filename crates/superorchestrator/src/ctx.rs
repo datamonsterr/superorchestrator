@@ -26,6 +26,16 @@ impl Ctx {
         Config::load(&self.paths).context("could not load config.toml")
     }
 
+    /// Regenerates the installed skill after accounts, choices or agents changed (SPEC 19.1).
+    /// Does nothing when the skill is not installed. A failure is a warning: the change
+    /// that called this already succeeded.
+    pub fn refresh_skill(&self) {
+        let Ok(host) = self.host() else { return };
+        for e in so_agents::skill::refresh(&self.paths, &host.home).errors {
+            eprintln!("warning: {e}");
+        }
+    }
+
     pub fn host(&self) -> Result<HostEnv> {
         Ok(HostEnv::detect()?)
     }

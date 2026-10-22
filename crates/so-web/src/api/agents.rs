@@ -248,6 +248,7 @@ pub async fn create(
                 let _ = std::fs::remove_dir_all(&folder);
                 return Err(ApiError::internal(e));
             }
+            st.refresh_skill();
             Ok((
                 StatusCode::CREATED,
                 Json(AgentWriteResult {
@@ -272,6 +273,7 @@ pub async fn update(
             refuse_redacted(&b.source)?;
             let def = parse_for(&name, &b.source, &t.file, t.dir.clone(), t.source)?;
             write_atomic(&t.file, b.source.as_bytes()).map_err(ApiError::internal)?;
+            st.refresh_skill();
             Ok(Json(AgentWriteResult {
                 ok: true,
                 warnings: warnings(&def),
@@ -294,6 +296,7 @@ pub async fn remove(
                 None => std::fs::remove_file(&t.file),
             }
             .map_err(ApiError::internal)?;
+            st.refresh_skill();
             Ok(Json(AckResult { ok: true }))
         })
         .await

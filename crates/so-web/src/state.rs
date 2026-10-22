@@ -95,6 +95,16 @@ impl AppState {
             .unwrap_or_else(|| std::path::PathBuf::from("/"))
     }
 
+    /// Regenerates the installed skill after accounts, choices or agents changed (SPEC 19.1).
+    /// Blocking file I/O: call it from inside [`Self::blocking`]. A no-op when the skill is
+    /// not installed; a failure is logged because the change itself already succeeded.
+    pub fn refresh_skill(&self) {
+        let Some(host) = &self.sup.host else { return };
+        for e in so_agents::skill::refresh(&self.sup.paths, &host.home).errors {
+            tracing::warn!("{e}");
+        }
+    }
+
     /// Runs a blocking closure (store, filesystem, git) off the async runtime.
     pub async fn blocking<T, F>(&self, f: F) -> ApiResult<T>
     where
