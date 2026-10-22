@@ -103,6 +103,66 @@ describe('RunPanel', () => {
   })
 })
 
+describe('RunPanel behaviour', () => {
+  it('shell-quotes the cwd so a pasted command cannot run anything', async () => {
+    server.use(http.post(`${B}/runs/run-1/join`, () => HttpResponse.json({ argv: ['codex'], cwd: "/w/a b'c;$(x)", env_names: [] })))
+    panel('run-1')
+    await userEvent.click(await tab('Join'))
+    expect(await screen.findByText("cd '/w/a b'\\''c;$(x)' && codex")).toBeInTheDocument()
+  })
+
+  it('requests the join command once per panel and keeps it across tab switches; "Issue again" is explicit', async () => {
+    let posts = 0
+    server.use(http.post(`${B}/runs/run-1/join`, () => { posts++; return HttpResponse.json({ argv: ['codex', `n${posts}`], cwd: '/w', env_names: [] }) }))
+    panel('run-1')
+    await userEvent.click(await tab('Join'))
+    expect(await screen.findByText('cd /w && codex n1')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('tab', { name: 'Brief' }))
+    await userEvent.click(screen.getByRole('tab', { name: 'Join' }))
+    expect(screen.getByText('cd /w && codex n1')).toBeVisible()
+    expect(posts).toBe(1)
+    await userEvent.click(screen.getByRole('button', { name: 'Issue again' }))
+    expect(await screen.findByText('cd /w && codex n2')).toBeInTheDocument()
+    expect(posts).toBe(2)
+  })
+
+  it('keeps the Events filter and Transcript search when switching tabs', async () => {
+    layout()
+    panel('run-1')
+    await userEvent.click(await tab('Events'))
+    const lifecycle = await screen.findByRole('button', { name: 'Lifecycle' })
+    await userEvent.click(lifecycle)
+    expect(lifecycle).toHaveAttribute('aria-pressed', 'false')
+    await userEvent.click(screen.getByRole('tab', { name: 'Transcript' }))
+    await userEvent.type(await screen.findByRole('searchbox', { name: 'Search transcript' }), 'abc')
+    await userEvent.click(screen.getByRole('tab', { name: 'Events' }))
+    expect(screen.getByRole('button', { name: 'Lifecycle' })).toHaveAttribute('aria-pressed', 'false')
+    await userEvent.click(screen.getByRole('tab', { name: 'Transcript' }))
+    expect(screen.getByRole('searchbox', { name: 'Search transcript' })).toHaveValue('abc')
+  })
+
+  it('only mounts a tab once it has been opened', async () => {
+    let transcriptFetches = 0
+    server.use(http.get(`${B}/runs/run-1/transcript`, () => { transcriptFetches++; return HttpResponse.json({ lines: [], next_offset: null, total_bytes: 0 }) }))
+    panel('run-1')
+    await screen.findByRole('heading', { name: 'refactor-api' })
+    await new Promise((r) => setTimeout(r, 30))
+    expect(transcriptFetches).toBe(0)
+  })
+
+  it('Escape in the Reject dialog closes only the dialog: the panel and the typed feedback stay', async () => {
+    const { onClose } = panel('run-2')
+    await userEvent.click(await screen.findByRole('button', { name: 'Reject' }))
+    await userEvent.type(await screen.findByRole('textbox', { name: 'Feedback' }), 'keep me')
+    await userEvent.keyboard('{Escape}')
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Reject this run' })).toBeNull())
+    expect(onClose).not.toHaveBeenCalled()
+    expect(screen.getByRole('heading', { name: 'write-tests' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Reject' }))
+    expect(await screen.findByRole('textbox', { name: 'Feedback' })).toHaveValue('keep me')
+  })
+})
+
 describe('RunPanel actions', () => {
   it('running: send message and cancel enabled, no accept or reject', async () => {
     panel('run-1')
@@ -224,7 +284,8 @@ describe('RunPanel with 10 000 rows', () => {
 
     // Turn off every group but stalls.
     for (const name of ['Lifecycle', 'Activity', 'Messages']) await userEvent.click(screen.getByRole('button', { name }))
-    const status = screen.getAllByRole('status').find((s) => /events$/.test(s.textContent ?? ''))!
+    const status = screen.getByText(/ events$/)
+    expect(screen.queryAllByRole('status').some((n) => /events$/.test(n.textContent ?? ''))).toBe(false) // counts stay out of live regions
     const stalls = large.events.filter((e) => ['stall_detected', 'nudge_sent', 'escalated'].includes(e.type)).length
     expect(status).toHaveTextContent(`${stalls} of 10000 events`)
 
@@ -232,27 +293,27 @@ describe('RunPanel with 10 000 rows', () => {
     await userEvent.click(first)
     expect(first).toHaveAttribute('aria-expanded', 'true')
     expect(within(list).getAllByText(/"/).length).toBeGreaterThan(0)
-  }, 30000)
+  })
 
   it('Transcript tab: loads all pages, virtualises 10 000 lines and searches client-side', async () => {
     layout()
     panel('run-000')
     await userEvent.click(await tab('Transcript'))
     expect(await screen.findByText('10000 lines', {}, { timeout: 15000 })).toBeInTheDocument()
-    const log = screen.getByRole('log', { name: 'Transcript' })
+    const log = screen.getByRole('region', { name: 'Transcript' })
     const rendered = log.querySelectorAll('[data-index]').length
     expect(rendered).toBeGreaterThan(5)
     expect(rendered).toBeLessThan(60)
     await userEvent.type(screen.getByRole('searchbox', { name: 'Search transcript' }), 'line 777:')
     expect(await screen.findByText(/1 of 10000 lines match/)).toBeInTheDocument()
     expect(within(log).getByText(/assistant line 777:|user line 777:|system line 777:/)).toBeInTheDocument()
-  }, 30000)
+  })
 
   it('Transcript tab: loads the fixture transcript for a small run', async () => {
     layout()
     panel('run-1')
     await userEvent.click(await tab('Transcript'))
-    const log = await screen.findByRole('log', { name: 'Transcript' })
+    const log = await screen.findByRole('region', { name: 'Transcript' })
     expect(await screen.findByText(/lines$/)).toBeInTheDocument()
     expect(log.querySelectorAll('[data-index]').length).toBeGreaterThan(0)
   })

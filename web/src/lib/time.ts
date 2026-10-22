@@ -23,19 +23,30 @@ export interface AxisTick {
   major: boolean
 }
 
+/** Local UTC offset in ms at instant `t`, from the runtime time zone. */
+export const localOffsetMs = (t: number): number => -new Date(t).getTimezoneOffset() * MINUTE
+
 /**
- * Ticks at multiples of the nice step inside `[t0, t1]`. `offsetMs` is the local UTC offset
- * (default: that of `t0` in the runtime time zone), so hour steps land on local hours.
+ * Ticks at multiples of the nice step on the local clock inside `[t0, t1]`, so hour steps land on local hours
+ * and stay correct across a DST change. `offset` is the UTC offset in ms (a number) or a function of the
+ * instant (default: the runtime time zone).
  */
-export function axisTicks(t0: number, t1: number, maxLabels = 12, offsetMs = -new Date(t0).getTimezoneOffset() * MINUTE): AxisTick[] {
+export function axisTicks(t0: number, t1: number, maxLabels = 12, offset: number | ((t: number) => number) = localOffsetMs): AxisTick[] {
   if (!(t1 > t0)) return []
+  const off = typeof offset === 'number' ? () => offset : offset
   const step = niceStep(t1 - t0, maxLabels)
   const bigger = NICE_STEPS_MS[Math.min(NICE_STEPS_MS.indexOf(step) + 1, NICE_STEPS_MS.length - 1)]
+  // Local wall-clock time `local` to an instant; the second pass settles ambiguity next to a transition.
+  const toUtc = (local: number) => {
+    const guess = local - off(local)
+    return local - off(guess)
+  }
   const out: AxisTick[] = []
-  for (let k = Math.ceil((t0 + offsetMs) / step); ; k++) {
-    const t = k * step - offsetMs
+  for (let k = Math.ceil((t0 + off(t0)) / step); ; k++) {
+    const t = toUtc(k * step)
     if (t > t1) break
-    out.push({ t, major: (k * step) % bigger === 0 })
+    // A wall-clock hour skipped by a DST jump maps onto the same instant as the next one: keep one.
+    if (t >= t0 && (out.length === 0 || t > out[out.length - 1].t)) out.push({ t, major: (k * step) % bigger === 0 })
   }
   return out
 }

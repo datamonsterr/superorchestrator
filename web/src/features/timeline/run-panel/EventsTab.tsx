@@ -53,7 +53,7 @@ export function EventsTab({ runId }: { runId: string }) {
           </ToggleGroupItem>
         ))}
       </ToggleGroup>
-      <p className="text-xs text-muted-foreground" role="status">
+      <p className="text-xs text-muted-foreground">
         {rows.length} of {events.data.length} events
       </p>
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-auto rounded-md border" role="list" aria-label="Events" tabIndex={0}>

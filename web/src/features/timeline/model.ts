@@ -4,6 +4,9 @@ import type { RunState, RunViewPublic } from '@/api/types'
 export const ORCHESTRATOR_LANE = 'orchestrator'
 
 export const TERMINAL_STATES: ReadonlySet<RunState> = new Set<RunState>(['succeeded', 'failed', 'cancelled'])
+/** String-valued field or undefined, for untyped event data. */
+export const asString = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
+
 export const isTerminalState = (s: RunState): boolean => TERMINAL_STATES.has(s)
 
 /** Times are epoch milliseconds throughout. */

@@ -1,16 +1,18 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { ApiError } from '@/api/client'
 import { endpoints } from '@/api/endpoints'
 import { qk, useSession } from '@/api/queries'
 import type { Event, Page, RunViewPublic } from '@/api/types'
-import { applyEvent, withNow } from './applyEvent'
+import { applyEvents, refreshNow } from './applyEvent'
 import { deriveTimeline } from './derive'
 import type { TimelineModel } from './model'
 
 interface State {
   runs: RunViewPublic[] | null
-  /** Raw events, in arrival order; only used to re-derive. */
-  events: Event[]
+  /** Raw events as the batches they arrived in (cheap to append; flattened only to re-derive). */
+  chunks: Event[][]
+  count: number
   model: TimelineModel | null
 }
 type Action =
@@ -21,47 +23,54 @@ type Action =
 
 /** Batches larger than this are cheaper to re-derive than to fold. */
 const FOLD_LIMIT = 64
+const flat = (chunks: Event[][]) => chunks.flat()
 
 export function timelineReducer(s: State, a: Action): State {
   switch (a.type) {
     case 'runs':
-      return { runs: a.runs, events: s.events, model: deriveTimeline(a.runs, s.events, a.now) }
+      return { ...s, runs: a.runs, model: deriveTimeline(a.runs, flat(s.chunks), a.now) }
     case 'append': {
       if (!s.runs || !s.model || a.events.length === 0) return s
-      const events = s.events.concat(a.events)
-      let model = s.model
-      if (a.events.length > FOLD_LIMIT) model = deriveTimeline(s.runs, events, a.now)
+      const chunks = s.chunks.concat([a.events])
+      let model: TimelineModel
+      if (a.events.length > FOLD_LIMIT) model = deriveTimeline(s.runs, flat(chunks), a.now)
       else {
-        for (const e of a.events) model = applyEvent(model, e, a.now)
-        if (model.needsRebuild) model = deriveTimeline(s.runs, events, a.now)
+        model = applyEvents(s.model, a.events, a.now)
+        if (model.needsRebuild) model = deriveTimeline(s.runs, flat(chunks), a.now)
       }
-      return { ...s, events, model }
+      return { ...s, chunks, count: s.count + a.events.length, model }
     }
-    case 'tick':
-      return s.model ? { ...s, model: withNow(s.model, a.now) } : s
+    case 'tick': {
+      if (!s.model) return s
+      const model = refreshNow(s.model, a.now)
+      return model === s.model ? s : { ...s, model }
+    }
     case 'reset':
-      return { ...s, events: [], model: s.runs ? deriveTimeline(s.runs, [], a.now) : null }
+      return { ...s, chunks: [], count: 0, model: s.runs ? deriveTimeline(s.runs, [], a.now) : null }
   }
 }
 
 const isEventsKey = (key: readonly unknown[], sid: string) => key[0] === 'session' && key[1] === sid && key[2] === 'events'
+/** A cursor the server will not accept again: only then is a full reload warranted. */
+const isBadCursor = (e: unknown) => e instanceof ApiError && (e.status === 400 || e.status === 410)
 
 /**
  * Loads the session and all its events (pages of 1000 following the cursor), derives the model into a reducer and
  * keeps it live: SSE events land in the query cache (see `api/stream.ts`), and this hook picks them up from the
- * cache into a buffer that is flushed once per animation frame (design 4.7).
+ * cache into a buffer that is flushed once per animation frame (design 4.7). Event pages are fetched with
+ * `gcTime: Infinity`: they have no observer, and the stream only appends to pages that are still cached.
  */
 export function useTimelineModel(sessionId: string) {
   const qc = useQueryClient()
   const session = useSession(sessionId)
-  const [now, setNow] = useState(() => Date.now())
-  const [state, dispatch] = useReducer(timelineReducer, { runs: null, events: [], model: null })
+  const [initialNow] = useState(() => Date.now())
+  const [state, dispatch] = useReducer(timelineReducer, { runs: null, chunks: [], count: 0, model: null })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<unknown>(null)
 
   // Runs changed (first load, or a refetch after an unknown run appeared): re-derive.
   const runs = session.data?.runs
-  if (runs && state.runs !== runs) dispatch({ type: 'runs', runs, now })
+  if (runs && state.runs !== runs) dispatch({ type: 'runs', runs, now: state.model?.now ?? initialNow })
   const ready = state.runs !== null
 
   const seen = useRef(new Set<string>())
@@ -113,6 +122,7 @@ export function useTimelineModel(sessionId: string) {
           queryKey: [...qk.sessionEvents(sessionId), after],
           queryFn: ({ signal }) => endpoints.listSessionEvents(sessionId, { after, limit: 1000 }, { signal }),
           staleTime: 0,
+          gcTime: Infinity,
         })
         if (token.cancelled) return
         lastAfter.current = after
@@ -139,22 +149,37 @@ export function useTimelineModel(sessionId: string) {
   useEffect(() => {
     if (!ready) return
     let catching = false
+    let timer: ReturnType<typeof setTimeout> | undefined
     const token = { cancelled: false }
+    const catchUp = async () => {
+      // Transient errors retry with the same cursor; only a rejected cursor reloads everything.
+      for (let attempt = 0; !token.cancelled; attempt++) {
+        try {
+          await load(lastAfter.current, token)
+          return
+        } catch (e) {
+          if (token.cancelled) return
+          if (isBadCursor(e)) {
+            seen.current.clear()
+            buffer.current = []
+            lastAfter.current = null
+            dispatch({ type: 'reset', now: Date.now() })
+            await load(null, token)
+            return
+          }
+          if (attempt >= 3) throw e
+          // Cleanup clears `timer`, so a cancelled retry simply never resumes.
+          await new Promise<void>((resolve) => (timer = setTimeout(resolve, 1000 * 2 ** attempt)))
+        }
+      }
+    }
     const unsubscribe = qc.getQueryCache().subscribe((ev) => {
       if (ev.type !== 'updated' || !isEventsKey(ev.query.queryKey, sessionId)) return
       if (ev.action.type === 'invalidate') {
         if (catching) return
         catching = true
-        setTimeout(() => {
-          load(lastAfter.current, token)
-            .catch(() => {
-              // The cursor was rejected: full reload.
-              seen.current.clear()
-              buffer.current = []
-              dispatch({ type: 'reset', now: Date.now() })
-              lastAfter.current = null
-              return load(null, token)
-            })
+        timer = setTimeout(() => {
+          catchUp()
             .catch((e) => !token.cancelled && setError(e))
             .finally(() => (catching = false))
         }, 0)
@@ -165,6 +190,7 @@ export function useTimelineModel(sessionId: string) {
     })
     return () => {
       token.cancelled = true
+      clearTimeout(timer)
       unsubscribe()
     }
   }, [ready, qc, sessionId, ingest, load])
@@ -175,19 +201,16 @@ export function useTimelineModel(sessionId: string) {
       if (!f) return
       if (f.kind === 'raf') cancelAnimationFrame(f.id)
       else clearTimeout(f.id)
+      frame.current = null
     },
     [],
   )
 
-  // Open segments and the axis advance once a second.
+  // Open segments and the axis advance once a second (the reducer ignores ticks that change nothing).
   const active = state.model?.active ?? false
   useEffect(() => {
     if (!active) return
-    const id = setInterval(() => {
-      const t = Date.now()
-      setNow(t)
-      dispatch({ type: 'tick', now: t })
-    }, 1000)
+    const id = setInterval(() => dispatch({ type: 'tick', now: Date.now() }), 1000)
     return () => clearInterval(id)
   }, [active])
 
@@ -201,5 +224,11 @@ export function useTimelineModel(sessionId: string) {
     void qc.invalidateQueries({ queryKey: qk.session(sessionId) })
   }, [missing, qc, sessionId])
 
-  return { model: state.model, session, loadedEvents: state.events.length, loading, error }
+  // Inconsistent `state_changed.from` values: dev console only (design 4.2).
+  const warnings = state.model?.warnings ?? 0
+  useEffect(() => {
+    if (import.meta.env.DEV && warnings > 0) console.debug(`[timeline] ${warnings} state_changed events disagreed with the tracked state`)
+  }, [warnings])
+
+  return { model: state.model, session, loadedEvents: state.count, loading, error }
 }

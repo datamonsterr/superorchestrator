@@ -26,20 +26,36 @@ export function PlotTooltip({ containerRef, model }: { containerRef: RefObject<H
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
-    const move = (e: PointerEvent) => {
-      if (e.buttons !== 0) return hideTip()
-      const target = (e.target as Element | null)?.closest?.('[data-tip]')
-      const lines = target ? describeTip(modelRef.current, target) : null
+    // At most one update per animation frame, from the latest pointer position.
+    let frame = 0
+    let last: { target: Element | null; x: number; y: number; buttons: number } | null = null
+    const run = () => {
+      frame = 0
+      if (!last) return
+      const { target, x, y, buttons } = last
+      if (buttons !== 0) return hideTip()
+      const hit = target?.closest?.('[data-tip]')
+      const lines = hit ? describeTip(modelRef.current, hit) : null
       if (!lines) return hideTip()
       const box = el.getBoundingClientRect()
-      show({ x: e.clientX - box.left, y: e.clientY - box.top, lines })
+      show({ x: x - box.left, y: y - box.top, lines })
     }
-    const hide = () => hideTip()
+    const move = (e: PointerEvent) => {
+      last = { target: e.target as Element | null, x: e.clientX, y: e.clientY, buttons: e.buttons }
+      if (!frame) frame = requestAnimationFrame(run)
+    }
+    const hide = () => {
+      last = null
+      if (frame) cancelAnimationFrame(frame)
+      frame = 0
+      hideTip()
+    }
     el.addEventListener('pointermove', move)
     el.addEventListener('pointerleave', hide)
     el.addEventListener('pointerdown', hide)
     el.addEventListener('wheel', hide, { passive: true })
     return () => {
+      if (frame) cancelAnimationFrame(frame)
       el.removeEventListener('pointermove', move)
       el.removeEventListener('pointerleave', hide)
       el.removeEventListener('pointerdown', hide)

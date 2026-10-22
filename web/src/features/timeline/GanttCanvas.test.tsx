@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useState } from 'react'
 import { describe, expect, it, vi } from 'vitest'
@@ -37,9 +37,24 @@ describe('GanttCanvas', () => {
     expect(within(screen.getByTestId('label-run-1')).queryByText('└')).toBeNull()
   })
 
-  it('exposes the plot as an application with an accessible name', () => {
+  it('exposes the plot as a named group with key help, and keeps the table and status outside it', () => {
     setup()
-    expect(screen.getByRole('application', { name: /Session timeline/ })).toBeInTheDocument()
+    const group = screen.getByRole('group', { name: 'Session timeline' })
+    expect(screen.queryByRole('application')).toBeNull()
+    const help = document.getElementById(group.getAttribute('aria-describedby')!)!
+    expect(help).toHaveTextContent(/arrow keys pan/)
+    expect(group.contains(screen.getByTestId('timeline-summary'))).toBe(false)
+    expect(group.contains(screen.getByTestId('gantt-announce'))).toBe(false)
+  })
+
+  it('has one tab stop in the run list (roving tabindex) and position info on every lane', async () => {
+    setup()
+    const items = within(screen.getByRole('list', { name: 'Runs' })).getAllByRole('listitem')
+    expect(items.filter((li) => li.getAttribute('tabindex') === '0')).toHaveLength(1)
+    expect(items.map((li) => [li.getAttribute('aria-posinset'), li.getAttribute('aria-setsize')])).toEqual([['1', '3'], ['2', '3'], ['3', '3']])
+    act(() => screen.getByTestId('label-run-2').focus())
+    expect(screen.getByTestId('label-run-2')).toHaveAttribute('tabindex', '0')
+    expect(screen.getByTestId('label-orchestrator')).toHaveAttribute('tabindex', '-1')
   })
 
   it('calls onSelect when a lane label is clicked', async () => {
@@ -93,7 +108,7 @@ describe('GanttCanvas', () => {
 
   it('zooms with + and - and fits with 0', async () => {
     const { onViewportChange, viewport } = setup()
-    screen.getByRole('application').focus()
+    screen.getByRole('group', { name: 'Session timeline' }).focus()
     await userEvent.keyboard('+')
     expect(span(onViewportChange.mock.calls[0][0] as Viewport)).toBeLessThan(span(viewport))
     await userEvent.keyboard('-')
@@ -104,7 +119,7 @@ describe('GanttCanvas', () => {
 
   it('pans with the arrow keys on the plot and zooms with ctrl+wheel', async () => {
     const { onViewportChange, viewport } = setup()
-    screen.getByRole('application').focus()
+    screen.getByRole('group', { name: 'Session timeline' }).focus()
     await userEvent.keyboard('{ArrowRight}')
     const panned = onViewportChange.mock.calls[0][0] as Viewport
     expect(panned.t0).toBeGreaterThan(viewport.t0)
@@ -116,11 +131,43 @@ describe('GanttCanvas', () => {
   it('pans by dragging the plot', () => {
     const { onViewportChange, viewport } = setup()
     const plot = screen.getByTestId('gantt-plot')
+    const capture = vi.fn()
+    plot.setPointerCapture = capture
     fireEvent.pointerDown(plot, { button: 0, clientX: 400, pointerId: 1 })
-    fireEvent.pointerMove(window, { clientX: 300, pointerId: 1 })
-    fireEvent.pointerUp(window, { pointerId: 1 })
+    fireEvent.pointerMove(plot, { clientX: 402, pointerId: 1 })
+    expect(onViewportChange).not.toHaveBeenCalled() // below the 4 px threshold
+    expect(capture).not.toHaveBeenCalled()
+    fireEvent.pointerMove(plot, { clientX: 300, pointerId: 1 })
+    expect(capture).toHaveBeenCalledWith(1)
+    fireEvent.pointerUp(plot, { pointerId: 1 })
     const v = onViewportChange.mock.calls.at(-1)![0] as Viewport
     expect(v.t0).toBeGreaterThan(viewport.t0)
+  })
+
+  it.each(['pointerCancel', 'pointerUp', 'lostPointerCapture'] as const)('ends the drag on %s and swallows the click it would end with', (ending) => {
+    const { onViewportChange, onSelect } = setup()
+    const plot = screen.getByTestId('gantt-plot')
+    fireEvent.pointerDown(plot, { button: 0, clientX: 400, pointerId: 1 })
+    fireEvent.pointerMove(plot, { clientX: 300, pointerId: 1 })
+    const calls = onViewportChange.mock.calls.length
+    fireEvent[ending](plot, { pointerId: 1 })
+    fireEvent.pointerMove(plot, { clientX: 200, pointerId: 1 }) // no button down any more
+    expect(onViewportChange.mock.calls.length).toBe(calls)
+    fireEvent.click(screen.getByTestId('seg-run-1-0')) // the click that ends a drag is ignored
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('a minimap drag also ends on pointercancel', () => {
+    const { onViewportChange } = setup()
+    const map = screen.getByTestId('minimap')
+    map.getBoundingClientRect = () => ({ left: 0, top: 0, width: 952, height: 36, right: 952, bottom: 36, x: 0, y: 0, toJSON() {} })
+    fireEvent.pointerDown(map, { button: 0, clientX: 100, pointerId: 2 })
+    fireEvent.pointerMove(map, { clientX: 200, pointerId: 2 })
+    const calls = onViewportChange.mock.calls.length
+    expect(calls).toBeGreaterThan(0)
+    fireEvent.pointerCancel(map, { pointerId: 2 })
+    fireEvent.pointerMove(map, { clientX: 300, pointerId: 2 })
+    expect(onViewportChange.mock.calls.length).toBe(calls)
   })
 
   it('shows a tooltip with state, time range and account for a hovered bar', async () => {
@@ -239,7 +286,7 @@ describe('GanttCanvas with the large fixture', () => {
     }
     render(<Harness />)
     const before = Number(screen.getByTestId('span').textContent)
-    screen.getByRole('application').focus()
+    screen.getByRole('group', { name: 'Session timeline' }).focus()
     await userEvent.keyboard('{+}')
     expect(Number(screen.getByTestId('span').textContent)).toBeLessThan(before)
   })

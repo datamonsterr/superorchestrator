@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowLayer } from './ArrowLayer'
 import { PatternDefs } from './glyphs'
@@ -51,7 +51,6 @@ function useWidth(): [(el: HTMLElement | null) => void, number] {
  */
 export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, onSelect, className }: GanttCanvasProps) {
   const [plotRef, width] = useWidth()
-  const rootRef = useRef<HTMLDivElement>(null)
   const plotElRef = useRef<HTMLDivElement | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const setPlot = useCallback(
@@ -65,6 +64,8 @@ export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, 
   const [hoverArrow, setHoverArrow] = useState<Arrow | null>(null)
   const [active, setActive] = useState<{ lane: string; i: number } | null>(null)
   const [announce, setAnnounce] = useState('')
+  const [tabLane, setTabLane] = useState<string | null>(null)
+  const helpId = useId()
 
   const lanes = model.lanes
   const virtualise = lanes.length > VIRTUALISE_ABOVE
@@ -103,30 +104,35 @@ export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, 
     return () => el.removeEventListener('wheel', onWheel)
   }, [])
 
-  // Drag to pan. A drag suppresses the click that ends it.
+  // Drag to pan. Pointer capture starts once the pointer has moved past a small threshold, so a plain click still
+  // reaches the bar under it. A drag suppresses the click that ends it.
   const suppressClick = useRef(false)
+  const suppressTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const drag = useRef<{ x0: number; vp0: Viewport; moved: boolean } | null>(null)
+  useEffect(() => () => clearTimeout(suppressTimer.current), [])
   function onPointerDown(e: React.PointerEvent) {
     if (e.button !== 0) return
-    const x0 = e.clientX
-    const vp0 = viewport
-    let moved = false
-    const move = (ev: PointerEvent) => {
-      const dx = ev.clientX - x0
-      if (!moved && Math.abs(dx) < 4) return
-      moved = true
-      const { width: w, bounds: b, onViewportChange: change } = latest.current
-      change(panBy(vp0, -(dx / w) * span(vp0), b))
+    drag.current = { x0: e.clientX, vp0: viewport, moved: false }
+  }
+  function onPointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    const d = drag.current
+    if (!d) return
+    const dx = e.clientX - d.x0
+    if (!d.moved) {
+      if (Math.abs(dx) < 4) return
+      d.moved = true
+      e.currentTarget.setPointerCapture?.(e.pointerId)
     }
-    const up = () => {
-      window.removeEventListener('pointermove', move)
-      window.removeEventListener('pointerup', up)
-      if (moved) {
-        suppressClick.current = true
-        setTimeout(() => (suppressClick.current = false), 0)
-      }
+    onViewportChange(panBy(d.vp0, -(dx / width) * span(d.vp0), bounds))
+  }
+  const endDrag = () => {
+    const d = drag.current
+    drag.current = null
+    if (d?.moved) {
+      suppressClick.current = true
+      clearTimeout(suppressTimer.current)
+      suppressTimer.current = setTimeout(() => (suppressClick.current = false), 0)
     }
-    window.addEventListener('pointermove', move)
-    window.addEventListener('pointerup', up)
   }
   function onPlotClick(e: React.MouseEvent) {
     if (suppressClick.current) return
@@ -189,23 +195,25 @@ export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, 
     }
   }
 
-  const laneY = useMemo(() => {
-    const m = new Map<string, number>()
-    for (const i of rendered) m.set(lanes[i].runId, i * LANE_H)
-    return m
-    // `rendered` is derived from `lanes` and the virtualizer window
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lanes, rendered.join(',')])
+  const laneY = new Map<string, number>()
+  for (const i of rendered) laneY.set(lanes[i].runId, i * LANE_H)
+
+  const stopId = rendered.some((i) => lanes[i].runId === tabLane)
+    ? tabLane
+    : rendered.some((i) => lanes[i].runId === selectedRunId)
+      ? selectedRunId
+      : lanes[rendered[0]]?.runId
 
   const highlighted = useMemo(() => new Set(hoverArrow ? [hoverArrow.from, hoverArrow.to] : []), [hoverArrow])
   const ticks = useMemo(() => axisTicks(viewport.t0, viewport.t1, Math.max(3, Math.min(12, Math.floor(width / 70)))), [viewport.t0, viewport.t1, width])
   const nowX = model.active ? timeToX(model.now, viewport, width) : null
 
   return (
+    <>
     <div
-      ref={rootRef}
-      role="application"
-      aria-label="Session timeline. Use plus and minus to zoom, arrow keys to pan, and tab to move between runs."
+      role="group"
+      aria-label="Session timeline"
+      aria-describedby={helpId}
       tabIndex={0}
       onKeyDown={onRootKeyDown}
       className={cn('flex min-w-0 flex-col overflow-hidden rounded-md border bg-background outline-none focus-visible:ring-2 focus-visible:ring-ring', className)}
@@ -214,6 +222,10 @@ export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, 
       <style href="so-gantt-state-colors" precedence="default">
         {STATE_CSS}
       </style>
+      <p id={helpId} className="sr-only">
+        Plus and minus zoom, zero fits the whole session, arrow keys pan, tab moves to the run list. In the run list, up
+        and down move between runs, left and right move between segments, and Enter opens the run.
+      </p>
       <svg width={0} height={0} className="absolute" aria-hidden focusable="false">
         <PatternDefs />
       </svg>
@@ -236,15 +248,34 @@ export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, 
             onKeyDown={onLaneKeyDown}
             onFocus={(e) => {
               const id = (e.target as HTMLElement).closest('li[data-lane]')?.getAttribute('data-lane')
-              if (id && active && active.lane !== id) setActive(null)
+              if (!id) return
+              setTabLane(id)
+              if (active && active.lane !== id) setActive(null)
             }}
           >
             {rendered.map((i) => (
-              <LaneLabel key={lanes[i].runId} lane={lanes[i]} y={i * LANE_H} selected={lanes[i].runId === selectedRunId} onSelect={onSelect} />
+              <LaneLabel
+                key={lanes[i].runId}
+                lane={lanes[i]}
+                y={i * LANE_H}
+                selected={lanes[i].runId === selectedRunId}
+                onSelect={onSelect}
+                tabStop={lanes[i].runId === stopId}
+                position={i + 1}
+                setSize={lanes.length}
+              />
             ))}
           </ul>
 
-          <div ref={setPlot} className="relative min-w-0 flex-1 touch-pan-y select-none" onPointerDown={onPointerDown} onClick={onPlotClick} data-testid="gantt-plot">
+          <div
+            ref={setPlot}
+            className="relative min-w-0 flex-1 touch-pan-y select-none"
+            onPointerDown={onPointerDown}
+            onPointerMove={onPointerMove}
+            onPointerUp={endDrag}
+            onPointerCancel={endDrag}
+            onLostPointerCapture={endDrag}
+            onClick={onPlotClick} data-testid="gantt-plot">
             <svg width={width} height={totalH} className="block" role="presentation" focusable="false">
               {ticks.map((t) => (
                 <line key={t.t} x1={timeToX(t.t, viewport, width)} x2={timeToX(t.t, viewport, width)} y1={0} y2={totalH} stroke="var(--border)" strokeOpacity={t.major ? 1 : 0.5} />
@@ -282,11 +313,11 @@ export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, 
         </div>
       </div>
 
+    </div>
       <div aria-live="polite" role="status" className="sr-only" data-testid="gantt-announce">
         {announce}
       </div>
       <SummaryTable model={model} />
-    </div>
+    </>
   )
 }
-

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Event, EventType, RunViewPublic } from '@/api/types'
 import { makeLargeSession } from '@/test/fixtures/large'
-import { applyEvent } from './applyEvent'
+import { applyEvent, applyEvents } from './applyEvent'
 import { deriveTimeline } from './derive'
 import { ORCHESTRATOR_LANE, type RunLane, type TimelineModel } from './model'
 
@@ -233,6 +233,43 @@ describe('applyEvent', () => {
     const later = applyEvent(m, ev('assistant_message', 'a', 60), NOW + 7000)
     expect(lane(later, 'a').segments.at(-1)!.end).toBe(NOW + 7000)
     expect(later.tMax).toBe(NOW + 7000)
+  })
+})
+
+describe('applyEvents (batch)', () => {
+  it('equals folding applyEvent and deriveTimeline, and clones each touched lane once', () => {
+    const { session, events } = makeLargeSession({ events: 2000, runs: 10, seed: 5 })
+    const now = Date.parse(session.ended_at!) + 1000
+    const base = deriveTimeline(session.runs, events.slice(0, 1500), now)
+    const batch = events.slice(1500)
+    const batched = applyEvents(base, batch, now)
+    let folded = base
+    for (const e of batch) folded = applyEvent(folded, e, now)
+    expect(batched).toEqual(folded)
+    expect(batched).toEqual(deriveTimeline(session.runs, events, now))
+    // lanes without events in the batch keep their identity
+    const touched = new Set(batch.map((e) => e.run_id ?? ORCHESTRATOR_LANE))
+    for (const l of base.lanes) if (!touched.has(l.runId) && !l.cur) expect(batched.lanes[batched.index[l.runId]]).toBe(l)
+  })
+  it('flags an out-of-order event inside a batch', () => {
+    const m = deriveTimeline([run('a')], [ev('run_queued', 'a', 10)], NOW)
+    const out = applyEvents(m, [ev('nudge_sent', 'a', 12), ev('nudge_sent', 'a', 1, {}, 'aaa')], NOW)
+    expect(out.needsRebuild).toBe(true)
+  })
+})
+
+describe('terminal run view without a terminal event', () => {
+  it('closes the open segment at finished_at once events up to then are applied', () => {
+    const r = run('a', { state: 'failed', finished_at: iso(30) })
+    const events = [ev('run_started', 'a', 0), ev('state_changed', 'a', 5, { from: 'starting', to: 'running' }), ev('tool_call_started', 'a', 31, { name: 'x' })]
+    const m = deriveTimeline([r], events, NOW)
+    const l = lane(m, 'a')
+    expect(l.terminal).toBe(true)
+    expect(segs(l).map((x) => x[0])).toEqual(['starting', 'running', 'failed'])
+    expect(segs(l)[1]).toEqual(['running', 5, 30, false])
+    expect(m.active).toBe(false)
+    // Before the finish time is reached by the events, the lane stays open.
+    expect(lane(deriveTimeline([r], events.slice(0, 2), NOW), 'a').terminal).toBe(false)
   })
 })
 

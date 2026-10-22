@@ -10,10 +10,10 @@ import { cn } from '@/lib/utils'
 import { useTranscriptLines } from './hooks'
 
 const ROLE_STYLE: Record<TranscriptLine['role'], string> = {
-  user: 'border-l-blue-500 bg-blue-500/5',
-  assistant: 'border-l-emerald-500 bg-emerald-500/5',
-  tool: 'border-l-amber-500 bg-amber-500/5',
-  system: 'border-l-muted-foreground bg-muted/40',
+  user: 'border-l-primary bg-primary/5',
+  assistant: 'border-l-foreground/30',
+  tool: 'border-l-muted-foreground bg-muted/40',
+  system: 'border-l-border bg-muted/20 text-muted-foreground',
 }
 
 function Line({ line }: { line: TranscriptLine }) {
@@ -65,7 +65,7 @@ export function TranscriptTab({ runId, active }: { runId: string; active: boolea
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
       <Input type="search" placeholder="Search loaded lines" aria-label="Search transcript" value={query} onChange={(e) => setQuery(e.target.value)} />
-      <p className="text-xs text-muted-foreground" role="status">
+      <p className="text-xs text-muted-foreground">
         {query ? `${rows.length} of ${t.lines.length} lines match` : `${t.lines.length} lines`}
         {t.next !== null && !t.error ? ' (loading more)' : ''}
       </p>
@@ -73,7 +73,7 @@ export function TranscriptTab({ runId, active }: { runId: string; active: boolea
       <div
         ref={scrollRef}
         className="min-h-0 flex-1 overflow-auto rounded-md border"
-        role="log"
+        role="region"
         aria-label="Transcript"
         tabIndex={0}
         onScroll={(e) => {

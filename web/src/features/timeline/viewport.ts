@@ -132,6 +132,18 @@ export function clusterTicks(ticks: readonly Tick[], v: Viewport, width: number,
  */
 export function visibleRange<T>(arr: readonly T[], t0: number, t1: number, start: (i: T) => number): [number, number] {
   const from = Math.max(0, lowerBound(arr, t0, start) - 1)
-  const to = lowerBound(arr, t1 + Number.EPSILON, start)
+  const to = upperBound(arr, t1, start) // inclusive: an item starting exactly at t1 is visible
   return [from, Math.max(from, to)]
+}
+
+/** First index in sorted `arr` whose `key(item) > target`. */
+export function upperBound<T>(arr: readonly T[], target: number, key: (item: T) => number): number {
+  let lo = 0
+  let hi = arr.length
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1
+    if (key(arr[mid]) <= target) lo = mid + 1
+    else hi = mid
+  }
+  return lo
 }

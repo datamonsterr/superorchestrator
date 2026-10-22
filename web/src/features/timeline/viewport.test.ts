@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Tick } from './model'
 import {
   clampViewport, clusterTicks, fitViewport, lowerBound, MIN_SPAN_MS, panBy, sliderToSpan, span, spanToSlider,
-  timeToX, visibleSlice, withSpan, xToTime, zoomAt,
+  timeToX, visibleRange, visibleSlice, withSpan, xToTime, zoomAt,
 } from './viewport'
 
 const B = { tMin: 0, tMax: 600_000 } // 10 minutes
@@ -72,6 +72,15 @@ describe('culling', () => {
     expect(out.map((x) => x.s)).toEqual([190, 200, 210, 220, 230])
     expect(visibleSlice(long, 200, 230, (x) => x.s, (x) => x.e)[0]).toEqual({ s: 150, e: 500 })
     expect(visibleSlice(segs, 5000, 6000, (x) => x.s, (x) => x.e)).toEqual([])
+  })
+})
+
+describe('visibleRange', () => {
+  it('includes an item that starts exactly at t1', () => {
+    const items = [{ s: 0 }, { s: 10 }, { s: 20 }, { s: 30 }]
+    const [from, to] = visibleRange(items, 10, 20, (x) => x.s)
+    expect(items.slice(from, to).map((x) => x.s)).toEqual([0, 10, 20])
+    expect(visibleRange([], 0, 1, (x: { s: number }) => x.s)).toEqual([0, 0])
   })
 })
 

@@ -1,7 +1,7 @@
-import type { Event, EventType, RunState } from '@/api/types'
+import type { Event, EventType } from '@/api/types'
+import { asString, isTerminalState } from '../model'
 
-export const TERMINAL: ReadonlySet<RunState> = new Set<RunState>(['succeeded', 'failed', 'cancelled'])
-export const isTerminal = (s: RunState) => TERMINAL.has(s)
+export const isTerminal = isTerminalState
 
 /** Event type groups for the Events tab filter (design 4.9). */
 export type EventGroup = 'lifecycle' | 'activity' | 'messages' | 'stalls'
@@ -24,7 +24,7 @@ const GROUP_OF: Record<EventType, EventGroup> = {
 export const groupOf = (t: EventType): EventGroup => GROUP_OF[t]
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' ? (v as Record<string, unknown>) : {})
-const str = (v: unknown) => (typeof v === 'string' ? v : undefined)
+const str = asString
 
 /** One-line summary of an event for the list. */
 export function summarize(e: Event): string {

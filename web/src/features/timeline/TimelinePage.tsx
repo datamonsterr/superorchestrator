@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowLeft, Maximize, Minus, Plus, Radio } from 'lucide-react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { EmptyState } from '@/components/common/EmptyState'
@@ -25,7 +25,7 @@ export interface TimelinePageProps {
 const RunPanel = lazy(() => import('./run-panel/RunPanel').then((m) => ({ default: m.RunPanel })))
 const defaultRenderRunPanel = (runId: string, onClose: () => void) => (
   <Suspense fallback={null}>
-    <RunPanel key={runId} runId={runId} onClose={onClose} />
+    <RunPanel runId={runId} onClose={onClose} />
   </Suspense>
 )
 
@@ -50,7 +50,7 @@ export function TimelinePage(props: TimelinePageProps) {
   return <TimelineView key={sessionId} sessionId={sessionId} {...props} />
 }
 
-function TimelineView({ sessionId, renderRunPanel = defaultRenderRunPanel }: TimelinePageProps & { sessionId: string }) {
+function TimelineView({ sessionId, renderRunPanel }: TimelinePageProps & { sessionId: string }) {
   const { runId } = useParams()
   const navigate = useNavigate()
   const reduced = usePrefersReducedMotion()
@@ -66,30 +66,52 @@ function TimelineView({ sessionId, renderRunPanel = defaultRenderRunPanel }: Tim
     zoomRef.current?.querySelector('[role="slider"]')?.setAttribute('aria-label', 'Zoom')
   }, [ready])
 
-  const bounds = useMemo(() => (model ? { tMin: model.tMin, tMax: model.tMax } : null), [model])
-  const viewport = useMemo<Viewport | null>(() => {
-    if (!model || !bounds) return null
+  const tMin = model?.tMin
+  const tMax = model?.tMax
+  const bounds = useMemo(() => (tMin === undefined || tMax === undefined ? null : { tMin, tMax }), [tMin, tMax])
+  let vt0: number | null = null
+  let vt1: number | null = null
+  if (model && bounds) {
     const base = userViewport ?? fitViewport(bounds)
-    return follow && model.active && userViewport ? { t0: model.tMax - span(base), t1: model.tMax } : base
-  }, [model, bounds, userViewport, follow])
-
-  const change = (v: Viewport) => {
-    if (!bounds) return
-    setUserViewport(clampViewport(v, bounds))
-    setFollow(false)
+    const pinned = follow && model.active && userViewport
+    vt0 = pinned ? model.tMax - span(base) : base.t0
+    vt1 = pinned ? model.tMax : base.t1
   }
+  // Stable identity per (t0, t1): memoised children skip renders that do not move the window.
+  const viewport = useMemo<Viewport | null>(() => (vt0 === null || vt1 === null ? null : { t0: vt0, t1: vt1 }), [vt0, vt1])
 
-  const close = () => navigate(`/sessions/${encodeURIComponent(sessionId)}`)
-  const select = (id: string) => {
-    if (id !== ORCHESTRATOR_LANE) navigate(`/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(id)}`)
-  }
-
+  const boundsRef = useRef(bounds)
   useEffect(() => {
-    if (!runId) return
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && navigate(`/sessions/${encodeURIComponent(sessionId)}`)
+    boundsRef.current = bounds
+  })
+  const change = useCallback((v: Viewport) => {
+    if (!boundsRef.current) return
+    setUserViewport(clampViewport(v, boundsRef.current))
+    setFollow(false)
+  }, [])
+
+  const close = useCallback(() => navigate(`/sessions/${encodeURIComponent(sessionId)}`), [navigate, sessionId])
+  const select = useCallback(
+    (id: string) => {
+      if (id !== ORCHESTRATOR_LANE) navigate(`/sessions/${encodeURIComponent(sessionId)}/runs/${encodeURIComponent(id)}`)
+    },
+    [navigate, sessionId],
+  )
+
+  // The default run panel is a Sheet and closes itself on Escape. A custom `renderRunPanel` may not, so for those
+  // Escape closes it, unless it came from inside a nested dialog, list or popper or was already handled.
+  const custom = renderRunPanel !== undefined
+  useEffect(() => {
+    if (!runId || !custom) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      const t = e.target instanceof Element ? e.target : null
+      if (t?.closest('[role="dialog"],[role="alertdialog"],[role="listbox"],[role="menu"],[data-radix-popper-content-wrapper]')) return
+      close()
+    }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [runId, sessionId, navigate])
+  }, [runId, custom, close])
 
   const s = session.data
   const title = s ? `${s.client} ${new Date(s.started_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Session'
@@ -169,8 +191,8 @@ function TimelineView({ sessionId, renderRunPanel = defaultRenderRunPanel }: Tim
           </div>
 
           {loading && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
-              <span>Loading events ({loadedEvents})</span>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status" aria-busy="true">
+              <span>Loading events…</span>
               <Progress value={progress} className="max-w-48" aria-label="Events loaded" />
             </div>
           )}
@@ -183,7 +205,7 @@ function TimelineView({ sessionId, renderRunPanel = defaultRenderRunPanel }: Tim
         </>
       )}
 
-      {runId && renderRunPanel(runId, close)}
+      {runId && (renderRunPanel ?? defaultRenderRunPanel)(runId, close)}
     </div>
   )
 }

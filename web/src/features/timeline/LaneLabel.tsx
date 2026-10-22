@@ -1,4 +1,4 @@
-import { memo, type KeyboardEvent } from 'react'
+import { memo } from 'react'
 import { STATE_STYLES, stateFill } from './colors'
 import { accountAt, laneCurrentState, laneTitle, LANE_H } from './layout'
 import { ORCHESTRATOR_LANE, type RunLane } from './model'
@@ -9,11 +9,14 @@ interface Props {
   y: number
   selected: boolean
   onSelect: (runId: string) => void
-  onKeyDown?: (e: KeyboardEvent<HTMLLIElement>) => void
+  /** Roving tabindex: only one label is a tab stop. */
+  tabStop: boolean
+  position: number
+  setSize: number
 }
 
 /** Sticky-left lane label (HTML): indent by depth, state dot, name, state and account. Collapses to initials below `sm`. */
-export const LaneLabel = memo(function LaneLabel({ lane, y, selected, onSelect, onKeyDown }: Props) {
+export const LaneLabel = memo(function LaneLabel({ lane, y, selected, onSelect, tabStop, position, setSize }: Props) {
   const title = laneTitle(lane)
   const state = laneCurrentState(lane)
   const acct = accountAt(lane, lane.segments[lane.segments.length - 1]?.start ?? 0)
@@ -22,14 +25,15 @@ export const LaneLabel = memo(function LaneLabel({ lane, y, selected, onSelect, 
   return (
     <li
       role="listitem"
-      tabIndex={0}
+      tabIndex={tabStop ? 0 : -1}
+      aria-posinset={position}
+      aria-setsize={setSize}
       data-lane={lane.runId}
       data-testid={`label-${lane.runId}`}
       aria-label={`${title}${sub ? `, ${sub}` : ''}`}
       aria-current={selected ? 'true' : undefined}
       title={`${title}${sub ? ` (${sub})` : ''}`}
       onClick={() => onSelect(lane.runId)}
-      onKeyDown={onKeyDown}
       style={{ position: 'absolute', top: y, left: 0, right: 0, height: LANE_H }}
       className={cn(
         'flex cursor-pointer items-center gap-1.5 border-b px-1.5 outline-none select-none hover:bg-muted/60 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring sm:px-2',

@@ -1,4 +1,4 @@
-/** WCAG 2.x contrast helpers (test use and dev assertions). Inputs are `#rgb` or `#rrggbb`. */
+/** WCAG 2.x contrast helpers: the Gantt contrast test and the per-fill text ink choice. Inputs are `#rgb` or `#rrggbb`. */
 
 export function parseHex(hex: string): [number, number, number] {
   let h = hex.trim().replace(/^#/, '')

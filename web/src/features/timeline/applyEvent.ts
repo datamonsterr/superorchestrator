@@ -1,7 +1,9 @@
 import type { Event, RunState } from '@/api/types'
 import {
+  asString,
   isTerminalState,
   ORCHESTRATOR_LANE,
+  type Arrow,
   type AttemptSegment,
   type RunLane,
   type StateSegment,
@@ -12,7 +14,7 @@ const STATES: ReadonlySet<string> = new Set<RunState>([
   'queued', 'starting', 'running', 'waiting', 'stalled', 'escalated', 'pending_review', 'succeeded', 'failed', 'cancelled',
 ])
 const asState = (v: unknown): RunState | null => (typeof v === 'string' && STATES.has(v) ? (v as RunState) : null)
-const str = (d: Record<string, unknown>, k: string): string | undefined => (typeof d[k] === 'string' ? (d[k] as string) : undefined)
+const str = (d: Record<string, unknown>, k: string): string | undefined => asString(d[k])
 
 /** Compares `(ts, id)` keys. */
 export function compareKeys(a: { ts: number; id: string }, b: { ts: number; id: string }): number {
@@ -194,6 +196,16 @@ export function applyCore(m: TimelineModel, l: RunLane, ev: Event, ms: number) {
   }
 }
 
+function closeFromRunView(l: RunLane, state: RunState, ft: number): RunLane {
+  const c = cloneLane(l)
+  closeCur(c, ft)
+  c.segments.push({ kind: 'state', runId: c.runId, state, start: ft, end: ft, open: false })
+  const att = openAttempt(c)
+  if (att) setLastAttempt(c, { ...att, end: ft, outcome: state === 'succeeded' ? 'ok' : 'failed' })
+  c.terminal = true
+  return c
+}
+
 /**
  * Re-ends open segments and attempts at `now` and recomputes `tMin`/`tMax`.
  * Returns the same model when nothing changed; otherwise only lanes with an open
@@ -203,7 +215,17 @@ export function refreshNow(m: TimelineModel, now: number): TimelineModel {
   let lanes: RunLane[] | null = null
   let active = false
   for (let i = 0; i < m.lanes.length; i++) {
-    const l = m.lanes[i]
+    let l = m.lanes[i]
+    // The run view says it finished but no terminal event was seen (partial history): close it there.
+    if (!l.terminal && l.cur && l.run && isTerminalState(l.run.state) && l.run.finished_at) {
+      const ft = Date.parse(l.run.finished_at)
+      // Only once events up to that time were applied, so a fold and a derive agree on every prefix.
+      if (ft >= l.cur.start && m.lastKey !== null && m.lastKey.ts >= ft) {
+        l = closeFromRunView(l, l.run.state, ft)
+        lanes ??= m.lanes.slice()
+        lanes[i] = l
+      }
+    }
     const live = !l.terminal && (l.eventCount > 0 || !l.run || !isTerminalState(l.run.state)) && l.runId !== ORCHESTRATOR_LANE
     if (live) active = true
     const seg = lastSeg(l)
@@ -271,7 +293,41 @@ export function applyEvent(model: TimelineModel, event: Event, now: number): Tim
   return refreshNow(next, now)
 }
 
-/** Advances open segment ends and the axis to `now` without applying events. */
-export const withNow = refreshNow
 
-export type { StateSegment }
+
+/**
+ * Applies a batch in order: each touched lane is cloned once and bounds are refreshed once. Equal to folding
+ * `applyEvent`. Stops at the first event that sorts before `lastKey` (`needsRebuild`).
+ */
+export function applyEvents(model: TimelineModel, events: readonly Event[], now: number): TimelineModel {
+  let lanes: RunLane[] | null = null
+  const owned = new Set<number>()
+  let arrows: Arrow[] | null = null
+  let m: TimelineModel = model
+  for (const event of events) {
+    const ms = eventMs(event)
+    if (!Number.isFinite(ms)) continue
+    const key = { ts: ms, id: event.id }
+    if (m.lastKey && compareKeys(key, m.lastKey) < 0) {
+      m = { ...m, lanes: lanes ?? m.lanes, arrows: arrows ?? m.arrows, needsRebuild: true }
+      return refreshNow(m, now)
+    }
+    const laneId = event.run_id ?? ORCHESTRATOR_LANE
+    const idx = m.index[laneId]
+    m = { ...m, lastKey: key, firstTs: m.firstTs ?? ms }
+    if (idx === undefined) {
+      if (!m.missingRuns.includes(laneId)) m.missingRuns = [...m.missingRuns, laneId]
+      continue
+    }
+    lanes ??= m.lanes.slice()
+    if (!owned.has(idx)) {
+      lanes[idx] = cloneLane(lanes[idx])
+      owned.add(idx)
+    }
+    if (event.type === 'message_sent' && !arrows) arrows = m.arrows.slice()
+    m.lanes = lanes
+    if (arrows) m.arrows = arrows
+    applyCore(m, lanes[idx], event, ms)
+  }
+  return refreshNow(m, now)
+}
