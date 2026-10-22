@@ -400,7 +400,8 @@ mod tests {
             "from": "claude-u", "from_harness": "claude", "reason": "x",
             "error_kind": "quota", "decision": {}
         });
-        m.store()
+        let _ = m
+            .store()
             .set_failover_pending(&run.id, &pending.to_string());
         assert!(!m.reroute_queued(&run).await);
         assert_eq!(

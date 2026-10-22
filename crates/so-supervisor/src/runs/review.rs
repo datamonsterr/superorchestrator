@@ -803,7 +803,8 @@ mod tests {
             .parse()
             .unwrap();
         // The grandchild must go too; poll until it does.
-        let gone = || !Path::new(&format!("/proc/{pid}")).exists();
+        let p = rustix::process::Pid::from_raw(pid as i32).unwrap();
+        let gone = || rustix::process::test_kill_process(p).is_err();
         for _ in 0..200 {
             if gone() {
                 break;

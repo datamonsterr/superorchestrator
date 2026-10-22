@@ -12,7 +12,7 @@ pub mod wrapper;
 pub use env::{Launch, LaunchMode, build_launch, resolve_binary};
 pub use error::{AccountsError, Result};
 pub use host::HostEnv;
-pub use manage::{LoginPlan, add, import, login_command, remove, set_enabled};
+pub use manage::{LoginPlan, SELF_EXE, add, import, login_command, remove, set_enabled};
 pub use scan::{ImportCandidate, scan, scan_new};
 pub use signin::{SignIn, sign_in_state};
 pub use wrapper::{is_managed, remove_wrapper, write_wrapper};

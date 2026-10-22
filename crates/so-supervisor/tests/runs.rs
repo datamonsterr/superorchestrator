@@ -5,6 +5,7 @@ mod common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 use serde_json::json;
@@ -15,6 +16,7 @@ use so_core::proto::{
 use so_core::{EventType, RunState, new_id};
 use so_store::RunRow;
 use so_supervisor::SupervisorClient;
+use tempfile::TempDir;
 
 use common::*;
 
@@ -507,8 +509,26 @@ async fn queued_run_of_a_disabled_account_fails_and_the_queue_keeps_working() {
 }
 
 async fn pid_alive(pidfile: &Path) -> Option<bool> {
-    let pid = std::fs::read_to_string(pidfile).ok()?;
-    Some(Path::new(&format!("/proc/{}", pid.trim())).exists())
+    let pid: i32 = std::fs::read_to_string(pidfile).ok()?.trim().parse().ok()?;
+    // kill(pid, 0) sends nothing; it only reports whether the pid exists (portable).
+    let pid = rustix::process::Pid::from_raw(pid)?;
+    Some(match rustix::process::test_kill_process(pid) {
+        Ok(()) => true,
+        Err(e) => e != rustix::io::Errno::SRCH,
+    })
+}
+
+#[tokio::test]
+async fn pid_alive_sees_own_process_and_not_a_reaped_child() {
+    let dir = TempDir::new().unwrap();
+    let pidfile = dir.path().join("pid");
+    std::fs::write(&pidfile, std::process::id().to_string()).unwrap();
+    assert_eq!(pid_alive(&pidfile).await, Some(true));
+    let mut child = Command::new("true").spawn().unwrap();
+    let child_pid = child.id();
+    child.wait().unwrap();
+    std::fs::write(&pidfile, child_pid.to_string()).unwrap();
+    assert_eq!(pid_alive(&pidfile).await, Some(false));
 }
 
 #[tokio::test]

@@ -5,7 +5,7 @@ use dialoguer::{Input, Select, theme::ColorfulTheme};
 use so_core::Harness;
 
 use crate::cli::{AgentCmd, UiArgs};
-use crate::cmd::{account, agent, init, install, status, ui};
+use crate::cmd::{account, agent, init, install, migrate, status, ui};
 use crate::ctx::Ctx;
 
 const MAIN: [&str; 8] = [
@@ -43,7 +43,9 @@ pub fn run(ctx: &Ctx) -> Result<()> {
                 },
             )?,
             Some(5) => install::install(ctx, false, false)?,
-            Some(6) => eprintln!("`migrate` is not implemented yet"),
+            Some(6) => {
+                migrate::run(ctx, false)?;
+            }
             _ => return Ok(()),
         }
         println!();

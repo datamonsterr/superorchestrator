@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "logicalId": "0d72f17fbf5935970a8dd96ecc8abb883208bf709a16a7371a31c6f937b72854",
+  "source": "https://github.com/actionbook/rust-skills/tree/HEAD/skills/domain-web",
+  "ref": "HEAD",
+  "revision": "5c40d3ad785193231b7d0dbfb8e1eb447e5edd94",
+  "category": "backend/rust",
+  "installedAt": "2026-10-22T08:34:37.174Z"
+}

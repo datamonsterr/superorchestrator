@@ -188,6 +188,7 @@ async fn assert_gets_killed(pid: u32) {
     panic!("process {pid} survived");
 }
 
+#[cfg(target_os = "linux")]
 fn grandchild_pid(rig: &Rig) -> u32 {
     rig.log()
         .iter()

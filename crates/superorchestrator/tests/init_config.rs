@@ -136,17 +136,6 @@ fn config_edit_validates_after_editor() {
 }
 
 #[test]
-fn unimplemented_commands_exit_4_and_name_the_command() {
-    let e = Env::new();
-    // `migrate` is the one command left; it lands on its own branch.
-    e.cmd()
-        .args(["migrate", "--apply"])
-        .assert()
-        .code(4)
-        .stderr(predicate::str::contains("`migrate` is not implemented yet"));
-}
-
-#[test]
 fn usage_errors_exit_2() {
     let e = Env::new();
     e.cmd().arg("no-such-command").assert().code(2);

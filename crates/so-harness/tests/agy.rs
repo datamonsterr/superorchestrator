@@ -470,10 +470,12 @@ async fn shutdown_kills_the_process_group_without_bwrap() {
     until(&mut h, is_exit).await;
     let p = rustix::process::Pid::from_raw(pid).unwrap();
     for _ in 0..80 {
+        // Linux also reports an unreaped zombie as gone; /proc is absent elsewhere,
+        // where kill(0) alone decides.
         let gone = rustix::process::test_kill_process(p).is_err()
             || std::fs::read_to_string(format!("/proc/{pid}/stat"))
                 .map(|s| s.rsplit(") ").next().is_some_and(|r| r.starts_with('Z')))
-                .unwrap_or(true);
+                .unwrap_or(false);
         if gone {
             return;
         }

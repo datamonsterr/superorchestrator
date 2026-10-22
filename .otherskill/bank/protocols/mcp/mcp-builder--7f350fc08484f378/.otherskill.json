@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "logicalId": "7f350fc08484f3787a85b0c970061b10c9d09ee4806dec57c98d9ccde6285a62",
+  "source": "https://github.com/anthropics/skills/tree/HEAD/skills/mcp-builder",
+  "ref": "HEAD",
+  "revision": "dbd4588f9e1033efb41dad4bef2f7947c8993d44",
+  "category": "protocols/mcp",
+  "installedAt": "2026-10-22T08:34:25.396Z"
+}
