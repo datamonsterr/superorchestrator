@@ -26,3 +26,4 @@ Minor review findings deferred to M9 hardening. Each line names the file and the
 - `web/src/api/msw/handlers.ts`: the `/accounts/import` mock does not record the harness, so imported claude accounts get a device-code login in mock mode.
 - `crates/so-supervisor/src/runs/{comm,lifecycle}.rs`: `append_run_turn_prompt` errors are ignored. A failed write drops that message from a later failover; at least log it.
 - `crates/so-supervisor/src/runs/routing.rs`: re-routing a queued first-spawn agent run with tool controls does not filter out harnesses with tool gaps. Only pending failovers are filtered.
+- `crates/so-harness/src/{codex,opencode}.rs`: startup failures carry no process output, so a codex or opencode account that is not signed in or out of quota at launch fails as `other` with no failover. Capture the process's stderr and return `DriverError::Exited`.
