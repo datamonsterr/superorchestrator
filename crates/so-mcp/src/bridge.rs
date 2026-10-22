@@ -3,14 +3,14 @@
 use std::sync::Arc;
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, Implementation,
-    ListToolsResult, PaginatedRequestParams, ProgressNotificationParam, ServerCapabilities,
-    ServerConfig,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ElicitRequestParams,
+    ElicitationAction, ElicitationSchema, Implementation, ListToolsResult, PaginatedRequestParams,
+    ProgressNotificationParam, ServerCapabilities, ServerConfig,
 };
-use rmcp::service::RequestContext;
+use rmcp::service::{ElicitationMode, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{Value, json};
-use so_core::proto::{METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, Notification};
+use so_core::proto::{METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, Notification};
 use so_supervisor::{ClientError, SupervisorClient};
 use tokio::sync::{broadcast, mpsc};
 
@@ -72,6 +72,65 @@ impl McpBridge {
 
     fn spec(&self, name: &str) -> Option<&'static ToolSpec> {
         tool_specs(self.inner.subagent).find(|s| s.name == name)
+    }
+
+    /// `wait_agent`, surfacing questions to the person when the client can elicit input
+    /// (SPEC 9): each question is asked, the answer goes back as a `send_message` of kind
+    /// `answer`, and the wait resumes. Without elicitation, or when the person declines,
+    /// the questions stay in `updates` for the orchestrator to answer.
+    async fn forward_wait(
+        &self,
+        spec: &ToolSpec,
+        mut args: Value,
+        ctx: &RequestContext<RoleServer>,
+    ) -> Result<Value, ClientError> {
+        let started = std::time::Instant::now();
+        let timeout_ms = args.get("timeout_ms").and_then(Value::as_u64);
+        loop {
+            let result = self.forward(spec, args.clone(), ctx).await?;
+            let questions = questions_in(&result);
+            if questions.is_empty()
+                || !ctx
+                    .peer
+                    .supported_elicitation_modes()
+                    .contains(&ElicitationMode::Form)
+            {
+                return Ok(result);
+            }
+            let mut answered = 0;
+            for q in &questions {
+                let Some(text) = elicit(ctx, q).await else {
+                    continue;
+                };
+                let sent = self
+                    .inner
+                    .client
+                    .call::<_, Value>(
+                        METHOD_SEND_MESSAGE,
+                        &json!({"run": q.run, "text": text, "kind": "answer"}),
+                    )
+                    .await;
+                match sent {
+                    Ok(_) => answered += 1,
+                    Err(e) => tracing::warn!(error = %e, "could not send the elicited answer"),
+                }
+            }
+            // Wait again only when nothing but answered questions ended this wait.
+            let only_questions = result["finished"].as_array().is_none_or(Vec::is_empty)
+                && result["updates"].as_array().map_or(0, Vec::len) == questions.len();
+            if answered != questions.len() || !only_questions {
+                return Ok(result);
+            }
+            if let Some(total) = timeout_ms {
+                let left = total.saturating_sub(
+                    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+                );
+                if left == 0 {
+                    return Ok(result);
+                }
+                args["timeout_ms"] = json!(left);
+            }
+        }
     }
 
     /// Forwards one call. Cancelling the MCP request drops the call but does not cancel the
@@ -154,6 +213,72 @@ impl McpBridge {
     }
 }
 
+/// A `question_asked` update of a `wait_agent` result.
+struct Question {
+    run: String,
+    question: String,
+    options: Vec<String>,
+}
+
+fn questions_in(result: &Value) -> Vec<Question> {
+    result["updates"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| e["type"] == "question_asked")
+        .filter_map(|e| {
+            Some(Question {
+                run: e["run_id"].as_str()?.to_string(),
+                question: e["data"]["question"].as_str()?.to_string(),
+                options: e["data"]["options"]
+                    .as_array()
+                    .map(|o| {
+                        o.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            })
+        })
+        .collect()
+}
+
+/// Asks the person through the MCP client; `None` when they decline or it fails.
+async fn elicit(ctx: &RequestContext<RoleServer>, q: &Question) -> Option<String> {
+    let mut answer = json!({"type": "string", "title": "Answer"});
+    if !q.options.is_empty() {
+        answer["enum"] = json!(q.options);
+    }
+    let schema = ElicitationSchema::from_json_schema(
+        json!({
+            "type": "object",
+            "properties": {"answer": answer},
+            "required": ["answer"],
+        })
+        .as_object()?
+        .clone(),
+    )
+    .ok()?;
+    let message = format!(
+        "Run {} asks: {}",
+        q.run.chars().take(8).collect::<String>(),
+        q.question
+    );
+    let r = ctx
+        .peer
+        .create_elicitation(ElicitRequestParams::FormElicitationParams {
+            meta: None,
+            message,
+            requested_schema: schema,
+        })
+        .await
+        .ok()?;
+    if r.action != ElicitationAction::Accept {
+        return None;
+    }
+    r.content?["answer"].as_str().map(String::from)
+}
+
 /// "run <id8>: <type> step=<..> status=<..>" for a supervisor `event` notification;
 /// `None` for other notifications or events of runs outside `runs`.
 fn progress_message(n: &Notification, runs: Option<&[String]>) -> Option<String> {
@@ -226,7 +351,12 @@ impl ServerHandler for McpBridge {
             ));
         };
         let args = request.arguments.map_or_else(|| json!({}), Value::Object);
-        let result = match self.forward(spec, args, &context).await {
+        let forwarded = if spec.name == METHOD_WAIT_AGENT {
+            self.forward_wait(spec, args, &context).await
+        } else {
+            self.forward(spec, args, &context).await
+        };
+        let result = match forwarded {
             Ok(v) => into_result(v),
             Err(e) => tool_error(e.to_string()),
         };
