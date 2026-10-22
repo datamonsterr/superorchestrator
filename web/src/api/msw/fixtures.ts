@@ -37,8 +37,9 @@ export const headroom = (account: string, pool: string, five: number | null, wee
   weekly_remaining_pct: weekly,
   weekly_resets_at: weekly === null ? null : at(60 * 72),
   status: five === null ? 'unknown' : five < 10 ? 'exhausted' : five < 30 ? 'low' : 'ok',
-  source: 'ledger',
-  observed_at: at(0),
+  source: five === null ? 'ledger' : 'probe',
+  // Never observed is null on the wire, not the epoch.
+  observed_at: five === null ? null : at(0),
 })
 
 export const accounts: AccountView[] = [

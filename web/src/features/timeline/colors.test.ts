@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { contrastRatio, readableInk } from '@/lib/contrast'
-import { STATE_CSS, LANE_BG, LEGEND, MARKER_ORDER, MARKER_STYLES, STATE_ORDER, STATE_STYLES, segmentInk, stateVarName } from './colors'
+import { stateCss, LANE_BG, LEGEND, MARKER_ORDER, MARKER_STYLES, STATE_ORDER, STATE_STYLES, segmentInk, stateVarName } from './colors'
 
 describe('state colours', () => {
   for (const theme of ['light', 'dark'] as const) {
@@ -26,14 +26,15 @@ describe('state colours', () => {
   })
 
   it('emits every colour and ink as a CSS variable for both themes', () => {
+    const STATE_CSS = stateCss()
     const [light, dark] = STATE_CSS.split('.dark')
-    expect(light.startsWith(':root{')).toBe(true)
+    expect(light).toContain(':root {')
     for (const s of STATE_ORDER) {
       const v = stateVarName(s)
-      expect(light, v).toContain(`${v}:${STATE_STYLES[s].light};`)
-      expect(dark, v).toContain(`${v}:${STATE_STYLES[s].dark};`)
-      expect(light, v).toContain(`${v}-ink:${segmentInk(s, 'light')};`)
-      expect(dark, v).toContain(`${v}-ink:${segmentInk(s, 'dark')};`)
+      expect(light, v).toContain(`${v}: ${STATE_STYLES[s].light};`)
+      expect(dark, v).toContain(`${v}: ${STATE_STYLES[s].dark};`)
+      expect(light, v).toContain(`${v}-ink: ${segmentInk(s, 'light')};`)
+      expect(dark, v).toContain(`${v}-ink: ${segmentInk(s, 'dark')};`)
     }
     expect(STATE_CSS).toContain('--state-pending-review:')
   })

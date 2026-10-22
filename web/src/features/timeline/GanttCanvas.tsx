@@ -11,7 +11,6 @@ import { TimeAxis } from './TimeAxis'
 import { AXIS_H, describeSegment, LANE_H, VIRTUALISE_ABOVE } from './layout'
 import { type Arrow, type TimelineModel } from './model'
 import { fitViewport, panBy, span, timeToX, xToTime, zoomAt, type Viewport } from './viewport'
-import { STATE_CSS } from './colors'
 import { axisTicks } from '@/lib/time'
 import { cn } from '@/lib/utils'
 
@@ -225,9 +224,6 @@ export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, 
       className={cn('flex min-w-0 flex-col overflow-hidden rounded-md border bg-background outline-none focus-visible:ring-2 focus-visible:ring-ring', className)}
       data-testid="gantt"
     >
-      <style href="so-gantt-state-colors" precedence="default">
-        {STATE_CSS}
-      </style>
       <p id={helpId} className="sr-only">
         Plus and minus zoom, zero fits the whole session, arrow keys pan, tab moves to the run list. In the run list, up
         and down move between runs, left and right move between segments, and Enter opens the run.

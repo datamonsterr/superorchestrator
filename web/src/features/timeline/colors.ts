@@ -4,7 +4,7 @@ import { readableInk } from '@/lib/contrast'
 
 /**
  * Gantt colours (design 4.3). The hex values here are the single source of truth for the contrast test
- * and are emitted as CSS variables by `stateCss()` (injected by `GanttCanvas`). Colour is a pure function of
+ * and are emitted as CSS variables by `stateCss()` (committed as `state-colors.css`). Colour is a pure function of
  * `RunState`; every state also has a pattern or glyph so it is never the only signal.
  */
 export type PatternKind = 'dots' | 'hatch' | 'solid' | 'stripe' | 'cross' | 'dashed' | 'strike'
@@ -77,11 +77,12 @@ export const LEGEND = {
 
 /**
  * The `--state-*` custom properties for `:root` and `.dark` (design 4.3), generated from the table above so the
- * contrast test and the rendered CSS cannot drift. `GanttCanvas` injects it as a hoisted `<style>`.
+ * contrast test and the rendered CSS cannot drift. The result is committed as `state-colors.css` (imported by
+ * `index.css`, so every page that shows a state colour has it, including the legend of an empty timeline); the
+ * test in `colors.test.ts` fails when the file is stale. Regenerate with `UPDATE_STATE_CSS=1 pnpm test colors`.
  */
 export function stateCss(): string {
   const block = (theme: 'light' | 'dark', ink: string) =>
-    STATE_ORDER.map((s) => `${stateVarName(s)}:${STATE_STYLES[s][theme]};${stateVarName(s)}-ink:${segmentInk(s, theme)};`).join('') + `--state-ink:${ink};`
-  return `:root{${block('light', 'rgb(255 255 255 / 0.6)')}}.dark{${block('dark', 'rgb(0 0 0 / 0.45)')}}`
+    STATE_ORDER.map((s) => `  ${stateVarName(s)}: ${STATE_STYLES[s][theme]};\n  ${stateVarName(s)}-ink: ${segmentInk(s, theme)};\n`).join('') + `  --state-ink: ${ink};\n`
+  return `/* Generated from colors.ts (pnpm test colors with UPDATE_STATE_CSS=1). Do not edit by hand. */\n:root {\n${block('light', 'rgb(255 255 255 / 0.6)')}}\n\n.dark {\n${block('dark', 'rgb(0 0 0 / 0.45)')}}\n`
 }
-export const STATE_CSS = stateCss()

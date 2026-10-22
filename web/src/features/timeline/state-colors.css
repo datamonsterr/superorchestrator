@@ -1,0 +1,48 @@
+/* Generated from colors.ts (pnpm test colors with UPDATE_STATE_CSS=1). Do not edit by hand. */
+:root {
+  --state-queued: #64748b;
+  --state-queued-ink: #ffffff;
+  --state-starting: #0284c7;
+  --state-starting-ink: #0a0a0a;
+  --state-running: #16a34a;
+  --state-running-ink: #0a0a0a;
+  --state-waiting: #2563eb;
+  --state-waiting-ink: #ffffff;
+  --state-stalled: #d97706;
+  --state-stalled-ink: #0a0a0a;
+  --state-escalated: #dc2626;
+  --state-escalated-ink: #ffffff;
+  --state-pending-review: #9333ea;
+  --state-pending-review-ink: #ffffff;
+  --state-succeeded: #0f766e;
+  --state-succeeded-ink: #ffffff;
+  --state-failed: #991b1b;
+  --state-failed-ink: #ffffff;
+  --state-cancelled: #52525b;
+  --state-cancelled-ink: #ffffff;
+  --state-ink: rgb(255 255 255 / 0.6);
+}
+
+.dark {
+  --state-queued: #64748b;
+  --state-queued-ink: #ffffff;
+  --state-starting: #0ea5e9;
+  --state-starting-ink: #0a0a0a;
+  --state-running: #22c55e;
+  --state-running-ink: #0a0a0a;
+  --state-waiting: #60a5fa;
+  --state-waiting-ink: #0a0a0a;
+  --state-stalled: #fbbf24;
+  --state-stalled-ink: #0a0a0a;
+  --state-escalated: #f87171;
+  --state-escalated-ink: #0a0a0a;
+  --state-pending-review: #c084fc;
+  --state-pending-review-ink: #0a0a0a;
+  --state-succeeded: #2dd4bf;
+  --state-succeeded-ink: #0a0a0a;
+  --state-failed: #ef4444;
+  --state-failed-ink: #0a0a0a;
+  --state-cancelled: #a1a1aa;
+  --state-cancelled-ink: #0a0a0a;
+  --state-ink: rgb(0 0 0 / 0.45);
+}

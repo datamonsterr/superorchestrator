@@ -43,9 +43,19 @@ tempfile.workspace = true
 serde_json.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 
+[features]
+# Builds `e2e-seed`, the fixture that fills a supervisor for the web UI's real-server browser
+# tests. Never shipped.
+test-support = []
+
 [[bin]]
 name = "superorchestrator"
 path = "src/main.rs"
+
+[[bin]]
+name = "e2e-seed"
+path = "src/bin/e2e-seed.rs"
+required-features = ["test-support"]
 
 # `publish = false` hides this binary from dist; opt it back in for release archives.
 [package.metadata.dist]
