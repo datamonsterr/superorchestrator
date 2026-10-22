@@ -1624,12 +1624,25 @@ async fn a_message_sent_while_the_harness_is_launching_is_handed_over_when_it_is
     let env = Env::new();
     env.simple("claude-a", 2, &ok_script(&[expect("late note")]));
     let h = env.start().await;
-    h.state().runs.set_launch_delay(Duration::from_millis(700));
+    // Hold the run between launch and go-live, so "the prompt is built and sent" is an
+    // observed fact (the harness has read it) rather than a guess about timing.
+    h.state().runs.set_go_live_open(false);
     let c = env.client(&h).await;
     let id = spawn(&c, env.params("claude-a")).await;
-    wait_state(&c, &id, RunState::Starting).await;
+    for _ in 0..400 {
+        let read = env
+            .launches("claude-a")
+            .first()
+            .is_some_and(|l| !l.1.is_empty());
+        if read {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(view(&c, &id).await.state, RunState::Starting);
     // The prompt is already built; the message misses it and waits for the process.
     send(&c, &id, "late note", None).await;
+    h.state().runs.set_go_live_open(true);
     wait_state(&c, &id, RunState::Succeeded).await;
     assert!(
         env.launches("claude-a")[0]
