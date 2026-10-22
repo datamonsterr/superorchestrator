@@ -47,6 +47,20 @@ const fn spec(
     }
 }
 
+/// What a workflow script can call, from `so_workflow::GLOBALS` and `prelude.js`.
+const RUN_WORKFLOW_DESCRIPTION: &str = "Run a JavaScript workflow (a saved one by name, or an inline `script`) whose agent() calls are runs on any harness. Streams progress and returns the script's return value; with wait=false it returns the id at once, then follow it with workflow_status.\n\
+Script API (top-level await and return work; no import; Date.now() and Math.random() are disabled):\n\
+- agent(prompt, opts) -> the run's result; throws if the run fails. opts: harness, account, model, effort, cwd, isolation ('worktree'|'none'), schema (JSON schema for the result), name, maxTurns, timeout, stallMs, agent (custom agent name).\n\
+- parallel([fn | promise, ...]) -> results in order, null for a failed agent. Each fn(ag) gets an ag() that defaults to isolation 'worktree'.\n\
+- pipeline(items, fn) -> fn(item, i) per item concurrently, null for failures; pipeline([stage, ...]) runs stages in order, each given the previous result.\n\
+- phase(name, fn) groups steps in progress output; log(msg) writes a progress line; args is the `args` param.\n\
+Example:\n\
+const [a, b] = await parallel(args.files.map(f => ag => ag('Add tests for ' + f, {harness: 'codex', name: f})));\n\
+return await phase('review', async () => {\n\
+  log('reviewing');\n\
+  return agent('Review ' + JSON.stringify([a, b]), {schema: {type: 'object'}});\n\
+});";
+
 /// The 14 tools every session gets.
 pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     spec(
@@ -72,10 +86,10 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "get_run",
-        "Get a run's state, recent events, final result, usage, worktree and join command.",
+        "Get a run's state, recent events, final result, usage, worktree and join command. With diff=true and a worktree, also what the run changed: diff = {base, branch, stat, patch} (committed and uncommitted changes, patch cut at 64 KiB with truncated=true). Review a run with this instead of reading its files.",
         false,
         true,
-        schema::<RunRef>,
+        schema::<GetRunParams>,
     ),
     spec(
         "send_message",
@@ -100,10 +114,10 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "accept_run",
-        "Accept a run that is waiting at the review gate.",
+        "Accept a run that is waiting at the review gate. With merge=true, also merges the run's branch into the checkout it was started from (fast-forward when possible, else a merge commit) and removes the worktree. The merge is refused, and the run stays at the gate, when that checkout has tracked changes or is on another branch, when the run's worktree has uncommitted changes, or on a conflict (aborted; the error names the files). Without merge, the result gives branch and merge_command for the unmerged work. merge is a no-op for isolation none.",
         false,
         false,
-        schema::<RunRef>,
+        schema::<AcceptParams>,
     ),
     spec(
         "reject_run",
@@ -135,7 +149,7 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "run_workflow",
-        "Run a JavaScript workflow (a saved one by name, or an inline script) whose agent() calls are runs on any harness. Streams progress and returns the result; with wait=false it returns the id at once, then follow it with workflow_status.",
+        RUN_WORKFLOW_DESCRIPTION,
         true,
         false,
         schema::<RunWorkflowParams>,
@@ -172,4 +186,34 @@ pub fn tool_specs(subagent: bool) -> impl Iterator<Item = &'static ToolSpec> {
     ORCHESTRATOR_TOOLS
         .iter()
         .chain(SUBAGENT_TOOLS.iter().filter(move |_| subagent))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_workflow_description_names_every_script_global() {
+        for name in so_workflow::GLOBALS {
+            assert!(
+                RUN_WORKFLOW_DESCRIPTION.contains(&format!("{name}(")) || *name == "args",
+                "{name} is not documented"
+            );
+        }
+        assert!(RUN_WORKFLOW_DESCRIPTION.contains("args"));
+    }
+
+    #[test]
+    fn get_run_and_accept_run_document_their_flags() {
+        let desc = |n: &str| {
+            ORCHESTRATOR_TOOLS
+                .iter()
+                .find(|t| t.name == n)
+                .unwrap()
+                .description
+        };
+        assert!(desc("get_run").contains("diff=true"));
+        assert!(desc("accept_run").contains("merge=true"));
+    }
 }

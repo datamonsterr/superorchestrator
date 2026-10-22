@@ -7,11 +7,12 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use so_core::RunState;
 use so_core::proto::{
-    EmptyParams, INVALID_PARAMS, METHOD_ACCEPT_RUN, METHOD_ASK_PARENT, METHOD_CANCEL_AGENT,
-    METHOD_CANCEL_WORKFLOW, METHOD_FORK_AGENT, METHOD_GET_RUN, METHOD_JOIN_RUN,
-    METHOD_READ_MESSAGES, METHOD_REJECT_RUN, METHOD_REPORT_PROGRESS, METHOD_RUN_WORKFLOW,
-    METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, METHOD_WORKFLOW_STATUS, RpcError,
-    RunRef, SpawnParams, SpawnResult, WaitParams, WaitResult, WorkflowStatusParams,
+    EmptyParams, GetRunParams, INVALID_PARAMS, METHOD_ACCEPT_RUN, METHOD_ASK_PARENT,
+    METHOD_CANCEL_AGENT, METHOD_CANCEL_WORKFLOW, METHOD_FORK_AGENT, METHOD_GET_RUN,
+    METHOD_JOIN_RUN, METHOD_READ_MESSAGES, METHOD_REJECT_RUN, METHOD_REPORT_PROGRESS,
+    METHOD_RUN_WORKFLOW, METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT,
+    METHOD_WORKFLOW_STATUS, RpcError, RunRef, SpawnParams, SpawnResult, WaitParams, WaitResult,
+    WorkflowStatusParams,
 };
 
 use super::view::WaitMode;
@@ -48,9 +49,9 @@ pub(super) fn register(state: &Arc<SupervisorState>) {
     state.router.register(METHOD_GET_RUN, move |_ctx, p| {
         let m = m.clone();
         async move {
-            let r: RunRef = params(p)?;
+            let r: GetRunParams = params(p)?;
             let row = m.resolve_run(&r.run).await?;
-            json(m.run_view(row).await?)
+            json(m.run_view_with(row, r.diff).await?)
         }
     });
     let m = runs.clone();

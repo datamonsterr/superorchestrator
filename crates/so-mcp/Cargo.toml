@@ -24,3 +24,4 @@ tracing.workspace = true
 [dev-dependencies]
 rmcp = { workspace = true, features = ["client", "elicitation"] }
 tempfile.workspace = true
+so-workflow = { path = "../so-workflow" }

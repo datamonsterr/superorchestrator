@@ -63,6 +63,7 @@ You can use the [Claude Code plugin](plugin/README.md) instead of step 4.
 - [Routing and choices](docs/guide/routing.md)
 - [Custom agents](docs/guide/agents.md)
 - [Workflows](docs/guide/workflows.md)
+- [Reviewing and landing runs](docs/guide/review.md)
 - [The web UI](docs/guide/web-ui.md)
 - [Notifications](docs/guide/notifications.md)
 - [Migrating from the old tooling](docs/guide/migrate.md)

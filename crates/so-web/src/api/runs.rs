@@ -7,8 +7,8 @@ use axum::extract::{Path, State};
 use serde::Deserialize;
 use serde_json::Value;
 use so_core::proto::{
-    AckResult, ForkParams, INVALID_REQUEST, MessageView, RejectParams, RouteResult, RpcError,
-    RunRef, SendMessageParams, SpawnResult,
+    AcceptParams, AckResult, ForkParams, INVALID_REQUEST, MessageView, RejectParams, RouteResult,
+    RpcError, SendMessageParams, SpawnResult,
 };
 use so_core::redact::redact;
 use so_core::{Event, EventType};
@@ -311,16 +311,16 @@ pub async fn accept(
     Path(id): Path<String>,
 ) -> ApiResult<Json<AckResult>> {
     let row = st.sup.runs.resolve_run(&id).await?;
-    let r = RunRef {
+    let p = AcceptParams {
         run: row.id.clone(),
+        merge: false,
     };
-    Ok(Json(
-        st.sup
-            .runs
-            .accept_run(&acting(&row), r)
-            .await
-            .map_err(action_error)?,
-    ))
+    st.sup
+        .runs
+        .accept_run(&acting(&row), p)
+        .await
+        .map_err(action_error)?;
+    Ok(Json(AckResult { ok: true }))
 }
 
 pub async fn reject(
