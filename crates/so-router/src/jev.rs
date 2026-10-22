@@ -5,7 +5,7 @@
 //! `usage_5h` context) are sent to the decider. Credentials and tokens are not.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 use so_core::config::{Jev, Policy};
@@ -84,6 +84,8 @@ pub struct Validated {
 pub struct JevDecision {
     pub validated: Validated,
     pub usage: RouteUsage,
+    /// The model that answered: the response's model id, else the requested one.
+    pub model: String,
 }
 
 /// Why the decider did not decide. `reason` carries no secrets.
@@ -93,6 +95,8 @@ pub struct JevFailure {
     pub confidence: Option<f64>,
     pub probabilities: BTreeMap<String, f64>,
     pub usage: RouteUsage,
+    /// The model that gave the rejected answer; `None` when no model answered.
+    pub model: Option<String>,
 }
 
 impl JevFailure {
@@ -182,9 +186,9 @@ fn parse_usage(data: &Value) -> RouteUsage {
     }
 }
 
-pub fn build_payload(cfg: &Jev, req: &JevRequest<'_>) -> Value {
+pub fn build_payload(model: &str, req: &JevRequest<'_>) -> Value {
     json!({
-        "model": cfg.model,
+        "model": model,
         "state": {
             "task_content": req.task,
             "system_instruction": req.system_instruction,
@@ -211,7 +215,9 @@ enum Attempt {
     Done(Value),
     /// Worth one retry after the given pause.
     Transient(String, Duration),
-    Permanent(String),
+    /// Not retried. The flag says the model itself cannot be used (HTTP 400/404 for a
+    /// missing model, or a request that never completed), so the fallback model may try.
+    Permanent(String, bool),
 }
 
 fn retry_after(resp: &reqwest::Response) -> Duration {
@@ -240,10 +246,16 @@ fn endpoint_allowed(endpoint: &str) -> bool {
     }
 }
 
-async fn attempt(http: &reqwest::Client, cfg: &Jev, key: &str, payload: &Value) -> Attempt {
+async fn attempt(
+    http: &reqwest::Client,
+    cfg: &Jev,
+    key: &str,
+    payload: &Value,
+    timeout: Duration,
+) -> Attempt {
     let sent = http
         .post(&cfg.endpoint)
-        .timeout(cfg.timeout.as_duration())
+        .timeout(timeout)
         .bearer_auth(key)
         .json(payload)
         .send()
@@ -256,7 +268,7 @@ async fn attempt(http: &reqwest::Client, cfg: &Jev, key: &str, payload: &Value) 
                 BACKOFF,
             );
         }
-        Err(_) => return Attempt::Permanent("Jev request failed".into()),
+        Err(_) => return Attempt::Permanent("Jev request failed".into(), true),
     };
     let status = resp.status();
     // 408 and 429 say "try again": 429 may carry Retry-After.
@@ -267,23 +279,114 @@ async fn attempt(http: &reqwest::Client, cfg: &Jev, key: &str, payload: &Value) 
         );
     }
     if !status.is_success() {
-        return Attempt::Permanent(format!("Jev request failed (HTTP {})", status.as_u16()));
+        let missing = matches!(status.as_u16(), 400 | 404);
+        return Attempt::Permanent(
+            format!("Jev request failed (HTTP {})", status.as_u16()),
+            missing,
+        );
     }
     match read_capped(resp, MAX_RESPONSE).await {
         Ok(body) => match serde_json::from_slice(&body) {
             Ok(v) => Attempt::Done(v),
-            Err(_) => Attempt::Permanent("Jev returned an invalid response".into()),
+            Err(_) => Attempt::Permanent("Jev returned an invalid response".into(), false),
         },
         Err(e) if e.contains("size limit") => {
-            Attempt::Permanent("Jev response exceeds the size limit".into())
+            Attempt::Permanent("Jev response exceeds the size limit".into(), false)
         }
         Err(_) => Attempt::Transient("Jev response could not be read".into(), BACKOFF),
     }
 }
 
-/// Asks the decider. A transient failure (5xx, timeout, connection) is retried once; auth,
-/// other 4xx and validation failures are permanent. Rejections by validation or the gate keep
-/// the usage the call cost.
+/// Share of `router.jev.timeout` the primary model may use when a fallback is configured; the
+/// rest is left for the fallback, so the whole call stays within the timeout.
+const PRIMARY_SHARE: (u32, u32) = (3, 5);
+
+/// Why one model gave no usable answer.
+enum Failed {
+    /// The model could not be reached or refused the request: the fallback may try.
+    Unusable(JevFailure),
+    /// An answer arrived but validation or the gate rejected it, or the failure is
+    /// permanent and not about the model: the fallback is not asked.
+    Final(JevFailure),
+}
+
+async fn decide_model(
+    http: &reqwest::Client,
+    cfg: &Jev,
+    model: &str,
+    policy: &Policy,
+    key: &str,
+    req: &JevRequest<'_>,
+    deadline: Instant,
+) -> Result<JevDecision, Failed> {
+    let payload = build_payload(model, req);
+    let eligible: BTreeSet<&str> = req.criteria.keys().map(String::as_str).collect();
+    let mut last = String::new();
+    for n in 0..2 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(Failed::Unusable(JevFailure::new(if last.is_empty() {
+                "Jev request timed out".to_string()
+            } else {
+                last
+            })));
+        }
+        match attempt(http, cfg, key, &payload, left).await {
+            Attempt::Done(data) => {
+                let usage = parse_usage(&data);
+                let answered = data
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .filter(|m| !m.is_empty() && m.len() <= 200)
+                    .unwrap_or(model)
+                    .to_string();
+                let validated = validate(&data, &eligible).map_err(|e| {
+                    Failed::Final(JevFailure {
+                        usage: usage.clone(),
+                        model: Some(answered.clone()),
+                        ..JevFailure::new(format!("Jev returned an invalid response ({e})"))
+                    })
+                })?;
+                return match gate(&validated, policy) {
+                    Ok(()) => Ok(JevDecision {
+                        validated,
+                        usage,
+                        model: answered,
+                    }),
+                    Err(e) => Err(Failed::Final(JevFailure {
+                        reason: format!("Jev decision rejected: {e}"),
+                        confidence: Some(validated.confidence),
+                        probabilities: validated.probabilities,
+                        usage,
+                        model: Some(answered),
+                    })),
+                };
+            }
+            Attempt::Permanent(r, unusable) => {
+                let f = JevFailure::new(r);
+                return Err(if unusable {
+                    Failed::Unusable(f)
+                } else {
+                    Failed::Final(f)
+                });
+            }
+            Attempt::Transient(r, wait) => {
+                last = r;
+                if n == 0 {
+                    let pause = wait.min(deadline.saturating_duration_since(Instant::now()));
+                    tokio::time::sleep(pause).await;
+                }
+            }
+        }
+    }
+    Err(Failed::Unusable(JevFailure::new(last)))
+}
+
+/// Asks the decider. A transient failure (5xx, 429, timeout, connection) is retried once.
+/// When the primary model is unusable (transport error, timeout, 429, 5xx, or 400/404 for a
+/// missing model) the configured fallback model is tried; a rejection by validation or the
+/// gate is final and never reaches the fallback. The whole call stays within
+/// `router.jev.timeout`. Rejections keep the usage the call cost.
 pub async fn decide(
     http: &reqwest::Client,
     cfg: &Jev,
@@ -296,37 +399,30 @@ pub async fn decide(
             "Jev endpoint must use https (http is allowed only for loopback)",
         ));
     }
-    let payload = build_payload(cfg, req);
-    let eligible: BTreeSet<&str> = req.criteria.keys().map(String::as_str).collect();
-    let mut last = String::new();
-    for n in 0..2 {
-        match attempt(http, cfg, key, &payload).await {
-            Attempt::Done(data) => {
-                let usage = parse_usage(&data);
-                let validated = validate(&data, &eligible).map_err(|e| JevFailure {
-                    usage: usage.clone(),
-                    ..JevFailure::new(format!("Jev returned an invalid response ({e})"))
-                })?;
-                return match gate(&validated, policy) {
-                    Ok(()) => Ok(JevDecision { validated, usage }),
-                    Err(e) => Err(JevFailure {
-                        reason: format!("Jev decision rejected: {e}"),
-                        confidence: Some(validated.confidence),
-                        probabilities: validated.probabilities,
-                        usage,
-                    }),
-                };
-            }
-            Attempt::Permanent(r) => return Err(JevFailure::new(r)),
-            Attempt::Transient(r, wait) => {
-                last = r;
-                if n == 0 {
-                    tokio::time::sleep(wait).await;
-                }
-            }
-        }
+    let start = Instant::now();
+    let total = cfg.timeout.as_duration();
+    let fallback = cfg.fallback();
+    let primary_end = match fallback {
+        Some(_) => start + total * PRIMARY_SHARE.0 / PRIMARY_SHARE.1,
+        None => start + total,
+    };
+    let first = decide_model(http, cfg, &cfg.model, policy, key, req, primary_end).await;
+    let first = match first {
+        Ok(d) => return Ok(d),
+        Err(Failed::Final(f)) => return Err(f),
+        Err(Failed::Unusable(f)) => f,
+    };
+    let Some(fb) = fallback else {
+        return Err(first);
+    };
+    match decide_model(http, cfg, fb, policy, key, req, start + total).await {
+        Ok(d) => Ok(d),
+        Err(Failed::Final(f)) => Err(f),
+        Err(Failed::Unusable(f)) => Err(JevFailure {
+            reason: format!("{}; fallback model also failed: {}", first.reason, f.reason),
+            ..f
+        }),
     }
-    Err(JevFailure::new(last))
 }
 
 #[cfg(test)]

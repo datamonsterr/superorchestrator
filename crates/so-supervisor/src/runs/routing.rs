@@ -195,6 +195,7 @@ impl RunManager {
                 usage: Default::default(),
                 alternatives: Vec::new(),
                 config_fingerprint: so_router::config_fingerprint(self.config()),
+                decider_model: None,
                 ranked_accounts: ranked,
             },
             fallback_reason: Some(why.message.clone()),

@@ -146,7 +146,10 @@ fn effort_rank(effort: &str) -> Option<i32> {
 /// and the choice's effort, scaled by `EFFORT_STEP`. Zero when the choice has no effort. It
 /// breaks ties between choices of one tier, so a bounded task prefers medium effort over
 /// high. Low effort is never preferred: keywords cannot show that a task is trivially
-/// mechanical, so the heuristic leaves that to the caller or the decider.
+/// mechanical, so the heuristic leaves that to the caller or the decider. (Measured on the
+/// bundled and held-out cases: wanting low effort for low complexity cost accuracy, because
+/// short prompts count as low.) A choice without an effort, or with one this does not know,
+/// has gap 0: it is neither favoured nor penalised.
 pub fn effort_gap(c: Complexity, effort: Option<&str>) -> f64 {
     let want = match c {
         Complexity::Low | Complexity::Mid => 1,

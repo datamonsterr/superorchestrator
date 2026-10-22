@@ -79,6 +79,8 @@ pub struct CaseRecord {
     pub correct: bool,
     pub eligible: bool,
     pub source: String,
+    /// The decider model that answered (also when its answer was rejected).
+    pub decider_model: Option<String>,
     pub confidence: Option<f64>,
     /// Jev's probabilities per eligible choice, also kept when the gate rejected the answer.
     pub probabilities: BTreeMap<String, f64>,
@@ -171,6 +173,7 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
                     correct: case.expected_choices.contains(&r.choice_id),
                     eligible: eligible.contains(&r.choice_id),
                     source: source_name(r.source).into(),
+                    decider_model: r.decider_model.clone(),
                     confidence: r.confidence,
                     probabilities: r.probabilities.clone(),
                     fallback_reason,
@@ -191,6 +194,7 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
                     correct: false,
                     eligible: false,
                     source: "error".into(),
+                    decider_model: None,
                     confidence: None,
                     probabilities: BTreeMap::new(),
                     fallback_reason: None,
@@ -234,6 +238,22 @@ mod tests {
         let c = bundled_cases();
         assert_eq!(c.len(), 15);
         assert!(c.iter().any(|c| c.id.starts_with("vietnamese")));
+    }
+
+    #[test]
+    fn holdout_cases_load_and_stay_separate_from_the_bundled_ones() {
+        let hold = parse_cases(include_str!("../evals/holdout.jsonl")).unwrap();
+        assert!(hold.len() >= 15);
+        assert!(hold.iter().any(|c| c.role == "conductor"));
+        assert!(hold.iter().any(|c| c.id.contains("injection")));
+        let bundled = bundled_cases();
+        assert!(hold.iter().all(|h| bundled.iter().all(|b| b.id != h.id)));
+        // A second expected choice always carries its reason.
+        assert!(
+            hold.iter()
+                .filter(|c| c.expected_choices.len() > 1)
+                .all(|c| c.reason.is_some())
+        );
     }
 
     #[test]

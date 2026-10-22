@@ -258,9 +258,12 @@ export interface ImportCandidate {
 
 export interface Jev {
   endpoint?: string;
+  /** Tried only when the primary model cannot be reached; `none` or empty disables it. */
+  fallback_model?: string | null;
   key_env?: string;
   /** Optional dotenv file holding the key. */
   key_file?: string | null;
+  /** Decider model, any OpenRouter model id. */
   model?: string;
   timeout?: HumanDuration;
 }
@@ -377,6 +380,8 @@ export interface RouteResult {
   choice_id: string;
   confidence?: number | null;
   config_fingerprint?: string;
+  /** The decider model that produced the answer (the response's model id when it gave one). Also set when its answer was rejected; absent for pinned and key-less routing. */
+  decider_model?: string | null;
   effort?: string | null;
   harness: Harness;
   model: string;

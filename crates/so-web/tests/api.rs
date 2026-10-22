@@ -150,6 +150,7 @@ async fn fx_cfg(token: Option<&str>, config: Config) -> Fx {
         usage: Default::default(),
         alternatives: vec![],
         config_fingerprint: "f".into(),
+        decider_model: None,
         ranked_accounts: Default::default(),
     };
     store

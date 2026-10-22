@@ -187,6 +187,7 @@ mod tests {
                 usage: Default::default(),
                 alternatives: vec![],
                 config_fingerprint: "f".into(),
+                decider_model: None,
                 ranked_accounts: vec![],
             },
             fallback_reason: fallback.map(String::from),

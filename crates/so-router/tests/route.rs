@@ -96,6 +96,8 @@ fn world(endpoint: &str, key: bool) -> World {
         ..Config::default()
     };
     config.router.jev.endpoint = endpoint.into();
+    // Tests opt in to the fallback model; the default one would add hits to every script.
+    config.router.jev.fallback_model = None;
     config.router.jev.key_env = "SO_ROUTER_TEST_KEY_UNSET".into();
     if key {
         let f = dir.path().join(".env");
@@ -168,7 +170,11 @@ async fn valid_answer_is_source_jev_and_request_has_the_spec_shape() {
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].0, "Bearer sk-test-secret");
     let b = &seen[0].1;
-    assert_eq!(b["model"], "~typesafe/jev-latest");
+    assert_eq!(b["model"], "inception/mercury-decide:free");
+    assert_eq!(
+        r.decider_model.as_deref(),
+        Some("inception/mercury-decide:free")
+    );
     assert_eq!(b["state"]["task_content"], "do the thing");
     assert_eq!(b["state"]["role"], "worker");
     assert!(b["state"]["context"].get("quota").is_some());
@@ -502,4 +508,173 @@ async fn ranked_accounts_and_exclude_accounts_drive_failover() {
             .account,
         "codex-b"
     );
+}
+
+fn good() -> Value {
+    answer("agy-fast", 0.9, json!({"agy-fast": 0.9, "codex-big": 0.1}))
+}
+
+fn models_seen(fake: &Fake) -> Vec<String> {
+    fake.seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, b)| b["model"].as_str().unwrap().to_string())
+        .collect()
+}
+
+fn with_fallback(w: &mut World) {
+    w.config.router.jev.fallback_model = Some("fallback/model".into());
+}
+
+#[tokio::test]
+async fn primary_answer_does_not_call_the_fallback() {
+    let (url, fake) = serve(vec![(200, good(), 0)]).await;
+    let mut w = world(&url, true);
+    with_fallback(&mut w);
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    assert_eq!(out.result.source, RouteSource::Jev);
+    assert_eq!(fake.hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        out.result.decider_model.as_deref(),
+        Some("inception/mercury-decide:free")
+    );
+}
+
+#[tokio::test]
+async fn unusable_primary_falls_back_to_the_fallback_model() {
+    // 5xx (retried once), 404 and 400 (missing model) all hand over to the fallback.
+    for (status, primary_hits) in [(500u16, 2usize), (404, 1), (400, 1)] {
+        let mut script = vec![(status, json!({}), 0); primary_hits];
+        script.push((200, good(), 0));
+        let (url, fake) = serve(script).await;
+        let mut w = world(&url, true);
+        with_fallback(&mut w);
+        let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+        assert_eq!(out.result.source, RouteSource::Jev, "{status}");
+        assert_eq!(out.result.decider_model.as_deref(), Some("fallback/model"));
+        let models = models_seen(&fake);
+        assert_eq!(models.len(), primary_hits + 1);
+        assert_eq!(models.last().unwrap(), "fallback/model");
+        assert!(models[..primary_hits].iter().all(|m| m != "fallback/model"));
+    }
+}
+
+#[tokio::test]
+async fn rate_limited_primary_falls_back() {
+    let (url, fake) = serve(vec![
+        (429, json!({}), 0),
+        (429, json!({}), 0),
+        (200, good(), 0),
+    ])
+    .await;
+    let mut w = world(&url, true);
+    with_fallback(&mut w);
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    assert_eq!(out.result.source, RouteSource::Jev);
+    assert_eq!(models_seen(&fake).last().unwrap(), "fallback/model");
+}
+
+#[tokio::test]
+async fn both_models_unusable_goes_to_the_heuristic() {
+    let (url, fake) = serve(vec![(503, json!({}), 0)]).await;
+    let mut w = world(&url, true);
+    with_fallback(&mut w);
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    assert_eq!(out.result.source, RouteSource::Heuristic);
+    let why = out.fallback_reason.unwrap();
+    assert!(why.contains("fallback model also failed"), "{why}");
+    assert_eq!(fake.hits.load(Ordering::SeqCst), 4);
+}
+
+#[tokio::test]
+async fn rejected_answer_and_auth_errors_never_reach_the_fallback() {
+    let (url, fake) = serve(vec![(
+        200,
+        answer("agy-fast", 0.2, json!({"agy-fast": 0.6, "codex-big": 0.4})),
+        0,
+    )])
+    .await;
+    let mut w = world(&url, true);
+    with_fallback(&mut w);
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    assert_eq!(out.result.source, RouteSource::Heuristic);
+    assert_eq!(fake.hits.load(Ordering::SeqCst), 1);
+    // The rejected answer still names the model that gave it.
+    assert_eq!(
+        out.result.decider_model.as_deref(),
+        Some("inception/mercury-decide:free")
+    );
+
+    let (url, fake) = serve(vec![(401, json!({}), 0)]).await;
+    let mut w = world(&url, true);
+    with_fallback(&mut w);
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    assert_eq!(out.result.source, RouteSource::Heuristic);
+    assert_eq!(fake.hits.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn response_model_id_is_recorded_when_given() {
+    let mut body = good();
+    body["model"] = json!("inception/mercury-decide-20260930");
+    let (url, _) = serve(vec![(200, body, 0)]).await;
+    let w = world(&url, true);
+    let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
+    assert_eq!(
+        out.result.decider_model.as_deref(),
+        Some("inception/mercury-decide-20260930")
+    );
+}
+
+#[test]
+fn fallback_ignores_none_empty_and_the_primary() {
+    let mut j = so_core::config::Jev::default();
+    assert_eq!(j.fallback(), Some("~typesafe/jev-latest"));
+    for v in ["none", "NONE", "  ", "", "inception/mercury-decide:free"] {
+        j.fallback_model = Some(v.into());
+        assert_eq!(j.fallback(), None, "{v:?}");
+    }
+    j.fallback_model = None;
+    assert_eq!(j.fallback(), None);
+}
+
+#[tokio::test]
+async fn eval_records_decider_model_and_probabilities() {
+    let (url, _) = serve(vec![(200, good(), 0)]).await;
+    let w = world(&url, true);
+    let snap = Snapshot::collect(&w.store, &w.accounts, 15.0, chrono::Utc::now()).unwrap();
+    let ctx = RouteCtx {
+        config: &w.config,
+        catalog: &w.catalog,
+        snapshot: &snap,
+        http: &w.http,
+        env: |_| None,
+    };
+    let cases =
+        parse_cases(r#"{"id":"a","task":"x","expected_choices":["agy-fast"],"reason":"r"}"#)
+            .unwrap();
+    let rep = evaluate(&ctx, &cases).await;
+    let c = &rep.cases[0];
+    assert_eq!(
+        c.decider_model.as_deref(),
+        Some("inception/mercury-decide:free")
+    );
+    assert_eq!(c.probabilities.len(), 2);
+    assert!(c.fallback_reason.is_none());
+}
+
+#[tokio::test]
+async fn effort_penalty_reorders_two_choices_of_the_same_tier() {
+    // Same harness, tier, cost and pool; the low-effort choice comes first in the config, so
+    // without the effort penalty the stable sort would pick it.
+    let mut w = world("http://127.0.0.1:1/x", false);
+    let mut low = choice("agy-low", Harness::Agy, "gemini-3.8-flash-low");
+    low.effort = Some("low".into());
+    let med = choice("agy-med", Harness::Agy, "gemini-3.8-flash-medium");
+    w.config.choices = vec![low, med];
+    let out = route_detailed(&w.inputs(), &params("Please look into the report"))
+        .await
+        .unwrap();
+    assert_eq!(out.result.choice_id, "agy-med");
 }

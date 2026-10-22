@@ -252,6 +252,10 @@ pub struct RouteResult {
     pub alternatives: Vec<RouteAlternative>,
     #[serde(default)]
     pub config_fingerprint: String,
+    /// The decider model that produced the answer (the response's model id when it gave one).
+    /// Also set when its answer was rejected; absent for pinned and key-less routing.
+    #[serde(default)]
+    pub decider_model: Option<String>,
     /// Usable accounts of the chosen choice, best first (`account` is the first). Failover
     /// walks this list, then re-routes with `exclude_accounts`.
     #[serde(default)]
@@ -835,6 +839,7 @@ mod tests {
             usage: RouteUsage::default(),
             alternatives: vec![],
             config_fingerprint: "f".into(),
+            decider_model: None,
             ranked_accounts: vec![],
         };
         let j = serde_json::to_string(&r).unwrap();

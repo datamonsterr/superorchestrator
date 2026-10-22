@@ -338,7 +338,8 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                   fail: Option<&JevFailure>,
                   jev: Option<(f64, BTreeMap<String, f64>, RouteUsage)>,
                   probs_rank: Option<Vec<(usize, f64)>>,
-                  fallback_reason: Option<String>|
+                  fallback_reason: Option<String>,
+                  decider_model: Option<String>|
      -> RouteOutcome {
         let cand = &cands[pick];
         let ranked_accounts: Vec<String> = rank_accounts(&cand.accounts, &cand.pool)
@@ -383,6 +384,7 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                 usage,
                 alternatives,
                 config_fingerprint: fingerprint.clone(),
+                decider_model,
                 ranked_accounts,
             },
             fallback_reason,
@@ -411,17 +413,28 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
             None,
             None,
             None,
+            None,
         ));
     }
 
     let heuristic = |reason: Option<String>, fail: Option<&JevFailure>, note: &str| {
+        let decider_model = fail.and_then(|f| f.model.clone());
         let pick = best_heuristic(&ranked);
         let why = format!(
             "heuristic: {note}; complexity {}, score {:.2}",
             complexity.as_str(),
             ranked.first().map_or(0.0, |r| r.score)
         );
-        finish(pick, RouteSource::Heuristic, why, fail, None, None, reason)
+        finish(
+            pick,
+            RouteSource::Heuristic,
+            why,
+            fail,
+            None,
+            None,
+            reason,
+            decider_model,
+        )
     };
 
     if cands.len() == 1 {
@@ -487,6 +500,7 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                 Some((d.validated.confidence, d.validated.probabilities, d.usage)),
                 Some(by_prob),
                 None,
+                Some(d.model),
             ))
         }
         Err(f) => {
