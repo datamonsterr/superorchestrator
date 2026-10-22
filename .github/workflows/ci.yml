@@ -102,7 +102,10 @@ jobs:
     name: test (arch)
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    container:
+      image: archlinux:latest
+      # Run docker's init (tini) as PID 1 so orphaned children are reaped.
+      options: --init
     timeout-minutes: 45
     steps:
       - name: Install toolchain
