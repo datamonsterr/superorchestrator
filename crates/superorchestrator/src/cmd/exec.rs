@@ -6,7 +6,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use so_accounts::{LaunchMode, build_launch};
+use so_accounts::build_launch;
 use so_core::{AccountFile, SessionKind, new_id};
 use so_store::{SessionRow, Store};
 
@@ -21,9 +21,8 @@ pub fn run(ctx: &Ctx, account: &str, args: &[String]) -> Result<std::convert::In
     }
     let acc = AccountFile::load(&file).with_context(|| format!("account `{account}`"))?;
     let host = ctx.host()?;
-    // agy accounts need no bwrap interactively (ADR-0005): `--gemini_dir` selects them.
-    let launch = build_launch(&acc, &host, None, LaunchMode::Interactive)
-        .with_context(|| format!("cannot launch account `{account}`"))?;
+    let launch =
+        build_launch(&acc, &host).with_context(|| format!("cannot launch account `{account}`"))?;
 
     record_session(&ctx.paths.state_db(), account);
 
