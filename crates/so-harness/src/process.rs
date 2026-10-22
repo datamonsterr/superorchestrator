@@ -407,6 +407,10 @@ pub struct Supervised {
     /// (opencode HTTP and SSE) with consistent offsets.
     pub transcript: SharedTranscript,
     pub handle: ProcessHandle,
+    /// A sender into `events`. The event channel only closes once every clone
+    /// is dropped, so a driver that keeps one must drop it when the process
+    /// exits.
+    pub events_tx: mpsc::UnboundedSender<HarnessEvent>,
 }
 
 /// Spawns `cmd` as a supervised process: piped stdio, `kill_on_drop`, own
@@ -469,6 +473,7 @@ pub fn spawn_supervised(
         tx.clone(),
         exit_rx.clone(),
     ));
+    let events_tx = tx.clone();
 
     tokio::spawn(async move {
         let status = tokio::select! {
@@ -506,6 +511,8 @@ pub fn spawn_supervised(
             pid,
             grace,
         },
+        transcript,
+        events_tx,
     })
 }
 

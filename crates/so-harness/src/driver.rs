@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 use crate::agy::{AgyControl, AgyDriver};
 use crate::claude::{ClaudeControl, ClaudeDriver};
 use crate::opencode::{OpencodeControl, OpencodeDriver};
+use crate::codex::{CodexControl, CodexDriver};
 
 /// Errors from starting or controlling a harness.
 #[derive(Debug, thiserror::Error)]
@@ -271,6 +272,7 @@ pub enum RunControl {
     Claude(ClaudeControl),
     Agy(AgyControl),
     Opencode(OpencodeControl),
+    Codex(CodexControl),
 }
 
 impl RunControl {
@@ -280,6 +282,7 @@ impl RunControl {
             RunControl::Claude(c) => c.send(text).await,
             RunControl::Agy(c) => c.send(text).await,
             RunControl::Opencode(c) => c.send(text).await,
+            RunControl::Codex(c) => c.send(text).await,
         }
     }
 
@@ -290,6 +293,7 @@ impl RunControl {
             RunControl::Claude(c) => c.interrupt().await,
             RunControl::Agy(c) => c.interrupt().await,
             RunControl::Opencode(c) => c.interrupt().await,
+            RunControl::Codex(c) => c.interrupt().await,
         }
     }
 
@@ -300,6 +304,7 @@ impl RunControl {
             RunControl::Claude(c) => c.shutdown(deadline).await,
             RunControl::Agy(c) => c.shutdown(deadline).await,
             RunControl::Opencode(c) => c.shutdown(deadline).await,
+            RunControl::Codex(c) => c.shutdown(deadline).await,
         }
     }
 
@@ -308,6 +313,7 @@ impl RunControl {
             RunControl::Claude(c) => c.pid(),
             RunControl::Agy(c) => c.pid(),
             RunControl::Opencode(c) => c.pid(),
+            RunControl::Codex(c) => c.pid(),
         }
     }
 }
@@ -348,6 +354,7 @@ pub enum AnyDriver {
     Claude(ClaudeDriver),
     Agy(AgyDriver),
     Opencode(OpencodeDriver),
+    Codex(CodexDriver),
 }
 
 impl AnyDriver {
@@ -358,6 +365,7 @@ impl AnyDriver {
             Harness::Claude => Ok(AnyDriver::Claude(ClaudeDriver::new(config))),
             Harness::Agy => Ok(AnyDriver::Agy(AgyDriver::new(config))),
             Harness::Opencode => Ok(AnyDriver::Opencode(OpencodeDriver::new(config))),
+            Harness::Codex => Ok(AnyDriver::Codex(CodexDriver::new(config))),
             other => Err(DriverError::Unsupported(other)),
         }
     }
@@ -369,6 +377,7 @@ impl Driver for AnyDriver {
             AnyDriver::Claude(d) => d.harness(),
             AnyDriver::Agy(d) => d.harness(),
             AnyDriver::Opencode(d) => d.harness(),
+            AnyDriver::Codex(d) => d.harness(),
         }
     }
 
@@ -377,6 +386,7 @@ impl Driver for AnyDriver {
             AnyDriver::Claude(d) => d.launch(spec).await,
             AnyDriver::Agy(d) => d.launch(spec).await,
             AnyDriver::Opencode(d) => d.launch(spec).await,
+            AnyDriver::Codex(d) => d.launch(spec).await,
         }
     }
 
@@ -385,6 +395,7 @@ impl Driver for AnyDriver {
             AnyDriver::Claude(d) => d.join_command(j),
             AnyDriver::Agy(d) => d.join_command(j),
             AnyDriver::Opencode(d) => d.join_command(j),
+            AnyDriver::Codex(d) => d.join_command(j),
         }
     }
 
@@ -393,6 +404,7 @@ impl Driver for AnyDriver {
             AnyDriver::Claude(d) => d.classify_error(text),
             AnyDriver::Agy(d) => d.classify_error(text),
             AnyDriver::Opencode(d) => d.classify_error(text),
+            AnyDriver::Codex(d) => d.classify_error(text),
         }
     }
 }
@@ -467,8 +479,8 @@ mod tests {
     #[test]
     fn unsupported_harness() {
         assert!(matches!(
-            AnyDriver::for_harness(Harness::Codex, DriverConfig::default()),
-            Err(DriverError::Unsupported(Harness::Codex))
+            AnyDriver::for_harness(Harness::Opencode, DriverConfig::default()),
+            Err(DriverError::Unsupported(Harness::Opencode))
         ));
     }
 

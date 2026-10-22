@@ -3,6 +3,7 @@
 
 pub mod agy;
 pub mod claude;
+pub mod codex;
 pub mod driver;
 pub mod opencode;
 pub mod process;
@@ -10,6 +11,7 @@ pub mod transcript;
 
 pub use agy::{AgyControl, AgyDriver};
 pub use claude::{ClaudeControl, ClaudeDriver};
+pub use codex::{CodexControl, CodexDriver};
 pub use driver::{
     AnyDriver, Channel, Driver, DriverConfig, DriverError, Endpoint, HarnessEvent, JoinCommand,
     JoinInfo, LaunchSpec, McpServerSpec, RateLimits, RunControl, RunHandle, ShutdownOutcome,
