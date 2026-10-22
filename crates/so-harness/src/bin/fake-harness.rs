@@ -7,6 +7,7 @@
 //! - `{"stderr": "text"}`: print one stderr line
 //! - `{"sleep_ms": n}`
 //! - `{"spawn_sleep": secs, "detach": bool}`: spawn a `sleep` grandchild (same process group), log `{"grandchild": pid}`
+//! - `{"shell": "cmd"}`: run `sh -c cmd` in the current directory (e.g. to commit in a worktree)
 //! - `{"exit": code}`: exit immediately
 //!
 //! After the last step it drains stdin until EOF and exits 0, like `claude -p`.
@@ -81,6 +82,14 @@ fn main() {
             }
             let child = cmd.spawn().expect("spawn sleep");
             record(json!({"grandchild": child.id()}));
+        } else if let Some(cmd) = step["shell"].as_str() {
+            let status = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(cmd)
+                .stdin(std::process::Stdio::null())
+                .status()
+                .expect("run shell step");
+            record(json!({"shell": cmd, "ok": status.success()}));
         } else if let Some(code) = step["exit"].as_i64() {
             std::process::exit(code as i32);
         }

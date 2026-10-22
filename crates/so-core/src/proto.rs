@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::types::{Choice, Event, Harness, Headroom, Isolation, MessageKind, RunState};
+use crate::types::{Choice, ErrorKind, Event, Harness, Headroom, Isolation, MessageKind, RunState};
 
 pub const JSONRPC: &str = "2.0";
 
@@ -41,6 +41,8 @@ pub const METHOD_RUN_WORKFLOW: &str = "run_workflow";
 pub const METHOD_WORKFLOW_STATUS: &str = "workflow_status";
 pub const METHOD_REPORT_PROGRESS: &str = "report_progress";
 pub const METHOD_ASK_PARENT: &str = "ask_parent";
+/// Returns the command a person runs to join a run (CLI `join`).
+pub const METHOD_JOIN_RUN: &str = "join_run";
 
 fn jsonrpc() -> String {
     JSONRPC.to_string()
@@ -287,6 +289,12 @@ pub struct SpawnResult {
     /// Final result, present when `wait` was set and the run finished.
     #[serde(default)]
     pub result: Option<Value>,
+    /// Non-fatal notes for the caller, e.g. a dirty tree or a missing git repository.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// Why the run failed, when `wait` was set and it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<ErrorKind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -347,6 +355,49 @@ pub struct RunView {
     pub branch: Option<String>,
     #[serde(default)]
     pub join_command: Option<String>,
+    /// Directory the join command runs in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join_cwd: Option<String>,
+    /// Names (never values) of the environment variables the join command sets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub join_env: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub depth: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_run: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<ErrorKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Result of `join_run`: the command a person runs to join a run. Secrets travel only in
+/// `env`; `Debug` prints names only.
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct JoinResult {
+    pub argv: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
+    pub cwd: String,
+}
+
+impl std::fmt::Debug for JoinResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JoinResult")
+            .field("argv", &self.argv)
+            .field(
+                "env_keys",
+                &self.env.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(),
+            )
+            .field("cwd", &self.cwd)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

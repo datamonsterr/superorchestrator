@@ -8,6 +8,7 @@ pub mod handlers;
 mod lines;
 pub mod lock;
 pub mod reconcile;
+pub mod runs;
 pub mod server;
 
 use so_core::{Config, Paths};
@@ -18,6 +19,7 @@ pub use error::{Result, SupervisorError};
 pub use handlers::default_handlers;
 pub use lock::SupervisorLock;
 pub use reconcile::ReconcileHook;
+pub use runs::RunManager;
 pub use server::{
     ActivityProbe, MAX_LINE_BYTES, Supervisor, SupervisorHandle, SupervisorOptions, SupervisorState,
 };

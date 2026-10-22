@@ -25,6 +25,7 @@ use crate::error::{Result, SupervisorError};
 use crate::lines::{Line, read_line};
 use crate::lock::SupervisorLock;
 use crate::reconcile::{self, ReconcileHook};
+use crate::runs::RunManager;
 
 /// Longest accepted request line.
 pub const MAX_LINE_BYTES: usize = 8 * 1024 * 1024;
@@ -61,6 +62,8 @@ pub struct SupervisorOptions {
     pub setup: Option<Setup>,
     /// Host environment for sign-in checks; default is [`HostEnv::detect`].
     pub host: Option<HostEnv>,
+    /// Executable children run as their `mcp` server; default the current executable.
+    pub mcp_exe: Option<PathBuf>,
 }
 
 impl SupervisorOptions {
@@ -76,7 +79,13 @@ impl SupervisorOptions {
             max_inflight: MAX_INFLIGHT,
             setup: None,
             host: None,
+            mcp_exe: None,
         }
+    }
+
+    pub fn with_mcp_exe(mut self, exe: PathBuf) -> Self {
+        self.mcp_exe = Some(exe);
+        self
     }
 
     pub fn with_lock_wait(mut self, d: Duration) -> Self {
@@ -118,6 +127,8 @@ pub struct SupervisorState {
     pub router: Router,
     /// `None` when the host environment could not be detected (no `HOME`).
     pub host: Option<HostEnv>,
+    /// Runs: spawn, queue, wait, cancel.
+    pub runs: RunManager,
     max_inflight: usize,
     pub(crate) started: Instant,
     clients: AtomicUsize,
@@ -213,6 +224,7 @@ impl Supervisor {
             max_inflight,
             setup,
             host,
+            mcp_exe,
         } = opts;
 
         let lock = acquire_lock(&paths.config_dir, lock_wait).await?;
@@ -223,12 +235,22 @@ impl Supervisor {
                 .map_err(|e| std::io::Error::other(e.to_string()))??
         };
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let host = host.or_else(|| HostEnv::detect().ok());
+        let runs = RunManager::new(
+            store.clone(),
+            config.clone(),
+            paths.clone(),
+            host.clone(),
+            socket_path.clone(),
+            mcp_exe,
+        );
         let state = Arc::new(SupervisorState {
             store,
             config,
             paths,
             router: Router::default(),
-            host: host.or_else(|| HostEnv::detect().ok()),
+            host,
+            runs,
             max_inflight,
             started: Instant::now(),
             clients: AtomicUsize::new(0),
@@ -477,6 +499,7 @@ impl Drop for ConnGuard {
         self.state.clients.fetch_sub(1, Ordering::SeqCst);
         self.state.epoch.fetch_add(1, Ordering::SeqCst);
         if let Some(id) = self.session.take() {
+            self.state.runs.session_disconnected(&id);
             let store = self.state.store.clone();
             let work = move || log_session_end(&id, end_session_blocking(&store, &id));
             match tokio::runtime::Handle::try_current() {
@@ -621,6 +644,9 @@ async fn serve_connection(
             let resp = dispatch::handle_hello(&state, &mut ctx, req).await;
             if guard.session.is_none() && ctx.run_id.is_none() {
                 guard.session = ctx.session_id.clone();
+                if let Some(id) = &guard.session {
+                    state.runs.session_connected(id);
+                }
             }
             reply!(response_line(&resp));
         } else {

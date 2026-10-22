@@ -10,4 +10,5 @@ use crate::server::SupervisorState;
 /// both start from this; later tasks add their methods here.
 pub fn default_handlers(state: &Arc<SupervisorState>) {
     harnesses::register_harnesses(state);
+    crate::runs::register(state);
 }
