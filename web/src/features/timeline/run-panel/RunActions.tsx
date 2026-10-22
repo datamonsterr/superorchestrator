@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { toast } from 'sonner'
 import { useAcceptRun, useCancelRun, useRejectRun, useSendMessage } from '@/api/queries'
-import type { MessageKind, RunState } from '@/api/types'
+import type { MessageKind, RunState } from '@/api/generated'
 import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'

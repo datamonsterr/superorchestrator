@@ -1,4 +1,5 @@
-import type { Event, EventType } from '@/api/types'
+import type { EventType } from '@/api/generated'
+import type { Event } from '@/api/types'
 import { asString, isTerminalState } from '../model'
 
 export const isTerminal = isTerminalState

@@ -1,4 +1,5 @@
-import type { Event, RunState } from '@/api/types'
+import type { RunState } from '@/api/generated'
+import type { Event } from '@/api/types'
 import {
   asString,
   isTerminalState,

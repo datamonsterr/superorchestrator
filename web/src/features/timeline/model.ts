@@ -1,4 +1,5 @@
-import type { RunState, RunViewPublic } from '@/api/types'
+import type { RunState } from '@/api/generated'
+import type { RunViewPublic } from '@/api/types'
 
 /** Lane id of the synthetic top lane (events without a run, user joins, orchestrator messages). */
 export const ORCHESTRATOR_LANE = 'orchestrator'

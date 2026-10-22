@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { UseMutationResult } from '@tanstack/react-query'
-import type { JoinView } from '@/api/types'
+import type { JoinView } from '@/api/generated'
 import { CommandBlock } from '@/components/common/CommandBlock'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { Button } from '@/components/ui/button'

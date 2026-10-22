@@ -1,4 +1,4 @@
-import type { RunState } from '@/api/types'
+import type { RunState } from '@/api/generated'
 import type { MarkerKind } from './model'
 import { readableInk } from '@/lib/contrast'
 

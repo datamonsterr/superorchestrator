@@ -1,11 +1,9 @@
-import { useCallback } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Skeleton } from '@/components/ui/skeleton'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { TableSkeleton } from '@/components/common/TableSkeleton'
 import { useDailyUsage, useDashboard } from '@/api/queries'
-import type { RunViewPublic } from '@/api/types'
 import { StatCards } from './StatCards'
 import { AccountsSummaryTable } from './AccountsSummaryTable'
 import { LiveRuns } from './LiveRuns'
@@ -27,13 +25,6 @@ export function DashboardPage() {
   const dash = useDashboard()
   const usage = useDailyUsage(30)
   const data = dash.data
-  // TODO(T2.1): use run.session_id once RunViewPublic carries it.
-  // RunViewPublic has no session id: take it from the run's recent events or an escalation about it.
-  const sessionOf = useCallback(
-    (run: RunViewPublic) =>
-      run.recent_events[0]?.session_id ?? data?.escalations.find((e) => e.run_id === run.run_id)?.session_id,
-    [data],
-  )
 
   return (
     <>
@@ -58,7 +49,7 @@ export function DashboardPage() {
           </Section>
           <div className="grid gap-4 lg:grid-cols-2">
             <Section title="Live runs">
-              <LiveRuns runs={data.live_runs} sessionOf={sessionOf} />
+              <LiveRuns runs={data.live_runs} />
             </Section>
             <Section title="Recent escalations">
               <Escalations events={data.escalations} />

@@ -1,6 +1,6 @@
 import { memo } from 'react'
 import type { MarkerKind } from './model'
-import type { RunState } from '@/api/types'
+import type { RunState } from '@/api/generated'
 import { patternId, stateFill, STATE_STYLES } from './colors'
 import { BAR_H, BAR_Y, GLYPH, LANE_H } from './layout'
 
