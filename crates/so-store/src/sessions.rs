@@ -84,6 +84,16 @@ impl Store {
         Ok(())
     }
 
+    /// Open interactive sessions on `account` (they count toward its cap, SPEC 5.1).
+    pub fn count_active_interactive_sessions_by_account(&self, account: &str) -> Result<i64> {
+        Ok(self.conn().query_row(
+            "SELECT COUNT(*) FROM sessions WHERE kind = 'interactive' AND account = ?1 \
+             AND ended_at IS NULL",
+            [account],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn find_active_session_by_pid(&self, pid: i64) -> Result<Option<SessionRow>> {
         let conn = self.conn();
         let mut st = conn.prepare(&format!(
@@ -142,6 +152,25 @@ pub(crate) mod tests {
             1
         );
         assert_eq!(s.list_sessions(SessionFilter::All, None).unwrap().len(), 2);
+        let mut i = session(None);
+        i.kind = SessionKind::Interactive;
+        i.account = Some("acc".into());
+        s.insert_session(&i).unwrap();
+        assert_eq!(
+            s.count_active_interactive_sessions_by_account("acc")
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            s.count_active_interactive_sessions_by_account("x").unwrap(),
+            0
+        );
+        s.end_session(&i.id, "ended").unwrap();
+        assert_eq!(
+            s.count_active_interactive_sessions_by_account("acc")
+                .unwrap(),
+            0
+        );
         assert!(matches!(
             s.end_session("nope", "x"),
             Err(StoreError::NotFound { .. })

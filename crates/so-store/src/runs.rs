@@ -13,7 +13,12 @@ const COLS: &str = "id, session_id, parent_run_id, depth, name, agent, choice_id
     account, model, effort, cwd, worktree_path, branch, native_session_id, state, review, \
     output_schema, result_json, error_kind, prompt, created_at, started_at, finished_at";
 
+/// Non-terminal states, including `queued`.
 const ACTIVE: &str = "state NOT IN ('succeeded','failed','cancelled')";
+
+/// States that hold a concurrency slot. `queued` waits for a slot and is excluded (SPEC 7.7).
+const SLOT_HOLDING: &str =
+    "state IN ('starting','running','waiting','stalled','escalated','pending_review')";
 
 fn map(r: &Row<'_>) -> rusqlite::Result<RunRow> {
     Ok(RunRow {
@@ -217,7 +222,7 @@ impl Store {
         )
     }
 
-    /// Runs not in a terminal state (queued counts as active).
+    /// Runs not in a terminal state, including `queued` (unlike the slot counts).
     pub fn list_active_runs(&self) -> Result<Vec<RunRow>> {
         self.query_runs(
             &format!("SELECT {COLS} FROM runs WHERE {ACTIVE} ORDER BY created_at, id"),
@@ -225,17 +230,29 @@ impl Store {
         )
     }
 
+    /// Queued runs, oldest first (FIFO queue drain).
+    pub fn list_queued_runs(&self, limit: usize) -> Result<Vec<RunRow>> {
+        self.query_runs(
+            &format!(
+                "SELECT {COLS} FROM runs WHERE state = 'queued' ORDER BY created_at, id LIMIT ?1"
+            ),
+            [limit as i64],
+        )
+    }
+
+    /// Slot-holding runs (not queued, not terminal) on `account`.
     pub fn count_active_runs_by_account(&self, account: &str) -> Result<i64> {
         Ok(self.conn().query_row(
-            &format!("SELECT COUNT(*) FROM runs WHERE account = ?1 AND {ACTIVE}"),
+            &format!("SELECT COUNT(*) FROM runs WHERE account = ?1 AND {SLOT_HOLDING}"),
             [account],
             |r| r.get(0),
         )?)
     }
 
+    /// Slot-holding runs across all accounts.
     pub fn count_active_runs_total(&self) -> Result<i64> {
         Ok(self.conn().query_row(
-            &format!("SELECT COUNT(*) FROM runs WHERE {ACTIVE}"),
+            &format!("SELECT COUNT(*) FROM runs WHERE {SLOT_HOLDING}"),
             [],
             |r| r.get(0),
         )?)
@@ -397,6 +414,17 @@ pub(crate) mod tests {
         for r in [&a, &b, &c] {
             s.insert_run(r).unwrap();
         }
+        // queued runs do not hold a slot
+        assert_eq!(s.count_active_runs_by_account("a1").unwrap(), 0);
+        assert_eq!(s.count_active_runs_total().unwrap(), 0);
+        assert_eq!(s.list_active_runs().unwrap().len(), 3);
+        assert_eq!(s.list_queued_runs(2).unwrap().len(), 2);
+        assert_eq!(s.list_queued_runs(10).unwrap()[0].id, a.id);
+        for r in [&a, &b, &c] {
+            s.update_run_state(&r.id, RunState::Queued, RunState::Starting)
+                .unwrap();
+        }
+        assert!(s.list_queued_runs(10).unwrap().is_empty());
         assert_eq!(s.count_active_runs_by_account("a1").unwrap(), 2);
         assert_eq!(s.count_active_runs_total().unwrap(), 3);
         let now = crate::codec::now();
@@ -424,7 +452,7 @@ pub(crate) mod tests {
             s.patch_run("nope", &RunPatch::default()),
             Err(StoreError::NotFound { .. })
         ));
-        s.update_run_state(&a.id, RunState::Queued, RunState::Cancelled)
+        s.update_run_state(&a.id, RunState::Starting, RunState::Cancelled)
             .unwrap();
         assert_eq!(s.count_active_runs_by_account("a1").unwrap(), 1);
         assert_eq!(s.count_active_runs_total().unwrap(), 2);
