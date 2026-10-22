@@ -71,10 +71,12 @@ superorchestrator config edit
 | Key | Default | Meaning |
 |---|---|---|
 | `endpoint` | `https://openrouter.ai/api/alpha/decisions` | Decider URL |
-| `model` | `~typesafe/jev-latest` | Decider model |
+| `model` | `inception/mercury-decide:free` | Decider model, any OpenRouter id. Env `SUPERORCHESTRATOR_ROUTER_MODEL` overrides it |
+| `fallback_model` | `~typesafe/jev-latest` | Tried only when the primary model cannot be reached. Env `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL` overrides it; `none` disables it |
+| `on_unreachable` | `"error"` | When a configured decider cannot be reached: `"error"` fails the call, `"heuristic"` degrades |
 | `key_env` | `OPENROUTER_API_KEY` | Environment variable that holds the key |
 | `key_file` | unset | Optional dotenv file that holds the key |
-| `timeout` | `"20s"` | Decider timeout |
+| `timeout` | `"20s"` | Decider timeout, shared by the primary and the fallback |
 
 ### `[router.policy]`
 
@@ -83,7 +85,7 @@ superorchestrator config edit
 | `min_confidence` | `0.45` | Lowest confidence to accept a decision |
 | `min_margin` | `0.15` | Lowest gap between the top two probabilities |
 
-The two defaults were tuned on 2026-10-23 against `jev-1.14-20261014`. Re-run `route eval --require-live` after you change choice descriptions or the routing instruction.
+The two defaults were tuned on 2026-10-23 against `jev-1.14-20261014`. The routing instruction and the seeded choice descriptions are what the decider reads; choices already in your `config.toml` keep their old descriptions. Re-run `route eval --require-live` after you change choice descriptions or the routing instruction.
 
 ### `[worktrees]`
 
@@ -145,6 +147,8 @@ See [routing](routing.md). Fields: `id`, `harness`, `model`, `effort`, `roles`, 
 | `SUPERORCHESTRATOR_LOG` | Log filter, for example `debug` |
 | `SUPERORCHESTRATOR_SKIP_SKILL_REFRESH` | Any non-empty value turns off skill regeneration. Use it with a throwaway config dir against a real `HOME`. |
 | `SUPERORCHESTRATOR_DOCTOR_TIMEOUT_MS` | `doctor` timeout for each `--version` call (default 5000) |
+| `SUPERORCHESTRATOR_ROUTER_MODEL` | Overrides `router.jev.model` (empty is unset) |
+| `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL` | Overrides `router.jev.fallback_model` (`none` disables it) |
 | `OPENROUTER_API_KEY` | The Jev key (name set by `router.jev.key_env`) |
 | `SO_DISCORD_WEBHOOK` | The Discord webhook URL (name set by `notifications.discord_webhook_env`) |
 | `SUPERORCHESTRATOR_INSTALL_DIR`, `SUPERORCHESTRATOR_RELEASE_URL` | Used by `install.sh` only |
