@@ -1,0 +1,4 @@
+.claude/worktrees/
+.claude/settings.local.json
+/target/
+node_modules/
