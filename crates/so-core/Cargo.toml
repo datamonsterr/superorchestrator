@@ -12,3 +12,13 @@ repository.workspace = true
 workspace = true
 
 [dependencies]
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+schemars = { workspace = true, features = ["chrono04"] }
+
+[dev-dependencies]
+tempfile.workspace = true

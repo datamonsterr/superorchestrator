@@ -1,0 +1,609 @@
+//! JSON-RPC 2.0 over newline-delimited JSON between clients and the supervisor.
+
+use std::collections::BTreeMap;
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::types::{Choice, Event, Harness, Headroom, Isolation, MessageKind, RunState};
+
+pub const JSONRPC: &str = "2.0";
+
+// Standard JSON-RPC error codes.
+pub const PARSE_ERROR: i64 = -32700;
+pub const INVALID_REQUEST: i64 = -32600;
+pub const METHOD_NOT_FOUND: i64 = -32601;
+pub const INVALID_PARAMS: i64 = -32602;
+pub const INTERNAL_ERROR: i64 = -32603;
+// Application error codes.
+pub const DEPTH_LIMIT: i64 = -32001;
+pub const CAP_EXCEEDED: i64 = -32002;
+pub const NOT_FOUND: i64 = -32003;
+pub const UNAVAILABLE: i64 = -32004;
+
+// Method names.
+pub const METHOD_HELLO: &str = "hello";
+pub const METHOD_STATUS: &str = "status";
+pub const METHOD_ROUTE: &str = "route";
+pub const METHOD_SPAWN_AGENT: &str = "spawn_agent";
+pub const METHOD_WAIT_AGENT: &str = "wait_agent";
+pub const METHOD_GET_RUN: &str = "get_run";
+pub const METHOD_SEND_MESSAGE: &str = "send_message";
+pub const METHOD_READ_MESSAGES: &str = "read_messages";
+pub const METHOD_CANCEL_AGENT: &str = "cancel_agent";
+pub const METHOD_ACCEPT_RUN: &str = "accept_run";
+pub const METHOD_REJECT_RUN: &str = "reject_run";
+pub const METHOD_FORK_AGENT: &str = "fork_agent";
+pub const METHOD_LIST_HARNESSES: &str = "list_harnesses";
+pub const METHOD_LIST_AGENTS: &str = "list_agents";
+pub const METHOD_RUN_WORKFLOW: &str = "run_workflow";
+pub const METHOD_WORKFLOW_STATUS: &str = "workflow_status";
+pub const METHOD_REPORT_PROGRESS: &str = "report_progress";
+pub const METHOD_ASK_PARENT: &str = "ask_parent";
+
+fn jsonrpc() -> String {
+    JSONRPC.to_string()
+}
+
+/// A JSON-RPC request. `id` is a number or a string.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Request {
+    #[serde(default = "jsonrpc")]
+    pub jsonrpc: String,
+    pub id: Value,
+    pub method: String,
+    #[serde(default)]
+    pub params: Value,
+}
+
+impl Request {
+    pub fn new(
+        id: impl Into<Value>,
+        method: &str,
+        params: impl Serialize,
+    ) -> serde_json::Result<Self> {
+        Ok(Self {
+            jsonrpc: jsonrpc(),
+            id: id.into(),
+            method: method.to_string(),
+            params: serde_json::to_value(params)?,
+        })
+    }
+}
+
+/// A JSON-RPC notification: a request without an id and without a response.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Notification {
+    #[serde(default = "jsonrpc")]
+    pub jsonrpc: String,
+    pub method: String,
+    #[serde(default)]
+    pub params: Value,
+}
+
+/// A JSON-RPC error object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RpcError {
+    pub code: i64,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<Value>,
+}
+
+impl RpcError {
+    pub fn new(code: i64, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            data: None,
+        }
+    }
+}
+
+/// A JSON-RPC response carrying either `result` or `error`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Response {
+    #[serde(default = "jsonrpc")]
+    pub jsonrpc: String,
+    pub id: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<RpcError>,
+}
+
+impl Response {
+    pub fn ok(id: Value, result: impl Serialize) -> serde_json::Result<Self> {
+        Ok(Self {
+            jsonrpc: jsonrpc(),
+            id,
+            result: Some(serde_json::to_value(result)?),
+            error: None,
+        })
+    }
+
+    pub fn err(id: Value, error: RpcError) -> Self {
+        Self {
+            jsonrpc: jsonrpc(),
+            id,
+            result: None,
+            error: Some(error),
+        }
+    }
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+// ---------------------------------------------------------------- params
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HelloParams {
+    pub client: String,
+    pub cwd: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub pid: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HelloResult {
+    pub session_id: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    pub depth: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct StatusResult {
+    pub pid: u32,
+    pub version: String,
+    pub uptime_s: u64,
+    pub sessions: u32,
+    pub active_runs: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RouteParams {
+    pub prompt: String,
+    #[serde(default)]
+    pub role: Option<String>,
+    /// Choice ids to drop from the eligible set.
+    #[serde(default)]
+    pub exclude: Vec<String>,
+    #[serde(default)]
+    pub harness: Option<String>,
+    #[serde(default)]
+    pub account: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteSource {
+    Jev,
+    Heuristic,
+    Pinned,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RouteUsage {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cost: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RouteAlternative {
+    pub choice_id: String,
+    #[serde(default)]
+    pub account: Option<String>,
+    #[serde(default)]
+    pub score: Option<f64>,
+}
+
+/// Result of `route` (SPEC 8.3 step 6).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RouteResult {
+    pub choice_id: String,
+    pub harness: Harness,
+    pub account: String,
+    pub model: String,
+    #[serde(default)]
+    pub effort: Option<String>,
+    pub source: RouteSource,
+    pub rationale: String,
+    #[serde(default)]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub probabilities: BTreeMap<String, f64>,
+    #[serde(default)]
+    pub usage: RouteUsage,
+    #[serde(default)]
+    pub alternatives: Vec<RouteAlternative>,
+    #[serde(default)]
+    pub config_fingerprint: String,
+}
+
+/// Parameters of `spawn_agent` (SPEC 7.2).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SpawnParams {
+    /// Task brief; required unless `agent` supplies one.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// Custom agent name.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// `auto` (default) or a harness name.
+    #[serde(default)]
+    pub harness: Option<String>,
+    #[serde(default)]
+    pub account: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub effort: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub isolation: Option<Isolation>,
+    /// JSON Schema for the final result.
+    #[serde(default)]
+    pub output_schema: Option<Value>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub review: bool,
+    /// `"ci"`, `"pr_threads"` or `"cmd:<shell command>"`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<String>,
+    /// Block until the run finishes.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub wait: bool,
+    #[serde(default)]
+    pub max_turns: Option<u32>,
+    /// Duration string such as `30m`.
+    #[serde(default)]
+    pub timeout: Option<String>,
+    /// Short label for the UI.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SpawnResult {
+    pub run_id: String,
+    pub state: RunState,
+    /// Final result, present when `wait` was set and the run finished.
+    #[serde(default)]
+    pub result: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WaitParams {
+    pub runs: Vec<String>,
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WaitResult {
+    /// Run ids that finished.
+    #[serde(default)]
+    pub finished: Vec<String>,
+    /// Progress and question events posted while waiting.
+    #[serde(default)]
+    pub updates: Vec<Event>,
+    #[serde(default)]
+    pub timed_out: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunRef {
+    pub run: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct UsageTotals {
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cost: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RunView {
+    pub run_id: String,
+    pub state: RunState,
+    #[serde(default)]
+    pub harness: Option<Harness>,
+    #[serde(default)]
+    pub account: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub recent_events: Vec<Event>,
+    #[serde(default)]
+    pub result: Option<Value>,
+    #[serde(default)]
+    pub usage: UsageTotals,
+    #[serde(default)]
+    pub worktree: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub join_command: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SendMessageParams {
+    pub run: String,
+    pub text: String,
+    #[serde(default)]
+    pub kind: Option<MessageKind>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct MessageView {
+    pub id: String,
+    #[serde(default)]
+    pub from_run: Option<String>,
+    #[serde(default)]
+    pub to_run: Option<String>,
+    pub kind: MessageKind,
+    pub body: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EmptyParams {}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct ReadMessagesResult {
+    #[serde(default)]
+    pub messages: Vec<MessageView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AckResult {
+    pub ok: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RejectParams {
+    pub run: String,
+    pub feedback: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ForkParams {
+    pub run: String,
+    pub prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AccountView {
+    pub name: String,
+    pub harness: Harness,
+    pub signed_in: bool,
+    pub enabled: bool,
+    pub cap: u32,
+    pub active_runs: u32,
+    #[serde(default)]
+    pub headroom: Vec<Headroom>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct HarnessesView {
+    #[serde(default)]
+    pub accounts: Vec<AccountView>,
+    #[serde(default)]
+    pub choices: Vec<Choice>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentView {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AgentsView {
+    #[serde(default)]
+    pub agents: Vec<AgentView>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RunWorkflowParams {
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub script: Option<String>,
+    #[serde(default)]
+    pub args: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RunWorkflowResult {
+    pub id: String,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub result: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkflowStatusParams {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkflowStatusResult {
+    pub id: String,
+    pub state: String,
+    #[serde(default)]
+    pub result: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ReportProgressParams {
+    pub step: String,
+    pub status: String,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AskParentParams {
+    pub question: String,
+    #[serde(default)]
+    pub options: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AskParentResult {
+    /// The answer text, or `timeout` when `runs.ask_timeout` elapsed.
+    pub answer: String,
+    #[serde(default)]
+    pub timed_out: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_round_trip() {
+        let r = Request::new(1, METHOD_GET_RUN, RunRef { run: "r1".into() }).unwrap();
+        let line = serde_json::to_string(&r).unwrap();
+        assert!(!line.contains('\n'));
+        let back: Request = serde_json::from_str(&line).unwrap();
+        assert_eq!(back, r);
+        assert_eq!(back.jsonrpc, "2.0");
+        let p: RunRef = serde_json::from_value(back.params).unwrap();
+        assert_eq!(p.run, "r1");
+    }
+
+    #[test]
+    fn response_result_and_error_shapes() {
+        let ok = Response::ok(Value::from("a"), AckResult { ok: true }).unwrap();
+        let s = serde_json::to_string(&ok).unwrap();
+        assert!(s.contains("\"result\"") && !s.contains("\"error\""));
+        assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), ok);
+
+        let err = Response::err(Value::from(2), RpcError::new(NOT_FOUND, "no such run"));
+        let s = serde_json::to_string(&err).unwrap();
+        assert!(s.contains("-32003") && !s.contains("\"result\""));
+        assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), err);
+    }
+
+    #[test]
+    fn notification_has_no_id() {
+        let n = Notification {
+            jsonrpc: jsonrpc(),
+            method: "event".into(),
+            params: serde_json::json!({"a": 1}),
+        };
+        let s = serde_json::to_string(&n).unwrap();
+        assert!(!s.contains("\"id\""));
+        assert_eq!(serde_json::from_str::<Notification>(&s).unwrap(), n);
+    }
+
+    #[test]
+    fn error_codes() {
+        assert_eq!(
+            [
+                PARSE_ERROR,
+                INVALID_REQUEST,
+                METHOD_NOT_FOUND,
+                INVALID_PARAMS,
+                INTERNAL_ERROR
+            ],
+            [-32700, -32600, -32601, -32602, -32603]
+        );
+        assert_eq!(
+            [DEPTH_LIMIT, CAP_EXCEEDED, NOT_FOUND, UNAVAILABLE],
+            [-32001, -32002, -32003, -32004]
+        );
+    }
+
+    #[test]
+    fn params_reject_unknown_fields() {
+        assert!(serde_json::from_str::<SpawnParams>(r#"{"prompt":"x","bogus":1}"#).is_err());
+        let p: SpawnParams =
+            serde_json::from_str(r#"{"prompt":"x","isolation":"none","review":true}"#).unwrap();
+        assert_eq!(p.isolation, Some(Isolation::None));
+        assert!(p.review && !p.wait);
+    }
+
+    #[test]
+    fn spawn_params_schema_generation() {
+        let schema = schemars::schema_for!(SpawnParams);
+        let v = serde_json::to_value(&schema).unwrap();
+        let props = v["properties"].as_object().unwrap();
+        for k in [
+            "prompt",
+            "agent",
+            "harness",
+            "account",
+            "model",
+            "effort",
+            "cwd",
+            "isolation",
+            "output_schema",
+            "review",
+            "checks",
+            "wait",
+            "max_turns",
+            "timeout",
+            "name",
+        ] {
+            assert!(props.contains_key(k), "missing {k}");
+        }
+        assert_eq!(v["additionalProperties"], serde_json::json!(false));
+    }
+
+    #[test]
+    fn route_result_round_trip() {
+        let r = RouteResult {
+            choice_id: "c".into(),
+            harness: Harness::Agy,
+            account: "agy-a".into(),
+            model: "m".into(),
+            effort: None,
+            source: RouteSource::Heuristic,
+            rationale: "why".into(),
+            confidence: None,
+            probabilities: BTreeMap::new(),
+            usage: RouteUsage::default(),
+            alternatives: vec![],
+            config_fingerprint: "f".into(),
+        };
+        let j = serde_json::to_string(&r).unwrap();
+        assert_eq!(serde_json::from_str::<RouteResult>(&j).unwrap(), r);
+        assert!(j.contains("\"source\":\"heuristic\""));
+    }
+}
