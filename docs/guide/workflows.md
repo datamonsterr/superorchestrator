@@ -28,7 +28,7 @@ phase("review", async () => {
 
 | Name | Behaviour |
 |---|---|
-| `agent(prompt, opts)` | Starts a run and returns its final result. `opts` are the spawn options (`harness`, `account`, `model`, `effort`, `cwd`, `isolation`, `output_schema`, `review`, `checks`, `max_turns`, `timeout`, `name`). camelCase works (`maxTurns`). `schema` means `output_schema` and `label` means `name`. A failed step throws. |
+| `agent(prompt, opts)` | Starts a run and returns its final result. `opts` are the spawn options (`harness`, `account`, `model`, `effort`, `cwd`, `isolation`, `output_schema`, `max_turns`, `timeout`, `name`, `agent`). camelCase works (`maxTurns`). `schema` means `output_schema` and `label` means `name`. A failed step throws. `review: true` is rejected: nobody can accept the run, so use the workflow's own result to review. |
 | `parallel([...])` | Runs the items at once. Items are functions that get a worktree-defaulting `agent`, or promises. A failed item gives `null`. |
 | `pipeline(items, fn)` | Runs `fn` for each item at once. A failed item gives `null`. |
 | `pipeline([fn, ...])` | Runs stages in order. Each stage gets the previous result. |
