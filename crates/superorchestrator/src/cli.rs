@@ -179,7 +179,9 @@ pub enum AgentCmd {
 
 #[derive(Subcommand, Debug)]
 pub enum ModelsCmd {
+    /// Collect models from the harness CLIs and models.dev into models.toml
     Refresh,
+    /// List the catalog
     List,
 }
 

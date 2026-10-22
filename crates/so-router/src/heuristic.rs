@@ -113,7 +113,7 @@ pub fn fit(c: Complexity, t: Tier) -> f64 {
 /// Cost term: free models are negative (a bonus), included is neutral, paid is a penalty.
 pub fn cost_value(c: Cost) -> f64 {
     match c {
-        Cost::Free => -1.0,
+        Cost::Free => -0.25,
         Cost::Included => 0.0,
         Cost::Paid => 1.0,
     }
@@ -212,7 +212,7 @@ mod tests {
             cost: Cost::Free,
             ..i
         };
-        assert!((score(&free, &w) - score(&i, &w) - 0.6).abs() < 1e-9);
+        assert!((score(&free, &w) - score(&i, &w) - 0.375).abs() < 1e-9);
     }
 
     #[test]

@@ -139,8 +139,8 @@ fn config_edit_validates_after_editor() {
 fn unimplemented_commands_exit_4_and_name_the_command() {
     let e = Env::new();
     for args in [
-        vec!["route", "do a thing"],
-        vec!["route", "eval"],
+        vec!["agent", "list"],
+        vec!["workflow", "status", "x"],
         vec!["migrate", "--apply"],
         vec!["workflow", "list"],
     ] {
@@ -156,11 +156,11 @@ fn unimplemented_commands_exit_4_and_name_the_command() {
 fn unimplemented_message_names_the_full_path() {
     let e = Env::new();
     e.cmd()
-        .args(["route", "eval"])
+        .args(["workflow", "status", "x"])
         .assert()
         .code(4)
         .stderr(predicate::str::contains(
-            "`route eval` is not implemented yet",
+            "`workflow status` is not implemented yet",
         ));
     e.cmd()
         .args(["workflow", "list"])

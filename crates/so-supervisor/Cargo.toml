@@ -18,6 +18,7 @@ so-harness = { path = "../so-harness" }
 so-accounts = { path = "../so-accounts" }
 so-usage = { path = "../so-usage" }
 so-router = { path = "../so-router" }
+reqwest.workspace = true
 so-agents = { path = "../so-agents" }
 so-workflow = { path = "../so-workflow" }
 tokio.workspace = true

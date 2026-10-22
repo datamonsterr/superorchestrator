@@ -84,12 +84,14 @@ struct World {
 
 fn world(endpoint: &str, key: bool) -> World {
     let dir = tempfile::tempdir().unwrap();
-    let mut config = Config::default();
-    config.choices = vec![
-        choice("agy-fast", Harness::Agy, "gemini-3.8-flash-low"),
-        choice("codex-big", Harness::Codex, "gpt-6.1-sol"),
-        choice("claude-x", Harness::Claude, "claude-haiku-5-5"),
-    ];
+    let mut config = Config {
+        choices: vec![
+            choice("agy-fast", Harness::Agy, "gemini-3.8-flash-low"),
+            choice("codex-big", Harness::Codex, "gpt-6.1-sol"),
+            choice("claude-x", Harness::Claude, "claude-haiku-5-5"),
+        ],
+        ..Config::default()
+    };
     config.router.jev.endpoint = endpoint.into();
     config.router.jev.key_env = "SO_ROUTER_TEST_KEY_UNSET".into();
     if key {

@@ -2290,6 +2290,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "jsonschema",
+ "reqwest",
  "rustix",
  "serde",
  "serde_json",
@@ -2408,6 +2409,7 @@ dependencies = [
  "clap",
  "dialoguer",
  "predicates",
+ "reqwest",
  "rmcp",
  "rustix",
  "serde",
