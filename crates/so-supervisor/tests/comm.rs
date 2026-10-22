@@ -196,8 +196,13 @@ impl Env {
     /// The recorded launches of an account: `(argv, stdin lines)`.
     fn launches(&self, name: &str) -> Vec<(Vec<String>, Vec<String>)> {
         let text = std::fs::read_to_string(self.log_path(name)).unwrap_or_default();
+        // The fake harness may still be writing: ignore a partial trailing line.
+        let complete = match text.rfind('\n') {
+            Some(i) => &text[..=i],
+            None => "",
+        };
         let mut out: Vec<(Vec<String>, Vec<String>)> = Vec::new();
-        for l in text.lines() {
+        for l in complete.lines() {
             let v: Value = serde_json::from_str(l).unwrap();
             if let Some(a) = v["argv"].as_array() {
                 let argv = a.iter().map(|s| s.as_str().unwrap().to_string()).collect();
