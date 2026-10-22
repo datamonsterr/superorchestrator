@@ -129,6 +129,34 @@ pub fn harness_priority(order: &[Harness], h: Harness) -> f64 {
         .map_or(0.0, |i| (order.len() - 1 - i) as f64 * PRIORITY_STEP)
 }
 
+/// Penalty per step between the effort a task wants and the effort a choice runs at.
+pub const EFFORT_STEP: f64 = 0.05;
+
+fn effort_rank(effort: &str) -> Option<i32> {
+    match effort {
+        "low" | "minimal" => Some(0),
+        "medium" => Some(1),
+        "high" => Some(2),
+        "thinking" | "xhigh" | "max" => Some(3),
+        _ => None,
+    }
+}
+
+/// Distance between the effort the complexity wants (medium for low and mid, high for high)
+/// and the choice's effort, scaled by `EFFORT_STEP`. Zero when the choice has no effort. It
+/// breaks ties between choices of one tier, so a bounded task prefers medium effort over
+/// high. Low effort is never preferred: keywords cannot show that a task is trivially
+/// mechanical, so the heuristic leaves that to the caller or the decider.
+pub fn effort_gap(c: Complexity, effort: Option<&str>) -> f64 {
+    let want = match c {
+        Complexity::Low | Complexity::Mid => 1,
+        Complexity::High => 2,
+    };
+    effort
+        .and_then(effort_rank)
+        .map_or(0.0, |r| f64::from((want - r).abs()) * EFFORT_STEP)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct ScoreInputs {
     pub complexity: Complexity,
@@ -138,6 +166,8 @@ pub struct ScoreInputs {
     pub active_runs: u32,
     pub cost: Cost,
     pub priority: f64,
+    /// `effort_gap` of the choice.
+    pub effort_gap: f64,
 }
 
 pub fn score(i: &ScoreInputs, w: &Weights) -> f64 {
@@ -145,6 +175,7 @@ pub fn score(i: &ScoreInputs, w: &Weights) -> f64 {
         - w.load * f64::from(i.active_runs)
         - w.cost * cost_value(i.cost)
         + i.priority
+        - i.effort_gap
 }
 
 #[cfg(test)]
@@ -205,6 +236,7 @@ mod tests {
             active_runs: 2,
             cost: Cost::Paid,
             priority: 0.1,
+            effort_gap: 0.0,
         };
         // 0.5 + 2*0.5 - 0.5*2 - 0.3*1 + 0.1
         assert!((score(&i, &w) - 0.3).abs() < 1e-9);
@@ -213,6 +245,20 @@ mod tests {
             ..i
         };
         assert!((score(&free, &w) - score(&i, &w) - 0.375).abs() < 1e-9);
+    }
+
+    #[test]
+    fn effort_gap_prefers_matching_effort() {
+        let g = |c, e| effort_gap(c, Some(e));
+        assert_eq!(g(Complexity::Mid, "medium"), 0.0);
+        assert!(g(Complexity::Mid, "high") > 0.0);
+        assert!(g(Complexity::Mid, "low") > 0.0);
+        assert!(g(Complexity::Low, "medium") < g(Complexity::Low, "low"));
+        assert!(g(Complexity::High, "high") < g(Complexity::High, "medium"));
+        assert_eq!(effort_gap(Complexity::High, None), 0.0);
+        assert_eq!(effort_gap(Complexity::High, Some("odd")), 0.0);
+        // A tier step (0.5 of fit) always outweighs the effort tie-break.
+        const { assert!(3.0 * EFFORT_STEP < 0.5) };
     }
 
     #[test]

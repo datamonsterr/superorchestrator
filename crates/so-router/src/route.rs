@@ -14,7 +14,9 @@ use so_store::Store;
 use crate::catalog::Catalog;
 use crate::eligible::{Candidate, Snapshot, apply_claude_rank, candidate, eligible};
 use crate::error::{Result, RouterError};
-use crate::heuristic::{Complexity, ScoreInputs, estimate_complexity, harness_priority, score};
+use crate::heuristic::{
+    Complexity, ScoreInputs, effort_gap, estimate_complexity, harness_priority, score,
+};
 use crate::jev::{EnvFn, JevFailure, JevRequest, decide, process_env, resolve_key};
 use crate::select::{headroom_of, rank_accounts, select_account};
 
@@ -221,6 +223,7 @@ fn heuristic_rank<'a>(
                 active_runs: account.active,
                 cost: cand.cost,
                 priority: harness_priority(&ctx.config.router.priority, cand.choice.harness),
+                effort_gap: effort_gap(complexity, cand.choice.effort.as_deref()),
             };
             Some(Ranked {
                 cand,
