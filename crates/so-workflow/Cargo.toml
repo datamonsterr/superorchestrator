@@ -13,3 +13,15 @@ workspace = true
 
 [dependencies]
 so-core = { path = "../so-core" }
+so-store = { path = "../so-store" }
+rquickjs = { workspace = true, features = ["futures", "parallel"] }
+tokio.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+sha2 = "0.10"
+futures-util = "0.3"
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
