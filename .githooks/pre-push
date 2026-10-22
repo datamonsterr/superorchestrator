@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Full gate before push. Bypass with SKIP_PREPUSH=1.
+set -euo pipefail
+
+if [ "${SKIP_PREPUSH:-}" = "1" ]; then
+  echo "pre-push: SKIP_PREPUSH=1, skipping scripts/check.sh (CI will still run it)" >&2
+  exit 0
+fi
+
+cd "$(git rev-parse --show-toplevel)"
+exec scripts/check.sh

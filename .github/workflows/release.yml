@@ -1,0 +1,11 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "release pipeline configured in T4.1"
