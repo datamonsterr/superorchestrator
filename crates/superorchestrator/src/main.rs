@@ -82,6 +82,7 @@ fn dispatch(cli: Cli, path: &str) -> Result<ExitCode> {
         Command::Join(a) => cmd::runs::join(&ctx, &a.run, a.exec),
         Command::Worktrees(c) => cmd::worktrees::run(&ctx, c),
         Command::Route(a) => cmd::route::run(&ctx, a),
+        Command::Migrate(a) => cmd::migrate::run(&ctx, a.apply),
         Command::Models(c) => cmd::models::run(&ctx, c).map(|()| ExitCode::SUCCESS),
         // Commands without an arm yet; later tasks add only their own arm above.
         _ => Err(CliError::not_implemented(path).into()),

@@ -19,13 +19,13 @@ use crate::register::{self, JsonKind, NAME};
 use crate::skill::{MARKER, render_skill};
 
 #[derive(Debug, Serialize)]
-struct Outcome {
-    target: String,
-    action: &'static str,
+pub(crate) struct Outcome {
+    pub(crate) target: String,
+    pub(crate) action: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<String>,
+    pub(crate) path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    note: Option<String>,
+    pub(crate) note: Option<String>,
 }
 
 impl Outcome {
@@ -40,21 +40,21 @@ impl Outcome {
 }
 
 /// One config file to edit.
-struct FileTarget {
-    label: String,
-    path: PathBuf,
-    kind: Kind,
+pub(crate) struct FileTarget {
+    pub(crate) label: String,
+    pub(crate) path: PathBuf,
+    pub(crate) kind: Kind,
     /// The directory that must exist for the file to be created.
     needs_dir: PathBuf,
 }
 
 #[derive(Clone, Copy)]
-enum Kind {
+pub(crate) enum Kind {
     Codex,
     Json(JsonKind),
 }
 
-fn config_files(host: &HostEnv, accounts: &[AccountFile]) -> Result<Vec<FileTarget>> {
+pub(crate) fn config_files(host: &HostEnv, accounts: &[AccountFile]) -> Result<Vec<FileTarget>> {
     let mut out = vec![
         FileTarget {
             label: "codex".into(),
@@ -145,7 +145,7 @@ fn skill_files(host: &HostEnv) -> Vec<PathBuf> {
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Private directories (0700), created recursively.
-fn create_private_dirs(dir: &Path) -> Result<()> {
+pub(crate) fn create_private_dirs(dir: &Path) -> Result<()> {
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -190,13 +190,13 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 }
 
 /// Writes files with a backup of what they replace.
-struct Writer {
-    dry_run: bool,
+pub(crate) struct Writer {
+    pub(crate) dry_run: bool,
     backup_root: PathBuf,
 }
 
 impl Writer {
-    fn new(paths: &Paths, dry_run: bool) -> Self {
+    pub(crate) fn new(paths: &Paths, dry_run: bool) -> Self {
         let now = Utc::now();
         let id = format!(
             "{}-{}-{}",
@@ -210,9 +210,15 @@ impl Writer {
         }
     }
 
+    /// Where `path` lands in the backup tree.
+    pub(crate) fn backup_path(&self, path: &Path) -> PathBuf {
+        self.backup_root
+            .join(path.strip_prefix("/").unwrap_or(path))
+    }
+
     /// Copies `path` into the backup tree (mirroring its absolute path) without ever
     /// overwriting an existing backup.
-    fn backup(&self, path: &Path) -> Result<()> {
+    pub(crate) fn backup(&self, path: &Path) -> Result<()> {
         let src = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let mode = std::fs::metadata(&src).map_or(0o600, |m| m.mode() & 0o777);
         let rel = path.strip_prefix("/").unwrap_or(path);
@@ -252,7 +258,7 @@ impl Writer {
     }
 
     /// Replaces `path` with `text` (backing up the old file first).
-    fn write(&self, path: &Path, text: &str) -> Result<()> {
+    pub(crate) fn write(&self, path: &Path, text: &str) -> Result<()> {
         if self.dry_run {
             return Ok(());
         }
@@ -262,7 +268,7 @@ impl Writer {
         write_atomic(path, text.as_bytes())
     }
 
-    fn remove_file(&self, path: &Path) -> Result<()> {
+    pub(crate) fn remove_file(&self, path: &Path) -> Result<()> {
         if self.dry_run {
             return Ok(());
         }
@@ -509,7 +515,7 @@ fn print(ctx: &Ctx, outcomes: &[Outcome], dry_run: bool) -> Result<()> {
 }
 
 /// One step's result, keyed by the target it acted on so errors name it.
-type Step = (String, Result<Outcome>);
+pub(crate) type Step = (String, Result<Outcome>);
 
 fn finish(ctx: &Ctx, results: Vec<Step>, dry_run: bool) -> Result<()> {
     let mut outcomes = Vec::new();
@@ -539,25 +545,31 @@ fn skill_step(w: &Writer, p: &Path, content: Option<&str>) -> Step {
 }
 
 pub fn install(ctx: &Ctx, force: bool, dry_run: bool) -> Result<()> {
+    let w = Writer::new(&ctx.paths, dry_run);
+    let results = install_steps(ctx, &w, force)?;
+    finish(ctx, results, dry_run)
+}
+
+/// The MCP registrations and skill files `install` manages, written through `w`.
+pub(crate) fn install_steps(ctx: &Ctx, w: &Writer, force: bool) -> Result<Vec<Step>> {
     let host = ctx.host()?;
     let exe = std::env::current_exe().context("could not find this executable")?;
     let exe = exe.to_string_lossy().into_owned();
     let accounts = AccountFile::list(&ctx.paths)?;
     let choices = ctx.config().map(|c| c.choices).unwrap_or_default();
     let skill = render_skill(&accounts, &choices);
-    let w = Writer::new(&ctx.paths, dry_run);
 
     let mut results = vec![(
         "claude".to_string(),
-        claude_install(&host, &exe, force, dry_run),
+        claude_install(&host, &exe, force, w.dry_run),
     )];
     for t in config_files(&host, &accounts)? {
-        results.push(file_step(&w, &t, &exe, true));
+        results.push(file_step(w, &t, &exe, true));
     }
     for p in skill_files(&host) {
-        results.push(skill_step(&w, &p, Some(&skill)));
+        results.push(skill_step(w, &p, Some(&skill)));
     }
-    finish(ctx, results, dry_run)
+    Ok(results)
 }
 
 pub fn uninstall(ctx: &Ctx, dry_run: bool) -> Result<()> {

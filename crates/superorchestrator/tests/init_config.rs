@@ -138,11 +138,7 @@ fn config_edit_validates_after_editor() {
 #[test]
 fn unimplemented_commands_exit_4_and_name_the_command() {
     let e = Env::new();
-    for args in [
-        vec!["workflow", "status", "x"],
-        vec!["migrate", "--apply"],
-        vec!["workflow", "list"],
-    ] {
+    for args in [vec!["workflow", "status", "x"], vec!["workflow", "list"]] {
         e.cmd()
             .args(&args)
             .assert()
