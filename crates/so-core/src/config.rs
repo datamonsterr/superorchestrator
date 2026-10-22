@@ -259,6 +259,43 @@ pub struct Config {
     pub choices: Vec<Choice>,
 }
 
+/// Optional keys are absent from the default value tree, so they are listed here.
+const OPTION_KEYS: [&str; 5] = [
+    "ui.token",
+    "router.jev.key_file",
+    "defaults.harness",
+    "defaults.model",
+    "defaults.effort",
+];
+
+fn render(v: &toml::Value) -> String {
+    match v {
+        toml::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+fn to_edit_value(v: &toml::Value) -> toml_edit::Value {
+    match v {
+        toml::Value::String(s) => s.as_str().into(),
+        toml::Value::Integer(i) => (*i).into(),
+        toml::Value::Float(f) => (*f).into(),
+        toml::Value::Boolean(b) => (*b).into(),
+        toml::Value::Datetime(d) => d
+            .to_string()
+            .parse::<toml_edit::Value>()
+            .unwrap_or_else(|_| d.to_string().as_str().into()),
+        toml::Value::Array(a) => toml_edit::Value::Array(a.iter().map(to_edit_value).collect()),
+        toml::Value::Table(t) => {
+            let mut it = toml_edit::InlineTable::new();
+            for (k, v) in t {
+                it.insert(k, to_edit_value(v));
+            }
+            toml_edit::Value::InlineTable(it)
+        }
+    }
+}
+
 impl Config {
     /// Loads `config.toml`; a missing file yields the defaults.
     pub fn load(paths: &Paths) -> Result<Self> {
@@ -270,40 +307,76 @@ impl Config {
         }
     }
 
-    /// Writes `config.toml`, creating the config directory.
+    /// Writes `config.toml` atomically, creating the config directory.
+    /// Comments in an existing file are not kept; use [`Config::set_in_file`] for that.
     pub fn save(&self, paths: &Paths) -> Result<()> {
-        let path = paths.config_toml();
         std::fs::create_dir_all(&paths.config_dir)
             .map_err(|e| CoreError::io(&paths.config_dir, e))?;
         let text = toml::to_string_pretty(self)?;
-        std::fs::write(&path, text).map_err(|e| CoreError::io(path, e))
+        crate::fsutil::write_atomic(&paths.config_toml(), text.as_bytes())
     }
 
     fn to_value(&self) -> Result<toml::Value> {
         Ok(toml::Value::try_from(self)?)
     }
 
-    /// Value at a dotted key such as `router.weights.load`.
-    /// Unset optional keys (for example `ui.token`) are not found.
-    pub fn get(&self, key_path: &str) -> Result<toml::Value> {
-        let mut cur = self.to_value()?;
-        for part in key_path.split('.') {
-            cur = match cur {
-                toml::Value::Table(mut t) => t.remove(part),
-                _ => None,
+    /// Checks a dotted key against the default value tree plus the known optional keys.
+    fn validate_key(key_path: &str) -> Result<Vec<&str>> {
+        let bad = || CoreError::InvalidConfigKey(key_path.to_string());
+        let parts: Vec<&str> = key_path.split('.').collect();
+        let mut cur = Self::default().to_value()?;
+        for (i, part) in parts.iter().enumerate() {
+            let prefix = parts[..=i].join(".");
+            match cur {
+                toml::Value::Table(mut t) => match t.remove(*part) {
+                    Some(next) => cur = next,
+                    None if OPTION_KEYS.contains(&prefix.as_str()) => {
+                        return if i + 1 == parts.len() {
+                            Ok(parts)
+                        } else {
+                            Err(bad())
+                        };
+                    }
+                    None => return Err(bad()),
+                },
+                _ => return Err(bad()),
             }
-            .ok_or_else(|| CoreError::InvalidConfigKey(key_path.to_string()))?;
         }
-        Ok(cur)
+        Ok(parts)
+    }
+
+    /// Value at a dotted key as a TOML value. `None` for a known optional key that is unset.
+    pub fn get_value(&self, key_path: &str) -> Result<Option<toml::Value>> {
+        let parts = Self::validate_key(key_path)?;
+        let mut cur = self.to_value()?;
+        for part in parts {
+            cur = match cur {
+                toml::Value::Table(mut t) => match t.remove(part) {
+                    Some(v) => v,
+                    None => return Ok(None),
+                },
+                _ => return Ok(None),
+            };
+        }
+        Ok(Some(cur))
+    }
+
+    /// Value at a dotted key such as `router.weights.load`, rendered as text
+    /// (strings without quotes). `Ok(None)` for a known optional key that is unset;
+    /// an unknown key is an error.
+    pub fn get(&self, key_path: &str) -> Result<Option<String>> {
+        Ok(self.get_value(key_path)?.as_ref().map(render))
     }
 
     /// Sets a dotted key from its string form, validating by re-deserialising the whole config.
     /// The string is read as a TOML value (`true`, `8`, `["a"]`, `"x"`), or as a plain string.
     pub fn set(&mut self, key_path: &str, value: &str) -> Result<()> {
-        let parts: Vec<&str> = key_path.split('.').collect();
-        if parts.iter().any(|p| p.is_empty()) {
-            return Err(CoreError::InvalidConfigKey(key_path.to_string()));
-        }
+        self.set_value(key_path, value).map(|_| ())
+    }
+
+    /// Like [`Config::set`], returning the accepted value.
+    fn set_value(&mut self, key_path: &str, value: &str) -> Result<toml::Value> {
+        let parts = Self::validate_key(key_path)?;
         let parsed: Option<toml::Value> = toml::from_str::<toml::Table>(&format!("v = {value}"))
             .ok()
             .and_then(|mut t| t.remove("v"));
@@ -313,21 +386,35 @@ impl Config {
         }
         candidates.push(toml::Value::String(value.to_string()));
 
-        let mut last_err = None;
+        // The typed candidate goes first, so its error is the one reported.
+        let mut first_err = None;
         for cand in candidates {
-            match self.with_value(&parts, key_path, cand) {
+            match self.with_value(&parts, key_path, Some(cand.clone())) {
                 Ok(cfg) => {
                     *self = cfg;
-                    return Ok(());
+                    return Ok(cand);
                 }
-                Err(e @ CoreError::InvalidConfigKey(_)) => return Err(e),
-                Err(e) => last_err = Some(e),
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                }
             }
         }
-        Err(last_err.unwrap_or_else(|| CoreError::InvalidConfigKey(key_path.to_string())))
+        Err(first_err.unwrap_or_else(|| CoreError::InvalidConfigKey(key_path.to_string())))
     }
 
-    fn with_value(&self, parts: &[&str], key_path: &str, new: toml::Value) -> Result<Config> {
+    /// Resets a dotted key: optional keys become unset, others return to their default.
+    pub fn unset(&mut self, key_path: &str) -> Result<()> {
+        let parts = Self::validate_key(key_path)?;
+        *self = self.with_value(&parts, key_path, None)?;
+        Ok(())
+    }
+
+    fn with_value(
+        &self,
+        parts: &[&str],
+        key_path: &str,
+        new: Option<toml::Value>,
+    ) -> Result<Config> {
         let mut root = self.to_value()?;
         let mut cur = &mut root;
         for part in &parts[..parts.len() - 1] {
@@ -341,19 +428,86 @@ impl Config {
         let table = cur
             .as_table_mut()
             .ok_or_else(|| CoreError::InvalidConfigKey(key_path.to_string()))?;
-        table.insert(parts[parts.len() - 1].to_string(), new);
-        root.try_into::<Config>().map_err(|e| {
-            let msg = e.message().to_string();
-            // `deny_unknown_fields` reports unknown keys; surface them as such.
-            if msg.starts_with("unknown field") {
-                CoreError::InvalidConfigKey(key_path.to_string())
-            } else {
-                CoreError::InvalidValue {
-                    key: key_path.to_string(),
-                    reason: msg,
-                }
+        let last = parts[parts.len() - 1];
+        match new {
+            Some(v) => {
+                table.insert(last.to_string(), v);
             }
+            None => {
+                table.remove(last);
+            }
+        }
+        root.try_into::<Config>()
+            .map_err(|e| CoreError::InvalidValue {
+                key: key_path.to_string(),
+                reason: e.message().to_string(),
+            })
+    }
+
+    /// Sets a key in `config.toml`, keeping comments and ordering, and writes it atomically.
+    /// Returns the updated config.
+    pub fn set_in_file(paths: &Paths, key_path: &str, value: &str) -> Result<Config> {
+        Self::edit_file(paths, key_path, |cfg| {
+            cfg.set_value(key_path, value).map(Some)
         })
+    }
+
+    /// Removes a key from `config.toml`, keeping comments and ordering.
+    pub fn unset_in_file(paths: &Paths, key_path: &str) -> Result<Config> {
+        Self::edit_file(paths, key_path, |cfg| cfg.unset(key_path).map(|_| None))
+    }
+
+    fn edit_file(
+        paths: &Paths,
+        key_path: &str,
+        change: impl FnOnce(&mut Config) -> Result<Option<toml::Value>>,
+    ) -> Result<Config> {
+        let path = paths.config_toml();
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return Err(CoreError::io(&path, e)),
+        };
+        let mut cfg: Config = toml::from_str(&text).map_err(|source| CoreError::TomlDe {
+            path: path.clone(),
+            source,
+        })?;
+        let mut doc: toml_edit::DocumentMut =
+            text.parse()
+                .map_err(|e: toml_edit::TomlError| CoreError::TomlEdit {
+                    path: path.clone(),
+                    message: e.to_string(),
+                })?;
+        let accepted = change(&mut cfg)?;
+
+        let bad = || CoreError::InvalidConfigKey(key_path.to_string());
+        let parts: Vec<&str> = key_path.split('.').collect();
+        let (last, parents) = parts.split_last().ok_or_else(bad)?;
+        let mut table = doc.as_table_mut();
+        for part in parents {
+            if accepted.is_none() && !table.contains_key(part) {
+                // Nothing to remove.
+                return Ok(cfg);
+            }
+            let item = table.entry(part).or_insert_with(|| {
+                let mut t = toml_edit::Table::new();
+                t.set_implicit(true);
+                toml_edit::Item::Table(t)
+            });
+            table = item.as_table_mut().ok_or_else(bad)?;
+        }
+        match accepted {
+            Some(v) => {
+                table.insert(last, toml_edit::Item::Value(to_edit_value(&v)));
+            }
+            None => {
+                table.remove(last);
+            }
+        }
+        std::fs::create_dir_all(&paths.config_dir)
+            .map_err(|e| CoreError::io(&paths.config_dir, e))?;
+        crate::fsutil::write_atomic(&path, doc.to_string().as_bytes())?;
+        Ok(cfg)
     }
 }
 
@@ -471,21 +625,21 @@ mod tests {
     #[test]
     fn get_dotted_keys() {
         let c = Config::default();
+        assert_eq!(c.get("limits.global_cap").unwrap().as_deref(), Some("16"));
         assert_eq!(
-            c.get("limits.global_cap").unwrap(),
-            toml::Value::Integer(16)
+            c.get("router.weights.load").unwrap().as_deref(),
+            Some("0.5")
         );
-        assert_eq!(
-            c.get("router.weights.load").unwrap(),
-            toml::Value::Float(0.5)
-        );
-        assert_eq!(
-            c.get("runs.ask_timeout").unwrap(),
-            toml::Value::String("30m".into())
-        );
+        assert_eq!(c.get("runs.ask_timeout").unwrap().as_deref(), Some("30m"));
+        // Known but unset optional keys are Ok(None).
+        assert_eq!(c.get("ui.token").unwrap(), None);
+        assert_eq!(c.get("router.jev.key_file").unwrap(), None);
+        assert_eq!(c.get("defaults.harness").unwrap(), None);
+        // Unknown keys are errors.
         assert!(c.get("router.nope").is_err());
         assert!(c.get("limits.global_cap.x").is_err());
-        assert!(c.get("ui.token").is_err());
+        assert!(c.get("ui.token.x").is_err());
+        assert!(c.get("defaults.nope").is_err());
     }
 
     #[test]
@@ -507,6 +661,7 @@ mod tests {
         assert_eq!(c.defaults.harness, Some(Harness::Claude));
         c.set("ui.token", "12345").unwrap();
         assert_eq!(c.ui.token.as_deref(), Some("12345"));
+        assert_eq!(c.get("ui.token").unwrap().as_deref(), Some("12345"));
         c.set("router.jev.key_file", "~/x/.env").unwrap();
         assert_eq!(c.router.jev.key_file.as_deref(), Some("~/x/.env"));
     }
@@ -521,7 +676,6 @@ mod tests {
         ));
         assert!(c.set("limits.global_cap", "-1").is_err());
         assert!(c.set("runs.ask_timeout", "soon").is_err());
-        assert!(c.set("ui.port", "70000").is_err());
         assert!(c.set("defaults.harness", "gemini").is_err());
         assert!(matches!(
             c.set("limits.nope", "1"),
@@ -531,7 +685,105 @@ mod tests {
             c.set("nope.x", "1"),
             Err(CoreError::InvalidConfigKey(_))
         ));
-        assert!(c.set("limits..x", "1").is_err());
+        assert!(matches!(
+            c.set("limits.global_cap.x", "1"),
+            Err(CoreError::InvalidConfigKey(_))
+        ));
+        assert!(matches!(
+            c.set("ui.token.x", "1"),
+            Err(CoreError::InvalidConfigKey(_))
+        ));
+        assert!(matches!(
+            c.set("limits..x", "1"),
+            Err(CoreError::InvalidConfigKey(_))
+        ));
         assert_eq!(c, before);
+    }
+
+    #[test]
+    fn bare_integer_duration_needs_a_unit() {
+        let mut c = Config::default();
+        let err = c.set("runs.ask_timeout", "30").unwrap_err();
+        assert!(matches!(err, CoreError::InvalidValue { .. }));
+        assert!(err.to_string().contains("needs a unit"), "{err}");
+        assert!(toml::from_str::<Config>("[runs]\nask_timeout = 1800000").is_err());
+    }
+
+    #[test]
+    fn typed_error_is_reported() {
+        let mut c = Config::default();
+        let err = c.set("ui.port", "70000").unwrap_err().to_string();
+        assert!(err.contains("70000"), "{err}");
+        assert!(err.contains("u16"), "{err}");
+    }
+
+    #[test]
+    fn nested_unknown_field_in_value_is_invalid_value() {
+        let mut c = Config::default();
+        let err = c
+            .set("router.weights", "{ headroom = 1.0, bogus = 2 }")
+            .unwrap_err();
+        assert!(matches!(err, CoreError::InvalidValue { .. }), "{err}");
+    }
+
+    #[test]
+    fn unset_resets_keys() {
+        let mut c = Config::default();
+        c.set("ui.token", "abc").unwrap();
+        c.unset("ui.token").unwrap();
+        assert_eq!(c.ui.token, None);
+        c.set("limits.global_cap", "3").unwrap();
+        c.unset("limits.global_cap").unwrap();
+        assert_eq!(c.limits.global_cap, 16);
+        assert!(c.unset("nope").is_err());
+    }
+
+    #[test]
+    fn set_in_file_keeps_comments_and_order() {
+        let (_d, paths) = tmp();
+        std::fs::write(
+            paths.config_toml(),
+            "# keep me\n[limits]\nglobal_cap = 4 # inline\n\n[ui]\nport = 9000\n",
+        )
+        .unwrap();
+        let cfg = Config::set_in_file(&paths, "limits.max_children", "3").unwrap();
+        assert_eq!(cfg.limits.max_children, 3);
+        Config::set_in_file(&paths, "router.weights.load", "0.9").unwrap();
+        Config::set_in_file(&paths, "ui.token", "t").unwrap();
+        let text = std::fs::read_to_string(paths.config_toml()).unwrap();
+        assert!(
+            text.starts_with("# keep me\n[limits]\nglobal_cap = 4 # inline"),
+            "{text}"
+        );
+        let loaded = Config::load(&paths).unwrap();
+        assert_eq!(loaded.limits.global_cap, 4);
+        assert_eq!(loaded.limits.max_children, 3);
+        assert_eq!(loaded.router.weights.load, 0.9);
+        assert_eq!(loaded.ui.port, 9000);
+        assert_eq!(loaded.ui.token.as_deref(), Some("t"));
+
+        // Invalid values leave the file untouched.
+        let before = std::fs::read_to_string(paths.config_toml()).unwrap();
+        assert!(Config::set_in_file(&paths, "ui.port", "70000").is_err());
+        assert_eq!(
+            std::fs::read_to_string(paths.config_toml()).unwrap(),
+            before
+        );
+
+        Config::unset_in_file(&paths, "ui.token").unwrap();
+        assert_eq!(Config::load(&paths).unwrap().ui.token, None);
+        assert!(
+            std::fs::read_to_string(paths.config_toml())
+                .unwrap()
+                .contains("# keep me")
+        );
+    }
+
+    #[test]
+    fn set_in_file_creates_missing_file() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(d.path().join("new"));
+        Config::set_in_file(&paths, "limits.global_cap", "2").unwrap();
+        assert_eq!(Config::load(&paths).unwrap().limits.global_cap, 2);
     }
 }

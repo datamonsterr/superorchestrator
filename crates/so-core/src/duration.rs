@@ -9,7 +9,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::error::CoreError;
 
-/// A duration serialised as a string like `30m`. Integers deserialise as milliseconds.
+/// A duration serialised as a string like `30m`. A bare integer is rejected: a unit is required.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HumanDuration(pub Duration);
 
@@ -85,18 +85,20 @@ impl<'de> Deserialize<'de> for HumanDuration {
         impl Visitor<'_> for V {
             type Value = HumanDuration;
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a duration string like \"5m\" or an integer of milliseconds")
+                f.write_str("a duration string with a unit, like \"5m\"")
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
                 v.parse().map_err(E::custom)
             }
             fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
-                Ok(HumanDuration::from_millis(v))
+                Err(E::custom(format!(
+                    "duration `{v}` needs a unit (ms, s, m, h or d), for example \"{v}s\""
+                )))
             }
             fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
-                u64::try_from(v)
-                    .map(HumanDuration::from_millis)
-                    .map_err(|_| E::custom("duration cannot be negative"))
+                Err(E::custom(format!(
+                    "duration `{v}` needs a unit (ms, s, m, h or d), for example \"{v}s\""
+                )))
             }
         }
         d.deserialize_any(V)
@@ -152,17 +154,19 @@ mod tests {
     }
 
     #[test]
-    fn serde_string_and_integer_ms() {
+    fn serde_string_only_integer_rejected() {
         #[derive(Serialize, Deserialize)]
         struct W {
             d: HumanDuration,
         }
         let w: W = toml::from_str("d = \"5m\"").unwrap();
         assert_eq!(w.d, HumanDuration::from_secs(300));
-        let w: W = toml::from_str("d = 1500").unwrap();
-        assert_eq!(w.d, HumanDuration::from_millis(1500));
-        assert_eq!(toml::to_string(&w).unwrap().trim(), "d = \"1500ms\"");
-        let j = serde_json::to_string(&HumanDuration::from_secs(20)).unwrap();
-        assert_eq!(j, "\"20s\"");
+        let err = toml::from_str::<W>("d = 1500").err().unwrap().to_string();
+        assert!(err.contains("needs a unit"), "{err}");
+        assert!(serde_json::from_str::<HumanDuration>("1500").is_err());
+        assert_eq!(
+            serde_json::to_string(&HumanDuration::from_secs(20)).unwrap(),
+            "\"20s\""
+        );
     }
 }

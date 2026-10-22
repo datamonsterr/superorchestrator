@@ -107,25 +107,56 @@ impl AccountFile {
         })
     }
 
+    /// Checks name, `cap >= 1` and non-empty `pools`.
+    pub fn validate(&self) -> Result<()> {
+        validate_account_name(&self.name)?;
+        let invalid = |reason: &str| CoreError::InvalidValue {
+            key: format!("account {}", self.name),
+            reason: reason.to_string(),
+        };
+        if self.cap == 0 {
+            return Err(invalid("cap must be at least 1"));
+        }
+        if self.pools.is_empty() {
+            return Err(invalid("pools must not be empty"));
+        }
+        Ok(())
+    }
+
+    /// Loads one account file. The `name` must equal the file stem.
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).map_err(|e| CoreError::io(path, e))?;
         let acc: Self = toml::from_str(&text).map_err(|source| CoreError::TomlDe {
             path: path.to_path_buf(),
             source,
         })?;
-        validate_account_name(&acc.name)?;
+        let bad = |reason: String| CoreError::InvalidAccountFile {
+            path: path.to_path_buf(),
+            reason,
+        };
+        acc.validate().map_err(|e| bad(e.to_string()))?;
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        if stem != acc.name {
+            return Err(bad(format!(
+                "name `{}` does not match the file name",
+                acc.name
+            )));
+        }
         Ok(acc)
     }
 
     /// Writes `accounts/<name>.toml`, creating the directory.
     pub fn save(&self, paths: &Paths) -> Result<()> {
-        validate_account_name(&self.name)?;
+        self.validate()?;
         let path = paths.account_file(&self.name);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| CoreError::io(dir, e))?;
         }
         let text = toml::to_string_pretty(self)?;
-        std::fs::write(&path, text).map_err(|e| CoreError::io(&path, e))
+        crate::fsutil::write_atomic(&path, text.as_bytes())
     }
 
     /// All account files, sorted by name. A missing directory yields an empty list.
@@ -198,6 +229,36 @@ mod tests {
         )
         .unwrap();
         assert_eq!(b.pools, vec!["gemini"]);
+    }
+
+    #[test]
+    fn rejects_zero_cap_empty_pools_and_name_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(dir.path().to_path_buf());
+        let mut a = AccountFile::new("codex-a", Harness::Codex, "~/.a", "codex").unwrap();
+        a.cap = 0;
+        assert!(a.save(&paths).is_err());
+        a.cap = 1;
+        a.pools.clear();
+        assert!(a.save(&paths).is_err());
+        a.pools = vec!["default".into()];
+        a.save(&paths).unwrap();
+
+        // File renamed so the stem no longer matches the name.
+        std::fs::rename(paths.account_file("codex-a"), paths.account_file("codex-z")).unwrap();
+        let err = AccountFile::load(&paths.account_file("codex-z")).unwrap_err();
+        assert!(matches!(err, CoreError::InvalidAccountFile { .. }), "{err}");
+        assert!(err.to_string().contains("codex-z.toml"));
+        // list names the offending file.
+        let err = AccountFile::list(&paths).unwrap_err();
+        assert!(err.to_string().contains("codex-z.toml"), "{err}");
+
+        std::fs::write(
+            paths.account_file("codex-z"),
+            "name = \"codex-z\"\nharness = \"codex\"\nhome = \"h\"\nbinary = \"codex\"\ncap = 0",
+        )
+        .unwrap();
+        assert!(AccountFile::load(&paths.account_file("codex-z")).is_err());
     }
 
     #[test]

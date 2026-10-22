@@ -9,6 +9,41 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
 
+/// Implements `ALL`, `as_str`, `Display` and `FromStr` for a unit enum, so the
+/// wire name of each variant is written once. Tests assert it equals the serde name.
+macro_rules! str_enum {
+    (@unit $v:ident) => {
+        ()
+    };
+    ($t:ident, $err:expr, { $($v:ident => $s:expr),+ $(,)? }) => {
+        impl $t {
+            pub const ALL: [$t; <[()]>::len(&[$(str_enum!(@unit $v)),+])] = [$($t::$v),+];
+
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $($t::$v => $s),+
+                }
+            }
+        }
+
+        impl fmt::Display for $t {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        impl FromStr for $t {
+            type Err = CoreError;
+            fn from_str(s: &str) -> ::core::result::Result<Self, Self::Err> {
+                $t::ALL
+                    .into_iter()
+                    .find(|v| v.as_str() == s)
+                    .ok_or_else(|| ($err)(s.to_string()))
+            }
+        }
+    };
+}
+
 /// Generates a time-ordered unique id (UUID v7).
 pub fn new_id() -> String {
     uuid::Uuid::now_v7().to_string()
@@ -26,39 +61,12 @@ pub enum Harness {
     Claude,
 }
 
-impl Harness {
-    pub const ALL: [Harness; 4] = [
-        Harness::Codex,
-        Harness::Agy,
-        Harness::Opencode,
-        Harness::Claude,
-    ];
-
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Harness::Codex => "codex",
-            Harness::Agy => "agy",
-            Harness::Opencode => "opencode",
-            Harness::Claude => "claude",
-        }
-    }
-}
-
-impl fmt::Display for Harness {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for Harness {
-    type Err = CoreError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Harness::ALL
-            .into_iter()
-            .find(|h| h.as_str() == s)
-            .ok_or_else(|| CoreError::UnknownHarness(s.to_string()))
-    }
-}
+str_enum!(Harness, CoreError::UnknownHarness, {
+    Codex => "codex",
+    Agy => "agy",
+    Opencode => "opencode",
+    Claude => "claude",
+});
 
 /// Lifecycle state of a run (SPEC 7.1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -77,21 +85,6 @@ pub enum RunState {
 }
 
 impl RunState {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            RunState::Queued => "queued",
-            RunState::Starting => "starting",
-            RunState::Running => "running",
-            RunState::Waiting => "waiting",
-            RunState::Stalled => "stalled",
-            RunState::Escalated => "escalated",
-            RunState::PendingReview => "pending_review",
-            RunState::Succeeded => "succeeded",
-            RunState::Failed => "failed",
-            RunState::Cancelled => "cancelled",
-        }
-    }
-
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
@@ -130,11 +123,18 @@ impl RunState {
     }
 }
 
-impl fmt::Display for RunState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+str_enum!(RunState, |s| CoreError::UnknownValue { kind: "run state", value: s }, {
+    Queued => "queued",
+    Starting => "starting",
+    Running => "running",
+    Waiting => "waiting",
+    Stalled => "stalled",
+    Escalated => "escalated",
+    PendingReview => "pending_review",
+    Succeeded => "succeeded",
+    Failed => "failed",
+    Cancelled => "cancelled",
+});
 
 /// What kind of connection a session is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -143,6 +143,11 @@ pub enum SessionKind {
     Orchestrator,
     Interactive,
 }
+
+str_enum!(SessionKind, |s| CoreError::UnknownValue { kind: "session kind", value: s }, {
+    Orchestrator => "orchestrator",
+    Interactive => "interactive",
+});
 
 fn default_roles() -> Vec<String> {
     vec!["worker".to_string()]
@@ -154,6 +159,7 @@ fn default_true() -> bool {
 
 /// One routable combination of harness, model and effort (SPEC 8.2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Choice {
     pub id: String,
     pub harness: Harness,
@@ -178,6 +184,13 @@ pub enum HeadroomStatus {
     Unknown,
 }
 
+str_enum!(HeadroomStatus, |s| CoreError::UnknownValue { kind: "headroom status", value: s }, {
+    Ok => "ok",
+    Low => "low",
+    Exhausted => "exhausted",
+    Unknown => "unknown",
+});
+
 /// Where a headroom record came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -186,6 +199,12 @@ pub enum HeadroomSource {
     Event,
     Ledger,
 }
+
+str_enum!(HeadroomSource, |s| CoreError::UnknownValue { kind: "headroom source", value: s }, {
+    Probe => "probe",
+    Event => "event",
+    Ledger => "ledger",
+});
 
 /// Headroom of one (account, pool) (SPEC 6.2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -215,6 +234,13 @@ pub enum ErrorKind {
     Other,
 }
 
+str_enum!(ErrorKind, |s| CoreError::UnknownValue { kind: "error kind", value: s }, {
+    Quota => "quota",
+    RateLimit => "rate_limit",
+    Auth => "auth",
+    Other => "other",
+});
+
 /// Where a run executes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -222,6 +248,11 @@ pub enum Isolation {
     Worktree,
     None,
 }
+
+str_enum!(Isolation, |s| CoreError::UnknownValue { kind: "isolation", value: s }, {
+    Worktree => "worktree",
+    None => "none",
+});
 
 /// Kind of a message between runs and the orchestrator (SPEC 9).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -234,6 +265,15 @@ pub enum MessageKind {
     Nudge,
     Result,
 }
+
+str_enum!(MessageKind, |s| CoreError::UnknownValue { kind: "message kind", value: s }, {
+    Message => "message",
+    Progress => "progress",
+    Question => "question",
+    Answer => "answer",
+    Nudge => "nudge",
+    Result => "result",
+});
 
 /// Every event type of SPEC 12.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -266,6 +306,35 @@ pub enum EventType {
     ReviewAccepted,
     ReviewRejected,
 }
+
+str_enum!(EventType, |s| CoreError::UnknownValue { kind: "event type", value: s }, {
+    RunQueued => "run_queued",
+    RunStarted => "run_started",
+    StateChanged => "state_changed",
+    RunFinished => "run_finished",
+    AttemptStarted => "attempt_started",
+    Failover => "failover",
+    RouteDecision => "route_decision",
+    ToolCallStarted => "tool_call_started",
+    ToolCallFinished => "tool_call_finished",
+    AssistantMessage => "assistant_message",
+    Progress => "progress",
+    MessageSent => "message_sent",
+    QuestionAsked => "question_asked",
+    QuestionAnswered => "question_answered",
+    Usage => "usage",
+    UserJoined => "user_joined",
+    UserLeft => "user_left",
+    JoinCommandIssued => "join_command_issued",
+    StallDetected => "stall_detected",
+    NudgeSent => "nudge_sent",
+    Escalated => "escalated",
+    WorktreeCreated => "worktree_created",
+    WorktreeRemoved => "worktree_removed",
+    CheckResult => "check_result",
+    ReviewAccepted => "review_accepted",
+    ReviewRejected => "review_rejected",
+});
 
 /// One appended fact in the timeline.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -373,6 +442,40 @@ mod tests {
         for (a, b) in bad {
             assert!(!a.can_transition(b), "{a} -> {b}");
         }
+    }
+
+    fn assert_str_matches_serde<T>(all: &[T])
+    where
+        T: Serialize + std::str::FromStr + fmt::Display + PartialEq + fmt::Debug,
+        T::Err: fmt::Debug,
+    {
+        for v in all {
+            let json = serde_json::to_value(v).unwrap();
+            assert_eq!(json.as_str().unwrap(), v.to_string());
+            assert_eq!(&v.to_string().parse::<T>().unwrap(), v);
+        }
+        assert!("no-such-value".parse::<T>().is_err());
+    }
+
+    #[test]
+    fn as_str_matches_serde_for_every_enum() {
+        assert_str_matches_serde(&Harness::ALL);
+        assert_str_matches_serde(&RunState::ALL);
+        assert_str_matches_serde(&SessionKind::ALL);
+        assert_str_matches_serde(&HeadroomStatus::ALL);
+        assert_str_matches_serde(&HeadroomSource::ALL);
+        assert_str_matches_serde(&ErrorKind::ALL);
+        assert_str_matches_serde(&Isolation::ALL);
+        assert_str_matches_serde(&MessageKind::ALL);
+        assert_str_matches_serde(&EventType::ALL);
+    }
+
+    #[test]
+    fn choice_rejects_unknown_fields() {
+        assert!(
+            toml::from_str::<Choice>("id = \"a\"\nharness = \"codex\"\nmodel = \"m\"\nbogus = 1")
+                .is_err()
+        );
     }
 
     #[test]

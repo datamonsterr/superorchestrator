@@ -29,6 +29,12 @@ pub enum CoreError {
     InvalidValue { key: String, reason: String },
     #[error("invalid duration `{0}`: expected forms like 20s, 5m, 5h, 7d")]
     InvalidDuration(String),
+    #[error("unknown {kind} `{value}`")]
+    UnknownValue { kind: &'static str, value: String },
+    #[error("invalid account file {path}: {reason}")]
+    InvalidAccountFile { path: PathBuf, reason: String },
+    #[error("cannot edit toml {path}: {message}")]
+    TomlEdit { path: PathBuf, message: String },
     #[error("unknown harness `{0}`")]
     UnknownHarness(String),
     #[error("cannot determine the home directory (HOME is unset)")]

@@ -34,18 +34,21 @@ impl Platform {
 }
 
 /// Expands a leading `~` or `~/` using `HOME`.
-pub fn expand_tilde(s: &str) -> PathBuf {
+pub fn expand_tilde(s: &str) -> Result<PathBuf> {
     expand_tilde_with(&process_env, s)
 }
 
-/// [`expand_tilde`] with an injected environment.
-pub fn expand_tilde_with(env: EnvFn<'_>, s: &str) -> PathBuf {
-    let home = non_empty(env, "HOME");
-    match (s, home) {
-        ("~", Some(h)) => PathBuf::from(h),
-        (s, Some(h)) if s.starts_with("~/") => PathBuf::from(h).join(&s[2..]),
-        _ => PathBuf::from(s),
+/// [`expand_tilde`] with an injected environment. Errors when the path starts
+/// with `~` and `HOME` is unset. `~user` forms are left as they are.
+pub fn expand_tilde_with(env: EnvFn<'_>, s: &str) -> Result<PathBuf> {
+    if s != "~" && !s.starts_with("~/") {
+        return Ok(PathBuf::from(s));
     }
+    let home = non_empty(env, "HOME").ok_or(CoreError::NoHomeDir)?;
+    Ok(match s.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(home).join(rest),
+        None => PathBuf::from(home),
+    })
 }
 
 /// Paths under the config directory.
@@ -64,7 +67,7 @@ impl Paths {
     /// `$XDG_CONFIG_HOME/superorchestrator`, then `~/.config/superorchestrator`.
     pub fn resolve_with(env: EnvFn<'_>, platform: Platform) -> Result<Self> {
         if let Some(dir) = non_empty(env, "SUPERORCHESTRATOR_CONFIG_DIR") {
-            return Ok(Self::from_dir(expand_tilde_with(env, &dir)));
+            return Ok(Self::from_dir(expand_tilde_with(env, &dir)?));
         }
         if platform == Platform::Linux
             && let Some(xdg) = non_empty(env, "XDG_CONFIG_HOME")
@@ -132,7 +135,7 @@ impl Paths {
 /// `~/Library/Caches/superorchestrator/sock`.
 pub fn socket_path_with(env: EnvFn<'_>, platform: Platform) -> Result<PathBuf> {
     if let Some(p) = non_empty(env, "SUPERORCHESTRATOR_SOCKET") {
-        return Ok(expand_tilde_with(env, &p));
+        return expand_tilde_with(env, &p);
     }
     match platform {
         Platform::MacOs => {
@@ -142,13 +145,15 @@ pub fn socket_path_with(env: EnvFn<'_>, platform: Platform) -> Result<PathBuf> {
                 .join("sock"))
         }
         Platform::Linux => {
-            if let Some(rt) = non_empty(env, "XDG_RUNTIME_DIR") {
+            if let Some(rt) = non_empty(env, "XDG_RUNTIME_DIR")
+                && Path::new(&rt).is_absolute()
+            {
                 return Ok(PathBuf::from(rt).join("superorchestrator.sock"));
             }
-            let uid = non_empty(env, "HOME")
-                .and_then(|h| std::fs::metadata(h).ok())
-                .or_else(|| std::fs::metadata("/tmp").ok())
-                .map_or(0, |m| m.uid());
+            // The owner of /proc/self is the process's effective uid.
+            let uid = std::fs::metadata("/proc/self")
+                .map_err(|e| CoreError::io("/proc/self", e))?
+                .uid();
             Ok(PathBuf::from(format!("/tmp/superorchestrator-{uid}"))
                 .join("superorchestrator.sock"))
         }
@@ -234,20 +239,25 @@ mod tests {
     fn tilde_expansion() {
         let env = env_of(&[("HOME", "/home/u")]);
         assert_eq!(
-            expand_tilde_with(&env, "~/.codex"),
+            expand_tilde_with(&env, "~/.codex").unwrap(),
             PathBuf::from("/home/u/.codex")
         );
-        assert_eq!(expand_tilde_with(&env, "~"), PathBuf::from("/home/u"));
         assert_eq!(
-            expand_tilde_with(&env, "/abs/~/x"),
+            expand_tilde_with(&env, "~").unwrap(),
+            PathBuf::from("/home/u")
+        );
+        assert_eq!(
+            expand_tilde_with(&env, "/abs/~/x").unwrap(),
             PathBuf::from("/abs/~/x")
         );
         assert_eq!(
-            expand_tilde_with(&env, "~other/x"),
+            expand_tilde_with(&env, "~other/x").unwrap(),
             PathBuf::from("~other/x")
         );
         let none = env_of(&[]);
-        assert_eq!(expand_tilde_with(&none, "~/x"), PathBuf::from("~/x"));
+        assert!(expand_tilde_with(&none, "~/x").is_err());
+        assert!(expand_tilde_with(&none, "~").is_err());
+        assert_eq!(expand_tilde_with(&none, "/x").unwrap(), PathBuf::from("/x"));
     }
 
     #[test]
@@ -265,6 +275,13 @@ mod tests {
         assert_eq!(
             socket_path_with(&env, Platform::Linux).unwrap(),
             PathBuf::from("/run/user/1000/superorchestrator.sock")
+        );
+
+        let env = env_of(&[("XDG_RUNTIME_DIR", "relative/dir")]);
+        let p = socket_path_with(&env, Platform::Linux).unwrap();
+        assert!(
+            p.to_string_lossy().starts_with("/tmp/superorchestrator-"),
+            "{p:?}"
         );
 
         let env = env_of(&[("HOME", "/home/u")]);
