@@ -26,3 +26,4 @@ Minor review findings deferred to M9 hardening. Each line names the file and the
 - `crates/so-supervisor/src/runs/routing.rs`: re-routing a queued first-spawn agent run with tool controls does not filter out harnesses with tool gaps. Only pending failovers are filtered.
 - `scripts/smoke.sh`: install the cleanup trap before the isolation-check `die`. Cleanup should also kill the supervisor by socket-owner pid when `status` does not answer.
 - `crates/so-mcp`: the `cancelled` doc comment is stale. `cancelling_a_task_does_not_cancel_the_run` uses `run_workflow`, which never calls `cancel_agent`, so it should be a `wait_agent` case.
+- `crates/so-harness/src/agy.rs`: parse "Resets in XhYmZs" from the quota message, so the cooldown uses the reported reset time instead of the 5 h default. Seen in the 2026-10-23 smoke test.
