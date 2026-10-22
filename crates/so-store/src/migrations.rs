@@ -19,7 +19,9 @@ CREATE TABLE runs (
   harness TEXT NOT NULL, account TEXT, model TEXT, effort TEXT, cwd TEXT, worktree_path TEXT,
   branch TEXT, native_session_id TEXT, state TEXT NOT NULL, review INTEGER NOT NULL DEFAULT 0,
   output_schema TEXT, result_json TEXT, error_kind TEXT, prompt TEXT,
-  created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT
+  created_at TEXT NOT NULL, started_at TEXT, finished_at TEXT,
+  isolation TEXT NOT NULL DEFAULT 'none', max_turns INTEGER, worktree_base TEXT,
+  worktree_repo TEXT, timeout_ms INTEGER
 );
 CREATE INDEX idx_runs_session ON runs(session_id);
 CREATE INDEX idx_runs_state ON runs(state);

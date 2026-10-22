@@ -9,12 +9,13 @@ use so_core::{RunState, new_id};
 
 use crate::codec::*;
 use crate::error::{Result, StoreError};
-use crate::rows::{AttemptRow, FinishPatch, RunPatch, RunRow};
+use crate::rows::{AttemptRow, FinishPatch, InsertRun, RunPatch, RunRow};
 use crate::store::Store;
 
 const COLS: &str = "id, session_id, parent_run_id, depth, name, agent, choice_id, harness, \
     account, model, effort, cwd, worktree_path, branch, native_session_id, state, review, \
-    output_schema, result_json, error_kind, prompt, created_at, started_at, finished_at";
+    output_schema, result_json, error_kind, prompt, created_at, started_at, finished_at, \
+    isolation, max_turns, worktree_base, worktree_repo, timeout_ms";
 
 fn state_list(pred: impl Fn(RunState) -> bool) -> String {
     RunState::ALL
@@ -63,6 +64,15 @@ fn map(r: &Row<'_>) -> rusqlite::Result<RunRow> {
         created_at: get_ts(r, 21)?,
         started_at: get_opt_ts(r, 22)?,
         finished_at: get_opt_ts(r, 23)?,
+        isolation: get_enum(r, 24)?,
+        max_turns: r
+            .get::<_, Option<i64>>(25)?
+            .and_then(|n| u32::try_from(n).ok()),
+        worktree_base: r.get(26)?,
+        worktree_repo: r.get(27)?,
+        timeout_ms: r
+            .get::<_, Option<i64>>(28)?
+            .and_then(|n| u64::try_from(n).ok()),
     })
 }
 
@@ -80,39 +90,29 @@ fn map_attempt(r: &Row<'_>) -> rusqlite::Result<AttemptRow> {
 
 impl Store {
     pub fn insert_run(&self, r: &RunRow) -> Result<()> {
-        self.conn().execute(
-            &format!(
-                "INSERT INTO runs ({COLS}) VALUES \
-                 (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)"
-            ),
-            params![
-                r.id,
-                r.session_id,
-                r.parent_run_id,
-                r.depth,
-                r.name,
-                r.agent,
-                r.choice_id,
-                enum_to_sql(&r.harness),
-                r.account,
-                r.model,
-                r.effort,
-                r.cwd,
-                r.worktree_path,
-                r.branch,
-                r.native_session_id,
-                enum_to_sql(&r.state),
-                r.review,
-                r.output_schema,
-                r.result_json,
-                r.error_kind.as_ref().map(enum_to_sql),
-                r.prompt,
-                ts_to_sql(&r.created_at),
-                opt_ts_to_sql(&r.started_at),
-                opt_ts_to_sql(&r.finished_at),
-            ],
-        )?;
-        Ok(())
+        insert_run_on(&self.conn(), r)
+    }
+
+    /// Inserts a run unless its parent already has `max_children` active children. The
+    /// count and the insert share one transaction, so concurrent spawns cannot overshoot.
+    pub fn insert_run_checked(&self, r: &RunRow, max_children: usize) -> Result<InsertRun> {
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(parent) = &r.parent_run_id {
+            let active = &*ACTIVE;
+            let n: i64 = tx.query_row(
+                &format!("SELECT COUNT(*) FROM runs WHERE parent_run_id = ?1 AND {active}"),
+                [parent],
+                |row| row.get(0),
+            )?;
+            let n = usize::try_from(n).unwrap_or(usize::MAX);
+            if n >= max_children {
+                return Ok(InsertRun::ChildCap { active: n });
+            }
+        }
+        insert_run_on(&tx, r)?;
+        tx.commit()?;
+        Ok(InsertRun::Inserted)
     }
 
     pub fn get_run(&self, id: &str) -> Result<Option<RunRow>> {
@@ -273,6 +273,12 @@ impl Store {
         if let Some(v) = &p.branch {
             set!("branch", v.clone());
         }
+        if let Some(v) = &p.worktree_base {
+            set!("worktree_base", v.clone());
+        }
+        if let Some(v) = &p.worktree_repo {
+            set!("worktree_repo", v.clone());
+        }
         if let Some(v) = &p.native_session_id {
             set!("native_session_id", v.clone());
         }
@@ -408,6 +414,48 @@ impl Store {
     }
 }
 
+fn insert_run_on(conn: &Connection, r: &RunRow) -> Result<()> {
+    conn.execute(
+        &format!(
+            "INSERT INTO runs ({COLS}) VALUES \
+             (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,\
+              ?25,?26,?27,?28,?29)"
+        ),
+        params![
+            r.id,
+            r.session_id,
+            r.parent_run_id,
+            r.depth,
+            r.name,
+            r.agent,
+            r.choice_id,
+            enum_to_sql(&r.harness),
+            r.account,
+            r.model,
+            r.effort,
+            r.cwd,
+            r.worktree_path,
+            r.branch,
+            r.native_session_id,
+            enum_to_sql(&r.state),
+            r.review,
+            r.output_schema,
+            r.result_json,
+            r.error_kind.as_ref().map(enum_to_sql),
+            r.prompt,
+            ts_to_sql(&r.created_at),
+            opt_ts_to_sql(&r.started_at),
+            opt_ts_to_sql(&r.finished_at),
+            enum_to_sql(&r.isolation),
+            r.max_turns.map(i64::from),
+            r.worktree_base,
+            r.worktree_repo,
+            r.timeout_ms.and_then(|n| i64::try_from(n).ok()),
+        ],
+    )?;
+    Ok(())
+}
+
 fn current_state(conn: &Connection, id: &str) -> Result<RunState> {
     match conn.query_row("SELECT state FROM runs WHERE id = ?1", [id], |r| {
         get_enum::<RunState>(r, 0)
@@ -469,6 +517,11 @@ pub(crate) mod tests {
             result_json: None,
             error_kind: None,
             prompt: Some("do it".into()),
+            isolation: so_core::Isolation::None,
+            max_turns: None,
+            worktree_base: None,
+            worktree_repo: None,
+            timeout_ms: None,
             created_at: crate::codec::now(),
             started_at: None,
             finished_at: None,
@@ -833,5 +886,32 @@ pub(crate) mod tests {
             s.start_attempt("nope", "a", None, now),
             Err(StoreError::Constraint(_))
         ));
+    }
+
+    #[test]
+    fn insert_run_checked_caps_active_children() {
+        let (s, sid) = setup();
+        let parent = run(&sid, None);
+        s.insert_run(&parent).unwrap();
+        let child = |state| {
+            let mut r = run(&sid, None);
+            r.parent_run_id = Some(parent.id.clone());
+            r.state = state;
+            r
+        };
+        assert_eq!(
+            s.insert_run_checked(&child(RunState::Queued), 2).unwrap(),
+            InsertRun::Inserted
+        );
+        s.insert_run(&child(RunState::Succeeded)).unwrap();
+        assert_eq!(
+            s.insert_run_checked(&child(RunState::Running), 2).unwrap(),
+            InsertRun::Inserted
+        );
+        assert_eq!(
+            s.insert_run_checked(&child(RunState::Queued), 2).unwrap(),
+            InsertRun::ChildCap { active: 2 }
+        );
+        assert_eq!(s.list_child_runs(&parent.id, 10).unwrap().len(), 3);
     }
 }

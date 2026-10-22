@@ -2,22 +2,21 @@
 //! outcome out (SPEC 12).
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use chrono::Utc;
 use jsonschema::Validator;
 use serde_json::{Value, json};
-use so_core::{AccountFile, ErrorKind, EventType, Harness, RunState};
+use so_core::{AccountFile, ErrorKind, EventType, Harness};
 use so_harness::{Channel, HarnessEvent, RunControl};
 use so_store::{LedgerEntry, RunPatch};
 use so_usage::{TokioProbeRunner, UsageService, parse_claude_rate_limit_event};
 use tokio::sync::mpsc::UnboundedReceiver;
 
-use super::manager::{RunManager, excerpt};
+use super::RunManager;
+use super::lifecycle::{Outcome, excerpt};
 
 /// Re-prompts allowed when the final result does not match `output_schema`.
 const MAX_REPROMPTS: u32 = 5;
-const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
 const EXCERPT_CHARS: usize = 280;
 
 pub(crate) struct PumpCtx {
@@ -201,8 +200,8 @@ impl RunManager {
         text: &str,
     ) {
         st.done = true;
-        let _ = control.shutdown(SHUTDOWN_DEADLINE).await;
-        self.fail_run(&pc.run_id, kind, text).await;
+        let o = Outcome::failed(kind, text, Some(control.clone()));
+        self.finish(&pc.run_id, o).await;
     }
 
     async fn exited(&self, pc: &PumpCtx, st: &mut State, code: Option<i32>) {
@@ -272,10 +271,9 @@ impl RunManager {
             }
         };
         st.done = true;
-        let _ = control.shutdown(SHUTDOWN_DEADLINE).await;
         let json = serde_json::to_string(&value).ok();
         // Review gate (`review: true`) is added later; a finished run is succeeded.
-        self.finish(&pc.run_id, RunState::Succeeded, None, json, None)
+        self.finish(&pc.run_id, Outcome::succeeded(json, control.clone()))
             .await;
     }
 }

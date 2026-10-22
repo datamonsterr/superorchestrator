@@ -10,7 +10,7 @@ use so_core::proto::{
     METHOD_WAIT_AGENT, RpcError, RunRef, SpawnParams, SpawnResult, WaitParams, WaitResult,
 };
 
-use super::manager::{RunManager, WaitOutcome};
+use super::{RunManager, WaitOutcome};
 use crate::dispatch::{ConnCtx, internal};
 use crate::server::SupervisorState;
 
@@ -73,14 +73,14 @@ pub(super) fn register(state: &Arc<SupervisorState>) {
 async fn spawn_agent(m: &RunManager, ctx: ConnCtx, p: SpawnParams) -> Result<Value, RpcError> {
     let wait = p.wait;
     // Subscribe first, so no event of the new run is missed.
-    let mut rx = ctx
+    let mut sub = ctx
         .session_id
         .as_ref()
         .filter(|_| wait)
-        .map(|s| m.subscribe(std::slice::from_ref(s)));
+        .map(|s| m.subscribe(std::slice::from_ref(s), None));
     let (run_id, warnings) = m.spawn(&ctx, p).await?;
-    if let Some(rx) = rx.as_mut() {
-        m.wait_runs(&ctx, std::slice::from_ref(&run_id), rx, None)
+    if let Some(sub) = sub.as_mut() {
+        m.wait_runs(&ctx, std::slice::from_ref(&run_id), sub, None)
             .await?;
     }
     let row = m.resolve_run(&run_id).await?;
@@ -107,13 +107,13 @@ async fn wait_agent(m: &RunManager, ctx: ConnCtx, p: WaitParams) -> Result<Value
         }
         ids.push(row.id);
     }
-    let mut rx = m.subscribe(&sessions);
+    let mut sub = m.subscribe(&sessions, Some(&ids));
     let timeout = p.timeout_ms.map_or(DEFAULT_WAIT, Duration::from_millis);
     let WaitOutcome {
         finished,
         updates,
         timed_out,
-    } = m.wait_runs(&ctx, &ids, &mut rx, Some(timeout)).await?;
+    } = m.wait_runs(&ctx, &ids, &mut sub, Some(timeout)).await?;
     json(WaitResult {
         finished,
         updates,

@@ -66,19 +66,13 @@ fn list(ctx: &Ctx) -> Result<()> {
     })
 }
 
-/// Where the worktree came from, from the run's `worktree_created` event.
-fn created_of(store: &so_store::Store, r: &RunRow) -> Option<Created> {
-    let e = store
-        .list_events_by_run(&r.id, 1_000_000)
-        .ok()?
-        .into_iter()
-        .find(|e| e.event_type == EventType::WorktreeCreated)?;
-    let s = |k: &str| e.data.get(k).and_then(Value::as_str).map(String::from);
+/// The worktree of a run, from the run's row.
+fn created_of(r: &RunRow) -> Option<Created> {
     Some(Created {
-        path: PathBuf::from(s("path")?),
-        branch: s("branch")?,
-        base: s("base")?,
-        repo: PathBuf::from(s("repo")?),
+        path: PathBuf::from(r.worktree_path.clone()?),
+        branch: r.branch.clone()?,
+        base: r.worktree_base.clone()?,
+        repo: PathBuf::from(r.worktree_repo.clone()?),
     })
 }
 
@@ -89,7 +83,7 @@ fn prune(ctx: &Ctx) -> Result<()> {
     let targets: Vec<(RunRow, Created)> = with_worktree(ctx)?
         .into_iter()
         .filter(|r| r.state.is_terminal())
-        .filter_map(|r| created_of(&store, &r).map(|c| (r, c)))
+        .filter_map(|r| created_of(&r).map(|c| (r, c)))
         .filter(|(_, c)| c.path.is_dir())
         .collect();
     if targets.is_empty() {

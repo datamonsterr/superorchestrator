@@ -1,7 +1,7 @@
 //! Typed row structs.
 
 use chrono::{DateTime, Utc};
-use so_core::{ErrorKind, Harness, MessageKind, RunState, SessionKind};
+use so_core::{ErrorKind, Harness, Isolation, MessageKind, RunState, SessionKind};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionRow {
@@ -49,6 +49,23 @@ pub struct RunRow {
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
+    pub isolation: Isolation,
+    pub max_turns: Option<u32>,
+    /// `HEAD` of the repository when the run's worktree was made.
+    pub worktree_base: Option<String>,
+    /// Top level of the repository the worktree belongs to.
+    pub worktree_repo: Option<String>,
+    pub timeout_ms: Option<u64>,
+}
+
+/// Result of [`crate::Store::insert_run_checked`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertRun {
+    Inserted,
+    /// The parent already has this many active children; nothing was inserted.
+    ChildCap {
+        active: usize,
+    },
 }
 
 /// Fields to set on a run. `None` leaves the column unchanged; for clearable columns
@@ -64,6 +81,8 @@ pub struct RunPatch {
     pub account: Option<Option<String>>,
     pub worktree_path: Option<Option<String>>,
     pub branch: Option<Option<String>>,
+    pub worktree_base: Option<Option<String>>,
+    pub worktree_repo: Option<Option<String>>,
     pub native_session_id: Option<Option<String>>,
     pub result_json: Option<Option<String>>,
     pub error_kind: Option<Option<ErrorKind>>,

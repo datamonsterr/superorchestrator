@@ -181,6 +181,17 @@ impl Env {
         .unwrap();
     }
 
+    fn set_enabled(&self, name: &str, enabled: bool) {
+        let path = self.paths.account_file(name);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let text: String = text
+            .lines()
+            .filter(|l| !l.starts_with("enabled"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        std::fs::write(path, format!("{text}enabled = {enabled}\n")).unwrap();
+    }
+
     fn store(&self) -> Store {
         Store::open(self.paths.state_db()).unwrap()
     }
@@ -325,10 +336,13 @@ async fn spawn_wait_get_succeeds_and_removes_untouched_worktree() {
 
     // Events were pushed to the waiting connection.
     let mut pushed = Vec::new();
+    let mut seqs = Vec::new();
     while let Ok(n) = notes.try_recv() {
         assert_eq!(n.method, "event");
         pushed.push(n.params["type"].as_str().unwrap().to_string());
+        seqs.push(n.params["seq"].as_u64().unwrap());
     }
+    assert!(seqs.windows(2).all(|w| w[0] < w[1]), "{seqs:?}");
     assert!(pushed.contains(&"run_finished".to_string()), "{pushed:?}");
 
     // Ledger row written.
@@ -486,6 +500,11 @@ fn insert_session_and_run(store: &Store, depth: i64, state: RunState) -> RunRow 
         result_json: None,
         error_kind: None,
         prompt: None,
+        isolation: so_core::Isolation::None,
+        max_turns: None,
+        worktree_base: None,
+        worktree_repo: None,
+        timeout_ms: None,
         created_at: chrono::Utc::now(),
         started_at: None,
         finished_at: None,
@@ -769,5 +788,68 @@ async fn reconcile_fails_a_run_without_a_native_session() {
     let h = env.start().await;
     let c = env.client(&h).await;
     assert_eq!(view(&c, &row.id).await.state, RunState::Failed);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn queued_run_of_a_disabled_account_fails_and_the_queue_keeps_working() {
+    let env = Env::new();
+    env.account("claude-acc1", 1, &ok_script(&[json!({"sleep_ms": 500})]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = env.spawn_params("claude-acc1");
+    p.isolation = Some(so_core::Isolation::None);
+    let a = spawn(&c, p.clone()).await;
+    let b = spawn(&c, p.clone()).await;
+    assert_eq!(b.state, RunState::Queued);
+    env.set_enabled("claude-acc1", false);
+    wait_state(&c, &a.run_id, RunState::Succeeded).await;
+    wait_state(&c, &b.run_id, RunState::Failed).await;
+    // The queue still works once the account is back.
+    env.set_enabled("claude-acc1", true);
+    let d = spawn(&c, p).await;
+    wait_state(&c, &d.run_id, RunState::Succeeded).await;
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancel_right_after_spawn_leaves_no_process() {
+    let env = Env::new();
+    let pidfile = env.dir.path().join("pid");
+    // Records its pid, then waits for input that never comes (stdin EOF ends it).
+    env.account(
+        "claude-acc1",
+        2,
+        &script(&[
+            json!({"expect_stdin_contains": PROMPT}),
+            json!({"shell": format!("echo $PPID > {}", pidfile.display())}),
+            json!({"expect_stdin_contains": "never"}),
+        ]),
+    );
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = env.spawn_params("claude-acc1");
+    p.isolation = Some(so_core::Isolation::None);
+    let r = spawn(&c, p).await;
+    let v: RunView = c
+        .call(
+            METHOD_CANCEL_AGENT,
+            RunRef {
+                run: r.run_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(v.state, RunState::Cancelled);
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    if let Ok(pid) = std::fs::read_to_string(&pidfile) {
+        let proc = format!("/proc/{}", pid.trim());
+        assert!(
+            !Path::new(&proc).exists(),
+            "harness {pid} survived the cancel"
+        );
+    }
+    assert_eq!(h.state().runs.live_count(), 0);
+    assert_eq!(view(&c, &r.run_id).await.state, RunState::Cancelled);
     h.shutdown().await;
 }
