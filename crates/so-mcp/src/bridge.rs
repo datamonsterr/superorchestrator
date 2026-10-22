@@ -14,18 +14,17 @@ use rmcp::service::{ElicitationMode, Peer, RequestContext};
 use rmcp::task_manager::{TaskContext, TaskExit, TaskManager, TaskOptions};
 use rmcp::{ErrorData, RoleServer, ServerHandler};
 use serde_json::{Value, json};
-use so_core::proto::{METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, Notification};
+use so_core::proto::{
+    METHOD_GET_RUN, METHOD_LIST_HARNESSES, METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT,
+    METHOD_WAIT_AGENT, Notification,
+};
 use so_supervisor::{ClientError, SupervisorClient};
 use tokio::sync::{broadcast, mpsc};
 
+use crate::compact;
 use crate::tools::{ToolSpec, tool_specs};
 
-const INSTRUCTIONS: &str = "Superorchestrator delegates work to coding agents on other harnesses and accounts. \
-Use list_harnesses to see accounts and headroom and route to preview a routing decision; spawn_agent starts a run \
-(wait=true blocks for the result), wait_agent waits on runs, get_run inspects one, send_message and read_messages \
-exchange messages, cancel_agent stops a run and its subtree, accept_run and reject_run decide reviewed runs, \
-fork_agent branches a finished run, list_agents lists custom agents, and run_workflow and workflow_status run \
-scripted workflows. Subagents also get report_progress and ask_parent. Tool failures are returned as errors you can read.";
+const INSTRUCTIONS: &str = "Delegates work to coding agents on other harnesses and accounts. Start with list_harnesses. Run ids accept unique prefixes. Omitted keys in replies mean null, empty or false. Failures come back as readable errors.";
 
 const PROGRESS_QUEUE: usize = 64;
 /// Most times one `wait_agent` call asks the person before it returns what it has.
@@ -251,6 +250,39 @@ impl McpBridge {
     }
 }
 
+/// The params sent to the supervisor for a tool call. `list_harnesses` asks for the short view,
+/// which the supervisor builds because it has the catalog and the load.
+pub fn rpc_args(tool: &str, args: &Value) -> Value {
+    if tool == METHOD_LIST_HARNESSES {
+        json!({"brief": true})
+    } else {
+        args.clone()
+    }
+}
+
+/// What the orchestrator receives for the supervisor's `raw` reply to `tool`: the short view
+/// of [`compact`], with each finished run of a `wait_agent` read from the supervisor so the
+/// caller can act without a `get_run`.
+pub async fn mcp_reply(client: &SupervisorClient, tool: &str, args: &Value, raw: Value) -> Value {
+    if tool != METHOD_WAIT_AGENT {
+        return compact::project(tool, args, raw);
+    }
+    let mut finished = Vec::new();
+    for id in raw["finished"].as_array().into_iter().flatten() {
+        let Some(id) = id.as_str() else { continue };
+        let run = match client
+            .call::<_, Value>(METHOD_GET_RUN, &json!({"run": id}))
+            .await
+        {
+            Ok(v) => compact::run_view(v, true),
+            // The run finished, but its record could not be read: say so.
+            Err(e) => json!({"run_id": id, "state": "unknown", "error": e.to_string()}),
+        };
+        finished.push(run);
+    }
+    compact::wait_view(&raw, finished)
+}
+
 /// A `question_asked` update of a `wait_agent` result.
 struct Question {
     run: String,
@@ -380,11 +412,13 @@ impl McpBridge {
         args: Value,
         cx: &CallCx,
     ) -> Result<Value, ClientError> {
-        if spec.name == METHOD_WAIT_AGENT {
-            self.forward_wait(spec, args, cx).await
+        let sent = rpc_args(spec.name, &args);
+        let raw = if spec.name == METHOD_WAIT_AGENT {
+            self.forward_wait(spec, sent, cx).await?
         } else {
-            self.forward(spec, args, cx).await
-        }
+            self.forward(spec, sent, cx).await?
+        };
+        Ok(mcp_reply(&self.inner.client, spec.name, &args, raw).await)
     }
 
     /// Starts a long call as an MCP task (SEP-2663) and returns its handle. Progress goes to

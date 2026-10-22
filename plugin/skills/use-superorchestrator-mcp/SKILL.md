@@ -1,53 +1,31 @@
 ---
 name: use-superorchestrator-mcp
-description: Delegate coding work to other agents, harnesses and accounts (claude, codex, opencode, agy) through the superorchestrator MCP tools. Use it when handing implementation, review or research work to another agent: route, spawn, wait on, message and review subagent runs.
+description: Delegate coding work to agents on other harnesses and accounts via superorchestrator MCP tools: route, spawn, wait, review.
 ---
 
-# Delegate through superorchestrator
+# Delegate via superorchestrator
 
-Use the `superorchestrator` MCP tools to hand work to subagents that run on other harnesses and accounts. This skill comes with the superorchestrator plugin.
+## Workflow
 
-## Accounts, choices and agents
+1. `list_harnesses` first: signed_in, headroom, cooldown, load, eligible, free_models.
+2. Pick. `harness` auto unless reason. Simple task: free opencode `model` or low `effort`. Keep Claude for orchestrator.
+3. `prompt` = goal / acceptance (commands that must pass) / out-of-scope / pointers. Subagent has no context.
+4. `spawn_agent`. Parallel: `wait: false`, then `wait_agent(runs, timeout_ms)`.
+5. Review `get_run(run, diff: true)`, not file reads. Then `accept_run(run, merge: true)` or `reject_run(run, feedback)`.
 
-Call `list_harnesses` for the accounts and choices on this machine, and `list_agents` for custom agents. Pass `agent: "<name>"` to `spawn_agent` to use one. `superorchestrator account add` and `superorchestrator init` set accounts and choices up.
+Accounts, choices: `list_harnesses`. Agents: `list_agents`, then `agent: "<name>"`.
 
-Call `list_harnesses` for the live picture: signed-in state, headroom and active runs per account.
+## Tools
 
-## route or spawn_agent
+- `route`: preview pick, runs nothing.
+- `spawn_agent`: `wait: true` blocks to finish or review gate. `review: true` holds at `pending_review`. `output_schema`, `checks` (ci, pr_threads, cmd:<shell>).
+- `wait_agent`: finished (state, result), updates, timed_out. Question: `send_message(run, text, kind: answer)`.
+- `get_run`: short; `verbose: true` full.
+- `send_message` resumes finished run. `read_messages` unread. `cancel_agent` run + subtree. `fork_agent` finished run, new prompt.
+- `accept_run` merge refused (run stays at gate): checkout dirty or on other branch, worktree dirty, conflict. Error names it. No merge: branch + merge_command.
+- `run_workflow`, `workflow_status`: JS workflows.
+- Shell: `superorchestrator status`.
 
-- `route` previews which choice and account the router would pick. It runs nothing. Use it when you want to see or sanity-check a decision first.
-- `spawn_agent` starts a run. With `harness: auto` (the default) the router picks. Pass `account`, `model` or `effort` only when you have a reason to override it. Set `wait: true` to block until the run finishes; otherwise it returns a run id.
+## Subagent
 
-## Writing a task brief
-
-The subagent starts with no context. Put in the `prompt`:
-
-1. The goal in one or two sentences.
-2. Acceptance criteria: observable checks that say the work is done (tests that must pass, commands that must succeed).
-3. Out of scope: what it must not touch or decide.
-4. Pointers: files, docs and constraints it needs.
-
-Use `output_schema` when you need a structured final result, and `review: true` when you want to inspect the work before it counts as done.
-
-## Waiting, messaging and reviewing
-
-- `wait_agent(runs, timeout)` returns when a listed run finishes, asks a question or reports progress, or when the timeout ends.
-- `get_run` shows state, recent events, the final result and the worktree. Review a run's changes with `get_run(run, diff: true)` (stat and patch), not by reading its files.
-- `send_message(run, text)` talks to a running run; sent to a finished run it resumes the session.
-- `read_messages` returns unread messages for you. Answer a child's question with `send_message`.
-- A run in `pending_review` waits for `accept_run` or `reject_run`. Land accepted work with `accept_run(run, merge: true)`: it merges the run's branch into the checkout it started from and removes the worktree. A refused or conflicting merge leaves the run at the gate with the reason; without `merge`, the result gives the branch and the command to merge it.
-- `cancel_agent` stops a run and its subtree.
-
-## If you are a subagent
-
-You run with a run id and must never wait for a person.
-
-- `report_progress(step, status)` at each step.
-- `ask_parent(question, options?)` for decisions and blockers. It blocks until answered.
-- `read_messages` for messages from your parent.
-- Finish with a final result, matching the schema if one was given.
-- Call `spawn_agent` only when your depth is below 2.
-
-## Checking on things
-
-Run `superorchestrator status` for accounts, headroom and the supervisor, and `superorchestrator runs list` for runs. The `superorchestrator-cli` skill covers the rest of the command line.
+No person to wait for. `report_progress(step, status)` each step. `ask_parent(question, options?)` blocks for answer. Final result matches schema. `spawn_agent` only if depth < 2.

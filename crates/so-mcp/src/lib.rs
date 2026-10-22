@@ -14,6 +14,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 mod bridge;
+pub mod compact;
 mod tools;
 
 use std::path::PathBuf;
@@ -22,7 +23,7 @@ use anyhow::Context;
 use rmcp::ServiceExt;
 use so_supervisor::{SupervisorClient, spawn_daemon_process};
 
-pub use bridge::McpBridge;
+pub use bridge::{McpBridge, mcp_reply, rpc_args};
 pub use tools::{ORCHESTRATOR_TOOLS, SUBAGENT_TOOLS, ToolSpec, tool_specs};
 
 /// Options for [`serve_stdio`].

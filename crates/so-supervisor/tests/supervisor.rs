@@ -854,3 +854,158 @@ async fn list_harnesses_reports_accounts_load_and_choices() {
     assert!(v.choices.iter().any(|c| c.id == "c2" && !c.enabled));
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
+    use so_core::{AccountFile, Choice, Headroom, HeadroomSource, HeadroomStatus};
+    use so_store::FlagRow;
+
+    let env = Env::new();
+    let home = env.dir.path().join("homes");
+    let account = |name: &str, harness: Harness, cap: u32, enabled: bool| {
+        let mut a =
+            AccountFile::new(name, harness, &home.join(name).to_string_lossy(), "bin").unwrap();
+        a.cap = cap;
+        a.enabled = enabled;
+        a.save(&env.paths).unwrap();
+    };
+    account("codex-a", Harness::Codex, 1, true);
+    account("oc-a", Harness::Opencode, 2, true);
+    account("claude-a", Harness::Claude, 1, false);
+    account("agy-a", Harness::Agy, 1, true);
+
+    let store = env.store();
+    let session = session_row();
+    store.insert_session(&session).unwrap();
+    let now = chrono::Utc::now();
+    store
+        .upsert_headroom(&Headroom {
+            account: "oc-a".into(),
+            pool: "default".into(),
+            five_hour_remaining_pct: Some(79.6),
+            five_hour_resets_at: None,
+            weekly_remaining_pct: Some(60.0),
+            weekly_resets_at: None,
+            status: HeadroomStatus::Ok,
+            source: HeadroomSource::Ledger,
+            observed_at: now,
+        })
+        .unwrap();
+    let until = now + chrono::Duration::hours(2);
+    store
+        .set_flag(&FlagRow {
+            account: "oc-a".into(),
+            pool: "default".into(),
+            until,
+            reason: "rate limit".into(),
+        })
+        .unwrap();
+
+    let choice = |id: &str, harness: Harness, model: &str, enabled: bool| Choice {
+        id: id.into(),
+        harness,
+        model: model.into(),
+        effort: None,
+        roles: vec!["worker".into()],
+        description: String::new(),
+        enabled,
+    };
+    let config = Config {
+        choices: vec![
+            choice("codex-c", Harness::Codex, "gpt-6.1-sol", true),
+            choice(
+                "free-c",
+                Harness::Opencode,
+                "opencode/deepseek-v4.1-flash-free",
+                true,
+            ),
+            choice(
+                "paid-c",
+                Harness::Opencode,
+                "opencode/claude-opus-5-5",
+                true,
+            ),
+            choice("claude-c", Harness::Claude, "claude-sonnet-5-5", true),
+            choice("agy-c", Harness::Agy, "gemini-3.8-flash-low", true),
+            choice("off-c", Harness::Opencode, "opencode/beam-free", false),
+        ],
+        ..Config::default()
+    };
+    let opts = SupervisorOptions::new(env.paths.clone(), config, env.sock.clone())
+        .with_idle_exit(Duration::from_secs(600))
+        .with_lock_wait(Duration::ZERO)
+        .with_host(so_accounts::HostEnv {
+            home: env.dir.path().join("fakehome"),
+            path_var: None,
+            platform: so_core::Platform::Linux,
+        })
+        .with_setup(so_supervisor::default_handlers);
+    let h = Supervisor::start(opts).await.unwrap();
+    let c = connect(&h).await;
+    hello(&c).await;
+    // The codex account runs one thing, which is its whole cap.
+    let mut run = run_row(&session.id, RunState::Running, 0);
+    run.account = Some("codex-a".into());
+    store.insert_run(&run).unwrap();
+
+    let v: Value = c
+        .call("list_harnesses", json!({"brief": true}))
+        .await
+        .unwrap();
+    let account = |name: &str| {
+        v["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap()
+            .clone()
+    };
+    let choice = |id: &str| {
+        v["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["id"] == id)
+            .unwrap()
+            .clone()
+    };
+
+    let oc = account("oc-a");
+    assert_eq!(oc["headroom"], "ok 5h80 wk60");
+    assert_eq!(oc["load"], "0/2");
+    assert_eq!(
+        oc["cooldown"],
+        until.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    );
+    assert_eq!(oc["signed_in"], false);
+    // Nothing known about a pool: no headroom key; disabled is only shown when true.
+    assert!(account("codex-a").get("headroom").is_none());
+    assert_eq!(account("codex-a")["load"], "1/1");
+    assert_eq!(account("claude-a")["disabled"], true);
+    assert!(oc.get("disabled").is_none());
+
+    assert_eq!(choice("codex-c")["eligible"], false);
+    assert_eq!(choice("codex-c")["why"], "at cap");
+    assert_eq!(choice("free-c")["free"], true);
+    assert_eq!(choice("free-c")["why"], "cooldown");
+    assert!(choice("paid-c").get("free").is_none());
+    assert_eq!(choice("claude-c")["why"], "account disabled");
+    assert!(
+        choice("agy-c").get("eligible").is_none() && choice("agy-c").get("why").is_none(),
+        "eligible is the default"
+    );
+    assert_eq!(choice("off-c")["why"], "disabled");
+    assert!(
+        choice("free-c").get("roles").is_none(),
+        "worker is the default role"
+    );
+
+    let free = v["free_models"]["opencode"].as_array().unwrap();
+    assert!(free.contains(&json!("opencode/deepseek-v4.1-flash-free")));
+    assert!(!free.contains(&json!("opencode/claude-opus-5-5")));
+    // The plain call keeps the full shape for the CLI and the web UI.
+    let full: Value = c.call("list_harnesses", json!({})).await.unwrap();
+    assert!(full["accounts"][0].get("flags").is_some());
+    h.shutdown().await;
+}

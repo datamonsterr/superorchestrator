@@ -8,7 +8,6 @@ use common::Env;
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
-use so_core::proto::HarnessesView;
 use so_core::{AccountFile, Harness};
 
 #[tokio::test]
@@ -76,14 +75,19 @@ async fn mcp_serves_tools_and_list_harnesses_returns_configured_accounts() {
         .await
         .unwrap();
     assert_ne!(res.is_error, Some(true), "{res:?}");
-    let view: HarnessesView = match res.structured_content {
+    let view: serde_json::Value = match res.structured_content {
         Some(v) => serde_json::from_value(v).unwrap(),
         None => {
             let t = res.content[0].as_text().unwrap().text.clone();
             serde_json::from_str(&t).unwrap()
         }
     };
-    let mut names: Vec<_> = view.accounts.iter().map(|a| a.name.as_str()).collect();
+    let mut names: Vec<_> = view["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["name"].as_str().unwrap())
+        .collect();
     names.sort_unstable();
     assert_eq!(names, ["claude-acc1", "codex-acc1"]);
 

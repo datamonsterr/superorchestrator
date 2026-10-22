@@ -48,7 +48,7 @@ async fn fixture(tasks: bool) -> Fixture {
                     )
                     .await;
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                Ok(json!({"run_id": "abcdefgh1234", "wait": p["wait"]}))
+                Ok(json!({"run_id": "abcdefgh1234", "state": "running", "result": p["wait"]}))
             });
             st.router.register("wait_agent", |_c, p| async move {
                 Ok(json!({"finished": p["runs"], "updates": [], "timed_out": false}))
@@ -152,15 +152,16 @@ async fn long_tools_become_tasks_for_a_task_client() {
     assert_eq!(r.is_error, Some(false));
     assert_eq!(
         r.structured_content,
-        Some(json!({"run_id": "abcdefgh1234", "wait": true}))
+        Some(json!({"run_id": "abcdefgh1234", "state": "running", "result": true}))
     );
 
     let t = task_of(call(&f, "wait_agent", json!({"runs": ["abcdefgh1234"]})).await);
     let r = completed(settle(&f, &t.task.task_id).await);
-    assert_eq!(
-        r.structured_content.unwrap()["finished"],
-        json!(["abcdefgh1234"])
-    );
+    // This fixture has no get_run: the run still reports, as unreadable, with the error.
+    let finished = &r.structured_content.unwrap()["finished"];
+    assert_eq!(finished[0]["run_id"], "abcdefgh1234");
+    assert_eq!(finished[0]["state"], "unknown");
+    assert!(finished[0]["error"].as_str().unwrap().contains("get_run"));
 
     // A tool error is a completed task whose result has isError, as for a plain call.
     let t = task_of(call(&f, "run_workflow", json!({"script": "x"})).await);
@@ -229,7 +230,7 @@ async fn a_client_without_tasks_blocks_and_gets_the_result() {
         .unwrap();
     assert_eq!(
         r.structured_content,
-        Some(json!({"run_id": "abcdefgh1234", "wait": true}))
+        Some(json!({"run_id": "abcdefgh1234", "state": "running", "result": true}))
     );
     f.sup.shutdown().await;
 }

@@ -2087,6 +2087,7 @@ async fn view_diff(c: &SupervisorClient, run: &str) -> RunView {
         GetRunParams {
             run: run.into(),
             diff: true,
+            verbose: false,
         },
     )
     .await

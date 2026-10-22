@@ -3,10 +3,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
+use serde_json::{Map, Value, json};
 use so_accounts::{HostEnv, SignIn, sign_in_state};
 use so_core::proto::{AccountFlag, AccountView, HarnessesView, METHOD_LIST_HARNESSES, SignInState};
 use so_core::{AccountFile, Harness, Headroom, HeadroomSource, HeadroomStatus};
+use so_router::{Catalog, Snapshot, eligible::candidate};
 
 use crate::dispatch::internal;
 use crate::server::SupervisorState;
@@ -18,17 +20,206 @@ pub(super) fn register_harnesses(state: &Arc<SupervisorState>) {
     state
         .clone()
         .router
-        .register(METHOD_LIST_HARNESSES, move |_ctx, _params| {
+        .register(METHOD_LIST_HARNESSES, move |_ctx, params| {
             let state = state.clone();
             async move {
+                let brief = params.get("brief").and_then(Value::as_bool) == Some(true);
                 // Sign-in checks, directory reads and sqlite calls all block.
-                let view = tokio::task::spawn_blocking(move || harnesses_view(&state))
-                    .await
-                    .map_err(internal)?
-                    .map_err(internal)?;
-                serde_json::to_value(view).map_err(internal)
+                tokio::task::spawn_blocking(move || {
+                    if brief {
+                        harnesses_brief(&state)
+                    } else {
+                        harnesses_view(&state)
+                            .and_then(|v| serde_json::to_value(v).map_err(|e| e.to_string()))
+                    }
+                })
+                .await
+                .map_err(internal)?
+                .map_err(internal)
             }
         });
+}
+
+/// The catalog, re-read only when `models.toml` changes on disk.
+fn cached_catalog(paths: &so_core::Paths) -> Result<Arc<Catalog>, String> {
+    type Slot = Option<(
+        std::path::PathBuf,
+        Option<std::time::SystemTime>,
+        Arc<Catalog>,
+    )>;
+    static CACHE: std::sync::Mutex<Slot> = std::sync::Mutex::new(None);
+    let file = paths.models_toml();
+    let mtime = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
+    let mut slot = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((path, seen, catalog)) = slot.as_ref()
+        && *path == file
+        && *seen == mtime
+    {
+        return Ok(catalog.clone());
+    }
+    let catalog = Arc::new(Catalog::load(paths).map_err(|e| e.to_string())?);
+    *slot = Some((file, mtime, catalog.clone()));
+    Ok(catalog)
+}
+
+fn seconds(t: DateTime<Utc>) -> String {
+    t.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+/// "ok 5h80 wk60": status and remaining percentages, one per pool (`pool:` prefix unless
+/// it is `default`). `None` when nothing is known about any pool.
+fn headroom_short(rows: &[Headroom]) -> Option<String> {
+    let one = |h: &Headroom| {
+        let mut out = String::new();
+        if h.pool != "default" {
+            out.push_str(&format!("{}:", h.pool));
+        }
+        out.push_str(h.status.as_str());
+        if let Some(p) = h.five_hour_remaining_pct {
+            out.push_str(&format!(" 5h{p:.0}"));
+        }
+        if let Some(p) = h.weekly_remaining_pct {
+            out.push_str(&format!(" wk{p:.0}"));
+        }
+        out
+    };
+    let known = |h: &Headroom| {
+        h.status != HeadroomStatus::Unknown
+            || h.five_hour_remaining_pct.is_some()
+            || h.weekly_remaining_pct.is_some()
+    };
+    if !rows.iter().any(known) {
+        return None;
+    }
+    Some(rows.iter().map(one).collect::<Vec<_>>().join("; "))
+}
+
+/// `list_harnesses` for an orchestrator, with `{"brief": true}`: one short row per account
+/// and per choice, plus the free models. Omitted keys mean false or empty; `signed_in` and
+/// `headroom` are left out when unknown. A choice is `eligible` (the key is left out then) when the router
+/// would consider it: it is enabled and an account of its harness can take a run; otherwise
+/// `eligible: false` and `why` say what is missing.
+pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
+    let view = harnesses_view(state)?;
+    let accounts = AccountFile::list(&state.paths).map_err(|e| e.to_string())?;
+    let catalog = cached_catalog(&state.paths)?;
+    let snapshot = Snapshot::collect(
+        &state.store,
+        &accounts,
+        f64::from(state.config.usage.low_pct),
+        Utc::now(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let rows: Vec<Value> = view
+        .accounts
+        .iter()
+        .map(|a| {
+            let mut row = Map::new();
+            row.insert("name".into(), json!(a.name));
+            row.insert("harness".into(), json!(a.harness));
+            match a.signed_in {
+                SignInState::SignedIn => row.insert("signed_in".into(), json!(true)),
+                SignInState::SignedOut => row.insert("signed_in".into(), json!(false)),
+                SignInState::Unknown => None,
+            };
+            if !a.enabled {
+                row.insert("disabled".into(), json!(true));
+            }
+            row.insert("load".into(), json!(format!("{}/{}", a.active_runs, a.cap)));
+            if let Some(h) = headroom_short(&a.headroom) {
+                row.insert("headroom".into(), json!(h));
+            }
+            let until = a.flags.iter().flatten().map(|f| f.until).max();
+            if let Some(until) = until {
+                row.insert("cooldown".into(), json!(seconds(until)));
+            }
+            if let Some(e) = &a.error {
+                row.insert("error".into(), json!(e));
+            }
+            Value::Object(row)
+        })
+        .collect();
+
+    let choices: Vec<Value> = view
+        .choices
+        .iter()
+        .map(|c| {
+            let mut row = Map::new();
+            row.insert("id".into(), json!(c.id));
+            row.insert("harness".into(), json!(c.harness));
+            row.insert("model".into(), json!(c.model));
+            if let Some(e) = &c.effort {
+                row.insert("effort".into(), json!(e));
+            }
+            if c.roles != ["worker"] {
+                row.insert("roles".into(), json!(c.roles));
+            }
+            if !c.description.is_empty() {
+                row.insert("description".into(), json!(c.description));
+            }
+            if catalog.is_free(c.harness, &c.model) {
+                row.insert("free".into(), json!(true));
+            }
+            let why = if !c.enabled {
+                Some("disabled")
+            } else if candidate(c, &catalog, &snapshot).is_some() {
+                None
+            } else {
+                let same: Vec<_> = view
+                    .accounts
+                    .iter()
+                    .filter(|a| a.harness == c.harness)
+                    .collect();
+                let open: Vec<_> = same
+                    .iter()
+                    .filter(|a| a.enabled && a.active_runs < a.cap)
+                    .collect();
+                Some(if same.is_empty() {
+                    "no account"
+                } else if same.iter().all(|a| !a.enabled) {
+                    "account disabled"
+                } else if open.is_empty() {
+                    "at cap"
+                } else if open
+                    .iter()
+                    .all(|a| a.flags.as_ref().is_some_and(|f| !f.is_empty()))
+                {
+                    "cooldown"
+                } else if open.iter().any(|a| {
+                    snapshot
+                        .accounts
+                        .iter()
+                        .find(|s| s.file.name == a.name)
+                        .is_some_and(|s| s.pools.values().any(|p| !p.available))
+                }) {
+                    "no headroom"
+                } else {
+                    // The router found no usable account for a reason this view cannot name.
+                    "not eligible"
+                })
+            };
+            if let Some(why) = why {
+                row.insert("eligible".into(), json!(false));
+                row.insert("why".into(), json!(why));
+            }
+            Value::Object(row)
+        })
+        .collect();
+
+    let mut out = Map::new();
+    out.insert("accounts".into(), Value::Array(rows));
+    out.insert("choices".into(), Value::Array(choices));
+    // Free models of opencode, once (the catalog is per harness, not per account).
+    let models = catalog.free_models(Harness::Opencode);
+    let has_account = view
+        .accounts
+        .iter()
+        .any(|a| a.harness == Harness::Opencode && a.enabled);
+    if has_account && !models.is_empty() {
+        out.insert("free_models".into(), json!({ "opencode": models }));
+    }
+    Ok(Value::Object(out))
 }
 
 fn sign_in_state_of(s: SignIn) -> SignInState {
