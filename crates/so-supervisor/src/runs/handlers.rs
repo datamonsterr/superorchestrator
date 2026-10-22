@@ -5,11 +5,15 @@ use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
+use so_core::RunState;
 use so_core::proto::{
-    INVALID_PARAMS, METHOD_CANCEL_AGENT, METHOD_GET_RUN, METHOD_JOIN_RUN, METHOD_SPAWN_AGENT,
-    METHOD_WAIT_AGENT, RpcError, RunRef, SpawnParams, SpawnResult, WaitParams, WaitResult,
+    EmptyParams, INVALID_PARAMS, METHOD_ACCEPT_RUN, METHOD_ASK_PARENT, METHOD_CANCEL_AGENT,
+    METHOD_FORK_AGENT, METHOD_GET_RUN, METHOD_JOIN_RUN, METHOD_READ_MESSAGES, METHOD_REJECT_RUN,
+    METHOD_REPORT_PROGRESS, METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, RpcError,
+    RunRef, SpawnParams, SpawnResult, WaitParams, WaitResult,
 };
 
+use super::view::WaitMode;
 use super::{RunManager, WaitOutcome};
 use crate::dispatch::{ConnCtx, internal};
 use crate::server::SupervisorState;
@@ -59,7 +63,7 @@ pub(super) fn register(state: &Arc<SupervisorState>) {
             json(m.run_view(row).await?)
         }
     });
-    let m = runs;
+    let m = runs.clone();
     state.router.register(METHOD_JOIN_RUN, move |_ctx, p| {
         let m = m.clone();
         async move {
@@ -67,6 +71,46 @@ pub(super) fn register(state: &Arc<SupervisorState>) {
             let row = m.resolve_run(&r.run).await?;
             json(m.join_run(row).await?)
         }
+    });
+    let m = runs.clone();
+    state.router.register(METHOD_SEND_MESSAGE, move |ctx, p| {
+        let m = m.clone();
+        async move { json(m.send_message(&ctx, params(p)?).await?) }
+    });
+    let m = runs.clone();
+    state.router.register(METHOD_READ_MESSAGES, move |ctx, p| {
+        let m = m.clone();
+        async move {
+            let _: EmptyParams = params(p)?;
+            json(m.read_messages(&ctx).await?)
+        }
+    });
+    let m = runs.clone();
+    state
+        .router
+        .register(METHOD_REPORT_PROGRESS, move |ctx, p| {
+            let m = m.clone();
+            async move { json(m.report_progress(&ctx, params(p)?).await?) }
+        });
+    let m = runs.clone();
+    state.router.register(METHOD_ASK_PARENT, move |ctx, p| {
+        let m = m.clone();
+        async move { json(m.ask_parent(&ctx, params(p)?).await?) }
+    });
+    let m = runs.clone();
+    state.router.register(METHOD_ACCEPT_RUN, move |ctx, p| {
+        let m = m.clone();
+        async move { json(m.accept_run(&ctx, params(p)?).await?) }
+    });
+    let m = runs.clone();
+    state.router.register(METHOD_REJECT_RUN, move |ctx, p| {
+        let m = m.clone();
+        async move { json(m.reject_run(&ctx, params(p)?).await?) }
+    });
+    let m = runs;
+    state.router.register(METHOD_FORK_AGENT, move |ctx, p| {
+        let m = m.clone();
+        async move { json(m.fork_run(&ctx, params(p)?).await?) }
     });
 }
 
@@ -80,11 +124,17 @@ async fn spawn_agent(m: &RunManager, ctx: ConnCtx, p: SpawnParams) -> Result<Val
         .map(|s| m.subscribe(std::slice::from_ref(s), None));
     let (run_id, warnings) = m.spawn(&ctx, p).await?;
     if let Some(sub) = sub.as_mut() {
-        m.wait_runs(&ctx, std::slice::from_ref(&run_id), sub, None)
-            .await?;
+        m.wait_runs(
+            &ctx,
+            std::slice::from_ref(&run_id),
+            sub,
+            None,
+            WaitMode::Finish,
+        )
+        .await?;
     }
     let row = m.resolve_run(&run_id).await?;
-    let finished = wait && row.state.is_terminal();
+    let finished = wait && (row.state.is_terminal() || row.state == RunState::PendingReview);
     json(SpawnResult {
         run_id,
         state: row.state,
@@ -113,7 +163,20 @@ async fn wait_agent(m: &RunManager, ctx: ConnCtx, p: WaitParams) -> Result<Value
         finished,
         updates,
         timed_out,
-    } = m.wait_runs(&ctx, &ids, &mut sub, Some(timeout)).await?;
+    } = {
+        // A run that blocks on its own children is `waiting`, and is not stall-checked.
+        let guard = match &ctx.run_id {
+            Some(id) => Some(m.begin_wait(id).await),
+            None => None,
+        };
+        let r = m
+            .wait_runs(&ctx, &ids, &mut sub, Some(timeout), WaitMode::Update)
+            .await;
+        if let Some(g) = guard {
+            g.end().await;
+        }
+        r?
+    };
     json(WaitResult {
         finished,
         updates,

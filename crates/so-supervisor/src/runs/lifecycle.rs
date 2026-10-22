@@ -128,6 +128,7 @@ impl RunManager {
         cwd: PathBuf,
         prompt: String,
         resume: Option<String>,
+        fork: bool,
     ) -> Result<LaunchSpec, String> {
         let launch = self.launch_for(account).map_err(|e| e.message)?;
         let run_dir = self.inner.paths.run_dir(&row.id);
@@ -159,7 +160,7 @@ impl RunManager {
             output_schema,
             max_turns: row.max_turns,
             resume,
-            fork: false,
+            fork,
         })
     }
 
@@ -212,18 +213,44 @@ impl RunManager {
         if row.isolation == Isolation::Worktree {
             cwd = self.make_worktree(row, &cwd).await?;
         }
+        let fork_from = {
+            let id = row.id.clone();
+            self.db(move |s| s.get_run_fork(&id))
+                .await
+                .map_err(|e| e.message)?
+        };
+        let mut prompt = row.prompt.clone().unwrap_or_default();
+        prompt.push_str(&self.start_messages(row).await);
+        let fork = fork_from.is_some();
         let spec = self
-            .build_spec(
-                row,
-                &account,
-                cwd,
-                row.prompt.clone().unwrap_or_default(),
-                None,
-            )
+            .build_spec(row, &account, cwd, prompt, fork_from, fork)
             .await?;
         let handle = self.launch_harness(row, spec).await?;
         self.go_live(row, &account, handle, false).await;
         Ok(())
+    }
+
+    /// Messages sent to the run while it was queued, ready to append to its prompt. They
+    /// are marked read.
+    async fn start_messages(&self, row: &RunRow) -> String {
+        let (sid, id) = (row.session_id.clone(), row.id.clone());
+        let msgs = self
+            .db(move |s| {
+                let msgs = s.unread_messages(&sid, Some(&id), 100)?;
+                let ids: Vec<String> = msgs.iter().map(|m| m.id.clone()).collect();
+                s.mark_messages_read(&ids, Utc::now())?;
+                Ok(msgs)
+            })
+            .await
+            .unwrap_or_default();
+        if msgs.is_empty() {
+            return String::new();
+        }
+        let mut s = String::from("\n\nMessages sent to you before you started:\n");
+        for m in msgs {
+            s.push_str(&format!("- {}\n", m.body));
+        }
+        s
     }
 
     /// Creates the run's worktree and returns the directory the harness starts in.
@@ -411,6 +438,7 @@ impl RunManager {
             account: account.clone(),
             pool: pool.unwrap_or_else(|| "default".into()),
             validator,
+            review: row.review,
         };
         tokio::spawn(self.clone().pump(pc, events, control));
     }
@@ -443,6 +471,7 @@ impl RunManager {
         let Ok(account) = self.load_account(&name).await else {
             return;
         };
+        let account_label = account.name.clone();
         let pool = account
             .pools
             .first()
@@ -457,8 +486,18 @@ impl RunManager {
                     .map_err(|e| StoreError::Constraint(e.to_string()))
             })
             .await;
-        if let Err(e) = r {
-            tracing::warn!(%run_id, error = %e.message, "could not flag the account");
+        match r {
+            Ok(()) => {
+                let account_name = account_label;
+                self.notify(
+                    "account_exhausted",
+                    &account_name,
+                    &account_name,
+                    "the account hit a limit and is in cooldown",
+                )
+                .await;
+            }
+            Err(e) => tracing::warn!(%run_id, error = %e.message, "could not flag the account"),
         }
     }
 
@@ -632,7 +671,16 @@ impl RunManager {
             })
             .await;
         match r {
-            Ok(true) => self.forget_session_seq(session_id),
+            Ok(true) => {
+                self.forget_session_seq(session_id);
+                self.notify(
+                    "session_finished",
+                    session_id,
+                    "session",
+                    "all of its runs have finished",
+                )
+                .await;
+            }
             Ok(false) => {}
             Err(e) => tracing::warn!(%session_id, error = %e.message, "could not end session"),
         }

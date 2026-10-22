@@ -384,6 +384,9 @@ pub struct RunView {
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// Messages sent to or from the run, oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub messages: Vec<MessageView>,
 }
 
 /// Result of `join_run`: the command a person runs to join a run. Secrets travel only in

@@ -16,6 +16,17 @@ const RECENT_EVENTS: usize = 50;
 const ALL_EVENTS: usize = 1_000_000;
 const POLL: Duration = Duration::from_secs(1);
 
+/// What ends a wait besides the timeout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitMode {
+    /// `spawn_agent` with `wait`: a run is done when it finished or reached the review
+    /// gate (its caller is the one who accepts it).
+    Finish,
+    /// `wait_agent`: a run is done when it finished; progress, a question, an escalation
+    /// or the review gate also end the wait.
+    Update,
+}
+
 /// Result of waiting on runs.
 #[derive(Debug, Default)]
 pub struct WaitOutcome {
@@ -60,6 +71,13 @@ impl RunManager {
         let skip = events.len().saturating_sub(RECENT_EVENTS);
         let recent_events = events.into_iter().skip(skip).collect();
         let join = self.join_for(&row);
+        let rid = row.id.clone();
+        let messages = self
+            .db(move |s| s.list_messages_by_run(&rid, ALL_EVENTS))
+            .await?
+            .into_iter()
+            .map(super::comm::message_view)
+            .collect();
         Ok(RunView {
             run_id: row.id,
             state: row.state,
@@ -87,6 +105,7 @@ impl RunManager {
             cwd: row.cwd,
             created_at: Some(row.created_at),
             finished_at: row.finished_at,
+            messages,
         })
     }
 
@@ -119,7 +138,7 @@ impl RunManager {
 
     /// Which of `ids` are done: terminal in the store and fully wrapped up (no registry
     /// entry left). One blocking call for all of them.
-    async fn done_among(&self, ids: &[String]) -> R<Vec<String>> {
+    async fn done_among(&self, ids: &[String], mode: WaitMode) -> R<Vec<String>> {
         let list = ids.to_vec();
         let rows = self
             .db(move |s| {
@@ -135,9 +154,52 @@ impl RunManager {
         let runs = lock(&self.inner.runs);
         Ok(rows
             .into_iter()
-            .filter(|(id, st)| st.is_terminal() && !runs.contains_key(id))
+            .filter(|(id, st)| {
+                (st.is_terminal() && !runs.contains_key(id))
+                    || (mode == WaitMode::Finish && *st == so_core::RunState::PendingReview)
+            })
             .map(|(id, _)| id)
             .collect())
+    }
+
+    /// The latest question of each listed run that still waits for the caller's answer,
+    /// and the review-gate event of each listed run waiting for a decision.
+    async fn standing_updates(&self, ctx: &ConnCtx, ids: &[String]) -> R<Vec<Event>> {
+        let (session, caller, ids) = (ctx.session_id.clone(), ctx.run_id.clone(), ids.to_vec());
+        let Some(session) = session else {
+            return Ok(Vec::new());
+        };
+        self.db(move |s| {
+            let asked: Vec<String> = s
+                .unread_messages(&session, caller.as_deref(), 1000)?
+                .into_iter()
+                .filter(|m| m.kind == so_core::MessageKind::Question)
+                .filter_map(|m| m.from_run)
+                .filter(|r| ids.contains(r))
+                .collect();
+            let mut out = Vec::new();
+            for id in &ids {
+                let Some(run) = s.get_run(id)? else { continue };
+                let wanted = if asked.contains(id) {
+                    Some(EventType::QuestionAsked)
+                } else if run.state == so_core::RunState::PendingReview {
+                    Some(EventType::StateChanged)
+                } else {
+                    None
+                };
+                let Some(want) = wanted else { continue };
+                let latest = s
+                    .list_events_by_run(id, 1_000_000)?
+                    .into_iter()
+                    .rev()
+                    .find(|e| {
+                        e.event_type == want && (want != EventType::StateChanged || is_update(e))
+                    });
+                out.extend(latest);
+            }
+            Ok(out)
+        })
+        .await
     }
 
     /// Waits until any of `ids` is done, `timeout` passes, or the client goes away. Events
@@ -148,19 +210,30 @@ impl RunManager {
         ids: &[String],
         sub: &mut Subscription,
         timeout: Option<Duration>,
+        mode: WaitMode,
     ) -> R<WaitOutcome> {
         let deadline = timeout.map(|t| tokio::time::Instant::now() + t);
         let mut finished_rx = self.inner.finished.subscribe();
         let mut out = WaitOutcome::default();
         let mut open = true;
+        if mode == WaitMode::Update {
+            // Questions and reviews that were raised before this call still need an answer.
+            out.updates = self.standing_updates(ctx, ids).await?;
+        }
         loop {
-            let done = self.done_among(ids).await?;
+            let done = self.done_among(ids, mode).await?;
             if !done.is_empty() {
                 // Everything the run emitted is already queued: deliver it before returning.
                 while let Ok(d) = sub.try_recv() {
                     push_event(ctx, ids, d.seq, d.event, &mut out).await;
                 }
                 out.finished = done;
+                return Ok(out);
+            }
+            if mode == WaitMode::Update && !out.updates.is_empty() {
+                while let Ok(d) = sub.try_recv() {
+                    push_event(ctx, ids, d.seq, d.event, &mut out).await;
+                }
                 return Ok(out);
             }
             tokio::select! {
@@ -185,6 +258,15 @@ impl RunManager {
     }
 }
 
+/// Events that end a `wait_agent`.
+fn is_update(ev: &Event) -> bool {
+    match ev.event_type {
+        EventType::Progress | EventType::QuestionAsked | EventType::Escalated => true,
+        EventType::StateChanged => ev.data["to"] == "pending_review",
+        _ => false,
+    }
+}
+
 async fn push_event(ctx: &ConnCtx, ids: &[String], seq: u64, ev: Event, out: &mut WaitOutcome) {
     if !ev.run_id.as_ref().is_some_and(|r| ids.contains(r)) {
         return;
@@ -195,10 +277,7 @@ async fn push_event(ctx: &ConnCtx, ids: &[String], seq: u64, ev: Event, out: &mu
     }
     .to_json();
     ctx.notifier.notify("event", payload).await;
-    if matches!(
-        ev.event_type,
-        EventType::Progress | EventType::QuestionAsked
-    ) {
+    if is_update(&ev) {
         out.updates.push(ev);
     }
 }

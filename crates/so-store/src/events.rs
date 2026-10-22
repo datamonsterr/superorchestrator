@@ -71,6 +71,21 @@ impl Store {
         Ok(rows)
     }
 
+    /// The newest event of `run_id` with the given type.
+    pub fn latest_event_of_type(
+        &self,
+        run_id: &str,
+        event_type: so_core::EventType,
+    ) -> Result<Option<Event>> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(&format!(
+            "SELECT {COLS} FROM events WHERE run_id = ?1 AND type = ?2 \
+             ORDER BY ts DESC, id DESC LIMIT 1"
+        ))?;
+        let mut rows = st.query_map(params![run_id, enum_to_sql(&event_type)], map)?;
+        Ok(rows.next().transpose()?)
+    }
+
     /// Deletes events older than `ts`; returns how many were removed.
     pub fn prune_events_before(&self, ts: DateTime<Utc>) -> Result<usize> {
         Ok(self

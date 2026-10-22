@@ -4,13 +4,16 @@
 //! `lifecycle` (start, finish, cancel, worktree cleanup), `view` (read models and waiting),
 //! `reconcile` (take over runs after a restart) and `events` (store and fan out events).
 
+mod comm;
 mod events;
+mod fork;
 mod handlers;
 mod instructions;
 mod lifecycle;
 mod pump;
 mod queue;
 mod reconcile;
+mod review;
 mod spawn;
 mod view;
 pub mod worktree;
@@ -29,9 +32,10 @@ use so_store::{RunRow, Store, StoreError};
 use tokio::sync::{Notify, watch};
 
 pub use events::{Delivered, Subscription};
-pub use view::{WaitOutcome, display_argv};
+pub use view::{WaitMode, WaitOutcome, display_argv};
 
 use crate::dispatch::internal;
+use crate::notify::{Notifications, Sink, sinks_from_config};
 use crate::server::SupervisorState;
 
 pub(crate) type R<T> = Result<T, RpcError>;
@@ -71,6 +75,9 @@ pub(crate) struct RunRt {
     pub live: Option<LiveRun>,
     /// A cancel was requested: a launch still in flight must not go live.
     pub cancel_requested: bool,
+    /// Blocking calls in progress (`ask_parent`, `wait_agent` on children). While there is
+    /// one the run is `waiting` and is not stall-checked.
+    pub waits: u32,
 }
 
 struct Inner {
@@ -89,6 +96,11 @@ struct Inner {
     drain: tokio::sync::Mutex<()>,
     drain_wake: Arc<Notify>,
     finished: watch::Sender<u64>,
+    /// Bumped when a message is stored, so blocked `ask_parent` calls look again.
+    msg_tick: watch::Sender<u64>,
+    /// Runs whose process died, to be resumed by the resumer task.
+    resume_tx: tokio::sync::mpsc::UnboundedSender<reconcile::ResumeRequest>,
+    notifications: Notifications,
     /// Test hooks: hold `go_live`, shorten the launch limit, slow the launch down.
     go_live_open: watch::Sender<bool>,
     launch_timeout_ms: AtomicU64,
@@ -122,6 +134,8 @@ impl RunManager {
             .or_else(|| std::env::current_exe().ok())
             .unwrap_or_else(|| PathBuf::from("superorchestrator"));
         let drain_wake = Arc::new(Notify::new());
+        let (resume_tx, resume_rx) = tokio::sync::mpsc::unbounded_channel();
+        let notifications = Notifications::new(&config.notifications.on);
         let inner = Arc::new(Inner {
             store,
             config,
@@ -136,6 +150,9 @@ impl RunManager {
             drain: tokio::sync::Mutex::new(()),
             drain_wake: drain_wake.clone(),
             finished: watch::channel(0).0,
+            msg_tick: watch::channel(0).0,
+            resume_tx,
+            notifications,
             go_live_open: watch::channel(true).0,
             launch_timeout_ms: AtomicU64::new(
                 u64::try_from(LAUNCH_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
@@ -143,7 +160,30 @@ impl RunManager {
             launch_delay_ms: AtomicU64::new(0),
         });
         queue::spawn_drainer(&inner, drain_wake);
+        reconcile::spawn_resumer(&inner, resume_rx);
         Self { inner }
+    }
+
+    /// Starts sending notifications to the sinks the config asks for (Discord, desktop).
+    /// Off by default so tests and embedded use never notify.
+    pub fn enable_notifications(&self) {
+        let client = reqwest::Client::new();
+        let sinks = sinks_from_config(&self.inner.config.notifications, &client);
+        self.inner.notifications.set_sinks(sinks);
+    }
+
+    /// Test hook: replace the notification sinks.
+    #[doc(hidden)]
+    pub fn set_notify_sinks(&self, sinks: Vec<Arc<dyn Sink>>) {
+        self.inner.notifications.set_sinks(sinks);
+    }
+
+    /// Sends a notification about `key` (rate limited, filtered by `notifications.on`).
+    pub(crate) async fn notify(&self, event: &str, key: &str, name: &str, reason: &str) {
+        self.inner
+            .notifications
+            .notify(event, key, name, reason)
+            .await;
     }
 
     pub(crate) fn config(&self) -> &Config {

@@ -2,6 +2,7 @@
 //! outcome out (SPEC 12).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::Utc;
 use jsonschema::Validator;
@@ -12,12 +13,20 @@ use so_store::{LedgerEntry, RunPatch};
 use so_usage::{TokioProbeRunner, UsageService, parse_claude_rate_limit_event};
 use tokio::sync::mpsc::UnboundedReceiver;
 
+use so_core::{MessageKind, RunState};
+
 use super::RunManager;
 use super::lifecycle::{Outcome, excerpt};
+use super::review::Gate;
 
 /// Re-prompts allowed when the final result does not match `output_schema`.
 const MAX_REPROMPTS: u32 = 5;
 const EXCERPT_CHARS: usize = 280;
+/// Nudges sent to a stalled run before it is escalated (SPEC 7.6).
+const MAX_NUDGES: u32 = 3;
+const NUDGE_TEXT: &str = "Status? Continue, or call ask_parent if blocked.";
+const RESUME_AFTER_DEATH: &str =
+    "Your process stopped unexpectedly. Continue the task from where you were.";
 
 pub(crate) struct PumpCtx {
     pub run_id: String,
@@ -26,6 +35,16 @@ pub(crate) struct PumpCtx {
     pub account: AccountFile,
     pub pool: String,
     pub validator: Option<Validator>,
+    pub review: bool,
+}
+
+/// Where a run is in stall handling.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum Stage {
+    #[default]
+    Active,
+    Stalled,
+    Escalated,
 }
 
 #[derive(Default)]
@@ -37,6 +56,10 @@ struct State {
     offset: Option<u64>,
     /// An error event seen outside a turn, used if the harness then exits.
     pending_error: Option<(ErrorKind, String)>,
+    stage: Stage,
+    nudges: u32,
+    /// Times the review checks failed and were sent back to the run.
+    review_failures: u32,
 }
 
 impl RunManager {
@@ -55,10 +78,36 @@ impl RunManager {
             )
         });
         let mut st = State::default();
-        while let Some(ev) = rx.recv().await {
+        let stall = Duration::from_millis(self.config().runs.stall_ms.max(1));
+        let mut check_at = tokio::time::Instant::now() + stall;
+        loop {
+            let ev = match tokio::time::timeout_at(check_at, rx.recv()).await {
+                Ok(Some(ev)) => ev,
+                Ok(None) => break,
+                Err(_) => {
+                    check_at = tokio::time::Instant::now() + stall;
+                    self.on_idle(&pc, &mut st, &control).await;
+                    continue;
+                }
+            };
             // A cancel finishes the run itself; whatever the dying process says is noise.
             if st.done || self.is_cancelling(&pc.run_id) {
                 continue;
+            }
+            // Our own input (a nudge, a message) is echoed as a raw line: not the
+            // harness showing signs of life.
+            let echo = matches!(
+                &ev,
+                HarnessEvent::Raw {
+                    channel: Channel::Stdin,
+                    ..
+                }
+            );
+            if !echo {
+                check_at = tokio::time::Instant::now() + stall;
+                if st.stage != Stage::Active {
+                    self.recover(&pc, &mut st).await;
+                }
             }
             self.on_event(&pc, &mut st, &control, usage.as_ref(), ev)
                 .await;
@@ -204,21 +253,190 @@ impl RunManager {
         self.finish(&pc.run_id, o).await;
     }
 
+    /// No harness event for `runs.stall_ms`: nudge up to three times, then escalate
+    /// (SPEC 7.6). A run that is waiting on a call of its own is not stalled.
+    async fn on_idle(&self, pc: &PumpCtx, st: &mut State, control: &RunControl) {
+        if st.done || self.is_cancelling(&pc.run_id) || self.is_waiting(&pc.run_id) {
+            return;
+        }
+        let idle_ms = self.config().runs.stall_ms;
+        match st.stage {
+            Stage::Active => {
+                if !self
+                    .move_state(
+                        &pc.run_id,
+                        RunState::Running,
+                        RunState::Stalled,
+                        "no events",
+                    )
+                    .await
+                {
+                    return;
+                }
+                st.stage = Stage::Stalled;
+                self.emit(
+                    &pc.session_id,
+                    Some(&pc.run_id),
+                    EventType::StallDetected,
+                    json!({"idle_ms": idle_ms}),
+                )
+                .await;
+                self.nudge(pc, st, control).await;
+            }
+            Stage::Stalled if st.nudges < MAX_NUDGES => self.nudge(pc, st, control).await,
+            Stage::Stalled => {
+                if !self
+                    .move_state(
+                        &pc.run_id,
+                        RunState::Stalled,
+                        RunState::Escalated,
+                        "no reply to nudges",
+                    )
+                    .await
+                {
+                    return;
+                }
+                st.stage = Stage::Escalated;
+                self.escalated(pc).await;
+            }
+            Stage::Escalated => {}
+        }
+    }
+
+    async fn nudge(&self, pc: &PumpCtx, st: &mut State, control: &RunControl) {
+        st.nudges += 1;
+        if let Err(e) = control.send(NUDGE_TEXT).await {
+            tracing::debug!(run_id = %pc.run_id, error = %e, "could not send a nudge");
+        }
+        let _ = self
+            .store_message(
+                &pc.session_id,
+                None,
+                Some(&pc.run_id),
+                MessageKind::Nudge,
+                NUDGE_TEXT,
+                true,
+            )
+            .await;
+        self.emit(
+            &pc.session_id,
+            Some(&pc.run_id),
+            EventType::NudgeSent,
+            json!({"n": st.nudges}),
+        )
+        .await;
+    }
+
+    async fn escalated(&self, pc: &PumpCtx) {
+        self.emit(
+            &pc.session_id,
+            Some(&pc.run_id),
+            EventType::Escalated,
+            json!({}),
+        )
+        .await;
+        let id = pc.run_id.clone();
+        let row = self.db(move |s| s.get_run(&id)).await.ok().flatten();
+        let parent = row.as_ref().and_then(|r| r.parent_run_id.clone());
+        let name = row
+            .and_then(|r| r.name)
+            .unwrap_or_else(|| pc.run_id.clone());
+        let _ = self
+            .store_message(
+                &pc.session_id,
+                Some(&pc.run_id),
+                parent.as_deref(),
+                MessageKind::Message,
+                &format!(
+                    "Run {} is stalled: it did not answer {MAX_NUDGES} nudges.",
+                    pc.run_id
+                ),
+                false,
+            )
+            .await;
+        self.notify(
+            "escalated",
+            &pc.run_id,
+            &name,
+            "the run is stalled and needs attention",
+        )
+        .await;
+    }
+
+    /// A harness event after a stall: back to `running`.
+    async fn recover(&self, pc: &PumpCtx, st: &mut State) {
+        let from = match st.stage {
+            Stage::Stalled => RunState::Stalled,
+            Stage::Escalated => RunState::Escalated,
+            Stage::Active => return,
+        };
+        self.move_state(&pc.run_id, from, RunState::Running, "activity")
+            .await;
+        st.stage = Stage::Active;
+        st.nudges = 0;
+    }
+
     async fn exited(&self, pc: &PumpCtx, st: &mut State, code: Option<i32>) {
         if st.done {
             return;
         }
         st.done = true;
-        let (kind, text) = st.pending_error.take().unwrap_or_else(|| {
-            (
-                ErrorKind::Other,
-                format!(
+        let text = match st.pending_error.take() {
+            // A quota, auth or similar error: resuming would only repeat it.
+            Some(err) => err,
+            None => {
+                let text = format!(
                     "the harness exited ({}) before producing a result",
                     code.map_or("no exit code".to_string(), |c| format!("code {c}"))
-                ),
-            )
-        });
-        self.fail_run(&pc.run_id, kind, &text).await;
+                );
+                // The process died on its own: resume it once from its native session.
+                match self.prepare_resume_after_death(pc).await {
+                    Ok(row) => {
+                        // Resumed on another task: `go_live` starts a pump, and a pump
+                        // that awaited it would be a future containing itself.
+                        self.request_resume(row, RESUME_AFTER_DEATH);
+                        return;
+                    }
+                    Err(why) => {
+                        tracing::debug!(run_id = %pc.run_id, %why, "not resumed after exit");
+                    }
+                }
+                (ErrorKind::Other, text)
+            }
+        };
+        self.fail_run(&pc.run_id, text.0, &text.1).await;
+    }
+
+    /// Checks that a run whose process died can be resumed (once, SPEC 7.6) and gets it
+    /// ready: the dead attempt is closed and the run is `running` again.
+    async fn prepare_resume_after_death(&self, pc: &PumpCtx) -> Result<so_store::RunRow, String> {
+        let id = pc.run_id.clone();
+        let (row, attempts) = self
+            .db(move |s| Ok((s.get_run(&id)?, s.list_attempts(&id, 10)?)))
+            .await
+            .map_err(|e| e.message)?;
+        let row = row.ok_or("run is gone")?;
+        if !row.state.is_active() || row.native_session_id.is_none() {
+            return Err("nothing to resume".into());
+        }
+        if attempts.len() >= 2 {
+            return Err("already resumed once".into());
+        }
+        // Close the dead attempt; the resume opens the next one.
+        if let Some(a) = attempts.iter().rev().find(|a| a.ended_at.is_none()) {
+            let aid = a.id.clone();
+            let _ = self
+                .db(move |s| s.finish_attempt(&aid, "died", Utc::now()))
+                .await;
+        }
+        // The run is running again, whatever it was doing when its process died.
+        for from in [RunState::Stalled, RunState::Escalated, RunState::Waiting] {
+            if row.state == from {
+                self.move_state(&row.id, from, RunState::Running, "process died")
+                    .await;
+            }
+        }
+        Ok(row)
     }
 
     async fn on_result(
@@ -270,9 +488,18 @@ impl RunManager {
                 candidate.unwrap_or(Value::Null)
             }
         };
-        st.done = true;
         let json = serde_json::to_string(&value).ok();
-        // Review gate (`review: true`) is added later; a finished run is succeeded.
+        if pc.review {
+            match self
+                .review_gate(&pc.run_id, control, json, st.review_failures)
+                .await
+            {
+                Gate::Retry => st.review_failures += 1,
+                Gate::Entered => st.done = true,
+            }
+            return;
+        }
+        st.done = true;
         self.finish(&pc.run_id, Outcome::succeeded(json, control.clone()))
             .await;
     }
