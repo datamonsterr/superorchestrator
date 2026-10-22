@@ -244,6 +244,218 @@ pub fn remove(c: &Created, force: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// The branch checked out in `dir`, or `None` for a detached `HEAD`.
+pub fn current_branch(dir: &Path) -> Option<String> {
+    git(dir, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .ok()
+        .filter(|b| !b.is_empty())
+}
+
+/// The first lines of `git status --porcelain` for `dir` when it has any change (untracked
+/// files included).
+pub fn uncommitted(dir: &Path) -> Option<String> {
+    let out = git(dir, &["status", "--porcelain"]).ok()?;
+    if out.is_empty() {
+        return None;
+    }
+    Some(out.lines().take(5).collect::<Vec<_>>().join("; "))
+}
+
+/// True when the local branch exists in `repo`.
+pub fn branch_exists(repo: &Path, branch: &str) -> bool {
+    git(
+        repo,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .is_ok()
+}
+
+/// What a successful [`merge_branch`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Merged {
+    FastForward,
+    MergeCommit,
+}
+
+/// Merges `branch` into the branch checked out in `repo` (SPEC 7.5, `accept_run` with
+/// `merge`). Refuses, changing nothing, unless the checkout has no tracked changes and is on
+/// `base_branch`; when that is unknown, on any branch that contains `base_commit`. A conflict
+/// is aborted. Every error is a message for the orchestrator.
+pub fn merge_branch(
+    repo: &Path,
+    branch: &str,
+    base_branch: Option<&str>,
+    base_commit: &str,
+    message: &str,
+) -> Result<Merged, String> {
+    if !branch_exists(repo, branch) {
+        return Err(format!(
+            "branch {branch} no longer exists in {}; there is nothing to merge",
+            repo.display()
+        ));
+    }
+    let Some(on) = current_branch(repo) else {
+        return Err(format!(
+            "{} has a detached HEAD; check out the branch to merge into, then accept again",
+            repo.display()
+        ));
+    };
+    match base_branch {
+        Some(want) if want != on => {
+            return Err(format!(
+                "{} is on branch {on}, but this run was started from {want}; check out {want}, then accept again",
+                repo.display()
+            ));
+        }
+        Some(_) => {}
+        None => {
+            let contains = git_command(repo)
+                .args(["merge-base", "--is-ancestor", base_commit, "HEAD"])
+                .status()
+                .is_ok_and(|s| s.success());
+            if !contains {
+                return Err(format!(
+                    "{} is on branch {on}, which does not contain the commit this run started from ({}); check out its base branch, then accept again",
+                    repo.display(),
+                    &base_commit[..base_commit.len().min(12)]
+                ));
+            }
+        }
+    }
+    let tracked = git(repo, &["status", "--porcelain", "--untracked-files=no"])?;
+    if !tracked.is_empty() {
+        return Err(format!(
+            "{} has uncommitted changes to tracked files; commit or stash them, then accept again",
+            repo.display()
+        ));
+    }
+    let before = git(repo, &["rev-parse", "HEAD"])?;
+    let out = git_command(repo)
+        .args(["merge", "--no-edit", "-m", message, branch])
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_MERGE_AUTOEDIT", "no")
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    if out.status.success() {
+        let parents = git(repo, &["rev-list", "--parents", "-n", "1", "HEAD"])?;
+        let after = git(repo, &["rev-parse", "HEAD"])?;
+        return Ok(if after != before && parents.split(' ').count() > 2 {
+            Merged::MergeCommit
+        } else {
+            Merged::FastForward
+        });
+    }
+    let detail = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let conflicts = git(repo, &["diff", "--name-only", "--diff-filter=U"]).unwrap_or_default();
+    // Leave the base checkout as it was found.
+    let _ = git(repo, &["merge", "--abort"]);
+    if conflicts.is_empty() {
+        return Err(format!(
+            "merging {branch} into {on} failed: {}",
+            detail.trim()
+        ));
+    }
+    let files: Vec<&str> = conflicts.lines().collect();
+    Err(format!(
+        "merging {branch} into {on} conflicts in {}; the merge was aborted and nothing changed. Reject the run with feedback to resolve the conflict, or merge {branch} by hand",
+        files.join(", ")
+    ))
+}
+
+/// What a run changed, for `get_run` with `diff`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffOut {
+    pub base: String,
+    pub stat: String,
+    pub patch: String,
+    pub truncated: bool,
+}
+
+/// Most untracked files added to a diff.
+const MAX_UNTRACKED: usize = 100;
+
+fn git_raw(dir: &Path, args: &[&str]) -> Result<(bool, Vec<u8>), String> {
+    let out = git_command(dir)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| format!("could not run git: {e}"))?;
+    Ok((out.status.success(), out.stdout))
+}
+
+fn truncate_utf8(text: &mut String, cap: usize) -> bool {
+    if text.len() <= cap {
+        return false;
+    }
+    let mut end = cap;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    true
+}
+
+/// The changes of a run since the merge base of its branch: committed work plus, when the
+/// worktree exists, uncommitted changes and untracked files. The patch is cut at `cap`
+/// bytes.
+pub fn diff(c: &Created, cap: usize) -> Result<DiffOut, String> {
+    let base = git(&c.repo, &["merge-base", &c.base, &c.branch]).unwrap_or_else(|_| c.base.clone());
+    let live = c.path.is_dir();
+    let (dir, target): (&Path, String) = if live {
+        (&c.path, base.clone())
+    } else {
+        (&c.repo, format!("{base}..{}", c.branch))
+    };
+    let (ok, stat) = git_raw(dir, &["diff", "--no-color", "--stat", &target])?;
+    if !ok {
+        return Err(format!("could not diff {} against {base}", c.branch));
+    }
+    let mut stat = String::from_utf8_lossy(&stat).trim_end().to_string();
+    let (ok, patch) = git_raw(dir, &["diff", "--no-color", &target])?;
+    if !ok {
+        return Err(format!("could not diff {} against {base}", c.branch));
+    }
+    let mut patch = String::from_utf8_lossy(&patch).into_owned();
+    if live {
+        let (_, names) = git_raw(dir, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+        let names = String::from_utf8_lossy(&names).into_owned();
+        for name in names
+            .split('\0')
+            .filter(|n| !n.is_empty())
+            .take(MAX_UNTRACKED)
+        {
+            if !stat.is_empty() {
+                stat.push('\n');
+            }
+            stat.push_str(&format!(" {name} (untracked)"));
+            if patch.len() <= cap {
+                // `--no-index` exits 1 when the files differ.
+                let (_, one) = git_raw(
+                    dir,
+                    &["diff", "--no-color", "--no-index", "--", "/dev/null", name],
+                )?;
+                patch.push_str(&String::from_utf8_lossy(&one));
+            }
+        }
+    }
+    let truncated = truncate_utf8(&mut patch, cap);
+    Ok(DiffOut {
+        base,
+        stat,
+        patch,
+        truncated,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +474,15 @@ mod tests {
         for var in INHERITED_GIT_ENV {
             assert!(cleared.iter().any(|k| k == var), "{var} not cleared");
         }
+    }
+
+    #[test]
+    fn truncation_keeps_whole_characters() {
+        let mut s = "aé".repeat(10);
+        assert!(truncate_utf8(&mut s, 4));
+        assert_eq!(s, "aéa");
+        let mut short = "ab".to_string();
+        assert!(!truncate_utf8(&mut short, 4));
     }
 
     #[test]

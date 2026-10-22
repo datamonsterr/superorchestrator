@@ -62,6 +62,11 @@ async fn fixture(subagent: bool) -> Fixture {
                     "decider unreachable: model `m`: HTTP 503",
                 ))
             });
+            // Echo the params so a test can see what reached the supervisor.
+            for method in ["accept_run", "get_run"] {
+                st.router
+                    .register(method, |_c, p| async move { Ok(json!({"params": p})) });
+            }
             st.router.register("fork_agent", |_c, _p| async {
                 Err(RpcError::new(DEPTH_LIMIT, "depth limit reached"))
             });
@@ -371,5 +376,45 @@ async fn cancelling_a_blocked_call_leaves_the_bridge_usable() {
         .await
         .unwrap();
     assert_eq!(r.is_error, Some(false));
+    f.sup.shutdown().await;
+}
+
+#[tokio::test]
+async fn accept_merge_and_get_run_diff_reach_the_supervisor() {
+    let f = fixture(false).await;
+    let call = |name: &'static str, args: serde_json::Value| {
+        let f = &f;
+        async move {
+            f.client
+                .call_tool(
+                    CallToolRequestParams::new(name)
+                        .with_arguments(args.as_object().unwrap().clone()),
+                )
+                .await
+                .unwrap()
+        }
+    };
+    let r = call("accept_run", json!({"run": "r1", "merge": true})).await;
+    assert_eq!(r.is_error, Some(false));
+    assert_eq!(
+        r.structured_content,
+        Some(json!({"params": {"run": "r1", "merge": true}}))
+    );
+    let r = call("get_run", json!({"run": "r1", "diff": true})).await;
+    assert_eq!(
+        r.structured_content,
+        Some(json!({"params": {"run": "r1", "diff": true}}))
+    );
+    // The schemas advertise the flags.
+    let tools = f.client.list_all_tools().await.unwrap();
+    for (tool, flag) in [("accept_run", "merge"), ("get_run", "diff")] {
+        let t = tools.iter().find(|t| t.name == tool).unwrap();
+        assert!(
+            serde_json::to_string(&t.input_schema)
+                .unwrap()
+                .contains(flag),
+            "{tool} schema lacks {flag}"
+        );
+    }
     f.sup.shutdown().await;
 }

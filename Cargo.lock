@@ -2472,6 +2472,7 @@ dependencies = [
  "serde_json",
  "so-core",
  "so-supervisor",
+ "so-workflow",
  "tempfile",
  "tokio",
  "tracing",

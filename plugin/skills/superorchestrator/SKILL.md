@@ -32,10 +32,10 @@ Use `output_schema` when you need a structured final result, and `review: true` 
 ## Waiting, messaging and reviewing
 
 - `wait_agent(runs, timeout)` returns when a listed run finishes, asks a question or reports progress, or when the timeout ends.
-- `get_run` shows state, recent events, the final result and the worktree.
+- `get_run` shows state, recent events, the final result and the worktree. Review a run's changes with `get_run(run, diff: true)` (stat and patch), not by reading its files.
 - `send_message(run, text)` talks to a running run; sent to a finished run it resumes the session.
 - `read_messages` returns unread messages for you. Answer a child's question with `send_message`.
-- A run in `pending_review` waits for `accept_run` or `reject_run`.
+- A run in `pending_review` waits for `accept_run` or `reject_run`. Land accepted work with `accept_run(run, merge: true)`: it merges the run's branch into the checkout it started from and removes the worktree. A refused or conflicting merge leaves the run at the gate with the reason; without `merge`, the result gives the branch and the command to merge it.
 - `cancel_agent` stops a run and its subtree.
 
 ## If you are a subagent

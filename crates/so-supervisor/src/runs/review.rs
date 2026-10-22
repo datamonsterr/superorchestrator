@@ -11,7 +11,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use so_core::proto::{AckResult, INVALID_REQUEST, RejectParams, RunRef};
+use so_core::proto::{AcceptParams, AcceptResult, AckResult, INVALID_REQUEST, RejectParams};
 use so_core::{EventType, MessageKind, RunState};
 use so_harness::RunControl;
 use so_store::{RunPatch, RunRow};
@@ -601,15 +601,28 @@ impl RunManager {
         Ok(row)
     }
 
-    /// `accept_run`: `pending_review -> succeeded`. The worktree is kept when the run made
-    /// changes (see `cleanup_worktree`); `worktrees prune` removes it later.
-    pub async fn accept_run(&self, ctx: &ConnCtx, r: RunRef) -> R<AckResult> {
-        let row = self.pending_review_run(ctx, &r.run).await?;
+    /// `accept_run`: `pending_review -> succeeded`. With `merge`, the run's branch is first
+    /// merged into the base checkout; a refused or conflicting merge leaves the run at the
+    /// gate. The worktree is kept when the run made changes that are not merged or pushed
+    /// (see `remove_accepted_worktree`); `worktrees prune` removes it later.
+    pub async fn accept_run(&self, ctx: &ConnCtx, p: AcceptParams) -> R<AcceptResult> {
+        let row = self.pending_review_run(ctx, &p.run).await?;
+        let mut merged = false;
+        let mut note = None;
+        if p.merge {
+            merged = self.merge_run_branch(&row).await?;
+            if !merged {
+                note = Some(
+                    "merge was requested but the run has no worktree branch (isolation none, or its untouched worktree was removed); nothing to merge"
+                        .to_string(),
+                );
+            }
+        }
         self.emit(
             &row.session_id,
             Some(&row.id),
             EventType::ReviewAccepted,
-            json!({"actor": ctx.actor()}),
+            json!({"actor": ctx.actor(), "merged": merged}),
         )
         .await;
         let outcome = Outcome {
@@ -625,7 +638,84 @@ impl RunManager {
             return Err(rpc(INVALID_REQUEST, "the run changed state; try again"));
         }
         self.remove_accepted_worktree(&row.id).await;
-        Ok(AckResult { ok: true })
+        let mut result = AcceptResult {
+            ok: true,
+            merged,
+            branch: None,
+            merge_command: None,
+            note,
+        };
+        if !merged
+            && let (Some(branch), Some(repo)) = (row.branch.clone(), row.worktree_repo.clone())
+        {
+            let (r, b) = (std::path::PathBuf::from(&repo), branch.clone());
+            if self
+                .blocking(move || worktree::branch_exists(&r, &b))
+                .await
+                .unwrap_or(false)
+            {
+                result.merge_command = Some(format!("git -C '{repo}' merge {branch}"));
+                result.branch = Some(branch);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Merges the run's branch into its base checkout. `Ok(false)` when the run has no
+    /// branch to merge; `Ok(true)` when it merged; an error (nothing changed) otherwise.
+    async fn merge_run_branch(&self, row: &RunRow) -> R<bool> {
+        let (Some(branch), Some(repo), Some(base)) = (
+            row.branch.clone(),
+            row.worktree_repo.clone(),
+            row.worktree_base.clone(),
+        ) else {
+            return Ok(false);
+        };
+        let rid = row.id.clone();
+        let events = self
+            .db(move |s| s.list_events_by_run(&rid, 1_000_000))
+            .await?;
+        let base_branch = events
+            .iter()
+            .find(|e| e.event_type == EventType::WorktreeCreated)
+            .and_then(|e| e.data["base_branch"].as_str().map(str::to_string));
+        let title = row
+            .name
+            .clone()
+            .or_else(|| {
+                row.prompt
+                    .as_deref()
+                    .and_then(|p| p.lines().next())
+                    .map(|l| l.chars().take(60).collect())
+            })
+            .unwrap_or_else(|| "run".into());
+        let message = format!("merge: {title} ({})", worktree::short_id(&row.id));
+        let wt = row.worktree_path.clone().map(std::path::PathBuf::from);
+        let repo = std::path::PathBuf::from(repo);
+        if !self
+            .blocking({
+                let (repo, branch) = (repo.clone(), branch.clone());
+                move || worktree::branch_exists(&repo, &branch)
+            })
+            .await?
+        {
+            return Ok(false);
+        }
+        self.blocking(move || {
+            if let Some(wt) = wt.filter(|w| w.is_dir())
+                && let Some(dirty) = worktree::uncommitted(&wt)
+            {
+                return Err(format!(
+                    "the run's worktree {} has uncommitted changes ({dirty}); they would not be merged. Reject the run with feedback to commit them, then accept again",
+                    wt.display()
+                ));
+            }
+            worktree::merge_branch(&repo, &branch, base_branch.as_deref(), &base, &message)
+                .map(|_| ())
+        })
+        .await?
+        .map_err(|e| rpc(INVALID_REQUEST, e))?;
+        Ok(true)
     }
 
     /// `reject_run`: sends `feedback` on the run's native session (resuming it) and moves

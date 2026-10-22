@@ -353,6 +353,61 @@ pub struct RunRef {
     pub run: String,
 }
 
+/// Params of `get_run`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct GetRunParams {
+    /// Run id or unique prefix.
+    pub run: String,
+    /// Include `diff`: what the run changed in its worktree (default false).
+    #[serde(default)]
+    pub diff: bool,
+}
+
+/// Params of `accept_run`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AcceptParams {
+    /// Run id or unique prefix.
+    pub run: String,
+    /// Also merge the run's branch into the branch the base checkout is on (default false).
+    /// Refused, with the run left at the review gate, when the base checkout has tracked
+    /// changes or is on another branch, or when the merge conflicts (it is aborted).
+    #[serde(default)]
+    pub merge: bool,
+}
+
+/// Result of `accept_run`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct AcceptResult {
+    pub ok: bool,
+    /// The run's branch was merged by this call.
+    #[serde(default)]
+    pub merged: bool,
+    /// The run's branch when its work is still unmerged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    /// The command that merges `branch`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+/// What a run changed: `get_run` with `diff: true`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RunDiff {
+    /// The commit the diff starts from (the merge base of the run's branch).
+    pub base: String,
+    pub branch: String,
+    /// `git diff --stat`, plus a line per untracked file.
+    pub stat: String,
+    /// Committed and uncommitted changes, truncated at 64 KiB.
+    pub patch: String,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct UsageTotals {
     #[serde(default)]
@@ -388,6 +443,9 @@ pub struct RunView {
     pub branch: Option<String>,
     #[serde(default)]
     pub join_command: Option<String>,
+    /// What the run changed (`get_run` with `diff: true`, for a run with a worktree).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<RunDiff>,
     /// Directory the join command runs in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub join_cwd: Option<String>,

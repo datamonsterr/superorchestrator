@@ -254,6 +254,7 @@ Worktree isolation is the default. The supervisor creates `git worktree add -b <
 Rules:
 - When the cwd's tree is dirty, the parent is warned that uncommitted changes are not carried over.
 - When `cwd` is not a git repository, isolation falls back to `none`, with a warning.
+- `accept_run` with `merge: true` lands the branch in the base checkout (7.5).
 - After the run: a worktree with no commits and a clean tree is removed. Otherwise it is kept until `accept_run`, after which it is removed when its branch is merged or pushed, or until `superorchestrator worktrees prune`.
 
 ### 7.4 Child instructions
@@ -276,13 +277,15 @@ A run with `review: true`:
    - `pr_threads`: no unresolved review threads and no outstanding `CHANGES_REQUESTED`
    - `cmd:`: the command exits 0 in the run cwd
 2. Enters `pending_review` when the checks pass. A failed check is sent back to the child as a message once, then the run is reported to the parent.
-3. Waits for the parent. `accept_run` marks it `succeeded`. `reject_run(feedback)` sends the feedback on the same native session and returns the run to `running`.
+3. Waits for the parent. The parent reviews the work with `get_run(run, diff: true)` (7.5 notes). `accept_run` marks it `succeeded`. `reject_run(feedback)` sends the feedback on the same native session and returns the run to `running`.
 
 Notes on the implementation:
 - `cmd:<shell>` runs with `sh -c` in the run's worktree (or cwd) with a 10 minute limit, in its own process group (killed whole on timeout or cancel), with at most 64 KiB of output kept. The command is chosen by the orchestrator in the `checks` of its `spawn_agent` call; it is never built from task text or run output. It runs with the daemon's privileges, outside the harness sandbox, so treat `checks` like any command you would run yourself.
 - `ci` and `pr_threads` use `gh` against the pull request of the run's branch. `ci` is green when every check is SUCCESS, SKIPPED or NEUTRAL.
 - At `pending_review` the harness process is stopped and its slot is freed; the native session stays so `reject_run` (or `send_message`, which counts as a rejection) can resume it. A resume claims a slot like a new start; with none free the run goes back to `queued` and resumes when one frees. A worktree run resumes in its worktree. If the directory is gone it is recreated from the run's branch; if the branch went with an untouched worktree, it is recreated at the run's base commit. A run that still cannot be resumed keeps its state and the caller gets the error.
 - `accept_run` removes the run's worktree and branch when the branch is merged into the repository's `HEAD` or contained in a remote branch, and the tree is clean (7.3). Otherwise the worktree stays until `worktrees prune`.
+- `get_run` with `diff: true` adds `diff = {base, branch, stat, patch, truncated}` for a run with a worktree: `base` is the merge base of the run's branch, `patch` is `git diff <base>` of the worktree (committed and uncommitted changes) plus untracked files, cut at 64 KiB (`truncated: true`). It is absent for a run without a worktree. The web API's run view omits it.
+- `accept_run(run, merge)` with `merge: true` also lands the work. The run must have a worktree branch; the base checkout (the repository the run was spawned from) must be on the branch it was on at spawn (recorded in `worktree_created.base_branch`; for older runs, any branch that contains the run's base commit) with no changes to tracked files (untracked files are fine), and the run's worktree must have no uncommitted changes. The branch is merged with `git merge` (fast-forward when possible, otherwise a merge commit with the message `merge: <run title> (<short run id>)`), then the worktree and branch are removed as above. On a refusal or a conflict (the merge is aborted) the call fails with an `INVALID_REQUEST` error that names the branch and, for a conflict, the files; nothing changes and the run stays `pending_review`. With isolation `none`, or when the run has no branch left, `merge` is a successful no-op with `merged: false` and a `note`. The result is `{ok, merged, branch?, merge_command?, note?}`; when the work is not merged and its branch exists, `branch` and `merge_command` (`git -C <repo> merge <branch>`) say how to land it. Nothing is merged without the flag, and nothing is pushed. The web UI accepts without `merge`.
 - Failed checks are sent to the child once. If they fail again the run still goes to `pending_review`, and the parent gets a `result` message that lists the failed checks.
 
 ### 7.6 Stall handling
@@ -444,7 +447,7 @@ System prompt body…
 
 `run_workflow(name|script, args)` runs a JavaScript workflow in embedded QuickJS. The API matches Claude Code workflow scripts:
 - `agent(prompt, opts)`: opts are the spawn options from 7.2, so any harness can be used.
-- `parallel([...])`: defaults to `isolation: worktree`.
+- `parallel([...])`: defaults to `isolation: worktree`. A failed agent gives `null`.
 - `pipeline([...])`
 - `phase(name, fn)`
 - `log(msg)`
@@ -482,11 +485,11 @@ Full transcripts are stored as files under `runs/<run_id>/transcript.jsonl`, in 
 | `route` | Preview a route decision (8.3). Runs nothing. |
 | `spawn_agent` | Start a run (7.2). Returns the run id, or the result when `wait: true`. |
 | `wait_agent` | Wait on runs, with a timeout. Streams progress notifications. |
-| `get_run` | State, recent events, final result, usage, worktree, join command |
+| `get_run` | State, recent events, final result, usage, worktree, join command; `diff: true` adds the run's changes (7.5) |
 | `send_message` | Message a run. Resumes a finished run. |
 | `read_messages` | Unread messages for the caller |
 | `cancel_agent` | Cancel a run and its subtree |
-| `accept_run`, `reject_run` | Review gate (7.5) |
+| `accept_run`, `reject_run` | Review gate (7.5); `accept_run` with `merge: true` lands the branch |
 | `fork_agent` | Fork a finished run (9) |
 | `list_harnesses` | Accounts, signed-in state, headroom, active runs, choices |
 | `list_agents` | Custom agents |

@@ -19,3 +19,28 @@ pub use engine::{CancelToken, EngineOptions, RunOptions, WorkflowEngine};
 pub use error::{Result, WorkflowError};
 pub use host::{BoxFut, HostError, StepEvent, StepOutcome, StepRequest, WorkflowHost};
 pub use saved::{SavedSource, SavedWorkflow, SavedWorkflows};
+
+/// The globals a workflow script can use (defined by `prelude.js`). The `run_workflow` tool
+/// description documents each.
+pub const GLOBALS: &[&str] = &["agent", "parallel", "pipeline", "phase", "log", "args"];
+
+#[cfg(test)]
+mod tests {
+    use super::GLOBALS;
+
+    #[test]
+    fn globals_match_what_the_prelude_defines() {
+        let prelude = include_str!("prelude.js");
+        let mut defined: Vec<&str> = prelude
+            .lines()
+            .filter_map(|l| l.trim_start().strip_prefix("g."))
+            .filter_map(|r| r.split(' ').next())
+            // `Date` is patched, not added; `__drain` is internal.
+            .filter(|n| !n.starts_with("__") && *n != "Date")
+            .collect();
+        defined.sort_unstable();
+        let mut listed = GLOBALS.to_vec();
+        listed.sort_unstable();
+        assert_eq!(defined, listed);
+    }
+}

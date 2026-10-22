@@ -488,7 +488,7 @@ impl RunManager {
             .or_else(|| row.prompt.clone())
             .unwrap_or_default();
         let (id, cwd) = (row.id.clone(), cwd.to_path_buf());
-        let (created, rel) = self
+        let (created, rel, base_branch) = self
             .blocking(move || {
                 let info = worktree::repo_info(&cwd)
                     .filter(|i| i.has_head)
@@ -502,7 +502,9 @@ impl RunManager {
                     .strip_prefix(&info.toplevel)
                     .unwrap_or(Path::new(""))
                     .to_path_buf();
-                worktree::create(&info, &template, &prefix, &hint, &id).map(|c| (c, rel))
+                let base_branch = worktree::current_branch(&info.toplevel);
+                worktree::create(&info, &template, &prefix, &hint, &id)
+                    .map(|c| (c, rel, base_branch))
             })
             .await
             .map_err(|e| e.message)??;
@@ -526,7 +528,7 @@ impl RunManager {
             &row.session_id,
             Some(&row.id),
             EventType::WorktreeCreated,
-            json!({"path": path, "branch": branch, "base": created.base, "repo": created.repo}),
+            json!({"path": path, "branch": branch, "base": created.base, "repo": created.repo, "base_branch": base_branch}),
         )
         .await;
         Ok(created.path.join(rel))
