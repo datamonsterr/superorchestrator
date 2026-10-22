@@ -78,17 +78,44 @@ fn read_one(
     source: AgentSource,
     stem: &str,
 ) -> Result<AgentDef> {
-    let text = std::fs::read_to_string(file).map_err(|e| AgentError::io(file, e))?;
+    let (text, cut) = crate::parse::read_capped(file, crate::parse::MAX_AGENT_FILE)
+        .map_err(|e| AgentError::io(file, e))?;
+    if cut {
+        return Err(AgentError::Parse {
+            path: file.to_path_buf(),
+            msg: format!("larger than {} KiB", crate::parse::MAX_AGENT_FILE / 1024),
+        });
+    }
     parse_agent(&text, file, dir, source, stem)
+}
+
+fn problem_name(file: &Path) -> String {
+    let is_folder_agent = file.file_name().is_some_and(|n| n == "AGENT.md");
+    let part = if is_folder_agent {
+        file.parent().and_then(Path::file_name)
+    } else {
+        file.file_stem()
+    };
+    part.map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Finds the agent a spawn asked for. Entry point for the supervisor.
 pub fn resolve_for_spawn(cwd: &Path, paths: &Paths, name: &str) -> Result<AgentDef> {
-    discover(cwd, paths)
-        .agents
+    let d = discover(cwd, paths);
+    if let Some(a) = d.agents.into_iter().find(|a| a.name == name) {
+        return Ok(a);
+    }
+    // A broken file named like the request: report why it failed, not "not found".
+    // Its folder name or file stem is the only name we have.
+    if let Some((path, msg)) = d
+        .problems
         .into_iter()
-        .find(|a| a.name == name)
-        .ok_or_else(|| AgentError::NotFound(name.to_string()))
+        .find(|(p, _)| problem_name(p) == name)
+    {
+        return Err(AgentError::Parse { path, msg });
+    }
+    Err(AgentError::NotFound(name.to_string()))
 }
 
 #[cfg(test)]
@@ -150,6 +177,20 @@ mod tests {
             resolve_for_spawn(t.path(), &paths, "zzz"),
             Err(AgentError::NotFound(_))
         ));
+        write(
+            &paths.agents_dir().join("broken/AGENT.md"),
+            "no frontmatter",
+        );
+        write(
+            &paths.agents_dir().join("flat-broken.md"),
+            "---\nname: x\n---\n",
+        );
+        for n in ["broken", "flat-broken"] {
+            match resolve_for_spawn(t.path(), &paths, n) {
+                Err(AgentError::Parse { .. }) => {}
+                other => panic!("{n}: {other:?}"),
+            }
+        }
     }
 
     #[test]

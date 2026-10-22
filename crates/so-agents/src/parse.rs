@@ -209,6 +209,60 @@ pub fn validate_agent_name(name: &str) -> Result<()> {
     }
 }
 
+/// Largest agent file accepted.
+pub const MAX_AGENT_FILE: u64 = 512 * 1024;
+/// Largest memory file read; the rest is cut off with a note.
+pub const MAX_MEMORY_FILE: u64 = 256 * 1024;
+
+/// Reads at most `max` bytes. Returns the (lossy UTF-8) text and whether it was cut.
+pub(crate) fn read_capped(path: &Path, max: u64) -> std::io::Result<(String, bool)> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(path)?
+        .take(max + 1)
+        .read_to_end(&mut buf)?;
+    let cut = buf.len() as u64 > max;
+    if cut {
+        buf.truncate(max as usize);
+    }
+    Ok((String::from_utf8_lossy(&buf).into_owned(), cut))
+}
+
+/// True when the YAML has an anchor (`&x`) or alias (`*x`) node. serde_norway
+/// replays aliases without bounding expansion, so they are rejected outright
+/// (a billion-laughs file would otherwise blow up memory). Quoted text and
+/// comments are skipped; block scalars mentioning `&word` are rejected too.
+fn has_anchor_or_alias(yaml: &str) -> bool {
+    for line in yaml.lines() {
+        let (mut quote, mut prev) = (None::<char>, ' ');
+        let chars: Vec<char> = line.chars().collect();
+        for (i, &c) in chars.iter().enumerate() {
+            match quote {
+                Some(q) => {
+                    if c == q && prev != '\\' {
+                        quote = None;
+                    }
+                }
+                None => match c {
+                    '"' | '\'' if prev.is_whitespace() || "[{,:-".contains(prev) => quote = Some(c),
+                    '#' if prev.is_whitespace() => break,
+                    '&' | '*'
+                        if (prev.is_whitespace() || "[{,".contains(prev))
+                            && chars
+                                .get(i + 1)
+                                .is_some_and(|n| n.is_alphanumeric() || *n == '_') =>
+                    {
+                        return true;
+                    }
+                    _ => {}
+                },
+            }
+            prev = c;
+        }
+    }
+    false
+}
+
 /// Splits `---` fenced frontmatter from the body.
 fn split_frontmatter(text: &str) -> Option<(&str, &str)> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
@@ -255,11 +309,24 @@ pub fn parse_agent(
     source: AgentSource,
     fallback_name: &str,
 ) -> Result<AgentDef> {
+    if text.len() as u64 > MAX_AGENT_FILE {
+        return Err(perr(
+            file,
+            format!("larger than {} KiB", MAX_AGENT_FILE / 1024),
+        ));
+    }
     let (fm, body) =
         split_frontmatter(text).ok_or_else(|| perr(file, "missing `---` YAML frontmatter"))?;
+    if has_anchor_or_alias(fm) {
+        return Err(perr(file, "YAML anchors and aliases are not supported"));
+    }
     let raw: Raw = serde_norway::from_str(fm).map_err(|e| perr(file, e.to_string()))?;
     let name = raw.name.unwrap_or_else(|| fallback_name.to_string());
     validate_agent_name(&name)?;
+    let skills = raw.skills.into_vec();
+    for sk in &skills {
+        validate_agent_name(sk)?;
+    }
     let description = raw
         .description
         .filter(|d| !d.trim().is_empty())
@@ -291,7 +358,7 @@ pub fn parse_agent(
         effort: raw.effort,
         tools: raw.tools.into_vec(),
         disallowed_tools: raw.disallowed_tools.into_vec(),
-        skills: raw.skills.into_vec(),
+        skills,
         mcp_servers,
         hooks: raw
             .hooks
@@ -427,6 +494,28 @@ body
         assert!(parse("---\ndescription: d\n").is_err(), "unterminated");
         let a = parse("---\ndescription: d\n---\n").unwrap();
         assert_eq!(a.name, "stem", "name falls back to the stem");
+    }
+
+    #[test]
+    fn skill_names_must_be_single_components() {
+        for bad in ["../x", "/abs", "a/b", ".."] {
+            let text = format!("---\nname: a\ndescription: d\nskills: [\"{bad}\"]\n---\n");
+            assert!(parse(&text).is_err(), "{bad}");
+        }
+        assert!(parse("---\nname: a\ndescription: d\nskills: [ok-skill]\n---\n").is_ok());
+    }
+
+    #[test]
+    fn size_cap_and_anchors() {
+        let big = format!(
+            "---\nname: a\ndescription: d\n---\n{}",
+            "x".repeat(600 * 1024)
+        );
+        assert!(parse(&big).is_err());
+        let bomb = "---\nname: a\ndescription: d\nx: &a [1,2]\ny: [*a, *a]\n---\n";
+        assert!(parse(bomb).unwrap_err().to_string().contains("anchors"));
+        let ok = "---\nname: a\ndescription: \"uses &amp and *stars*\" # &c\ntools: Bash(git *), Read\n---\n";
+        assert!(parse(ok).is_ok());
     }
 
     #[test]

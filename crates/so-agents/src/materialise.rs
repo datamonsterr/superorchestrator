@@ -13,24 +13,40 @@
 //! - `local`: `<cwd>/.superorchestrator/MEMORY.local.md`
 //!
 //! Consumer notes (supervisor integration):
-//! - Claude: append `extra_args` to argv (they use only documented flags:
-//!   `--tools`, `--allowedTools`, `--disallowedTools`, `--mcp-config`,
+//! - All harnesses: append `system_addendum_extra` to the launch addendum. The
+//!   supervisor applies `supervisor_applies` (model, effort, max turns) to the
+//!   `LaunchSpec`, in the SPEC 7.2 order (call argument, agent file, config, router).
+//!   Claude's `--max-turns` is already in `extra_args`, so `supervisor_applies.max_turns`
+//!   is `None` for Claude.
+//! - Claude: append `extra_args` to argv (documented flags only: `--tools`,
+//!   `--allowedTools`, `--disallowedTools`, `--max-turns`, `--mcp-config`,
 //!   `--settings`, `--add-dir`; tool lists are variadic, so put these before any
-//!   positional argument). Append `system_addendum_extra` to the addendum file.
-//! - Codex: deep-merge `config_fragment` into `thread/start` `config`.
-//! - OpenCode: merge the file `opencode-agent.json` (also `config_fragment`) into
-//!   the run's `OPENCODE_CONFIG`; select the agent with `agent: <name>` if wanted.
-//! - agy: prepend `system_addendum_extra`; `skills_dir` holds linked skills.
+//!   positional argument). `--tools ""` disables all built-in tools. Entries with an
+//!   argument pattern (`Bash(git *)`) or `mcp__*` names are `--allowedTools` rules,
+//!   which auto-approve and do not restrict.
+//! - Codex: deep-merge `config_fragment` (`mcp_servers`) into `thread/start` `config`.
+//!   Instructions travel in `developerInstructions` only; no `AGENTS.md` is written.
+//!   Hooks are a gap: Codex needs hook trust review, and loading them from a
+//!   `thread/start` config layer is not documented.
+//! - OpenCode: merge `config_fragment` (also written to `opencode-agent.json`) into
+//!   the run's `OPENCODE_CONFIG` and select the agent with `agent: <name>`. Tool
+//!   permissions live only under `agent.<name>.permission`, so they apply only when
+//!   that agent is selected.
+//! - agy: `skills_dir` holds linked skills.
+//!
+//! Skill and file safety: skill names are one plain path component; skill sources
+//! are canonicalised before linking; the run dir is created 0700 and files are
+//! created exclusively (`create_new`, which never follows a symlink).
 
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, symlink};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, symlink};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
 use so_core::{Harness, Paths};
 
 use crate::error::{AgentError, Result};
-use crate::parse::{AgentDef, McpRef, Memory};
+use crate::parse::{AgentDef, MAX_MEMORY_FILE, McpRef, Memory, read_capped, validate_agent_name};
 
 /// An inline MCP server the agent brings, in its source (Claude Code) shape.
 #[derive(Debug, Clone, PartialEq)]
@@ -39,14 +55,23 @@ pub struct McpExtra {
     pub config: Value,
 }
 
+/// Launch settings the supervisor sets itself from the agent file (SPEC 7.2).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct SupervisorApplies {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// `None` for Claude, which gets `--max-turns` in `extra_args`.
+    pub max_turns: Option<u32>,
+}
+
 #[derive(Debug, Default)]
 pub struct Materialised {
     /// Text to append to the run's system prompt (agent prompt + memory).
     pub system_addendum_extra: String,
     pub mcp_extra: Vec<McpExtra>,
     pub files_written: Vec<PathBuf>,
-    /// Extra environment for the harness process. Reserved; no harness needs any today.
-    pub env: Vec<(String, String)>,
+    /// Applied by the supervisor, not by materialisation.
+    pub supervisor_applies: SupervisorApplies,
     /// Extra argv (Claude only).
     pub extra_args: Vec<String>,
     /// Codex `thread/start` config overrides, or the OpenCode config fragment.
@@ -68,11 +93,17 @@ pub fn memory_path(scope: Memory, cwd: &Path, paths: &Paths) -> PathBuf {
 pub fn instructions(def: &AgentDef, cwd: &Path, paths: &Paths) -> String {
     let mut text = def.prompt.clone();
     if let Some(scope) = def.memory
-        && let Ok(mem) = std::fs::read_to_string(memory_path(scope, cwd, paths))
+        && let Ok((mem, cut)) = read_capped(&memory_path(scope, cwd, paths), MAX_MEMORY_FILE)
         && !mem.trim().is_empty()
     {
         text.push_str("\n\n## Memory\n\n");
         text.push_str(mem.trim());
+        if cut {
+            text.push_str(&format!(
+                "\n\n[memory truncated at {} KiB]",
+                MAX_MEMORY_FILE / 1024
+            ));
+        }
     }
     text
 }
@@ -96,13 +127,21 @@ pub fn gaps(def: &AgentDef, harness: Harness) -> Vec<String> {
         .iter()
         .any(|m| matches!(m, McpRef::Inline { .. }));
     match harness {
-        Harness::Claude => {}
+        Harness::Claude => {
+            for t in &def.tools {
+                if t.contains('(') || t.starts_with("mcp__") {
+                    g.push(format!(
+                        "tools: `{t}` is an auto-approve rule only (--allowedTools); it does not restrict access"
+                    ));
+                }
+            }
+        }
         Harness::Codex => {
             if has_tools {
                 g.push("tools/disallowedTools: codex has only sandbox and approval policy, no per-tool control".into());
             }
             if has_hooks {
-                g.push("hooks: codex requires hook trust review before they run".into());
+                g.push("hooks: not passed to codex (hooks need trust review, and thread/start config layers are not documented to load them)".into());
             }
         }
         Harness::Opencode => {
@@ -149,10 +188,23 @@ pub fn materialise(
     cwd: &Path,
     paths: &Paths,
 ) -> Result<Materialised> {
-    std::fs::create_dir_all(run_dir).map_err(|e| AgentError::io(run_dir, e))?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(run_dir)
+        .map_err(|e| AgentError::io(run_dir, e))?;
     let text = instructions(def, cwd, paths);
     let mut m = Materialised {
         system_addendum_extra: text.clone(),
+        supervisor_applies: SupervisorApplies {
+            model: def.model.clone(),
+            effort: def.effort.clone(),
+            max_turns: if harness == Harness::Claude {
+                None
+            } else {
+                def.max_turns
+            },
+        },
         gaps: gaps(def, harness),
         ..Default::default()
     };
@@ -174,7 +226,6 @@ pub fn materialise(
             claude(def, run_dir, &inline, &mut m)?;
         }
         Harness::Codex => {
-            write_file(run_dir, "AGENTS.md", &text, &mut m)?;
             let mut cfg = Map::new();
             if !inline.is_empty() {
                 let servers: Map<String, Value> = inline
@@ -184,10 +235,9 @@ pub fn materialise(
                 cfg.insert("mcp_servers".into(), Value::Object(servers));
                 m.mcp_extra = inline;
             }
-            if def.hooks.as_object().is_some_and(|h| !h.is_empty()) {
-                cfg.insert("hooks".into(), def.hooks.clone());
+            if !cfg.is_empty() {
+                m.config_fragment = Some(Value::Object(cfg));
             }
-            m.config_fragment = Some(Value::Object(cfg));
         }
         Harness::Opencode => {
             let frag = opencode_fragment(def, &text, &inline);
@@ -236,8 +286,13 @@ fn claude(def: &AgentDef, run_dir: &Path, inline: &[McpExtra], m: &mut Materiali
             }
         }
     }
-    if !builtin.is_empty() {
+    if !def.tools.is_empty() {
+        // `--tools ""` disables every built-in tool (claude --help), so an allowlist
+        // of only MCP tools does not leave the built-ins open.
         m.extra_args.extend(["--tools".into(), builtin.join(",")]);
+    }
+    if let Some(n) = def.max_turns {
+        m.extra_args.extend(["--max-turns".into(), n.to_string()]);
     }
     if !rules.is_empty() {
         m.extra_args.push("--allowedTools".into());
@@ -312,6 +367,16 @@ const OPENCODE_KEYS: [&str; 10] = [
     "todowrite",
 ];
 
+/// Gap text that says what actually happens to an unmappable tool entry.
+fn consequence(what: &str, tool: &str, why: &str) -> String {
+    let effect = if what == "tools" {
+        "it is not allowed (the allowlist denies every tool it does not map)"
+    } else {
+        "it is not denied"
+    };
+    format!("{what}: `{tool}` {why}; {effect}")
+}
+
 /// `permission` map from `tools` (allowlist: unlisted known tools denied) and
 /// `disallowedTools` (denied, wins), plus the entries that could not be mapped.
 fn opencode_permissions(def: &AgentDef) -> (Map<String, Value>, Vec<String>) {
@@ -319,14 +384,16 @@ fn opencode_permissions(def: &AgentDef) -> (Map<String, Value>, Vec<String>) {
     let mut perm = Map::new();
     let mut resolve = |tool: &str, what: &str| -> Option<&'static str> {
         if tool.contains('(') {
-            gaps.push(format!(
-                "{what}: `{tool}` argument patterns are not mapped to opencode"
+            gaps.push(consequence(
+                what,
+                tool,
+                "argument patterns are not mapped to opencode",
             ));
             return None;
         }
         let key = opencode_key(tool);
         if key.is_none() {
-            gaps.push(format!("{what}: `{tool}` has no opencode permission"));
+            gaps.push(consequence(what, tool, "has no opencode permission"));
         }
         key
     };
@@ -390,9 +457,6 @@ fn opencode_fragment(def: &AgentDef, text: &str, inline: &[McpExtra]) -> Value {
     }
     let mut frag = Map::new();
     frag.insert("agent".into(), json!({ def.name.clone(): agent }));
-    if !perm.is_empty() {
-        frag.insert("permission".into(), Value::Object(perm));
-    }
     if !inline.is_empty() {
         let mcp: Map<String, Value> = inline
             .iter()
@@ -407,8 +471,8 @@ fn write_file(dir: &Path, name: &str, text: &str, m: &mut Materialised) -> Resul
     let path = dir.join(name);
     let mut f = std::fs::OpenOptions::new()
         .write(true)
-        .create(true)
-        .truncate(true)
+        // Exclusive create: fails on an existing file and never follows a symlink.
+        .create_new(true)
         .mode(0o600)
         .open(&path)
         .map_err(|e| AgentError::io(&path, e))?;
@@ -437,12 +501,25 @@ fn link_skills(
             .collect();
         v.sort();
         for p in v {
-            if let Some(n) = p.file_name() {
-                found.push((n.to_string_lossy().into_owned(), p));
+            let Some(n) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            if validate_agent_name(&n).is_err() {
+                m.gaps.push(format!(
+                    "skills: folder `{n}` has an unsafe name and was skipped"
+                ));
+                continue;
             }
+            found.push((n, p));
         }
     }
     for name in &def.skills {
+        if validate_agent_name(name).is_err() {
+            m.gaps.push(format!(
+                "skills: `{name}` is not a plain skill name and was skipped"
+            ));
+            continue;
+        }
         if found.iter().any(|(n, _)| n == name) {
             continue;
         }
@@ -467,12 +544,17 @@ fn link_skills(
     if found.is_empty() {
         return Ok(());
     }
-    std::fs::create_dir_all(target).map_err(|e| AgentError::io(target, e))?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(target)
+        .map_err(|e| AgentError::io(target, e))?;
     for (name, src) in found {
         let dst = target.join(&name);
         if dst.symlink_metadata().is_ok() {
             continue;
         }
+        let src = std::fs::canonicalize(&src).map_err(|e| AgentError::io(&src, e))?;
         symlink(&src, &dst).map_err(|e| AgentError::io(&dst, e))?;
         m.files_written.push(dst);
     }
@@ -563,11 +645,12 @@ maxTurns: 7";
             a[at("--add-dir") + 1],
             f.run.join("agent-skills").display().to_string()
         );
-        // Named MCP server is fine for claude; only the missing skill is a gap.
-        assert_eq!(
-            m.gaps,
-            ["skills: `missing-skill` not found in any skills directory"]
-        );
+        assert_eq!(a[at("--max-turns") + 1], "7");
+        assert_eq!(m.supervisor_applies.max_turns, None);
+        // Named MCP server is fine for claude; the pattern rule and missing skill are gaps.
+        assert_eq!(m.gaps.len(), 2, "{:?}", m.gaps);
+        assert!(m.gaps[0].contains("auto-approve rule only"), "{:?}", m.gaps);
+        assert!(m.gaps[1].contains("missing-skill"), "{:?}", m.gaps);
         assert_eq!(m.mcp_extra.len(), 1);
     }
 
@@ -576,18 +659,16 @@ maxTurns: 7";
         let f = fx();
         let d = agent(&f, FULL);
         let m = materialise(&d, Harness::Codex, &f.run, &f.cwd, &f.paths).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(f.run.join("AGENTS.md")).unwrap(),
-            "Be careful."
-        );
+        assert!(!f.run.join("AGENTS.md").exists());
+        assert_eq!(m.supervisor_applies.max_turns, Some(7));
         assert!(f.run.join("skills/own-skill/SKILL.md").exists());
         let c = m.config_fragment.unwrap();
         assert_eq!(c["mcp_servers"]["gh"]["command"], "gh-mcp");
-        assert!(c["hooks"]["PreToolUse"].is_array());
+        assert!(c.get("hooks").is_none());
         assert!(m.extra_args.is_empty());
         let joined = m.gaps.join("\n");
         assert!(joined.contains("tools/disallowedTools"), "{joined}");
-        assert!(joined.contains("hook trust"), "{joined}");
+        assert!(joined.contains("hooks: not passed"), "{joined}");
         assert!(joined.contains("named"), "{joined}");
     }
 
@@ -602,16 +683,24 @@ maxTurns: 7";
         .unwrap();
         assert_eq!(v["agent"]["rev"]["prompt"], "Be careful.");
         assert_eq!(v["agent"]["rev"]["steps"], 7);
-        assert_eq!(v["permission"]["read"], "allow");
-        assert_eq!(v["permission"]["grep"], "allow");
+        assert!(
+            v.get("permission").is_none(),
+            "permissions only under the agent"
+        );
+        let perm = &v["agent"]["rev"]["permission"];
+        assert_eq!(perm["read"], "allow");
+        assert_eq!(perm["grep"], "allow");
         // A pattern-restricted tool is not widened: bash stays denied (and is a gap).
-        assert_eq!(v["permission"]["bash"], "deny");
-        assert_eq!(v["permission"]["edit"], "deny");
-        assert_eq!(v["permission"]["webfetch"], "deny");
+        assert_eq!(perm["bash"], "deny");
+        assert_eq!(perm["edit"], "deny");
+        assert_eq!(perm["webfetch"], "deny");
         assert_eq!(v["mcp"]["gh"]["command"], json!(["gh-mcp", "serve"]));
         assert_eq!(v["mcp"]["gh"]["environment"]["TOKEN"], "t");
         let joined = m.gaps.join("\n");
-        assert!(joined.contains("argument patterns"), "{joined}");
+        assert!(
+            joined.contains("argument patterns") && joined.contains("not allowed"),
+            "{joined}"
+        );
         assert!(joined.contains("hooks"), "{joined}");
         assert!(joined.contains("skills"), "{joined}");
         assert!(!f.run.join("skills").exists());
@@ -673,6 +762,74 @@ maxTurns: 7";
     }
 
     #[test]
+    fn claude_mcp_only_allowlist_disables_builtins() {
+        let f = fx();
+        let d = agent(&f, "tools: [\"mcp__gh__list\"]");
+        let m = materialise(&d, Harness::Claude, &f.run, &f.cwd, &f.paths).unwrap();
+        let i = m.extra_args.iter().position(|x| x == "--tools").unwrap();
+        assert_eq!(m.extra_args[i + 1], "");
+        assert!(m.extra_args.contains(&"mcp__gh__list".to_string()));
+    }
+
+    #[test]
+    fn unsafe_skill_dir_names_are_skipped() {
+        let f = fx();
+        std::fs::create_dir_all(f.agent_dir.join("skills/.hidden")).unwrap();
+        let d = agent(&f, "");
+        let m = materialise(&d, Harness::Agy, &f.run, &f.cwd, &f.paths).unwrap();
+        assert!(f.run.join("skills/own-skill").exists());
+        assert!(!f.run.join("skills/.hidden").exists());
+        assert!(m.gaps.iter().any(|g| g.contains(".hidden")), "{:?}", m.gaps);
+    }
+
+    #[test]
+    fn skills_link_to_canonical_paths_and_run_dir_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = fx();
+        let d = agent(&f, "");
+        materialise(&d, Harness::Codex, &f.run, &f.cwd, &f.paths).unwrap();
+        let link = std::fs::read_link(f.run.join("skills/own-skill")).unwrap();
+        assert_eq!(
+            link,
+            std::fs::canonicalize(f.agent_dir.join("skills/own-skill")).unwrap()
+        );
+        let mode = std::fs::metadata(&f.run).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn existing_file_is_not_overwritten() {
+        let f = fx();
+        std::fs::create_dir_all(&f.run).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/target", f.run.join("opencode-agent.json"))
+            .unwrap();
+        let d = agent(&f, "");
+        assert!(materialise(&d, Harness::Opencode, &f.run, &f.cwd, &f.paths).is_err());
+        assert!(!std::path::Path::new("/nonexistent/target").exists());
+    }
+
+    #[test]
+    fn model_and_effort_go_to_supervisor() {
+        let f = fx();
+        let d = agent(&f, "model: m1\neffort: high");
+        let m = materialise(&d, Harness::Agy, &f.run, &f.cwd, &f.paths).unwrap();
+        assert_eq!(m.supervisor_applies.model.as_deref(), Some("m1"));
+        assert_eq!(m.supervisor_applies.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn oversized_memory_is_truncated_with_note() {
+        let f = fx();
+        let p = f.cwd.join(".superorchestrator/MEMORY.md");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "m".repeat(300 * 1024)).unwrap();
+        let d = agent(&f, "memory: project");
+        let text = instructions(&d, &f.cwd, &f.paths);
+        assert!(text.ends_with("[memory truncated at 256 KiB]"));
+        assert!(text.len() < 257 * 1024 + 200);
+    }
+
+    #[test]
     fn memory_lands_in_materialised_text() {
         let f = fx();
         let p = f.cwd.join(".superorchestrator/MEMORY.md");
@@ -680,11 +837,6 @@ maxTurns: 7";
         std::fs::write(&p, "m").unwrap();
         let d = agent(&f, "memory: project");
         let m = materialise(&d, Harness::Codex, &f.run, &f.cwd, &f.paths).unwrap();
-        assert!(
-            std::fs::read_to_string(f.run.join("AGENTS.md"))
-                .unwrap()
-                .ends_with("## Memory\n\nm")
-        );
         assert!(m.system_addendum_extra.contains("## Memory"));
     }
 }

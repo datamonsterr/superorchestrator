@@ -41,7 +41,7 @@ fn find(ctx: &Ctx, name: &str) -> Result<AgentDef> {
 
 fn scaffold(name: &str, harness: &str, description: &str) -> String {
     format!(
-        "---\nname: {name}\ndescription: {description}\nharness: {harness}\n\
+        "---\nname: \"{name}\"\ndescription: {description}\nharness: {harness}\n\
 # accounts: [codex-acc2]\n# model:\n# effort: medium\n# tools: [Read, Grep, Bash]\n\
 # disallowedTools: [Write]\n# skills: []\n# mcpServers: []\n# memory: project\n\
 # maxTurns: 40\n# isolation: worktree\n# review: false\n---\n\
