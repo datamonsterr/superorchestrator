@@ -1,22 +1,26 @@
 //! Unix-socket server: listener, connections, session lifecycle, idle exit, shutdown.
 
-use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
-use so_core::proto::{INVALID_REQUEST, METHOD_HELLO, PARSE_ERROR, Request, Response, RpcError};
+use so_core::proto::{
+    INTERNAL_ERROR, INVALID_REQUEST, METHOD_HELLO, PARSE_ERROR, Request, Response, RpcError,
+};
 use so_core::{Config, Paths};
 use so_store::Store;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWriteExt, BufReader};
+use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 
 use crate::dispatch::{self, ConnCtx, Notifier, Router, internal};
 use crate::error::{Result, SupervisorError};
+use crate::lines::{Line, read_line};
 use crate::lock::SupervisorLock;
 use crate::reconcile::{self, ReconcileHook};
 
@@ -242,31 +246,50 @@ fn euid() -> u32 {
     rustix::process::geteuid().as_raw()
 }
 
-/// Creates the socket directory (0700) if needed, refuses one owned by someone else,
-/// removes a stale socket, binds and chmods the socket to 0600.
+/// Creates the socket directory (0700) if needed and refuses an existing one that is owned
+/// by someone else or open to group/other. Binds under a temporary name, chmods it to 0600
+/// and renames it into place, so the socket never appears with looser permissions.
 fn bind_socket(socket_path: &Path) -> Result<UnixListener> {
-    if let Some(dir) = socket_path.parent().filter(|d| !d.as_os_str().is_empty()) {
-        match std::fs::metadata(dir) {
-            Ok(meta) => {
-                if meta.uid() != euid() {
-                    return Err(SupervisorError::InsecureSocketDir(dir.to_path_buf()));
-                }
+    let dir = socket_path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    match std::fs::metadata(dir) {
+        Ok(meta) => {
+            if meta.uid() != euid() || meta.permissions().mode() & 0o077 != 0 {
+                return Err(SupervisorError::InsecureSocketDir(dir.to_path_buf()));
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                std::fs::create_dir_all(dir)?;
-                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
-            }
-            Err(e) => return Err(e.into()),
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(dir)?;
+        }
+        Err(e) => return Err(e.into()),
     }
+    // The lock is held, so any socket file left behind belongs to a dead supervisor.
     match std::fs::symlink_metadata(socket_path) {
         Ok(meta) if meta.file_type().is_socket() => std::fs::remove_file(socket_path)?,
         Ok(_) => return Err(SupervisorError::NotASocket(socket_path.to_path_buf())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),
     }
-    let listener = UnixListener::bind(socket_path)?;
-    std::fs::set_permissions(socket_path, std::fs::Permissions::from_mode(0o600))?;
+    let name = socket_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let listener = UnixListener::bind(&tmp)?;
+    let finish = || -> std::io::Result<()> {
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::rename(&tmp, socket_path)
+    };
+    if let Err(e) = finish() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(listener)
 }
 
@@ -304,6 +327,13 @@ async fn idle_monitor(
             seen_epoch = epoch;
             idle_since = Instant::now();
         } else if idle_since.elapsed() >= idle_exit {
+            // Re-check right before deciding: a client may have just connected.
+            if state.epoch.load(Ordering::SeqCst) != epoch
+                || state.connected_clients() > 0
+                || state.busy()
+            {
+                continue;
+            }
             tracing::info!(?idle_exit, "idle, shutting down");
             state.request_shutdown();
             return;
@@ -325,15 +355,13 @@ async fn accept_loop(
             _ = wait_shutdown(&mut shutdown) => break,
             accepted = listener.accept() => match accepted {
                 Ok((stream, _)) => {
-                    state.clients.fetch_add(1, Ordering::SeqCst);
-                    state.epoch.fetch_add(1, Ordering::SeqCst);
-                    let st = state.clone();
-                    let rx = conn_rx.clone();
-                    conns.spawn(async move {
-                        serve_connection(&st, stream, rx).await;
-                        st.clients.fetch_sub(1, Ordering::SeqCst);
-                        st.epoch.fetch_add(1, Ordering::SeqCst);
-                    });
+                    let guard = ConnGuard::new(state.clone());
+                    conns.spawn(serve_connection(
+                        state.clone(),
+                        guard,
+                        stream,
+                        conn_rx.clone(),
+                    ));
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "accept failed");
@@ -357,95 +385,151 @@ async fn accept_loop(
     tracing::info!("supervisor stopped");
 }
 
-enum Line {
-    Eof,
-    TooLong,
-    Data(Vec<u8>),
+const MAX_INFLIGHT: usize = 64;
+const WRITER_FLUSH: Duration = Duration::from_secs(1);
+const FALLBACK_ERROR: &str = r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"response serialization failed"}}"#;
+
+/// Aborts the task when dropped.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
-/// Reads one `\n`-terminated line. A line longer than `cap` is consumed and discarded
-/// (not buffered) and reported as `TooLong`, so the connection stays in sync.
-async fn read_line<R: AsyncBufRead + Unpin>(r: &mut R, cap: usize) -> std::io::Result<Line> {
-    let mut buf = Vec::new();
-    let mut too_long = false;
-    loop {
-        let chunk = r.fill_buf().await?;
-        if chunk.is_empty() {
-            return Ok(if too_long {
-                Line::TooLong
-            } else if buf.is_empty() {
-                Line::Eof
-            } else {
-                Line::Data(buf)
-            });
+/// Per-connection bookkeeping that must happen even when the connection task is aborted:
+/// the client count and ending the orchestrator session.
+pub(crate) struct ConnGuard {
+    state: Arc<SupervisorState>,
+    /// Orchestrator session to end when the connection goes away.
+    pub(crate) session: Option<String>,
+}
+
+impl ConnGuard {
+    pub(crate) fn new(state: Arc<SupervisorState>) -> Self {
+        state.clients.fetch_add(1, Ordering::SeqCst);
+        state.epoch.fetch_add(1, Ordering::SeqCst);
+        Self {
+            state,
+            session: None,
         }
-        let pos = chunk.iter().position(|b| *b == b'\n');
-        let take = pos.unwrap_or(chunk.len());
-        if !too_long {
-            buf.extend_from_slice(&chunk[..take]);
-            if buf.len() > cap {
-                too_long = true;
-                buf = Vec::new();
+    }
+}
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        self.state.clients.fetch_sub(1, Ordering::SeqCst);
+        self.state.epoch.fetch_add(1, Ordering::SeqCst);
+        if let Some(id) = self.session.take() {
+            let store = self.state.store.clone();
+            let work = move || log_session_end(&id, end_session_blocking(&store, &id));
+            match tokio::runtime::Handle::try_current() {
+                Ok(h) => {
+                    h.spawn_blocking(work);
+                }
+                Err(_) => work(),
             }
-        }
-        r.consume(take + usize::from(pos.is_some()));
-        if pos.is_some() {
-            return Ok(if too_long {
-                Line::TooLong
-            } else {
-                Line::Data(buf)
-            });
         }
     }
 }
 
 fn error_line(id: Value, code: i64, message: &str) -> String {
-    serde_json::to_string(&Response::err(id, RpcError::new(code, message))).unwrap_or_default()
+    serde_json::to_string(&Response::err(id, RpcError::new(code, message)))
+        .unwrap_or_else(|_| FALLBACK_ERROR.to_string())
 }
 
 fn response_line(resp: &Response) -> String {
-    serde_json::to_string(resp).unwrap_or_else(|e| {
-        error_line(
-            resp.id.clone(),
-            so_core::proto::INTERNAL_ERROR,
-            &e.to_string(),
-        )
-    })
+    serde_json::to_string(resp)
+        .unwrap_or_else(|e| error_line(resp.id.clone(), INTERNAL_ERROR, &e.to_string()))
+}
+
+enum End {
+    /// Client closed its write side: stop reading, let in-flight handlers finish.
+    Eof,
+    /// Shutdown, write failure or a client that cannot keep up: drop everything.
+    Abort,
+}
+
+async fn writer_task(
+    mut wr: OwnedWriteHalf,
+    mut rx: mpsc::Receiver<String>,
+    closed: Arc<watch::Sender<bool>>,
+) {
+    while let Some(line) = rx.recv().await {
+        if wr.write_all(line.as_bytes()).await.is_err() {
+            closed.send_replace(true);
+            return;
+        }
+    }
+    let _ = wr.shutdown().await;
+}
+
+/// Runs one request in its own task so a panic becomes an INTERNAL_ERROR reply.
+async fn run_handler(
+    state: Arc<SupervisorState>,
+    ctx: ConnCtx,
+    req: Request,
+    _permit: OwnedSemaphorePermit,
+) {
+    let id = req.id.clone();
+    let method = req.method.clone();
+    let notifier = ctx.notifier.clone();
+    let mut inner = AbortOnDrop(tokio::spawn(async move {
+        dispatch::handle_other(&state, ctx, req).await
+    }));
+    let resp = match (&mut inner.0).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(%method, error = %e, "handler failed");
+            Response::err(
+                id,
+                RpcError::new(INTERNAL_ERROR, "internal error: handler failed"),
+            )
+        }
+    };
+    notifier.send_line(response_line(&resp)).await;
 }
 
 async fn serve_connection(
-    state: &Arc<SupervisorState>,
+    state: Arc<SupervisorState>,
+    mut guard: ConnGuard,
     stream: UnixStream,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let (rd, mut wr) = stream.into_split();
-    let (tx, mut rx) = mpsc::channel::<String>(1024);
-    let writer = tokio::spawn(async move {
-        while let Some(line) = rx.recv().await {
-            if wr.write_all(line.as_bytes()).await.is_err() {
-                break;
-            }
-        }
-        let _ = wr.shutdown().await;
-    });
+    let (rd, wr) = stream.into_split();
+    let (tx, rx) = mpsc::channel::<String>(1024);
+    let (closed_tx, closed_rx) = watch::channel(false);
+    let closed_tx = Arc::new(closed_tx);
+    let mut writer = AbortOnDrop(tokio::spawn(writer_task(wr, rx, closed_tx.clone())));
     let notifier = Notifier::new(tx);
-    let mut ctx = ConnCtx::new(notifier.clone());
+    let mut ctx = ConnCtx::new(notifier.clone(), closed_rx.clone());
+    let mut write_failed = closed_rx;
     let mut reader = BufReader::new(rd);
     let mut inflight = JoinSet::new();
+    let permits = Arc::new(Semaphore::new(MAX_INFLIGHT));
 
-    loop {
+    let end = 'conn: loop {
+        while inflight.try_join_next().is_some() {}
         let line = tokio::select! {
-            _ = wait_shutdown(&mut shutdown) => break,
+            _ = wait_shutdown(&mut shutdown) => break End::Abort,
+            _ = wait_shutdown(&mut write_failed) => break End::Abort,
             l = read_line(&mut reader, MAX_LINE_BYTES) => l,
         };
+        // Protocol-level replies never wait: a full queue means the client is not reading.
+        macro_rules! reply {
+            ($line:expr) => {
+                if !notifier.try_send_line($line) {
+                    break 'conn End::Abort;
+                }
+            };
+        }
         let bytes = match line {
             Ok(Line::Data(b)) => b,
-            Ok(Line::Eof) | Err(_) => break,
+            Ok(Line::Eof) | Err(_) => break End::Eof,
             Ok(Line::TooLong) => {
                 let msg = format!("request line exceeds {MAX_LINE_BYTES} bytes");
-                notifier
-                    .send_line(error_line(Value::Null, INVALID_REQUEST, &msg))
-                    .await;
+                reply!(error_line(Value::Null, INVALID_REQUEST, &msg));
                 continue;
             }
         };
@@ -456,9 +540,7 @@ async fn serve_connection(
             Ok(v) => v,
             Err(e) => {
                 let msg = format!("parse error: {e}");
-                notifier
-                    .send_line(error_line(Value::Null, PARSE_ERROR, &msg))
-                    .await;
+                reply!(error_line(Value::Null, PARSE_ERROR, &msg));
                 continue;
             }
         };
@@ -467,57 +549,86 @@ async fn serve_connection(
             Ok(r) => r,
             Err(e) => {
                 let msg = format!("invalid request: {e}");
-                notifier
-                    .send_line(error_line(id, INVALID_REQUEST, &msg))
-                    .await;
+                reply!(error_line(id, INVALID_REQUEST, &msg));
                 continue;
             }
         };
         if req.method == METHOD_HELLO {
-            let resp = dispatch::handle_hello(state, &mut ctx, req).await;
-            notifier.send_line(response_line(&resp)).await;
+            let resp = dispatch::handle_hello(&state, &mut ctx, req).await;
+            if guard.session.is_none() && ctx.run_id.is_none() {
+                guard.session = ctx.session_id.clone();
+            }
+            reply!(response_line(&resp));
         } else {
-            let st = state.clone();
-            let c = ctx.clone();
-            inflight.spawn(async move {
-                let resp = dispatch::handle_other(&st, c.clone(), req).await;
-                c.notifier.send_line(response_line(&resp)).await;
-            });
+            let permit = tokio::select! {
+                _ = wait_shutdown(&mut shutdown) => break End::Abort,
+                p = permits.clone().acquire_owned() => p,
+            };
+            let Ok(permit) = permit else {
+                break End::Abort;
+            };
+            inflight.spawn(run_handler(state.clone(), ctx.clone(), req, permit));
+        }
+    };
+
+    // Tell long-running handlers the client is gone.
+    closed_tx.send_replace(true);
+    let mut aborted = matches!(end, End::Abort);
+    if aborted {
+        inflight.abort_all();
+    }
+    loop {
+        tokio::select! {
+            r = inflight.join_next() => {
+                if r.is_none() {
+                    break;
+                }
+            }
+            _ = wait_shutdown(&mut shutdown), if !aborted => {
+                inflight.abort_all();
+                aborted = true;
+            }
         }
     }
-
-    // Drop in-flight handlers so their notifier clones release the writer.
-    inflight.abort_all();
-    while inflight.join_next().await.is_some() {}
-    let session = ctx.session_id.clone();
-    let owns_session = ctx.run_id.is_none();
     drop(ctx);
     drop(notifier);
-    let _ = writer.await;
-    if let (Some(session_id), true) = (session, owns_session) {
-        end_orchestrator_session(state, session_id).await;
+    if tokio::time::timeout(WRITER_FLUSH, &mut writer.0)
+        .await
+        .is_err()
+    {
+        writer.0.abort();
+    }
+    if let Some(session_id) = guard.session.take() {
+        end_orchestrator_session(&state, session_id).await;
     }
 }
 
 /// Ends the session unless it still has active runs (a later task ends it then).
-async fn end_orchestrator_session(state: &Arc<SupervisorState>, session_id: String) {
-    let id = session_id.clone();
-    let result = state
-        .db(move |s| {
-            let active = s
-                .list_runs_by_session(&id, 100_000)?
-                .iter()
-                .any(|r| r.state.is_active());
-            if active {
-                return Ok(false);
-            }
-            s.end_session(&id, "ended", chrono::Utc::now())?;
-            Ok(true)
-        })
-        .await;
-    match result {
+fn end_session_blocking(store: &Store, id: &str) -> so_store::Result<bool> {
+    let active = store
+        .list_runs_by_session(id, 100_000)?
+        .iter()
+        .any(|r| r.state.is_active());
+    if active {
+        return Ok(false);
+    }
+    store.end_session(id, "ended", chrono::Utc::now())?;
+    Ok(true)
+}
+
+fn log_session_end(session_id: &str, r: so_store::Result<bool>) {
+    match r {
         Ok(true) => tracing::debug!(%session_id, "session ended"),
         Ok(false) => tracing::debug!(%session_id, "session kept open: active runs"),
+        Err(e) => tracing::warn!(%session_id, error = %e, "could not end session"),
+    }
+}
+
+async fn end_orchestrator_session(state: &Arc<SupervisorState>, session_id: String) {
+    let id = session_id.clone();
+    let r = state.db(move |s| end_session_blocking(s, &id)).await;
+    match r {
+        Ok(v) => log_session_end(&session_id, Ok(v)),
         Err(e) => tracing::warn!(%session_id, error = %e.message, "could not end session"),
     }
 }
@@ -526,4 +637,57 @@ async fn end_orchestrator_session(state: &Arc<SupervisorState>, session_id: Stri
 /// kept across an await by callers.
 async fn wait_shutdown(rx: &mut watch::Receiver<bool>) {
     let _ = rx.wait_for(|v| *v).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use so_core::SessionKind;
+    use so_store::SessionRow;
+
+    /// A connection task that is aborted must still decrement the client count and end its
+    /// orchestrator session (the shutdown-timeout abort path).
+    #[tokio::test]
+    async fn aborted_connection_task_still_cleans_up() {
+        let dir = tempfile::Builder::new()
+            .prefix("so-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let paths = Paths::from_dir(dir.path().join("cfg"));
+        let opts = SupervisorOptions::new(paths, Config::default(), dir.path().join("run/s.sock"));
+        let h = Supervisor::start(opts).await.unwrap();
+        let state = h.state().clone();
+        let row = SessionRow {
+            id: so_core::new_id(),
+            kind: SessionKind::Orchestrator,
+            client: "t".into(),
+            cwd: None,
+            account: None,
+            pid: None,
+            started_at: chrono::Utc::now(),
+            ended_at: None,
+            status: "active".into(),
+        };
+        let id = row.id.clone();
+        state.store.insert_session(&row).unwrap();
+        let mut guard = ConnGuard::new(state.clone());
+        guard.session = Some(id.clone());
+        assert_eq!(state.connected_clients(), 1);
+        let task = tokio::spawn(async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        });
+        tokio::task::yield_now().await;
+        task.abort();
+        let _ = task.await;
+        for _ in 0..100 {
+            let ended = state.store.get_session(&id).unwrap().unwrap().status == "ended";
+            if ended && state.connected_clients() == 0 {
+                h.shutdown().await;
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(30)).await;
+        }
+        panic!("cleanup did not run");
+    }
 }

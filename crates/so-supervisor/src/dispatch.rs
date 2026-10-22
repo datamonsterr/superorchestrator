@@ -9,12 +9,11 @@ use serde::Serialize;
 use serde_json::Value;
 use so_core::SessionKind;
 use so_core::proto::{
-    HelloParams, HelloResult, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_HELLO,
-    METHOD_NOT_FOUND, METHOD_STATUS, NOT_FOUND, Notification, Request, Response, RpcError,
-    StatusResult,
+    HelloParams, HelloResult, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND,
+    METHOD_STATUS, NOT_FOUND, Notification, Request, Response, RpcError, StatusResult,
 };
 use so_store::SessionRow;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::server::SupervisorState;
 
@@ -52,6 +51,13 @@ impl Notifier {
         line.push('\n');
         self.tx.send(line).await.is_ok()
     }
+
+    /// Non-blocking send for protocol-level replies; `false` when the queue is full or the
+    /// connection is gone (the caller then drops the connection).
+    pub(crate) fn try_send_line(&self, mut line: String) -> bool {
+        line.push('\n');
+        self.tx.try_send(line).is_ok()
+    }
 }
 
 /// Per-connection context handed to every handler.
@@ -61,16 +67,30 @@ pub struct ConnCtx {
     pub run_id: Option<String>,
     pub depth: u8,
     pub notifier: Notifier,
+    closed: watch::Receiver<bool>,
 }
 
 impl ConnCtx {
-    pub(crate) fn new(notifier: Notifier) -> Self {
+    pub(crate) fn new(notifier: Notifier, closed: watch::Receiver<bool>) -> Self {
         Self {
             session_id: None,
             run_id: None,
             depth: 0,
             notifier,
+            closed,
         }
+    }
+
+    /// Resolves when the client has disconnected (read EOF or write failure) or the
+    /// supervisor is shutting down. Long-running handlers (for example `wait_agent`)
+    /// should `select!` on this to stop waiting.
+    pub async fn closed(&self) {
+        let mut rx = self.closed.clone();
+        let _ = rx.wait_for(|v| *v).await;
+    }
+
+    pub fn is_closed(&self) -> bool {
+        *self.closed.borrow()
     }
 }
 
@@ -82,6 +102,13 @@ pub struct Router {
 
 impl Router {
     /// Registers (or replaces) the handler for `method`.
+    ///
+    /// A handler keeps running after the client half-closes (EOF), so its reply can still
+    /// be delivered, but it is dropped (aborted at an await point) when the write side
+    /// fails or the supervisor shuts down. Handlers must therefore be cancel-safe, or hand
+    /// their work to a detached task. Handlers that wait for long should `select!` on
+    /// [`ConnCtx::closed`] to stop waiting once the client is gone. A panicking handler
+    /// yields an INTERNAL_ERROR reply for that request only.
     pub fn register<F, Fut>(&self, method: &str, f: F)
     where
         F: Fn(ConnCtx, Value) -> Fut + Send + Sync + 'static,
@@ -135,9 +162,8 @@ pub(crate) async fn handle_other(
     ctx: ConnCtx,
     req: Request,
 ) -> Response {
-    let r = if req.method == METHOD_HELLO {
-        Err(RpcError::new(INVALID_REQUEST, "hello already completed"))
-    } else if ctx.session_id.is_none() {
+    // `hello` never gets here: the connection loop runs it through `handle_hello`.
+    let r = if ctx.session_id.is_none() {
         Err(RpcError::new(INVALID_REQUEST, "hello required"))
     } else if req.method == METHOD_STATUS {
         status(state).await
@@ -200,6 +226,7 @@ async fn hello(
 }
 
 async fn status(state: &Arc<SupervisorState>) -> Result<Value, RpcError> {
+    // TODO: add COUNT(*) helpers to so-store instead of listing rows.
     let (sessions, runs) = state
         .db(|s| {
             Ok((

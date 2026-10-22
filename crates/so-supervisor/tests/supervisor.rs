@@ -216,8 +216,10 @@ async fn hello_with_run_id_attaches_to_run_session() {
     assert_eq!(r.run_id.as_deref(), Some(run.id.as_str()));
     assert_eq!(r.depth, 2);
     // Closing a run connection leaves the session alone.
+    let st = h.state().clone();
+    let before = st.connected_clients();
     drop(c);
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_until(|| st.connected_clients() < before).await;
     assert_eq!(store.get_session(&s.id).unwrap().unwrap().status, "active");
     // Unknown run id is an error.
     let c2 = connect(&h).await;
@@ -339,7 +341,8 @@ async fn closing_connection_ends_orchestrator_session() {
         .insert_run(&run_row(&s2, RunState::Running, 0))
         .unwrap();
     drop(c);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    let st = h.state().clone();
+    wait_until(|| st.connected_clients() == 0).await;
     // (reconcile only runs at start, so the run is still active)
     assert_eq!(store.get_session(&s2).unwrap().unwrap().status, "active");
     h.shutdown().await;
@@ -482,4 +485,133 @@ async fn oversized_line_gets_error_and_is_skipped() {
     let v: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
     assert_eq!(v["id"], 9);
     h.shutdown().await;
+}
+
+#[tokio::test]
+async fn handler_panic_replies_internal_error() {
+    let env = Env::new();
+    let h = Supervisor::start(env.opts(Duration::from_secs(600)).with_setup(|st| {
+        st.router.register("boom", |_c, _p| async move {
+            if true {
+                panic!("boom");
+            }
+            Ok(Value::Null)
+        });
+    }))
+    .await
+    .unwrap();
+    let c = connect(&h).await;
+    hello(&c).await;
+    let e = c.call::<_, Value>("boom", json!({})).await.unwrap_err();
+    assert_eq!(rpc_code(e), so_core::proto::INTERNAL_ERROR);
+    // The connection is still usable.
+    c.call::<_, StatusResult>("status", json!({}))
+        .await
+        .unwrap();
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn closed_fires_on_eof_and_inflight_handler_still_replies() {
+    let env = Env::new();
+    let seen = Arc::new(AtomicBool::new(false));
+    let flag = seen.clone();
+    let h = Supervisor::start(env.opts(Duration::from_secs(600)).with_setup(move |st| {
+        st.router.register("wait_closed", move |ctx, _p| {
+            let flag = flag.clone();
+            async move {
+                ctx.closed().await;
+                flag.store(true, Ordering::SeqCst);
+                Ok(json!("bye"))
+            }
+        });
+    }))
+    .await
+    .unwrap();
+    let stream = UnixStream::connect(&env.sock).await.unwrap();
+    let (rd, mut wr) = stream.into_split();
+    wr.write_all(
+        b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"hello\",\"params\":{\"client\":\"t\",\"cwd\":\"/\"}}\n\
+          {\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"wait_closed\"}\n",
+    )
+    .await
+    .unwrap();
+    let mut lines = BufReader::new(rd).lines();
+    let hello_reply = lines.next_line().await.unwrap().unwrap();
+    assert!(hello_reply.contains("session_id"));
+    assert!(!seen.load(Ordering::SeqCst));
+    wr.shutdown().await.unwrap(); // half-close: EOF for the server
+    wait_until(|| seen.load(Ordering::SeqCst)).await;
+    let v: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(v["id"], 2);
+    assert_eq!(v["result"], "bye");
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn call_after_connection_death_is_disconnected() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = connect(&h).await;
+    hello(&c).await;
+    h.shutdown().await;
+    let mut result = None;
+    for _ in 0..100 {
+        match c
+            .call_timeout::<_, Value>("status", json!({}), Duration::from_secs(1))
+            .await
+        {
+            Err(ClientError::Disconnected) => {
+                result = Some(());
+                break;
+            }
+            _ => tokio::time::sleep(Duration::from_millis(30)).await,
+        }
+    }
+    assert!(result.is_some(), "expected Disconnected");
+    assert_eq!(c.pending_calls(), 0);
+}
+
+#[tokio::test]
+async fn timed_out_call_leaks_no_pending_entry() {
+    let env = Env::new();
+    let h = Supervisor::start(env.opts(Duration::from_secs(600)).with_setup(|st| {
+        st.router.register("slow", |_c, _p| async move {
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            Ok(Value::Null)
+        });
+    }))
+    .await
+    .unwrap();
+    let c = connect(&h).await;
+    hello(&c).await;
+    let e = c
+        .call_timeout::<_, Value>("slow", json!({}), Duration::from_millis(100))
+        .await
+        .unwrap_err();
+    assert!(matches!(e, ClientError::CallTimeout(_)));
+    assert_eq!(c.pending_calls(), 0);
+    // A dropped (cancelled) future leaks nothing either.
+    {
+        let fut = c.call::<_, Value>("slow", json!({}));
+        let _ = tokio::time::timeout(Duration::from_millis(50), fut).await;
+    }
+    assert_eq!(c.pending_calls(), 0);
+    c.call::<_, StatusResult>("status", json!({}))
+        .await
+        .unwrap();
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn existing_group_readable_socket_dir_is_refused() {
+    let env = Env::new();
+    let dir = env.dir.path().join("open");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let opts = SupervisorOptions::new(env.paths.clone(), Config::default(), dir.join("s.sock"));
+    match Supervisor::start(opts).await {
+        Err(SupervisorError::InsecureSocketDir(_)) => {}
+        other => panic!("expected InsecureSocketDir, got {:?}", other.err()),
+    }
 }

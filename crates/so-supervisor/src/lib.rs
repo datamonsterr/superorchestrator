@@ -4,6 +4,7 @@
 pub mod client;
 pub mod dispatch;
 pub mod error;
+mod lines;
 pub mod lock;
 pub mod reconcile;
 pub mod server;
