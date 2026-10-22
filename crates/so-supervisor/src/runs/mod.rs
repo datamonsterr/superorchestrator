@@ -17,6 +17,7 @@ pub mod worktree;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -26,7 +27,6 @@ use so_core::{Config, Paths};
 use so_harness::{DriverConfig, JoinInfo, RunControl};
 use so_store::{RunRow, Store, StoreError};
 use tokio::sync::{Notify, watch};
-use tokio::task::JoinHandle;
 
 pub use events::{Delivered, Subscription};
 pub use view::{WaitOutcome, display_argv};
@@ -61,8 +61,6 @@ fn store_rpc(e: StoreError) -> RpcError {
 pub(crate) struct LiveRun {
     pub control: RunControl,
     pub join: JoinInfo,
-    #[allow(dead_code)] // owned so the pump is tied to the run; finishing detaches it
-    pub task: Option<JoinHandle<()>>,
 }
 
 /// Everything the supervisor knows about one unfinished run besides its row. An entry
@@ -91,6 +89,17 @@ struct Inner {
     drain: tokio::sync::Mutex<()>,
     drain_wake: Arc<Notify>,
     finished: watch::Sender<u64>,
+    /// Test hooks: hold `go_live`, shorten the launch limit, slow the launch down.
+    go_live_open: watch::Sender<bool>,
+    launch_timeout_ms: AtomicU64,
+    launch_delay_ms: AtomicU64,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        // Let the drainer notice the manager is gone and end.
+        self.drain_wake.notify_one();
+    }
 }
 
 /// Cheap to clone; all clones share one state.
@@ -127,6 +136,11 @@ impl RunManager {
             drain: tokio::sync::Mutex::new(()),
             drain_wake: drain_wake.clone(),
             finished: watch::channel(0).0,
+            go_live_open: watch::channel(true).0,
+            launch_timeout_ms: AtomicU64::new(
+                u64::try_from(LAUNCH_TIMEOUT.as_millis()).unwrap_or(u64::MAX),
+            ),
+            launch_delay_ms: AtomicU64::new(0),
         });
         queue::spawn_drainer(&inner, drain_wake);
         Self { inner }
@@ -150,6 +164,39 @@ impl RunManager {
             .values()
             .filter(|r| r.live.is_some())
             .count()
+    }
+
+    /// Test hook: while closed, a launched harness waits before it is registered.
+    #[doc(hidden)]
+    pub fn set_go_live_open(&self, open: bool) {
+        self.inner.go_live_open.send_replace(open);
+    }
+
+    /// Test hook: how long a harness may take to start.
+    #[doc(hidden)]
+    pub fn set_launch_timeout(&self, d: Duration) {
+        let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        self.inner.launch_timeout_ms.store(ms, Ordering::SeqCst);
+    }
+
+    /// Test hook: extra time every launch takes (counts against the launch limit).
+    #[doc(hidden)]
+    pub fn set_launch_delay(&self, d: Duration) {
+        let ms = u64::try_from(d.as_millis()).unwrap_or(u64::MAX);
+        self.inner.launch_delay_ms.store(ms, Ordering::SeqCst);
+    }
+
+    pub(crate) fn launch_timeout(&self) -> Duration {
+        Duration::from_millis(self.inner.launch_timeout_ms.load(Ordering::SeqCst))
+    }
+
+    pub(crate) fn launch_delay(&self) -> Duration {
+        Duration::from_millis(self.inner.launch_delay_ms.load(Ordering::SeqCst))
+    }
+
+    pub(crate) async fn wait_go_live_gate(&self) {
+        let mut rx = self.inner.go_live_open.subscribe();
+        let _ = rx.wait_for(|open| *open).await;
     }
 
     /// True while any run is queued, starting or live.
@@ -212,4 +259,81 @@ pub(crate) fn register(state: &Arc<SupervisorState>) {
     handlers::register(state);
     state.set_probe(Arc::new(state.runs.clone()));
     state.set_reconcile_hook(Arc::new(state.runs.clone()));
+}
+
+#[cfg(test)]
+pub(crate) mod testutil {
+    use chrono::Utc;
+    use so_core::{AccountFile, Harness, Isolation, RunState, SessionKind, new_id};
+    use so_store::{RunRow, SessionRow};
+
+    use super::*;
+
+    /// A manager over an in-memory store with one claude account `claude-t`.
+    pub fn manager() -> (RunManager, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(dir.path().to_path_buf());
+        AccountFile::new("claude-t", Harness::Claude, "~/.claude-t", "claude")
+            .unwrap()
+            .save(&paths)
+            .unwrap();
+        let m = RunManager::new(
+            Store::open_in_memory().unwrap(),
+            Config::default(),
+            paths,
+            None,
+            dir.path().join("s.sock"),
+            None,
+        );
+        (m, dir)
+    }
+
+    pub fn insert_run(m: &RunManager, state: RunState) -> RunRow {
+        let session = SessionRow {
+            id: new_id(),
+            kind: SessionKind::Orchestrator,
+            client: "t".into(),
+            cwd: None,
+            account: None,
+            pid: None,
+            started_at: Utc::now(),
+            ended_at: None,
+            status: "active".into(),
+        };
+        m.store().insert_session(&session).unwrap();
+        let row = RunRow {
+            id: new_id(),
+            session_id: session.id,
+            parent_run_id: None,
+            depth: 1,
+            name: None,
+            agent: None,
+            choice_id: None,
+            harness: Harness::Claude,
+            account: Some("claude-t".into()),
+            model: None,
+            effort: None,
+            cwd: None,
+            worktree_path: None,
+            branch: None,
+            native_session_id: None,
+            state,
+            review: false,
+            output_schema: None,
+            result_json: None,
+            error_kind: None,
+            prompt: None,
+            created_at: Utc::now(),
+            started_at: None,
+            finished_at: None,
+            isolation: Isolation::None,
+            max_turns: None,
+            worktree_base: None,
+            worktree_repo: None,
+            timeout_ms: None,
+        };
+        m.store().insert_run(&row).unwrap();
+        lock(&m.inner.runs).insert(row.id.clone(), RunRt::default());
+        row
+    }
 }

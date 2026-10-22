@@ -8,7 +8,7 @@ use so_core::{ErrorKind, EventType, RunState};
 use so_store::StoreError;
 use tokio::sync::Notify;
 
-use super::{Inner, RunManager};
+use super::{Inner, RunManager, lock};
 
 /// Starts the background drainer. It holds only a weak reference, so it ends with the
 /// manager.
@@ -18,7 +18,11 @@ pub(super) fn spawn_drainer(inner: &Arc<Inner>, wake: Arc<Notify>) {
         loop {
             wake.notified().await;
             let Some(inner) = weak.upgrade() else { break };
-            RunManager { inner }.drain_once().await;
+            let mgr = RunManager { inner };
+            // A panic must not end the drainer: run the drain on its own task.
+            if let Err(e) = tokio::spawn(async move { mgr.drain_once().await }).await {
+                tracing::error!(error = %e, "queue drain panicked");
+            }
         }
     });
 }
@@ -86,6 +90,8 @@ impl RunManager {
                 .await;
             match claimed {
                 Ok(true) => {
+                    // Normally present from enqueue; make sure after any other path.
+                    lock(&self.inner.runs).entry(run.id.clone()).or_default();
                     self.emit(
                         &run.session_id,
                         Some(&run.id),
