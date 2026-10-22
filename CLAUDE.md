@@ -27,10 +27,9 @@ In this repository:
 
 The disk is small, and several agents build at once. Follow these rules:
 
-- One shared target dir for every project and worktree: `~/.cache/cargo-target`, set by `build.target-dir` in `~/.cargo/config.toml`. Do not set `CARGO_TARGET_DIR`, and do not create a per-worktree `target/`.
+- The main checkout builds into `~/.cache/cargo-target`, set by `build.target-dir` in `~/.cargo/config.toml`. Each git worktree gets its own target dir on the media disk: put an untracked `.cargo/config.toml` in the worktree with `[build] target-dir = "/media/storage/cache/cargo-target/<worktree>"` (`/.cargo/config.toml` is in `.git/info/exclude`). Never share one target dir between checkouts: workspace crates get the same artifact hash, so one checkout overwrites the other's builds. Do not set `CARGO_TARGET_DIR`.
 - sccache wraps rustc (`build.rustc-wrapper`). Its cache is on `/media/storage/cache/sccache`, capped at 20 GiB, oldest evicted first. Do not turn on incremental builds, because sccache cannot cache them.
 - Dev and test profiles keep `debug = "line-tables-only"` and dependencies build without debug info. Do not raise these.
 - While iterating, verify with `cargo check` (or `cargo clippy`), and `cargo test --no-run` for test code. Run `cargo test` for the crate you changed when the logic is complete. Run `cargo test --workspace` once before reporting.
 - Tests that need a binary find the target dir from the test executable path, not from `CARGO_TARGET_DIR` or `<repo>/target`.
 - Run at most one implementer per checkout. Concurrent implementers each get their own git worktree.
-- Two worktrees sharing the target dir overwrite each other's `superorchestrator` binary. If a CLI test fails for no clear reason, rerun it once before debugging.
