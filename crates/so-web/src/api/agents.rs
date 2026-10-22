@@ -15,7 +15,7 @@ use so_agents::{
     AgentDef, AgentSource, HarnessPref, MAX_AGENT_FILE, discover, gaps, parse_agent,
     read_source_of, search_dirs, validate_agent_name,
 };
-use so_core::proto::{AckResult, AgentView, AgentsView};
+use so_core::proto::{AckResult, AgentsView};
 use so_core::redact::redact;
 
 use crate::error::{ApiError, ApiResult};
@@ -178,28 +178,14 @@ fn write_atomic(file: &FsPath, bytes: &[u8]) -> std::io::Result<()> {
 }
 
 pub async fn list(State(st): State<AppState>) -> ApiResult<Json<AgentsView>> {
-    st.clone().blocking(move || {
-        let d = discover(&st.project_cwd(), &st.sup.paths);
-        for (path, msg) in &d.problems {
-            tracing::warn!(path = %path.display(), "skipped agent: {}", msg.lines().next().unwrap_or_default());
-        }
-        let link = |p: &FsPath| std::fs::symlink_metadata(p).is_ok_and(|m| m.is_symlink());
-        Ok(Json(AgentsView {
-            agents: d
-                .agents
-                .iter()
-                .filter(|a| !(link(&a.file) || a.dir.as_deref().is_some_and(link)))
-                .map(|a| AgentView {
-                    name: a.name.clone(),
-                    description: a.description.clone(),
-                    source: Some(a.source.as_str().to_string()),
-                    path: Some(a.file.display().to_string()),
-                    harness: Some(a.harness.as_str().to_string()),
-                })
-                .collect(),
-        }))
-    })
-    .await
+    st.clone()
+        .blocking(move || {
+            Ok(Json(so_supervisor::agents_view(
+                &st.project_cwd(),
+                &st.sup.paths,
+            )))
+        })
+        .await
 }
 
 pub async fn get(

@@ -141,7 +141,7 @@ impl RunManager {
             .output_schema
             .as_deref()
             .and_then(|s| serde_json::from_str::<Value>(s).ok());
-        Ok(LaunchSpec {
+        let mut spec = LaunchSpec {
             run_id: row.id.clone(),
             run_dir,
             cwd,
@@ -161,7 +161,12 @@ impl RunManager {
             max_turns: row.max_turns,
             resume,
             fork,
-        })
+            agent: Default::default(),
+        };
+        if let Some(name) = row.agent.clone() {
+            self.apply_agent(row, &name, &mut spec).await?;
+        }
+        Ok(spec)
     }
 
     /// Launches with a time limit, so a harness that never comes up fails the run.

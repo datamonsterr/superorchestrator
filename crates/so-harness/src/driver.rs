@@ -61,6 +61,57 @@ impl fmt::Debug for McpServerSpec {
     }
 }
 
+/// What a custom agent adds to a launch (SPEC 10), already in the harness's native form.
+/// The default adds nothing.
+#[derive(Clone, Default, PartialEq)]
+pub struct AgentLaunch {
+    /// Extra `claude` argv: tool lists, `--mcp-config`, `--settings`, `--add-dir`.
+    pub extra_args: Vec<String>,
+    /// Codex: merged into the `thread/start` config. OpenCode: merged into the run's config.
+    pub config_fragment: Option<serde_json::Value>,
+    /// OpenCode: the agent the session runs as.
+    pub agent_name: Option<String>,
+}
+
+impl AgentLaunch {
+    /// Merges the agent's config fragment into a harness config object. The agent can add
+    /// and change entries, but never replaces `protected_path`'s entry (the superorchestrator
+    /// MCP server), which the run needs to reach the supervisor.
+    pub fn merge_into(&self, base: &mut serde_json::Value, protected: (&str, &str)) {
+        let Some(fragment) = &self.config_fragment else {
+            return;
+        };
+        let keep = base
+            .get(protected.0)
+            .and_then(|m| m.get(protected.1))
+            .cloned();
+        merge_json(base, fragment);
+        if let (Some(keep), Some(map)) = (
+            keep,
+            base.get_mut(protected.0).and_then(|m| m.as_object_mut()),
+        ) {
+            map.insert(protected.1.to_string(), keep);
+        }
+    }
+}
+
+/// Objects merge key by key; anything else in `extra` replaces what is in `base`.
+fn merge_json(base: &mut serde_json::Value, extra: &serde_json::Value) {
+    match (base, extra) {
+        (serde_json::Value::Object(b), serde_json::Value::Object(e)) => {
+            for (k, v) in e {
+                match b.get_mut(k) {
+                    Some(slot) => merge_json(slot, v),
+                    None => {
+                        b.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+        }
+        (slot, v) => *slot = v.clone(),
+    }
+}
+
 /// Everything a driver needs to start (or resume) one run.
 #[derive(Clone)]
 pub struct LaunchSpec {
@@ -83,6 +134,8 @@ pub struct LaunchSpec {
     /// With `resume`: continue a copy of that session under a new native id instead of
     /// the session itself (only where [`AnyDriver::supports_fork`]).
     pub fork: bool,
+    /// The custom agent's additions (SPEC 10); empty without one.
+    pub agent: AgentLaunch,
 }
 
 // Redacting: no prompt text, no env values (account vars or MCP env).
@@ -114,6 +167,7 @@ impl fmt::Debug for LaunchSpec {
             .field("max_turns", &self.max_turns)
             .field("resume", &self.resume)
             .field("fork", &self.fork)
+            .field("agent_args", &self.agent.extra_args.len())
             .finish()
     }
 }
@@ -499,6 +553,32 @@ mod tests {
     }
 
     #[test]
+    fn agent_config_merges_deeply_and_keeps_our_server() {
+        use serde_json::json;
+        let agent = AgentLaunch {
+            config_fragment: Some(json!({
+                "mcp": {"docs": {"command": "d"}, "superorchestrator": {"command": "evil"}},
+                "agent": {"reviewer": {"prompt": "p"}},
+                "permission": {"*": "ask"},
+            })),
+            ..AgentLaunch::default()
+        };
+        let mut base = json!({
+            "mcp": {"superorchestrator": {"command": "ours"}},
+            "permission": {"*": "allow"},
+        });
+        agent.merge_into(&mut base, ("mcp", "superorchestrator"));
+        assert_eq!(base["mcp"]["superorchestrator"]["command"], "ours");
+        assert_eq!(base["mcp"]["docs"]["command"], "d");
+        assert_eq!(base["agent"]["reviewer"]["prompt"], "p");
+        assert_eq!(base["permission"]["*"], "ask");
+        // Nothing to merge: untouched.
+        let mut same = base.clone();
+        AgentLaunch::default().merge_into(&mut same, ("mcp", "superorchestrator"));
+        assert_eq!(same, base);
+    }
+
+    #[test]
     fn debug_is_redacted() {
         let spec = LaunchSpec {
             run_id: "r".into(),
@@ -524,6 +604,7 @@ mod tests {
             max_turns: None,
             resume: None,
             fork: false,
+            agent: AgentLaunch::default(),
         };
         let dbg = format!("{spec:?}");
         for leaked in ["launch-secret", "mcp-secret", "very private", "--token=abc"] {

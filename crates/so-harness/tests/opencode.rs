@@ -278,6 +278,7 @@ impl Rig {
             max_turns: None,
             resume: None,
             fork: false,
+            agent: Default::default(),
         }
     }
 

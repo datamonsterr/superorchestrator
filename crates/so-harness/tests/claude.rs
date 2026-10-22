@@ -109,6 +109,7 @@ impl Rig {
             max_turns: Some(8),
             resume: None,
             fork: false,
+            agent: Default::default(),
         }
     }
 }
@@ -196,6 +197,20 @@ fn grandchild_pid(rig: &Rig) -> u32 {
 
 fn is_turn(e: &HarnessEvent) -> bool {
     matches!(e, HarnessEvent::TurnFinished { .. })
+}
+
+#[test]
+fn an_agents_extra_args_end_the_argv() {
+    let rig = Rig::new();
+    let mut spec = rig.spec("");
+    spec.agent.extra_args = ["--tools", "Read,Grep", "--add-dir", "/agent"]
+        .map(String::from)
+        .to_vec();
+    let args = so_harness::claude::build_args(&spec, "sid");
+    assert_eq!(&args[args.len() - 4..], spec.agent.extra_args.as_slice());
+    assert!(args.windows(2).any(|w| w == ["--max-turns", "8"]));
+    spec.agent.extra_args.clear();
+    assert!(!so_harness::claude::build_args(&spec, "sid").contains(&"--tools".to_string()));
 }
 
 #[tokio::test]

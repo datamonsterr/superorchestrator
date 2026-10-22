@@ -4,6 +4,7 @@
 //! `lifecycle` (start, finish, cancel, worktree cleanup), `view` (read models and waiting),
 //! `reconcile` (take over runs after a restart) and `events` (store and fan out events).
 
+mod agent;
 mod comm;
 mod events;
 mod failover;

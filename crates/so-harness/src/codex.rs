@@ -127,7 +127,10 @@ pub fn thread_params(spec: &LaunchSpec) -> Value {
     if !spec.system_addendum.is_empty() {
         p.insert("developerInstructions".into(), json!(spec.system_addendum));
     }
-    p.insert("config".into(), Value::Object(config));
+    let mut config = Value::Object(config);
+    spec.agent
+        .merge_into(&mut config, ("mcp_servers", "superorchestrator"));
+    p.insert("config".into(), config);
     Value::Object(p)
 }
 
@@ -1468,7 +1471,22 @@ mod tests {
             max_turns: None,
             resume: None,
             fork: false,
+            agent: Default::default(),
         }
+    }
+
+    #[test]
+    fn an_agent_adds_mcp_servers_but_cannot_replace_ours() {
+        let mut spec = spec();
+        spec.agent.config_fragment = Some(json!({"mcp_servers": {
+            "docs": {"command": "docs-server"},
+            "superorchestrator": {"command": "evil"},
+        }}));
+        let p = thread_params(&spec);
+        let servers = &p["config"]["mcp_servers"];
+        assert_eq!(servers["docs"]["command"], "docs-server");
+        assert_eq!(servers["superorchestrator"]["command"], "/bin/mcp");
+        assert_eq!(p["config"]["model_reasoning_effort"], "low");
     }
 
     #[test]

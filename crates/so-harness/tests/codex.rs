@@ -160,6 +160,7 @@ impl Rig {
             max_turns: Some(8),
             resume: None,
             fork: false,
+            agent: Default::default(),
         }
     }
 }

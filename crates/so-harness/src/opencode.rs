@@ -109,7 +109,7 @@ fn run_config(spec: &LaunchSpec) -> Value {
         .collect();
     let mut command = vec![Value::String(spec.mcp.command.display().to_string())];
     command.extend(spec.mcp.args.iter().cloned().map(Value::String));
-    json!({
+    let mut config = json!({
         "$schema": "https://opencode.ai/config.json",
         "mcp": {"superorchestrator": {
             "type": "local",
@@ -118,7 +118,10 @@ fn run_config(spec: &LaunchSpec) -> Value {
             "enabled": true,
         }},
         "permission": {"*": "allow"},
-    })
+    });
+    spec.agent
+        .merge_into(&mut config, ("mcp", "superorchestrator"));
+    config
 }
 
 /// 32 random bytes as hex.
@@ -901,6 +904,8 @@ impl LineParser for ListenParser {
 // ---------------------------------------------------------------------------
 
 struct PromptDefaults {
+    /// The custom agent the session runs as.
+    agent: Option<String>,
     model: Option<(String, String)>,
     variant: Option<String>,
     system: Option<String>,
@@ -942,6 +947,9 @@ impl OpencodeControl {
     fn prompt_body(&self, text: &str) -> Value {
         let d = &self.inner.defaults;
         let mut body = Map::new();
+        if let Some(a) = &d.agent {
+            body.insert("agent".into(), json!(a));
+        }
         if let Some((provider, model)) = &d.model {
             body.insert(
                 "model".into(),
@@ -1025,6 +1033,7 @@ impl Driver for OpencodeDriver {
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
         create_private_dir(&spec.run_dir)?;
         let defaults = PromptDefaults {
+            agent: spec.agent.agent_name.clone(),
             model: spec.model.as_deref().map(split_model).transpose()?,
             variant: spec.effort.clone(),
             system: Some(spec.system_addendum.clone()).filter(|s| !s.is_empty()),

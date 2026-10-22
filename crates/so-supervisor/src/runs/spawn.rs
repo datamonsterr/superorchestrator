@@ -264,9 +264,17 @@ impl RunManager {
             .or_else(|| agent.as_ref().and_then(|a| a.isolation))
             .unwrap_or(Isolation::Worktree);
         let probe = cwd.clone();
-        let (warnings, isolation) = self
+        let (mut warnings, isolation) = self
             .blocking(move || inspect_isolation(&probe, want))
             .await?;
+        // What the agent file asks for and the chosen harness cannot do.
+        if let Some(a) = &agent {
+            warnings.extend(
+                so_agents::gaps(a, account.harness)
+                    .into_iter()
+                    .map(|g| format!("agent `{}`: {g}", a.name)),
+            );
+        }
         Ok(Validated {
             harness: account.harness,
             account,

@@ -1,0 +1,201 @@
+#![allow(clippy::unwrap_used)]
+//! Custom agents in `spawn_agent` and `list_agents` (SPEC 10, 13).
+
+mod common;
+
+use common::*;
+use serde_json::{Value, json};
+use so_core::proto::{AgentsView, METHOD_LIST_AGENTS, METHOD_SPAWN_AGENT, NOT_FOUND, SpawnParams};
+use so_core::{Choice, Harness, Isolation, RunState};
+
+fn write_agent(env: &Env, file: &str, text: &str) {
+    let path = env.paths.agents_dir().join(file);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, text).unwrap();
+}
+
+const REVIEWER: &str = "---\n\
+name: reviewer\n\
+description: Reviews a diff.\n\
+harness: claude\n\
+model: agent-model\n\
+effort: high\n\
+tools: [Read, Grep]\n\
+disallowedTools: [Write]\n\
+maxTurns: 7\n\
+mcpServers:\n  - docs:\n      command: docs-server\n      args: [--stdio]\n\
+---\n\
+You are the reviewer. Report only real bugs.\n";
+
+fn env() -> Env {
+    let mut env = Env::new();
+    env.config.choices = vec![Choice {
+        id: "claude-mid".into(),
+        harness: Harness::Claude,
+        model: "claude-sonnet-5-5".into(),
+        effort: None,
+        roles: vec!["worker".into()],
+        description: "d".into(),
+        enabled: true,
+    }];
+    env.config.router.jev.key_env = "SO_AGENTS_TEST_NO_SUCH_KEY".into();
+    env
+}
+
+fn agent_params(env: &Env, agent: &str) -> SpawnParams {
+    let mut p = env.spawn_params("unused");
+    p.harness = None;
+    p.account = None;
+    p.agent = Some(agent.into());
+    p.isolation = Some(Isolation::None);
+    p.wait = true;
+    p
+}
+
+fn flag_value(argv: &[String], flag: &str) -> Vec<String> {
+    argv.windows(2)
+        .filter(|w| w[0] == flag)
+        .map(|w| w[1].clone())
+        .collect()
+}
+
+#[tokio::test]
+async fn spawn_with_an_agent_materialises_its_instructions_and_controls() {
+    let env = env();
+    write_agent(&env, "reviewer.md", REVIEWER);
+    env.account("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let mut p = agent_params(&env, "reviewer");
+    p.prompt = Some(PROMPT.into());
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let v = view(&c, &r.run_id).await;
+    assert_eq!(v.model.as_deref(), Some("agent-model"));
+
+    // The agent's harness, model, effort, tools and turn budget reached the harness.
+    let argv = &env.launches("claude-a")[0];
+    assert_eq!(flag_value(argv, "--model"), ["agent-model"]);
+    assert_eq!(flag_value(argv, "--effort"), ["high"]);
+    assert_eq!(flag_value(argv, "--tools"), ["Read,Grep"]);
+    assert_eq!(flag_value(argv, "--disallowedTools"), ["Write"]);
+    assert_eq!(flag_value(argv, "--max-turns"), ["7"]);
+    // The run's own MCP config and the agent's inline server.
+    assert_eq!(flag_value(argv, "--mcp-config").len(), 2);
+
+    // The agent's prompt follows the child instructions in the system prompt file.
+    let run_dir = env.paths.run_dir(&r.run_id);
+    let system = std::fs::read_to_string(run_dir.join("system.md")).unwrap();
+    assert!(
+        system.contains("SUPERORCHESTRATOR") || system.contains(&r.run_id),
+        "{system}"
+    );
+    assert!(system.contains("You are the reviewer. Report only real bugs."));
+    let mcp = std::fs::read_to_string(run_dir.join("agent/agent-mcp.json")).unwrap();
+    assert!(mcp.contains("docs-server"));
+    // The agent is recorded on the run.
+    assert_eq!(
+        env.store()
+            .get_run(&r.run_id)
+            .unwrap()
+            .unwrap()
+            .agent
+            .as_deref(),
+        Some("reviewer")
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn call_arguments_override_the_agent_and_a_missing_prompt_uses_a_default_brief() {
+    let env = env();
+    write_agent(&env, "reviewer.md", REVIEWER);
+    let brief_script = script(&[
+        json!({"expect_stdin_contains": "Carry out your role as the reviewer agent"}),
+        json!({"stdout": init_msg()}),
+        json!({"stdout": result_msg(json!({}))}),
+    ]);
+    env.account("claude-a", 2, &brief_script);
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let mut p = agent_params(&env, "reviewer");
+    p.prompt = None;
+    p.model = Some("call-model".into());
+    p.max_turns = Some(3);
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let argv = &env.launches("claude-a")[0];
+    assert_eq!(flag_value(argv, "--model"), ["call-model"]);
+    // One turn budget only: the call's.
+    assert_eq!(flag_value(argv, "--max-turns"), ["3"]);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn the_accounts_list_of_an_agent_limits_routing() {
+    let env = env();
+    write_agent(
+        &env,
+        "picky.md",
+        "---\nname: picky\ndescription: d\naccounts: [claude-b]\n---\nbody\n",
+    );
+    env.account("claude-a", 2, &ok_script(&[]));
+    env.account("claude-b", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let mut p = agent_params(&env, "picky");
+    p.prompt = Some(PROMPT.into());
+    let r = spawn(&c, p).await;
+    assert_eq!(
+        view(&c, &r.run_id).await.account.as_deref(),
+        Some("claude-b")
+    );
+    // Naming another account is refused.
+    let mut p = agent_params(&env, "picky");
+    p.prompt = Some(PROMPT.into());
+    p.account = Some("claude-a".into());
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    assert_eq!(rpc_code(err), so_core::proto::INVALID_PARAMS);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_unknown_agent_is_not_found() {
+    let env = env();
+    env.account("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = agent_params(&env, "nobody");
+    p.prompt = Some(PROMPT.into());
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    assert_eq!(rpc_code(err), NOT_FOUND);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn list_agents_returns_user_and_project_agents() {
+    let env = env();
+    write_agent(&env, "reviewer.md", REVIEWER);
+    let project = env.repo.join(".superorchestrator/agents/proj/AGENT.md");
+    std::fs::create_dir_all(project.parent().unwrap()).unwrap();
+    std::fs::write(
+        &project,
+        "---\nname: proj\ndescription: Project helper.\n---\nbody\n",
+    )
+    .unwrap();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let view: AgentsView = c.call(METHOD_LIST_AGENTS, json!({})).await.unwrap();
+    let by = |n: &str| view.agents.iter().find(|a| a.name == n).unwrap();
+    assert_eq!(view.agents.len(), 2, "{view:?}");
+    assert_eq!(by("reviewer").source.as_deref(), Some("user"));
+    assert_eq!(by("reviewer").harness.as_deref(), Some("claude"));
+    assert_eq!(by("reviewer").description, "Reviews a diff.");
+    assert_eq!(by("proj").source.as_deref(), Some("superorchestrator"));
+    assert!(by("proj").path.as_deref().unwrap().ends_with("AGENT.md"));
+    h.shutdown().await;
+}
