@@ -1,15 +1,12 @@
 //! `worktrees list|prune`: reads the store and runs git directly.
 
-use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Result, bail};
-use chrono::Utc;
 use dialoguer::Confirm;
 use serde_json::{Value, json};
-use so_core::{Event, EventType, new_id};
 use so_store::RunRow;
-use so_supervisor::runs::worktree::{Created, remove};
+use so_supervisor::services::worktrees::{exists, prune_one, prune_targets};
 
 use super::runs::read_runs;
 use crate::cli::WorktreesCmd;
@@ -34,11 +31,6 @@ fn with_worktree(ctx: &Ctx) -> Result<Vec<RunRow>> {
 
 fn list(ctx: &Ctx) -> Result<()> {
     let rows = with_worktree(ctx)?;
-    let exists = |r: &RunRow| {
-        r.worktree_path
-            .as_deref()
-            .is_some_and(|p| Path::new(p).is_dir())
-    };
     let value = Value::Array(
         rows.iter()
             .map(|r| {
@@ -66,26 +58,11 @@ fn list(ctx: &Ctx) -> Result<()> {
     })
 }
 
-/// The worktree of a run, from the run's row.
-fn created_of(r: &RunRow) -> Option<Created> {
-    Some(Created {
-        path: PathBuf::from(r.worktree_path.clone()?),
-        branch: r.branch.clone()?,
-        base: r.worktree_base.clone()?,
-        repo: PathBuf::from(r.worktree_repo.clone()?),
-    })
-}
-
 fn prune(ctx: &Ctx) -> Result<()> {
     let Some(store) = open_existing_store(&ctx.paths) else {
         return ctx.emit_ok(json!({"removed": []}), "nothing to prune");
     };
-    let targets: Vec<(RunRow, Created)> = with_worktree(ctx)?
-        .into_iter()
-        .filter(|r| r.state.is_terminal())
-        .filter_map(|r| created_of(&r).map(|c| (r, c)))
-        .filter(|(_, c)| c.path.is_dir())
-        .collect();
+    let targets = prune_targets(with_worktree(ctx)?);
     if targets.is_empty() {
         return ctx.emit_ok(json!({"removed": []}), "nothing to prune");
     }
@@ -109,18 +86,8 @@ fn prune(ctx: &Ctx) -> Result<()> {
     }
     let mut removed = Vec::new();
     for (run, c) in &targets {
-        match remove(c, true) {
-            Ok(()) => {
-                store.append_event(&Event {
-                    id: new_id(),
-                    session_id: run.session_id.clone(),
-                    run_id: Some(run.id.clone()),
-                    ts: Utc::now(),
-                    event_type: EventType::WorktreeRemoved,
-                    data: json!({"path": c.path, "branch": c.branch, "pruned": true}),
-                })?;
-                removed.push(run.id.clone());
-            }
+        match prune_one(&store, run, c) {
+            Ok(()) => removed.push(run.id.clone()),
             Err(e) => eprintln!("could not remove {}: {e}", c.path.display()),
         }
     }

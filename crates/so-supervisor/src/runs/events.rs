@@ -40,6 +40,8 @@ struct Sub {
 struct BusState {
     next_id: u64,
     subs: HashMap<String, Vec<Sub>>,
+    /// Subscribers to every session (the web UI's stream).
+    all: Vec<(u64, mpsc::UnboundedSender<Delivered>)>,
     seqs: HashMap<String, u64>,
 }
 
@@ -56,6 +58,13 @@ impl Bus {
             *n += 1;
             *n
         };
+        st.all.retain(|(_, tx)| {
+            tx.send(Delivered {
+                seq,
+                event: ev.clone(),
+            })
+            .is_ok()
+        });
         if let Some(subs) = st.subs.get(&ev.session_id) {
             for s in subs {
                 let wanted = s
@@ -78,6 +87,7 @@ impl Bus {
 
     fn remove(&self, sub_id: u64, sessions: &[String]) {
         let mut st = lock(&self.state);
+        st.all.retain(|(id, _)| *id != sub_id);
         for s in sessions {
             if let Some(v) = st.subs.get_mut(s) {
                 v.retain(|x| x.id != sub_id);
@@ -137,8 +147,25 @@ impl RunManager {
         }
     }
 
+    /// Subscribes to the events of every session from the moment of subscribing.
+    pub fn subscribe_all(&self) -> Subscription {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let bus = self.inner.bus.clone();
+        let mut st = lock(&bus.state);
+        st.next_id += 1;
+        let id = st.next_id;
+        st.all.push((id, tx));
+        drop(st);
+        Subscription {
+            rx,
+            bus,
+            id,
+            sessions: Vec::new(),
+        }
+    }
+
     /// Stores an event, then delivers it to subscribers.
-    pub(crate) async fn emit(
+    pub async fn emit(
         &self,
         session_id: &str,
         run_id: Option<&str>,

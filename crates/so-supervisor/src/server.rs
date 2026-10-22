@@ -135,6 +135,8 @@ pub struct SupervisorState {
     /// Bumped on every connect so a short-lived client resets the idle clock.
     epoch: AtomicU64,
     probe: RwLock<Option<Arc<dyn ActivityProbe>>>,
+    /// Open [`ActivityGuard`]s (UI streams): the supervisor does not idle-exit while > 0.
+    guards: AtomicUsize,
     hook: RwLock<Option<Arc<dyn ReconcileHook>>>,
     shutdown: watch::Sender<bool>,
 }
@@ -171,12 +173,31 @@ impl SupervisorState {
             .map_err(internal)
     }
 
-    fn busy(&self) -> bool {
-        self.probe
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .is_some_and(|p| p.busy())
+    /// Marks the supervisor busy until the guard is dropped (for example while a UI stream
+    /// is open), so idle exit waits.
+    pub fn activity_guard(self: &Arc<Self>) -> ActivityGuard {
+        self.guards.fetch_add(1, Ordering::SeqCst);
+        ActivityGuard(self.clone())
+    }
+
+    /// True while a run is active or an [`ActivityGuard`] is open.
+    pub fn busy(&self) -> bool {
+        self.guards.load(Ordering::SeqCst) > 0
+            || self
+                .probe
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+                .is_some_and(|p| p.busy())
+    }
+}
+
+/// Keeps the supervisor from idle-exiting while alive. See [`SupervisorState::activity_guard`].
+pub struct ActivityGuard(Arc<SupervisorState>);
+
+impl Drop for ActivityGuard {
+    fn drop(&mut self) {
+        self.0.guards.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -256,6 +277,7 @@ impl Supervisor {
             clients: AtomicUsize::new(0),
             epoch: AtomicU64::new(0),
             probe: RwLock::new(None),
+            guards: AtomicUsize::new(0),
             hook: RwLock::new(None),
             shutdown: shutdown_tx,
         });

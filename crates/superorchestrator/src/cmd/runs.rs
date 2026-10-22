@@ -20,14 +20,14 @@ use crate::exit::CliError;
 use crate::output::write_table;
 use crate::views::open_existing_store;
 
-fn runtime() -> Result<tokio::runtime::Runtime> {
+pub(crate) fn runtime() -> Result<tokio::runtime::Runtime> {
     Ok(tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?)
 }
 
 /// Connects to the supervisor, starting it when it is not running.
-async fn connect(ctx: &Ctx) -> Result<SupervisorClient> {
+pub(crate) async fn connect(ctx: &Ctx) -> Result<SupervisorClient> {
     let socket = Paths::socket_path()?;
     let exe = std::env::current_exe().context("could not find this executable")?;
     let dir = ctx.paths.config_dir.clone();

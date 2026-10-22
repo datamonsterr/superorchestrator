@@ -166,7 +166,9 @@ pub(crate) async fn handle_other(
     let r = if ctx.session_id.is_none() {
         Err(RpcError::new(INVALID_REQUEST, "hello required"))
     } else if req.method == METHOD_STATUS {
-        status(state).await
+        status_result(state)
+            .await
+            .and_then(|r| serde_json::to_value(r).map_err(internal))
     } else if let Some(h) = state.router.get(&req.method) {
         h(ctx, req.params).await
     } else {
@@ -225,7 +227,8 @@ async fn hello(
     serde_json::to_value(result).map_err(internal)
 }
 
-async fn status(state: &Arc<SupervisorState>) -> Result<Value, RpcError> {
+/// The `status` result: pid, version, uptime and counts.
+pub async fn status_result(state: &Arc<SupervisorState>) -> Result<StatusResult, RpcError> {
     // TODO: add COUNT(*) helpers to so-store instead of listing rows.
     let (sessions, runs) = state
         .db(|s| {
@@ -236,12 +239,11 @@ async fn status(state: &Arc<SupervisorState>) -> Result<Value, RpcError> {
             ))
         })
         .await?;
-    serde_json::to_value(StatusResult {
+    Ok(StatusResult {
         pid: std::process::id(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_s: state.started.elapsed().as_secs(),
         sessions: u32::try_from(sessions).unwrap_or(u32::MAX),
         active_runs: u32::try_from(runs).unwrap_or(u32::MAX),
     })
-    .map_err(internal)
 }

@@ -62,6 +62,7 @@ impl RunManager {
         let join = self.join_for(&row);
         Ok(RunView {
             run_id: row.id,
+            session_id: row.session_id,
             state: row.state,
             harness: Some(row.harness),
             account: row.account,

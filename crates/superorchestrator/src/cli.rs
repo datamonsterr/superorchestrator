@@ -269,6 +269,9 @@ pub struct UiArgs {
     /// Write a systemd user unit or launchd agent
     #[arg(long)]
     pub install_service: bool,
+    /// Do not open the browser
+    #[arg(long)]
+    pub no_open: bool,
 }
 
 #[derive(Args, Debug)]

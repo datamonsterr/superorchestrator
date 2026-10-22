@@ -2,6 +2,8 @@
 
 mod harnesses;
 
+pub use harnesses::harnesses_view;
+
 use std::sync::Arc;
 
 use crate::server::SupervisorState;

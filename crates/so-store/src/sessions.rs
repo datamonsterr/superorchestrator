@@ -6,7 +6,7 @@ use so_core::SessionKind;
 
 use crate::codec::*;
 use crate::error::{Result, StoreError};
-use crate::rows::{SessionFilter, SessionRow};
+use crate::rows::{SessionFilter, SessionRow, SessionStats};
 use crate::store::Store;
 
 const COLS: &str = "id, kind, client, cwd, account, pid, started_at, ended_at, status";
@@ -71,6 +71,29 @@ impl Store {
         ))?;
         let rows = st.query_map([limit as i64], map)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Run counts and ledger cost of a session.
+    pub fn session_stats(&self, session_id: &str) -> Result<SessionStats> {
+        let conn = self.conn();
+        let (runs, escalated, failed): (i64, i64, i64) = conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(state = 'escalated'),0), COALESCE(SUM(state = 'failed'),0) \
+             FROM runs WHERE session_id = ?1",
+            [session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )?;
+        let cost: f64 = conn.query_row(
+            "SELECT COALESCE(SUM(cost),0.0) FROM ledger WHERE run_id IN \
+             (SELECT id FROM runs WHERE session_id = ?1)",
+            [session_id],
+            |r| r.get(0),
+        )?;
+        Ok(SessionStats {
+            runs,
+            escalated,
+            failed,
+            cost,
+        })
     }
 
     /// Marks a session ended with a final status.

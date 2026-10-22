@@ -11,4 +11,5 @@ pub mod mcp;
 pub mod menu;
 pub mod runs;
 pub mod status;
+pub mod ui;
 pub mod worktrees;

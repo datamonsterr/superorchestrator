@@ -6,6 +6,7 @@ use so_core::Event;
 
 use crate::codec::*;
 use crate::error::Result;
+use crate::rows::EventQuery;
 use crate::store::Store;
 
 fn map(r: &Row<'_>) -> rusqlite::Result<Event> {
@@ -78,6 +79,55 @@ impl Store {
             .execute("DELETE FROM events WHERE ts < ?1", [ts_to_sql(&ts)])?)
     }
 
+    /// Events matching `q`; the cursor `after` is exclusive in the chosen direction.
+    pub fn query_events(&self, q: &EventQuery) -> Result<Vec<Event>> {
+        use rusqlite::types::ToSql;
+        let mut conds: Vec<String> = Vec::new();
+        let mut args: Vec<Box<dyn ToSql>> = Vec::new();
+        let mut add = |cond: &str, v: Box<dyn ToSql>| {
+            args.push(v);
+            conds.push(cond.replace('?', &format!("?{}", args.len())));
+        };
+        if let Some(s) = &q.session_id {
+            add("session_id = ?", Box::new(s.clone()));
+        }
+        if let Some(r) = &q.run_id {
+            add("run_id = ?", Box::new(r.clone()));
+        }
+        if let Some(t) = &q.event_type {
+            add("type = ?", Box::new(enum_to_sql(t)));
+        }
+        if let Some((ts, id)) = &q.after {
+            let (ts, id) = (ts_to_sql(ts), id.clone());
+            let op = if q.newest_first { "<" } else { ">" };
+            args.push(Box::new(ts));
+            let n = args.len();
+            args.push(Box::new(id));
+            conds.push(format!(
+                "(ts {op} ?{n} OR (ts = ?{n} AND id {op} ?{}))",
+                n + 1
+            ));
+        }
+        let where_ = if conds.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conds.join(" AND "))
+        };
+        let dir = if q.newest_first { "DESC" } else { "ASC" };
+        args.push(Box::new(q.limit as i64));
+        let sql = format!(
+            "SELECT {COLS} FROM events {where_} ORDER BY ts {dir}, id {dir} LIMIT ?{}",
+            args.len()
+        );
+        let conn = self.conn();
+        let mut st = conn.prepare(&sql)?;
+        let rows = st.query_map(
+            rusqlite::params_from_iter(args.iter().map(|b| b.as_ref())),
+            map,
+        )?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn list_events_by_run(&self, run_id: &str, limit: usize) -> Result<Vec<Event>> {
         let conn = self.conn();
         let mut st = conn.prepare_cached(&format!(
@@ -103,6 +153,55 @@ mod tests {
             event_type: EventType::Progress,
             data: serde_json::json!({"step": 1}),
         }
+    }
+
+    #[test]
+    fn query_events_filters_and_pages_both_ways() {
+        let s = Store::open_in_memory().unwrap();
+        let t0 = Utc::now();
+        let mut all = Vec::new();
+        for i in 0..5 {
+            let mut e = ev(
+                "s1",
+                Some(if i % 2 == 0 { "r1" } else { "r2" }),
+                t0 + Duration::seconds(i),
+            );
+            if i == 3 {
+                e.event_type = EventType::Escalated;
+            }
+            s.append_event(&e).unwrap();
+            all.push(e);
+        }
+        s.append_event(&ev("s2", Some("r9"), t0)).unwrap();
+        let q = |f: &dyn Fn(&mut EventQuery)| {
+            let mut q = EventQuery {
+                limit: 100,
+                ..Default::default()
+            };
+            f(&mut q);
+            s.query_events(&q).unwrap()
+        };
+        assert_eq!(q(&|q| q.session_id = Some("s1".into())).len(), 5);
+        assert_eq!(q(&|q| q.run_id = Some("r1".into())).len(), 3);
+        let esc = q(&|q| q.event_type = Some(EventType::Escalated));
+        assert_eq!(esc.len(), 1);
+        assert_eq!(esc[0].id, all[3].id);
+        let page = q(&|q| {
+            q.session_id = Some("s1".into());
+            q.after = Some((all[1].ts, all[1].id.clone()));
+            q.limit = 2;
+        });
+        assert_eq!(
+            page.iter().map(|e| &e.id).collect::<Vec<_>>(),
+            [&all[2].id, &all[3].id]
+        );
+        let back = q(&|q| {
+            q.session_id = Some("s1".into());
+            q.newest_first = true;
+            q.after = Some((all[3].ts, all[3].id.clone()));
+            q.limit = 1;
+        });
+        assert_eq!(back[0].id, all[2].id);
     }
 
     #[test]

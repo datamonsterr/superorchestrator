@@ -105,6 +105,16 @@ impl<'de> Deserialize<'de> for HumanDuration {
     }
 }
 
+impl schemars::JsonSchema for HumanDuration {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "HumanDuration".into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({"type": "string", "description": "A duration such as 30m"})
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,5 +1,6 @@
 //! `config.toml` (SPEC 16): defaults, load, save and dotted-key get/set.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::duration::HumanDuration;
@@ -7,7 +8,7 @@ use crate::error::{CoreError, Result};
 use crate::paths::Paths;
 use crate::types::{Choice, Harness};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Limits {
     pub global_cap: u32,
@@ -23,7 +24,7 @@ impl Default for Limits {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Runs {
     pub stall_ms: u64,
@@ -39,7 +40,7 @@ impl Default for Runs {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Usage {
     pub probe_ttl: HumanDuration,
@@ -57,7 +58,7 @@ impl Default for Usage {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Weights {
     pub headroom: f64,
@@ -75,7 +76,7 @@ impl Default for Weights {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Jev {
     pub endpoint: String,
@@ -98,7 +99,7 @@ impl Default for Jev {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Policy {
     pub min_confidence: f64,
@@ -119,7 +120,7 @@ pub const DEFAULT_ROUTER_INSTRUCTION: &str = "Choose the least costly eligible c
 Prefer free and included capacity, pick a stronger choice only when the task needs it, \
 and never answer with a choice outside the eligible set.";
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Router {
     pub priority: Vec<Harness>,
@@ -146,7 +147,7 @@ impl Default for Router {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Worktrees {
     pub dir: String,
@@ -162,7 +163,7 @@ impl Default for Worktrees {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct AccountsCfg {
     pub wrapper_dir: String,
@@ -176,12 +177,15 @@ impl Default for AccountsCfg {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Ui {
     pub bind: String,
     pub port: u16,
     pub token: Option<String>,
+    /// Start the web UI whenever the supervisor starts (the `ui --install-service` unit
+    /// relies on it). Off by default: `superorchestrator ui` starts it on demand.
+    pub enabled: bool,
 }
 
 impl Default for Ui {
@@ -190,11 +194,12 @@ impl Default for Ui {
             bind: "127.0.0.1".to_string(),
             port: 7878,
             token: None,
+            enabled: false,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Supervisor {
     pub idle_exit: HumanDuration,
@@ -208,7 +213,7 @@ impl Default for Supervisor {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Notifications {
     pub discord_webhook_env: String,
@@ -234,7 +239,7 @@ impl Default for Notifications {
 }
 
 /// Default harness, model and effort used when a spawn does not name them.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Defaults {
     pub harness: Option<Harness>,
@@ -243,7 +248,7 @@ pub struct Defaults {
 }
 
 /// The whole of `config.toml`. Every section is optional in the file.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub limits: Limits,
