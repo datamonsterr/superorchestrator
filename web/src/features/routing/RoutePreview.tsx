@@ -23,7 +23,7 @@ export function RouteResultCard({ result }: { result: RouteResult }) {
           <span className="font-mono">{result.choice_id}</span>
           <span className="text-sm font-normal text-muted-foreground">on {result.account}</span>
           <Badge variant={result.source === 'pinned' ? 'secondary' : 'outline'}>source: {result.source}</Badge>
-          {result.confidence !== undefined && <Badge variant="outline">confidence {result.confidence.toFixed(2)}</Badge>}
+          {result.confidence != null && <Badge variant="outline">confidence {result.confidence.toFixed(2)}</Badge>}
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">

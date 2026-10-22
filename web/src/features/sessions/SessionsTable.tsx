@@ -50,7 +50,7 @@ export function SessionsTable({ sessions }: { sessions: SessionSummary[] }) {
                 {s.client}
               </Link>
             </TableCell>
-            <TableCell className="max-w-56 truncate font-mono text-xs text-muted-foreground" title={s.cwd}>
+            <TableCell className="max-w-56 truncate font-mono text-xs text-muted-foreground" title={s.cwd ?? undefined}>
               {s.cwd}
             </TableCell>
             <TableCell className="text-right font-mono tabular-nums">{s.run_count}</TableCell>

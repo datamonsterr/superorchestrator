@@ -30,9 +30,9 @@ export function WorktreeTab({ run }: { run: RunViewPublic }) {
   return (
     <div className="flex flex-col gap-4">
       <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-sm">
-        <Row label="Path" value={run.worktree} />
-        <Row label="Branch" value={run.branch} />
-        <Row label="Cwd" value={run.cwd} />
+        <Row label="Path" value={run.worktree ?? undefined} />
+        <Row label="Branch" value={run.branch ?? undefined} />
+        <Row label="Cwd" value={run.cwd ?? undefined} />
         <div className="contents">
           <dt className="text-muted-foreground">Isolation</dt>
           <dd>{isolation ?? 'unknown'}</dd>

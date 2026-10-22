@@ -103,7 +103,7 @@ export function WorkflowRunPage() {
           {run.result !== undefined && <JsonView value={run.result} label="Result" />}
         </div>
       )}
-      <RunWorkflowDialog name={again && run ? run.name : null} onClose={() => setAgain(false)} />
+      <RunWorkflowDialog name={again && run ? (run.name ?? null) : null} onClose={() => setAgain(false)} />
     </>
   )
 }

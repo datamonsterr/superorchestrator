@@ -1,7 +1,7 @@
 import { Badge } from '@/components/ui/badge'
 import type { WorkflowState } from '@/api/types'
 
-const GLYPH: Record<WorkflowState, string> = { queued: '…', running: '▶', succeeded: '✓', failed: '✗', cancelled: '–' }
+const GLYPH: Record<string, string> = { queued: '…', running: '▶', waiting: '…', stalled: '!', cached: '≡', succeeded: '✓', failed: '✗', cancelled: '–' }
 
 /** Text plus glyph, so state is never colour-only. */
 export function WorkflowStateBadge({ state }: { state: WorkflowState }) {

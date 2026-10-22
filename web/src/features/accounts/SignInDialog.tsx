@@ -122,7 +122,7 @@ function SignInBody({ name, onClose }: { name: string; onClose: () => void }) {
 
       {info?.mode === 'manual' && (
         <div className="flex flex-col gap-2">
-          <CommandBlock command={info.command} cwd={info.cwd} />
+          <CommandBlock command={info.command} cwd={info.cwd ?? undefined} />
           <p className="text-sm text-muted-foreground">Run this in a terminal, then come back.</p>
         </div>
       )}

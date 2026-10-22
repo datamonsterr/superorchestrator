@@ -3,7 +3,7 @@ import { useParams } from 'react-router'
 import { useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { endpoints } from '@/api/endpoints'
 import { qk, usePollingInterval, useRun } from '@/api/queries'
-import type { Event, Page, TranscriptLine } from '@/api/types'
+import type { Event, Page, TranscriptLine, TranscriptPage } from '@/api/types'
 import { compareKeys } from '../applyEvent'
 import { useTabActive } from './tabActive'
 
@@ -134,11 +134,11 @@ interface TranscriptState {
 }
 
 /** Merges a page; returns the same state when nothing changed (an empty tail poll does not re-render). */
-function mergePage(s: TranscriptState, page: { lines: TranscriptLine[]; next_offset: number | null; total_bytes: number }): TranscriptState {
+function mergePage(s: TranscriptState, page: TranscriptPage): TranscriptState {
   const last = s.lines.length ? s.lines[s.lines.length - 1].offset : -1
   const fresh = page.lines.filter((l) => l.offset > last)
-  if (!fresh.length && s.next === page.next_offset && s.tail === page.total_bytes && !s.loading && s.error == null) return s
-  return { lines: fresh.length ? s.lines.concat(fresh) : s.lines, next: page.next_offset, tail: page.total_bytes, loading: false, error: null }
+  if (!fresh.length && s.next === (page.next_offset ?? null) && s.tail === page.total_bytes && !s.loading && s.error == null) return s
+  return { lines: fresh.length ? s.lines.concat(fresh) : s.lines, next: page.next_offset ?? null, tail: page.total_bytes, loading: false, error: null }
 }
 
 /**

@@ -5,6 +5,7 @@ import type {
   AgentDetail,
   AgentWriteResult,
   AgentsView,
+  ChoicesPut,
   ChoicesView,
   ConfigPatch,
   ConfigView,
@@ -82,7 +83,7 @@ export const endpoints = {
   listRouteRecords: (q: { limit?: number; cursor?: string | null } = {}, o?: Opt) =>
     request<Page<RouteRecord>>('/routing/records', { query: q, ...o }),
   getChoices: (o?: Opt) => request<ChoicesView>('/choices', o),
-  putChoices: (body: ChoicesView) => request<ChoicesView>('/choices', { method: 'PUT', body }),
+  putChoices: (body: ChoicesPut) => request<ChoicesView>('/choices', { method: 'PUT', body }),
   getModels: (o?: Opt) => request<ModelCatalog>('/models', o),
   refreshModels: () => request<ModelCatalog>('/models/refresh', { method: 'POST' }),
 

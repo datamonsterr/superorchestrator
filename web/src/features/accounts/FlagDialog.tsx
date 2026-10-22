@@ -64,7 +64,7 @@ function FlagForm({ account, onClose }: { account: AccountView; onClose: () => v
                 {f.pool ?? 'all pools'} until <RelativeTime value={f.until} />
                 {f.reason ? ` (${f.reason})` : ''}
               </span>
-              <Button type="button" variant="ghost" size="sm" disabled={flag.isPending} onClick={() => void clear(f.pool)}>
+              <Button type="button" variant="ghost" size="sm" disabled={flag.isPending} onClick={() => void clear(f.pool ?? undefined)}>
                 Clear
               </Button>
             </li>

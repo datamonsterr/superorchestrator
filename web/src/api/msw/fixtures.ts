@@ -37,7 +37,7 @@ export const headroom = (account: string, pool: string, five: number | null, wee
   weekly_remaining_pct: weekly,
   weekly_resets_at: weekly === null ? null : at(60 * 72),
   status: five === null ? 'unknown' : five < 10 ? 'exhausted' : five < 30 ? 'low' : 'ok',
-  source: 'fixture',
+  source: 'ledger',
   observed_at: at(0),
 })
 
@@ -84,6 +84,7 @@ export const choices: ChoicesView = {
     { id: 'agy-pro', harness: 'agy', model: 'gemini-pro', roles: ['code'], description: 'Long context', enabled: true },
   ],
   routing_instruction: 'Prefer codex-high for refactors; use agy-pro for large-context reading.',
+  restart_required: false,
 }
 
 export const evt = (id: string, type: EventType, run_id: string | null, min: number, data: unknown = {}, session = 'sess-1'): Event => ({
@@ -98,6 +99,7 @@ export const evt = (id: string, type: EventType, run_id: string | null, min: num
 export const runs: RunViewPublic[] = [
   {
     run_id: 'run-1',
+    session_id: 'sess-1',
     state: 'running',
     harness: 'codex',
     account: 'codex-acc1',
@@ -113,6 +115,7 @@ export const runs: RunViewPublic[] = [
   },
   {
     run_id: 'run-2',
+    session_id: 'sess-1',
     state: 'pending_review',
     harness: 'agy',
     account: 'agy-acc1',
@@ -187,7 +190,6 @@ export const status: StatusView = { pid: 4242, version: '0.1.0', uptime_s: 10_80
 
 export const dashboard: DashboardView = {
   status,
-  caps: status.caps,
   accounts,
   live_runs: runs,
   escalations: [events[5]],
@@ -206,8 +208,8 @@ export const doctor: DoctorReport = {
 export const models: ModelCatalog = {
   refreshed_at: at(-10),
   models: [
-    { harness: 'codex', id: 'gpt-5', efforts: ['low', 'medium', 'high'] },
-    { harness: 'agy', id: 'gemini-pro', efforts: [] },
+    { harness: 'codex', id: 'gpt-5', efforts: ['low', 'medium', 'high'], cost: '$$', tier: 'high' },
+    { harness: 'agy', id: 'gemini-pro', efforts: [], cost: '$', tier: 'mid' },
   ],
 }
 
@@ -269,8 +271,8 @@ export const workflowRuns: WorkflowRunView[] = [
 export const workflowRunDetail: WorkflowRunDetail = {
   ...workflowRuns[0],
   steps: [
-    { name: 'plan', state: 'succeeded', run_id: 'run-1', started_at: at(0), finished_at: at(3) },
-    { name: 'implement', state: 'running', run_id: 'run-2', started_at: at(3) },
+    { index: 0, name: 'plan', state: 'succeeded', run_id: 'run-1', started_at: at(0), finished_at: at(3) },
+    { index: 1, name: 'implement', state: 'running', run_id: 'run-2', started_at: at(3) },
   ],
 }
 

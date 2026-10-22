@@ -20,7 +20,7 @@ export function RouteTab({ runId }: { runId: string }) {
           {r.harness} · {r.account} · {r.model}
           {r.effort ? ` · ${r.effort}` : ''}
         </span>
-        {r.confidence !== undefined && <span>Confidence {formatPercent(r.confidence * 100)}</span>}
+        {r.confidence != null && <span>Confidence {formatPercent(r.confidence * 100)}</span>}
       </div>
       <section aria-labelledby="prob-h">
         <h3 id="prob-h" className="mb-2 text-sm font-medium">
@@ -44,7 +44,7 @@ export function RouteTab({ runId }: { runId: string }) {
               <li key={`${a.choice_id}-${a.account ?? ''}`} className="flex gap-2">
                 <span className="font-medium">{a.choice_id}</span>
                 {a.account && <span className="text-muted-foreground">{a.account}</span>}
-                {a.score !== undefined && <span className="ml-auto tabular-nums">score {a.score.toFixed(2)}</span>}
+                {a.score != null && <span className="ml-auto tabular-nums">score {a.score.toFixed(2)}</span>}
               </li>
             ))}
           </ul>

@@ -10,7 +10,7 @@ describe('LiveRuns', () => {
     expect(screen.getByRole('link', { name: 'refactor-api' })).toHaveAttribute('href', '/sessions/sess-9/runs/run-1')
   })
   it('shows a plain label for a run without a session id', () => {
-    renderWithProviders(<LiveRuns runs={[runs[0]]} />)
+    renderWithProviders(<LiveRuns runs={[{ ...runs[0], session_id: '' }]} />)
     expect(screen.queryByRole('link')).toBeNull()
     expect(screen.getByText('refactor-api')).toBeInTheDocument()
   })
