@@ -1,6 +1,6 @@
 name: Release check
 
-# Plan-time gate called by release.yml (dist `plan-jobs`): the pushed tag must be `v` plus the
+# Gate called by release.yml (dist `global-artifacts-jobs`, so a failure blocks the release): the pushed tag must be `v` plus the
 # Cargo workspace version, and CHANGELOG.md must have a section for that version.
 
 on:

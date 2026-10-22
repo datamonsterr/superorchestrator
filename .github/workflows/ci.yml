@@ -7,7 +7,7 @@ on:
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
-  # Called by release.yml (a dist plan job) so a tag cannot publish unless CI passes.
+  # Called by release.yml (a dist global-artifacts job) so a tag cannot publish unless CI passes.
   workflow_call:
     inputs:
       plan:
@@ -43,6 +43,10 @@ jobs:
         run: actionlint
       - name: shellcheck
         run: shellcheck install.sh scripts/*.sh
+      - name: release job graph (host must not run unless every gate passed)
+        run: |
+          python3 -m pip install --quiet pyyaml==6.0.3
+          python3 scripts/test-release-gate.py
 
   deny:
     name: cargo-deny

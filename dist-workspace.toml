@@ -21,9 +21,14 @@ pr-run-mode = "skip"
 github-build-setup = "../dist/build-setup.yml"
 # Publish artifacts as a GitHub Release
 hosting = "github"
-# Custom jobs (reusable workflows in .github/workflows, see docs/release.md):
-# - plan-jobs run before any build: CI must pass and the tag must match Cargo.toml and CHANGELOG.
-# - global-artifacts-jobs run after every archive is built and before `host` creates the GitHub
-#   Release (host requires them to succeed): they install and smoke-test the archives.
-plan-jobs = ["./ci", "./release-check"]
-global-artifacts-jobs = ["./release-smoke"]
+# Custom jobs (reusable workflows in .github/workflows, see docs/release.md).
+#
+# All gates are global-artifacts-jobs, and plan-jobs is deliberately empty. dist's generated
+# `host` job (which creates the GitHub Release) runs when its needs are `success` OR `skipped`.
+# A failing plan-job would make every later job skip and `host` would still run with no
+# artifacts. A failing global-artifacts-job has result `failure`, which blocks `host`.
+# They run in parallel after every archive is built and before `host`:
+# - ./ci: the full CI workflow must pass.
+# - ./release-check: the tag must be v + the Cargo version and CHANGELOG must have its section.
+# - ./release-smoke: install and smoke-test each archive on a native runner.
+global-artifacts-jobs = ["./ci", "./release-check", "./release-smoke"]
