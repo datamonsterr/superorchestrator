@@ -18,8 +18,8 @@ use tokio::sync::mpsc;
 
 use crate::agy::{AgyControl, AgyDriver};
 use crate::claude::{ClaudeControl, ClaudeDriver};
-use crate::opencode::{OpencodeControl, OpencodeDriver};
 use crate::codex::{CodexControl, CodexDriver};
+use crate::opencode::{OpencodeControl, OpencodeDriver};
 
 /// Errors from starting or controlling a harness.
 #[derive(Debug, thiserror::Error)]
@@ -358,15 +358,14 @@ pub enum AnyDriver {
 }
 
 impl AnyDriver {
-    /// Driver for a harness; harnesses without a driver yet are
-    /// [`DriverError::Unsupported`].
+    /// Driver for a harness (all four have one; the `Result` is kept for
+    /// future harnesses, see [`DriverError::Unsupported`]).
     pub fn for_harness(h: Harness, config: DriverConfig) -> Result<Self, DriverError> {
         match h {
             Harness::Claude => Ok(AnyDriver::Claude(ClaudeDriver::new(config))),
             Harness::Agy => Ok(AnyDriver::Agy(AgyDriver::new(config))),
             Harness::Opencode => Ok(AnyDriver::Opencode(OpencodeDriver::new(config))),
             Harness::Codex => Ok(AnyDriver::Codex(CodexDriver::new(config))),
-            other => Err(DriverError::Unsupported(other)),
         }
     }
 }
@@ -477,11 +476,16 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_harness() {
-        assert!(matches!(
-            AnyDriver::for_harness(Harness::Opencode, DriverConfig::default()),
-            Err(DriverError::Unsupported(Harness::Opencode))
-        ));
+    fn every_harness_has_a_driver() {
+        for h in [
+            Harness::Claude,
+            Harness::Codex,
+            Harness::Opencode,
+            Harness::Agy,
+        ] {
+            let d = AnyDriver::for_harness(h, DriverConfig::default()).unwrap();
+            assert_eq!(d.harness(), h);
+        }
     }
 
     #[test]

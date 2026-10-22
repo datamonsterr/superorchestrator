@@ -597,7 +597,6 @@ pub fn spawn_supervised_with(
             pid,
             grace,
         },
-        transcript,
         events_sink: sink,
         producers: producers_tx,
     })
