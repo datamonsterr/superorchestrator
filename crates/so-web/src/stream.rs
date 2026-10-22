@@ -132,6 +132,7 @@ impl Hub {
         let hub = self.clone();
         let mut workflows = sup.runs.subscribe_workflows();
         let workflow_hub = self.clone();
+        let sup_for_lag = sup.clone();
         tokio::spawn(async move {
             loop {
                 match workflows.recv().await {
@@ -140,8 +141,24 @@ impl Hub {
                         so_core::redact::redact_json(&mut payload);
                         workflow_hub.publish("workflow", &payload, update.session_id.clone());
                     }
-                    // Missed some: the client's next refetch catches up.
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
+                    // Missed some: say where every running workflow stands now, so a client
+                    // does not keep a stale state.
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        let Ok(runs) = sup_for_lag.runs.list_workflow_runs(None, 200).await else {
+                            continue;
+                        };
+                        for r in runs.into_iter().filter(|r| r.state == "running") {
+                            let data = so_core::proto::WorkflowEventData {
+                                id: r.id,
+                                name: r.name,
+                                state: r.state,
+                                step: None,
+                                session_id: r.session_id.clone(),
+                                ts: chrono::Utc::now(),
+                            };
+                            workflow_hub.publish("workflow", &data, r.session_id);
+                        }
+                    }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }

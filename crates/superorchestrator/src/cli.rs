@@ -279,6 +279,11 @@ pub enum WorkflowCmd {
         /// Workflow run id or unique prefix
         id: String,
     },
+    /// Stop a running workflow and its steps
+    Cancel {
+        /// Workflow run id or unique prefix
+        id: String,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -295,6 +300,9 @@ pub struct WorkflowRun {
     /// Print the run id and return without waiting for the result
     #[arg(long)]
     pub detach: bool,
+    /// Run every step again instead of replaying cached results
+    #[arg(long)]
+    pub fresh: bool,
 }
 
 #[derive(Subcommand, Debug)]

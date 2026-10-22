@@ -129,6 +129,11 @@ struct Inner {
     fault_gate_result: std::sync::atomic::AtomicBool,
     /// Runs whose process died, to be resumed by the resumer task.
     resume_tx: tokio::sync::mpsc::UnboundedSender<reconcile::ResumeRequest>,
+    /// Cancel tokens of the workflows running now, by workflow run id.
+    workflow_cancels: Mutex<HashMap<String, so_workflow::CancelToken>>,
+    /// Workflows running now: while there are any the supervisor is busy, even between two
+    /// steps when no run is active.
+    active_workflows: std::sync::atomic::AtomicUsize,
     /// Workflow run and step changes, for the web stream.
     workflow_bus: tokio::sync::broadcast::Sender<so_core::proto::WorkflowEventData>,
     /// Runs to move to another account after a quota or auth error.
@@ -193,6 +198,8 @@ impl RunManager {
             msg_tick: watch::channel(0).0,
             resume_tx,
             failover_tx,
+            workflow_cancels: Mutex::default(),
+            active_workflows: std::sync::atomic::AtomicUsize::new(0),
             workflow_bus: tokio::sync::broadcast::channel(256).0,
             locks: Mutex::default(),
             gate_delay_ms: AtomicU64::new(0),
@@ -350,7 +357,7 @@ impl RunManager {
 
     /// True while any run is queued, starting or live.
     pub(crate) fn busy(&self) -> bool {
-        !lock(&self.inner.runs).is_empty()
+        !lock(&self.inner.runs).is_empty() || self.inner.active_workflows.load(Ordering::SeqCst) > 0
     }
 
     // ------------------------------------------------------------ store helpers
@@ -406,6 +413,12 @@ impl RunManager {
 /// and reconcile hook.
 pub(crate) fn register(state: &Arc<SupervisorState>) {
     handlers::register(state);
+    // On shutdown the running workflows are cancelled, and with them their step runs.
+    let (runs, mut down) = (state.runs.clone(), state.shutdown_signal());
+    tokio::spawn(async move {
+        let _ = down.wait_for(|v| *v).await;
+        runs.cancel_all_workflows();
+    });
     state.set_probe(Arc::new(state.runs.clone()));
     state.set_reconcile_hook(Arc::new(state.runs.clone()));
 }

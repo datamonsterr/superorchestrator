@@ -41,6 +41,9 @@ pub const METHOD_LIST_HARNESSES: &str = "list_harnesses";
 pub const METHOD_LIST_AGENTS: &str = "list_agents";
 pub const METHOD_RUN_WORKFLOW: &str = "run_workflow";
 pub const METHOD_WORKFLOW_STATUS: &str = "workflow_status";
+/// An extension of SPEC 13 (which lists no way to stop a workflow): not an MCP tool, only
+/// the CLI (`workflow cancel`) and the web API use it.
+pub const METHOD_CANCEL_WORKFLOW: &str = "cancel_workflow";
 pub const METHOD_REPORT_PROGRESS: &str = "report_progress";
 pub const METHOD_ASK_PARENT: &str = "ask_parent";
 /// Returns the command a person runs to join a run (CLI `join`).
@@ -584,6 +587,9 @@ pub struct RunWorkflowParams {
     /// follow it with `workflow_status`.
     #[serde(default = "yes")]
     pub wait: bool,
+    /// Ignore cached steps and run everything again (new results are still cached).
+    #[serde(default)]
+    pub fresh: bool,
 }
 
 impl Default for RunWorkflowParams {
@@ -593,6 +599,7 @@ impl Default for RunWorkflowParams {
             script: None,
             args: None,
             wait: true,
+            fresh: false,
         }
     }
 }

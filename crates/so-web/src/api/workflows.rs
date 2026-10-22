@@ -14,9 +14,6 @@ use crate::page::{clamp_limit, decode_cursor, encode_cursor};
 use crate::state::AppState;
 use crate::types::{Page, RunWorkflowBody, WorkflowSummary};
 
-/// Most workflow runs one list request scans.
-const SCAN: usize = 5000;
-
 pub async fn list(State(st): State<AppState>) -> ApiResult<Json<Vec<WorkflowSummary>>> {
     st.clone()
         .blocking(move || {
@@ -52,19 +49,8 @@ pub async fn runs(
 ) -> ApiResult<Json<Page<WorkflowRunView>>> {
     let limit = clamp_limit(q.limit);
     let cursor = q.cursor.as_deref().map(decode_cursor).transpose()?;
-    let mut items: Vec<WorkflowRunView> = st
-        .sup
-        .runs
-        .list_workflow_runs(SCAN)
-        .await?
-        .into_iter()
-        .filter(|r| {
-            cursor
-                .as_ref()
-                .is_none_or(|(ts, id)| (r.started_at, &r.id) < (*ts, id))
-        })
-        .take(limit + 1)
-        .collect();
+    // One more than a page, to know whether there is a next one; the position is in SQL.
+    let mut items: Vec<WorkflowRunView> = st.sup.runs.list_workflow_runs(cursor, limit + 1).await?;
     let next_cursor = (items.len() > limit).then(|| {
         items.truncate(limit);
         items
@@ -101,4 +87,12 @@ pub async fn run(
         .run_workflow_ui(st.project_cwd(), &name, body.args)
         .await?;
     Ok((StatusCode::ACCEPTED, Json(started)))
+}
+
+/// Stops a running workflow and its steps (an extension: SPEC 13 has no such tool).
+pub async fn cancel(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<so_core::proto::AckResult>> {
+    Ok(Json(st.sup.runs.cancel_workflow(&id).await?))
 }

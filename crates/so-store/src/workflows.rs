@@ -107,6 +107,28 @@ impl Store {
         Ok(())
     }
 
+    /// Fails a run that is still `running` (and cancels its open steps); a run that already
+    /// ended is left alone. Returns whether it changed anything.
+    pub fn fail_workflow_if_running(&self, id: &str, error: &str) -> Result<bool> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let ts = ts_to_sql(&chrono::Utc::now());
+        let n = tx.execute(
+            "UPDATE workflow_runs SET state = 'failed', finished_at = ?2, error = ?3 \
+             WHERE id = ?1 AND state = 'running'",
+            params![id, ts, error],
+        )?;
+        if n > 0 {
+            tx.execute(
+                "UPDATE workflow_steps SET state = 'cancelled', finished_at = ?2 \
+                 WHERE workflow_run_id = ?1 AND state IN ('running','waiting','stalled')",
+                params![id, ts],
+            )?;
+        }
+        tx.commit()?;
+        Ok(n > 0)
+    }
+
     /// Fails the runs a previous supervisor left `running` (it died with them) and cancels
     /// their open steps. Returns how many runs were failed.
     pub fn fail_orphaned_workflows(&self, now: DateTime<Utc>) -> Result<usize> {

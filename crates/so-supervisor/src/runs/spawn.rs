@@ -304,8 +304,18 @@ impl RunManager {
     /// Creates a queued run and starts it when a slot is free. Returns the run id and the
     /// warnings for the caller.
     pub async fn spawn(&self, ctx: &ConnCtx, p: SpawnParams) -> R<(String, Vec<String>)> {
+        self.spawn_with_id(ctx, p, new_id()).await
+    }
+
+    /// [`RunManager::spawn`] with the run id chosen by the caller, so it can arrange to
+    /// cancel the run before the spawn has finished.
+    pub async fn spawn_with_id(
+        &self,
+        ctx: &ConnCtx,
+        p: SpawnParams,
+        run_id: String,
+    ) -> R<(String, Vec<String>)> {
         let v = self.validate(ctx, &p).await?;
-        let run_id = new_id();
         let warnings = v.warnings.clone();
         let row = RunRow {
             id: run_id.clone(),

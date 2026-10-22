@@ -134,6 +134,7 @@ export interface Config {
   supervisor?: Supervisor;
   ui?: Ui;
   usage?: Usage;
+  workflows?: Workflows;
   worktrees?: Worktrees;
 }
 
@@ -672,6 +673,12 @@ export interface WorkflowSummary {
   path: string;
   /** `project` or `config`. */
   source: string;
+}
+
+/** Workflow limits (an extension of SPEC 11, which sets none). */
+export interface Workflows {
+  /** Longest one workflow run may take, waits for accounts included. It also interrupts a script that never yields (`while (true) {}`). */
+  max_duration?: HumanDuration;
 }
 
 export interface WorktreeView {

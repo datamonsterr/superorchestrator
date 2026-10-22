@@ -8,10 +8,10 @@ use serde_json::Value;
 use so_core::RunState;
 use so_core::proto::{
     EmptyParams, INVALID_PARAMS, METHOD_ACCEPT_RUN, METHOD_ASK_PARENT, METHOD_CANCEL_AGENT,
-    METHOD_FORK_AGENT, METHOD_GET_RUN, METHOD_JOIN_RUN, METHOD_READ_MESSAGES, METHOD_REJECT_RUN,
-    METHOD_REPORT_PROGRESS, METHOD_RUN_WORKFLOW, METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT,
-    METHOD_WAIT_AGENT, METHOD_WORKFLOW_STATUS, RpcError, RunRef, SpawnParams, SpawnResult,
-    WaitParams, WaitResult, WorkflowStatusParams,
+    METHOD_CANCEL_WORKFLOW, METHOD_FORK_AGENT, METHOD_GET_RUN, METHOD_JOIN_RUN,
+    METHOD_READ_MESSAGES, METHOD_REJECT_RUN, METHOD_REPORT_PROGRESS, METHOD_RUN_WORKFLOW,
+    METHOD_SEND_MESSAGE, METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, METHOD_WORKFLOW_STATUS, RpcError,
+    RunRef, SpawnParams, SpawnResult, WaitParams, WaitResult, WorkflowStatusParams,
 };
 
 use super::view::WaitMode;
@@ -118,6 +118,16 @@ pub(super) fn register(state: &Arc<SupervisorState>) {
         let m = m.clone();
         async move { json(m.run_workflow(&ctx, params(p)?).await?) }
     });
+    let m = runs.clone();
+    state
+        .router
+        .register(METHOD_CANCEL_WORKFLOW, move |_ctx, p| {
+            let m = m.clone();
+            async move {
+                let r: WorkflowStatusParams = params(p)?;
+                json(m.cancel_workflow(&r.id).await?)
+            }
+        });
     let m = runs;
     state
         .router

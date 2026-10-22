@@ -337,7 +337,7 @@ async fn an_over_cap_auto_spawn_moves_to_the_account_that_frees_up() {
     env.account("claude-b", 1, &idle_script());
     let h = env.start().await;
     let c = env.client(&h).await;
-    let mut hold = |acct: &str| {
+    let hold = |acct: &str| {
         let mut p = env.spawn_params(acct);
         p.isolation = Some(Isolation::None);
         p

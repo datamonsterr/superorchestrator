@@ -6,8 +6,8 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use so_core::proto::{
-    METHOD_RUN_WORKFLOW, METHOD_WORKFLOW_STATUS, Notification, RunWorkflowParams,
-    RunWorkflowResult, WorkflowStatusParams, WorkflowStatusResult, WorkflowStep,
+    METHOD_CANCEL_WORKFLOW, METHOD_RUN_WORKFLOW, METHOD_WORKFLOW_STATUS, Notification,
+    RunWorkflowParams, RunWorkflowResult, WorkflowStatusParams, WorkflowStatusResult, WorkflowStep,
 };
 use so_workflow::{SavedSource, SavedWorkflows};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -29,11 +29,18 @@ pub fn run(ctx: &Ctx, cmd: WorkflowCmd) -> Result<ExitCode> {
         WorkflowCmd::Status { id } => runtime()?
             .block_on(status(ctx, &id))
             .map(|()| ExitCode::SUCCESS),
+        WorkflowCmd::Cancel { id } => runtime()?
+            .block_on(cancel(ctx, &id))
+            .map(|()| ExitCode::SUCCESS),
     }
 }
 
 /// "<step>: <status>" for a workflow's progress event; `None` for any other notification.
 fn progress_line(n: &Notification) -> Option<String> {
+    // Sent once, as soon as the run exists, so its id is known while it works.
+    if n.method == "workflow" {
+        return Some(format!("workflow {}", n.params["id"].as_str()?));
+    }
     if n.method != "event" || n.params["type"] != "progress" {
         return None;
     }
@@ -70,6 +77,7 @@ async fn run_workflow(ctx: &Ctx, a: WorkflowRun) -> Result<ExitCode> {
         script,
         args,
         wait: !a.detach,
+        fresh: a.fresh,
     };
     let client = connect(ctx).await?;
     let mut notes: Option<UnboundedReceiver<Notification>> = client.notifications();
@@ -180,6 +188,18 @@ fn step_line(s: &WorkflowStep) -> String {
         .map(|r| format!("  run {}", r.chars().take(8).collect::<String>()))
         .unwrap_or_default();
     format!("#{} {}  {}{run}", s.index + 1, s.name, s.state)
+}
+
+async fn cancel(ctx: &Ctx, id: &str) -> Result<()> {
+    let client = connect(ctx).await?;
+    client
+        .call::<_, Value>(
+            METHOD_CANCEL_WORKFLOW,
+            WorkflowStatusParams { id: id.into() },
+        )
+        .await
+        .map_err(rpc)?;
+    ctx.emit_ok(json!({"id": id}), &format!("cancelling workflow {id}"))
 }
 
 async fn status(ctx: &Ctx, id: &str) -> Result<()> {

@@ -94,6 +94,9 @@ async fn run_status_and_watch_follow_a_workflow() {
         "{stderr}"
     );
     let id = v["id"].as_str().unwrap().to_string();
+    // The id is on stderr before the progress lines, so it is known while the workflow runs.
+    let first = stderr.lines().next().unwrap_or_default();
+    assert_eq!(first, format!("workflow {id}"), "{stderr}");
 
     // status by prefix, human and JSON.
     let (out, ok) = cli(&e, &["workflow", "status", &id[..12]]).await;
@@ -182,5 +185,53 @@ async fn failures_and_missing_workflows_exit_non_zero() {
         .await
         .unwrap();
     assert_eq!(out.status.code(), Some(3));
+    sup.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_and_fresh() {
+    let e = Env::new();
+    add_account(&e);
+    write_saved(&e, "hello", HELLO);
+    let sup = start_supervisor(&e).await;
+    let args = r#"{"who":"me"}"#;
+    let (out, ok) = cli(&e, &["workflow", "run", "hello", "--args", args, "--json"]).await;
+    assert!(ok);
+    let id = serde_json::from_str::<Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    // A finished workflow cannot be cancelled; an unknown one is not found.
+    let mut cmd = e.cmd();
+    cmd.args(["workflow", "cancel", &id]);
+    let out = tokio::task::spawn_blocking(move || cmd.output().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("not running"));
+    let mut cmd = e.cmd();
+    cmd.args(["workflow", "cancel", "ffffffff-nothing"]);
+    let out = tokio::task::spawn_blocking(move || cmd.output().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(out.status.code(), Some(3));
+    // --fresh runs the step again: its step is not `cached`.
+    let (out, ok) = cli(
+        &e,
+        &[
+            "workflow", "run", "hello", "--args", args, "--fresh", "--json",
+        ],
+    )
+    .await;
+    assert!(ok);
+    let id2 = serde_json::from_str::<Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (out, _) = cli(&e, &["workflow", "status", &id2, "--json"]).await;
+    assert_eq!(
+        serde_json::from_str::<Value>(&out).unwrap()["steps"][0]["state"],
+        "succeeded"
+    );
     sup.shutdown().await;
 }

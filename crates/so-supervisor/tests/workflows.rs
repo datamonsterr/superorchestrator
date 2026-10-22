@@ -352,3 +352,204 @@ async fn a_depth_two_run_cannot_start_a_workflow() {
     assert_eq!(rpc_code(err), DEPTH_LIMIT);
     h.shutdown().await;
 }
+
+fn idle_script() -> String {
+    script(&[json!({"expect_stdin_contains": PROMPT})])
+}
+
+async fn wait_workflow(c: &SupervisorClient, id: &str, want: &str) -> WorkflowStatusResult {
+    let mut s = status(c, id).await;
+    for _ in 0..400 {
+        if s.state == want {
+            return s;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        s = status(c, id).await;
+    }
+    panic!("workflow {id} never became {want}: {s:?}");
+}
+
+#[tokio::test]
+async fn a_session_with_a_workflow_between_steps_stays_open() {
+    let env = env();
+    env.account("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    // The only account is out for two seconds, so the second step waits with no run active.
+    so_usage::mark_exhausted(
+        &env.store(),
+        "claude-a",
+        "default",
+        Some(Utc::now() + chrono::Duration::seconds(2)),
+        Duration::from_secs(3600),
+        "t",
+        Utc::now(),
+    )
+    .unwrap();
+    let script_src = r#"
+await agent("do the task", {harness: "claude", account: "claude-a", isolation: "none"});
+return await agent("do the task", {harness: "claude", isolation: "none"});
+"#;
+    let (id, session) = {
+        let c = env.client(&h).await;
+        let r = run(&c, json!({"script": script_src, "wait": false})).await;
+        (r.id, r.session_id.unwrap())
+        // The client goes away here.
+    };
+    tokio::time::sleep(Duration::from_millis(900)).await;
+    let store = env.store();
+    let row = store.get_session(&session).unwrap().unwrap();
+    assert!(
+        row.ended_at.is_none(),
+        "the session ended mid-workflow: {row:?}"
+    );
+    assert!(h.state().busy(), "idle exit must wait for the workflow");
+
+    // It finishes after the reset, and only then does the session end.
+    let c = env.client(&h).await;
+    let s = wait_workflow(&c, &id, "succeeded").await;
+    assert_eq!(s.result, Some(json!("done")));
+    for _ in 0..200 {
+        if store
+            .get_session(&session)
+            .unwrap()
+            .unwrap()
+            .ended_at
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let fin = store.get_session(&session).unwrap().unwrap();
+    assert!(
+        fin.ended_at.is_some(),
+        "{fin:?} wf={:?} running={}",
+        store.get_workflow_run(&id).unwrap().unwrap().state,
+        store.session_has_running_workflow(&session).unwrap()
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancel_workflow_stops_it_and_its_step_runs() {
+    let env = env();
+    env.account("claude-a", 2, &idle_script());
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let script_src = r#"return await agent("do the task", {harness: "claude", account: "claude-a", isolation: "none"});"#;
+    let r = run(&c, json!({"script": script_src, "wait": false})).await;
+    let mut run_id = None;
+    for _ in 0..400 {
+        run_id = status(&c, &r.id)
+            .await
+            .steps
+            .first()
+            .and_then(|s| s.run_id.clone());
+        if run_id.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let run_id = run_id.expect("a step run");
+    let ack: Value = c
+        .call(so_core::proto::METHOD_CANCEL_WORKFLOW, json!({"id": r.id}))
+        .await
+        .unwrap();
+    assert_eq!(ack["ok"], true);
+    let s = wait_workflow(&c, &r.id, "cancelled").await;
+    assert_eq!(step_states(&s), ["cancelled"]);
+    wait_state(&c, &run_id, RunState::Cancelled).await;
+    // A finished workflow cannot be cancelled again.
+    let err = c
+        .call::<_, Value>(so_core::proto::METHOD_CANCEL_WORKFLOW, json!({"id": r.id}))
+        .await
+        .unwrap_err();
+    assert_eq!(rpc_code(err), so_core::proto::INVALID_PARAMS);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_waiting_caller_that_goes_away_cancels_the_workflow() {
+    let env = env();
+    env.account("claude-a", 2, &idle_script());
+    let h = env.start().await;
+    let script_src = r#"return await agent("do the task", {harness: "claude", account: "claude-a", isolation: "none"});"#;
+    let watcher = env.client(&h).await;
+    let caller = env.client(&h).await;
+    let call = tokio::spawn(async move {
+        let _ = caller
+            .call::<_, Value>(METHOD_RUN_WORKFLOW, json!({"script": script_src}))
+            .await;
+    });
+    let mut id = None;
+    for _ in 0..400 {
+        let runs = env.store().list_workflow_runs(5).unwrap();
+        if let Some(r) = runs.first() {
+            id = Some(r.id.clone());
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let id = id.expect("a workflow run");
+    // Dropping the call (and with it the connection) stops the workflow.
+    call.abort();
+    let _ = call.await;
+    wait_workflow(&watcher, &id, "cancelled").await;
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_script_that_never_yields_is_cut_off_at_max_duration() {
+    let mut env = env();
+    env.config.workflows.max_duration = so_core::duration::HumanDuration::from_millis(700);
+    env.account("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let r = run(&c, json!({"script": "while (true) {}"})).await;
+    assert_eq!(r.state.as_deref(), Some("failed"), "{r:?}");
+    assert!(r.error.unwrap().contains("maximum duration"));
+    // The row is not left running.
+    assert_eq!(status(&c, &r.id).await.state, "failed");
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn fresh_runs_every_step_again() {
+    let env = env();
+    env.account("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let src = r#"return await agent("do the task", {harness: "claude", account: "claude-a", isolation: "none"});"#;
+    run(&c, json!({"script": src})).await;
+    run(&c, json!({"script": src})).await;
+    assert_eq!(
+        env.launches("claude-a").len(),
+        1,
+        "the second run replayed the cache"
+    );
+    let r = run(&c, json!({"script": src, "fresh": true})).await;
+    assert_eq!(r.state.as_deref(), Some("succeeded"));
+    assert_eq!(env.launches("claude-a").len(), 2);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn steps_over_the_parents_child_limit_wait_for_one_to_finish() {
+    let mut env = env();
+    env.config.limits.max_children = 1;
+    env.account("claude-a", 4, &ok_script(&[json!({"sleep_ms": 300})]));
+    let h = env.start().await;
+    let parent = insert_session_and_run(&env.store(), 1, RunState::Running);
+    let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
+    c.hello("child", "/", Some(parent.id), None).await.unwrap();
+    let src = r#"
+return await parallel([
+  (a) => a("do the task", {harness: "claude", account: "claude-a", isolation: "none", model: "m1"}),
+  (a) => a("do the task", {harness: "claude", account: "claude-a", isolation: "none", model: "m2"}),
+]);
+"#;
+    let r = run(&c, json!({"script": src})).await;
+    assert_eq!(r.state.as_deref(), Some("succeeded"), "{r:?}");
+    assert_eq!(r.result, Some(json!(["done", "done"])));
+    h.shutdown().await;
+}

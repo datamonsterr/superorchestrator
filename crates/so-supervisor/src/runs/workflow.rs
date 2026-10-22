@@ -8,33 +8,34 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use so_core::proto::{
-    CAP_EXCEEDED, DEPTH_LIMIT, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, NOT_FOUND,
-    RpcError, RunWorkflowParams, RunWorkflowResult, SpawnParams, UNAVAILABLE, WorkflowEventData,
-    WorkflowRunView, WorkflowStatusResult, WorkflowStep,
+    AckResult, CAP_EXCEEDED, DEPTH_LIMIT, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST,
+    NOT_FOUND, RpcError, RunWorkflowParams, RunWorkflowResult, SpawnParams, UNAVAILABLE,
+    WorkflowEventData, WorkflowRunView, WorkflowStatusResult, WorkflowStep,
 };
 use so_core::{ErrorKind, EventType, RunState, SessionKind, new_id};
 use so_store::{EventQuery, SessionRow, WorkflowRunRow, WorkflowStepRow};
 use so_workflow::{
-    BoxFut, CancelToken, HostError, RunOptions, SavedWorkflows, StepEvent, StepOutcome,
-    StepRequest, WorkflowEngine, WorkflowError, WorkflowHost,
+    BoxFut, CancelToken, EngineOptions, HostError, RunOptions, SavedWorkflows, StepEvent,
+    StepOutcome, StepRequest, WorkflowEngine, WorkflowError, WorkflowHost,
 };
 use tokio::sync::broadcast;
 
 use super::instructions::MAX_DEPTH;
 use super::view::WaitMode;
-use super::{R, RunManager, rpc};
+use super::{R, RunManager, lock, rpc};
 use crate::dispatch::{ConnCtx, internal};
 use crate::handlers::route::NO_ELIGIBLE;
 
-/// How long a step waits before it tries to start again when its parent has too many
-/// active children.
-const CHILD_CAP_RETRY: Duration = Duration::from_secs(5);
+/// Longest a step waits for another run to finish before it tries to start again when its
+/// parent has too many active children (it also tries whenever one finishes).
+const CHILD_CAP_CEILING: Duration = Duration::from_secs(60);
 /// Most flags read when looking for the next reset.
 const MAX_LIST: usize = 1000;
 
@@ -125,13 +126,18 @@ impl RunManager {
             .start_workflow(
                 ctx.detached(),
                 &session_id,
-                name,
+                name.clone(),
                 source,
                 p.args.unwrap_or(Value::Null),
                 cwd,
                 false,
+                p.fresh,
             )
             .await?;
+        // So a caller that waits (and wants to be able to stop it) learns the id at once.
+        ctx.notifier
+            .notify("workflow", json!({"id": started.id, "name": name}))
+            .await;
         if !p.wait {
             return Ok(RunWorkflowResult {
                 id: started.id,
@@ -141,7 +147,20 @@ impl RunManager {
                 session_id: Some(session_id),
             });
         }
-        let out = started.done.await.map_err(internal)?;
+        // A caller that waits and goes away (or whose call is dropped) stops the workflow:
+        // nobody is left to read its result. One that does not wait leaves it running.
+        let mut stop = StopOnDrop {
+            mgr: self.clone(),
+            id: started.id.clone(),
+            armed: true,
+        };
+        let out = tokio::select! {
+            out = started.done => out.map_err(internal)?,
+            () = ctx.closed() => {
+                return Err(rpc(UNAVAILABLE, "client disconnected; the workflow was cancelled"));
+            }
+        };
+        stop.armed = false;
         Ok(RunWorkflowResult {
             id: started.id,
             state: Some(out.state.into()),
@@ -188,6 +207,7 @@ impl RunManager {
                 args.unwrap_or(Value::Null),
                 cwd,
                 true,
+                false,
             )
             .await;
         match started {
@@ -249,6 +269,7 @@ impl RunManager {
         args: Value,
         cwd: PathBuf,
         hold_session: bool,
+        fresh: bool,
     ) -> R<Started> {
         let id = new_id();
         let row = WorkflowRunRow {
@@ -273,14 +294,31 @@ impl RunManager {
             name: name.clone(),
             cwd: cwd.clone(),
         });
-        let engine = WorkflowEngine::new(self.store().clone());
+        // A script that never yields is cut off by the engine at `workflows.max_duration`.
+        let engine = WorkflowEngine::with_options(
+            self.store().clone(),
+            EngineOptions {
+                max_duration: Some(self.config().workflows.max_duration.as_duration()),
+                ..EngineOptions::default()
+            },
+        );
+        let cancel = CancelToken::new();
+        lock(&self.inner.workflow_cancels).insert(id.clone(), cancel.clone());
+        self.inner.active_workflows.fetch_add(1, Ordering::SeqCst);
+        let mut guard = WorkflowGuard {
+            mgr: self.clone(),
+            id: id.clone(),
+            session_id: session_id.to_string(),
+            hold_session,
+            done: false,
+        };
         let (mgr, sid, wid) = (self.clone(), session_id.to_string(), id.clone());
         let done = tokio::spawn(async move {
             let opts = RunOptions {
                 run_id: Some(wid.clone()),
-                cancel: CancelToken::new(),
+                cancel,
                 cwd: Some(cwd),
-                fresh: false,
+                fresh,
             };
             let ran = engine.run_with(opts, &source, &name, args, host).await;
             let out = match ran {
@@ -300,14 +338,43 @@ impl RunManager {
                     error: Some(e.to_string()),
                 },
             };
-            mgr.publish_workflow(&wid, &name, out.state, None, Some(&sid));
-            if hold_session {
-                mgr.session_disconnected(&sid);
-                mgr.maybe_end_session(&sid).await;
+            // The engine records its own end; when it could not (an engine error before
+            // that), the row must not stay `running`.
+            if let Some(e) = &out.error {
+                let (id, e) = (wid.clone(), e.clone());
+                let _ = mgr.db(move |s| s.fail_workflow_if_running(&id, &e)).await;
             }
+            mgr.publish_workflow(&wid, &name, out.state, None, Some(&sid));
+            guard.done = true;
+            drop(guard);
             out
         });
         Ok(Started { id, done })
+    }
+
+    /// Stops a running workflow: the engine is interrupted and every step run is cancelled.
+    /// An extension of SPEC 13 (see `METHOD_CANCEL_WORKFLOW`).
+    pub async fn cancel_workflow(&self, id: &str) -> R<AckResult> {
+        let p = id.to_string();
+        let row = self.db(move |s| s.get_workflow_run_by_prefix(&p)).await?;
+        let token = lock(&self.inner.workflow_cancels).get(&row.id).cloned();
+        match token {
+            Some(t) => {
+                t.cancel();
+                Ok(AckResult { ok: true })
+            }
+            None => Err(rpc(
+                INVALID_PARAMS,
+                format!("workflow {} is not running ({})", row.id, row.state),
+            )),
+        }
+    }
+
+    /// Cancels every running workflow (supervisor shutdown).
+    pub fn cancel_all_workflows(&self) {
+        for t in lock(&self.inner.workflow_cancels).values() {
+            t.cancel();
+        }
     }
 
     /// `workflow_status`: state, steps and result of a run, by id or unique id prefix.
@@ -337,8 +404,16 @@ impl RunManager {
     }
 
     /// Workflow runs, newest first.
-    pub async fn list_workflow_runs(&self, limit: usize) -> R<Vec<WorkflowRunView>> {
-        let rows = self.db(move |s| s.list_workflow_runs(limit)).await?;
+    pub async fn list_workflow_runs(
+        &self,
+        after: Option<(DateTime<Utc>, String)>,
+        limit: usize,
+    ) -> R<Vec<WorkflowRunView>> {
+        let rows = self
+            .db(move |s| {
+                s.list_workflow_runs_page(after.as_ref().map(|(t, i)| (*t, i.as_str())), limit)
+            })
+            .await?;
         Ok(rows
             .into_iter()
             .map(|r| WorkflowRunView {
@@ -352,17 +427,38 @@ impl RunManager {
             .collect())
     }
 
-    /// When an account may take a step again: the earliest end of a cooldown or exhausted
-    /// window. `None` when nothing is waiting for a reset, so waiting would not help.
-    async fn earliest_reset(&self) -> Option<DateTime<Utc>> {
+    /// When an account that could take the step may do so: the earliest end of a cooldown or
+    /// exhausted window among the accounts of the step's pinned harness (and the named
+    /// account, if any). `None` when nothing is waiting for a reset, so waiting would not
+    /// help.
+    async fn earliest_reset(
+        &self,
+        harness: Option<so_core::Harness>,
+        account: Option<String>,
+    ) -> Option<DateTime<Utc>> {
         let now = Utc::now();
+        let paths = self.inner.paths.clone();
+        let in_scope: Vec<String> = self
+            .blocking(move || so_core::AccountFile::list(&paths).unwrap_or_default())
+            .await
+            .ok()?
+            .into_iter()
+            .filter(|a| a.enabled)
+            .filter(|a| harness.is_none_or(|h| a.harness == h))
+            .filter(|a| account.as_ref().is_none_or(|n| n == &a.name))
+            .map(|a| a.name)
+            .collect();
         let (flags, headroom) = self
             .db(move |s| Ok((s.active_flags(now, MAX_LIST)?, s.list_headroom(10_000)?)))
             .await
             .ok()?;
-        let flagged = flags.iter().map(|f| f.until);
+        let flagged = flags
+            .iter()
+            .filter(|f| in_scope.contains(&f.account))
+            .map(|f| f.until);
         let exhausted = headroom
             .iter()
+            .filter(|h| in_scope.contains(&h.account))
             .filter(|h| h.status == so_core::HeadroomStatus::Exhausted)
             .filter_map(|h| {
                 [h.five_hour_resets_at, h.weekly_resets_at]
@@ -372,6 +468,61 @@ impl RunManager {
                     .min()
             });
         flagged.chain(exhausted).min()
+    }
+}
+
+/// Keeps a workflow's bookkeeping honest however its task ends: the cancel token and the
+/// busy count are released, a row still `running` is failed, and a session held for the
+/// workflow is let go. A panic runs this too.
+struct WorkflowGuard {
+    mgr: RunManager,
+    id: String,
+    session_id: String,
+    hold_session: bool,
+    /// The task reached its normal end and recorded the outcome.
+    done: bool,
+}
+
+impl Drop for WorkflowGuard {
+    fn drop(&mut self) {
+        lock(&self.mgr.inner.workflow_cancels).remove(&self.id);
+        self.mgr
+            .inner
+            .active_workflows
+            .fetch_sub(1, Ordering::SeqCst);
+        if !self.done {
+            let _ = self
+                .mgr
+                .store()
+                .fail_workflow_if_running(&self.id, "the workflow task stopped unexpectedly");
+        }
+        let (mgr, sid, hold) = (self.mgr.clone(), self.session_id.clone(), self.hold_session);
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                if hold {
+                    mgr.session_disconnected(&sid);
+                }
+                // The session may have been waiting only for this workflow.
+                mgr.maybe_end_session(&sid).await;
+            });
+        }
+    }
+}
+
+/// Cancels a workflow when the call that waits for it is dropped.
+struct StopOnDrop {
+    mgr: RunManager,
+    id: String,
+    armed: bool,
+}
+
+impl Drop for StopOnDrop {
+    fn drop(&mut self) {
+        if self.armed
+            && let Some(t) = lock(&self.mgr.inner.workflow_cancels).get(&self.id)
+        {
+            t.cancel();
+        }
     }
 }
 
@@ -391,7 +542,15 @@ impl Drop for CancelOnDrop {
         let (mgr, id) = (self.mgr.clone(), self.run_id.clone());
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
-                let _ = mgr.cancel(&id).await;
+                // The guard may be dropped before the spawn has inserted the run: wait a
+                // moment for it, so it is not left to start with nobody watching.
+                for _ in 0..50 {
+                    if mgr.resolve_run(&id).await.is_ok() {
+                        let _ = mgr.cancel(&id).await;
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
             });
         }
     }
@@ -446,16 +605,35 @@ impl StepHost {
     async fn run_step(&self, req: &StepRequest) -> Result<StepOutcome, HostError> {
         let params = spawn_params(req, &self.name, &self.cwd).map_err(Self::failed)?;
         let stall = req.stall_ms.map(Duration::from_millis);
-        let spawned = self.mgr.spawn(&self.ctx, params).await;
-        let (run_id, _warnings) = match spawned {
-            Ok(v) => v,
-            Err(e) => return self.spawn_failed(e).await,
-        };
+        // The guard exists before the spawn does: a step dropped while it is spawning still
+        // cancels the run it was about to start.
+        let run_id = so_core::new_id();
         let mut guard = CancelOnDrop {
             mgr: self.mgr.clone(),
             run_id: run_id.clone(),
             armed: true,
         };
+        // A parent with all its children busy starts another when one of them finishes.
+        let mut finished = self.mgr.inner.finished.subscribe();
+        loop {
+            match self
+                .mgr
+                .spawn_with_id(&self.ctx, params.clone(), run_id.clone())
+                .await
+            {
+                Ok(_) => break,
+                Err(e) if e.code == CAP_EXCEEDED => {
+                    tokio::select! {
+                        _ = finished.changed() => {}
+                        () = tokio::time::sleep(CHILD_CAP_CEILING) => {}
+                    }
+                }
+                Err(e) => {
+                    guard.armed = false;
+                    return self.spawn_failed(e, req).await;
+                }
+            }
+        }
         // Tie the run to its step now, so `workflow_status` shows it while it works.
         {
             let (wf, idx, rid) = (
@@ -498,7 +676,7 @@ impl StepHost {
             }
         }
         guard.armed = false;
-        self.finished(&run_id).await
+        self.finished(&run_id, req).await
     }
 
     /// A run that works (not queued, not waiting on a call of its own) and has had no event
@@ -533,7 +711,7 @@ impl StepHost {
     }
 
     /// What a finished run means for its step.
-    async fn finished(&self, run_id: &str) -> Result<StepOutcome, HostError> {
+    async fn finished(&self, run_id: &str, req: &StepRequest) -> Result<StepOutcome, HostError> {
         let row = self
             .mgr
             .resolve_run(run_id)
@@ -552,7 +730,7 @@ impl StepHost {
                 if matches!(
                     row.error_kind,
                     Some(ErrorKind::Quota | ErrorKind::RateLimit)
-                ) && let Some(retry_at) = self.mgr.earliest_reset().await
+                ) && let Some(retry_at) = self.scoped_reset(req).await
                 {
                     return Ok(StepOutcome::Unavailable { retry_at });
                 }
@@ -572,15 +750,26 @@ impl StepHost {
             .unwrap_or_else(|| "no reason recorded".to_string())
     }
 
+    /// The earliest reset among the accounts this step could run on.
+    async fn scoped_reset(&self, req: &StepRequest) -> Option<DateTime<Utc>> {
+        let harness = req
+            .opts
+            .get("harness")
+            .and_then(Value::as_str)
+            .and_then(|h| h.parse().ok());
+        let account = req
+            .opts
+            .get("account")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        self.mgr.earliest_reset(harness, account).await
+    }
+
     /// A step that could not even start.
-    async fn spawn_failed(&self, e: RpcError) -> Result<StepOutcome, HostError> {
+    async fn spawn_failed(&self, e: RpcError, req: &StepRequest) -> Result<StepOutcome, HostError> {
         match e.code {
-            CAP_EXCEEDED => Ok(StepOutcome::Unavailable {
-                retry_at: Utc::now()
-                    + chrono::Duration::from_std(CHILD_CAP_RETRY).unwrap_or_default(),
-            }),
             UNAVAILABLE if e.data.as_ref().is_some_and(|d| d["reason"] == NO_ELIGIBLE) => {
-                match self.mgr.earliest_reset().await {
+                match self.scoped_reset(req).await {
                     Some(retry_at) => Ok(StepOutcome::Unavailable { retry_at }),
                     None => Err(Self::failed(e.message)),
                 }
@@ -689,5 +878,118 @@ impl WorkflowHost for StepHost {
                 Some(&self.session_id),
             );
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runs::testutil::manager;
+    use so_core::{AccountFile, Harness};
+
+    fn running_row(id: &str, session: &str) -> WorkflowRunRow {
+        WorkflowRunRow {
+            id: id.into(),
+            name: "w".into(),
+            session_id: Some(session.into()),
+            state: "running".into(),
+            args_json: "null".into(),
+            started_at: Utc::now(),
+            finished_at: None,
+            result_json: None,
+            error: None,
+        }
+    }
+
+    /// A workflow task that dies (a panic unwinds through the guard) leaves no `running`
+    /// row, no cancel token and no busy count behind.
+    #[tokio::test]
+    async fn a_dropped_guard_fails_the_row_and_releases_everything() {
+        let (m, _dir) = manager();
+        m.store()
+            .insert_workflow_run(&running_row("wf1", "s1"))
+            .unwrap();
+        lock(&m.inner.workflow_cancels).insert("wf1".into(), CancelToken::new());
+        m.inner.active_workflows.fetch_add(1, Ordering::SeqCst);
+        assert!(m.busy());
+        let guard = WorkflowGuard {
+            mgr: m.clone(),
+            id: "wf1".into(),
+            session_id: "s1".into(),
+            hold_session: false,
+            done: false,
+        };
+        // A panic in the task drops the guard the same way as unwinding does.
+        let t = tokio::spawn(async move {
+            let _g = guard;
+            panic!("boom");
+        });
+        assert!(t.await.is_err());
+        let row = m.store().get_workflow_run("wf1").unwrap().unwrap();
+        assert_eq!(row.state, "failed");
+        assert!(row.error.unwrap().contains("stopped unexpectedly"));
+        assert!(lock(&m.inner.workflow_cancels).is_empty());
+        assert!(!m.busy());
+    }
+
+    /// A guard whose task finished normally leaves the recorded outcome alone.
+    #[tokio::test]
+    async fn a_finished_guard_keeps_the_outcome() {
+        let (m, _dir) = manager();
+        m.store()
+            .insert_workflow_run(&running_row("wf2", "s2"))
+            .unwrap();
+        m.store()
+            .finish_workflow_run("wf2", "succeeded", Utc::now(), Some("1"), None)
+            .unwrap();
+        m.inner.active_workflows.fetch_add(1, Ordering::SeqCst);
+        drop(WorkflowGuard {
+            mgr: m.clone(),
+            id: "wf2".into(),
+            session_id: "s2".into(),
+            hold_session: false,
+            done: true,
+        });
+        assert_eq!(
+            m.store().get_workflow_run("wf2").unwrap().unwrap().state,
+            "succeeded"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reset_to_wait_for_is_scoped_to_the_accounts_that_could_take_the_step() {
+        let (m, dir) = manager();
+        let paths = so_core::Paths::from_dir(dir.path().to_path_buf());
+        AccountFile::new("codex-t", Harness::Codex, "~/.codex-t", "codex")
+            .unwrap()
+            .save(&paths)
+            .unwrap();
+        let now = Utc::now();
+        let flag = |a: &str, hours: i64| {
+            so_usage::mark_exhausted(
+                m.store(),
+                a,
+                "default",
+                Some(now + chrono::Duration::hours(hours)),
+                Duration::from_secs(3600),
+                "t",
+                now,
+            )
+            .unwrap()
+        };
+        let claude = flag("claude-t", 5);
+        let codex = flag("codex-t", 1);
+        let us = |t: Option<DateTime<Utc>>| t.map(|t| t.timestamp_micros());
+        // Any harness: the earliest. A claude step waits for claude, not for codex.
+        assert_eq!(us(m.earliest_reset(None, None).await), us(Some(codex)));
+        assert_eq!(
+            us(m.earliest_reset(Some(Harness::Claude), None).await),
+            us(Some(claude))
+        );
+        assert_eq!(
+            us(m.earliest_reset(None, Some("claude-t".into())).await),
+            us(Some(claude))
+        );
+        assert_eq!(m.earliest_reset(Some(Harness::Opencode), None).await, None);
     }
 }

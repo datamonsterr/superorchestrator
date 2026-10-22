@@ -793,7 +793,8 @@ impl RunManager {
                 let busy = s
                     .list_runs_by_session(&sid, 100_000)?
                     .iter()
-                    .any(|r| r.state.is_active());
+                    .any(|r| r.state.is_active())
+                    || s.session_has_running_workflow(&sid)?;
                 if !busy {
                     s.end_session(&sid, "ended", Utc::now())?;
                 }

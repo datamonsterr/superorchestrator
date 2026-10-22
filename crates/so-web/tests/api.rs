@@ -2038,3 +2038,22 @@ async fn running_a_saved_workflow_returns_at_once_and_streams_its_state() {
     .await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn workflow_names_are_validated_and_cancel_needs_a_running_workflow() {
+    let f = fx().await;
+    // A name that is a path never reaches the filesystem.
+    for bad in ["..%2Fetc%2Fpasswd", "a%5Cb", ".hidden"] {
+        let (s, v) = post(&f.app, &format!("/api/v1/workflows/{bad}/run"), None).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{bad}: {v}");
+    }
+    let (s, _) = post(&f.app, "/api/v1/workflows/runs/nope/cancel", None).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // A run that is not running cannot be cancelled.
+    let store = f.handle.state().store.clone();
+    store
+        .insert_workflow_run(&workflow_row("wf-done-1", "w", 5, "succeeded"))
+        .unwrap();
+    let (s, v) = post(&f.app, "/api/v1/workflows/runs/wf-done-1/cancel", None).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+}
