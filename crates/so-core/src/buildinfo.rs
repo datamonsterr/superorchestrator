@@ -37,11 +37,13 @@ impl Ident {
 /// `/proc/self/exe` once the file was unlinked or replaced.
 fn exe_path() -> Option<PathBuf> {
     let p = std::env::current_exe().ok()?;
-    let s = p.to_string_lossy();
-    Some(match s.strip_suffix(" (deleted)") {
-        Some(t) => PathBuf::from(t),
-        None => p,
-    })
+    Some(PathBuf::from(strip_deleted(&p.to_string_lossy())))
+}
+
+/// Drops the ` (deleted)` suffix Linux appends to the `/proc/self/exe` target of an
+/// unlinked or replaced file.
+fn strip_deleted(s: &str) -> &str {
+    s.strip_suffix(" (deleted)").unwrap_or(s)
 }
 
 /// Build id of the running executable, e.g. `2a5c3f0-17f9a...`; `unknown` when it cannot be
@@ -86,6 +88,11 @@ impl ExeWatch {
         })
     }
 
+    /// Whether the file at the watched path is no longer the one that started.
+    pub fn is_stale(&self) -> bool {
+        self.stale().is_some()
+    }
+
     /// `Some(reason)` when the file at the watched path is no longer the one that started.
     pub fn stale(&self) -> Option<String> {
         match std::fs::metadata(&self.path) {
@@ -110,7 +117,7 @@ pub fn restart_hint(pid: Option<u32>) -> String {
         None => "stop the `superorchestrator daemon` process".to_string(),
     };
     format!(
-        "restart the daemon: {stop} once no run is active; the next superorchestrator command starts the new binary"
+        "Restart the daemon: {stop} once no run is active; the next superorchestrator command starts the new binary."
     )
 }
 
@@ -124,13 +131,18 @@ pub fn mismatch(
     daemon_pid: Option<u32>,
 ) -> Option<String> {
     let what = match daemon_build {
-        None => "the running daemon predates build ids, so it is an older build than this binary"
+        None => "The running daemon predates build ids, so it is an older build than this binary"
             .to_string(),
         Some(d) if d != local_build => {
-            format!("the running daemon is build {d} but this binary is build {local_build}")
+            let mut w =
+                format!("The running daemon is build {d} but this binary is build {local_build}");
+            if stale {
+                w.push_str(", and its executable was replaced on disk after it started");
+            }
+            w
         }
         Some(_) if stale => {
-            "the running daemon's executable was replaced on disk after it started".to_string()
+            "The running daemon's executable was replaced on disk after it started".to_string()
         }
         Some(_) => return None,
     };
@@ -141,9 +153,10 @@ pub fn mismatch(
 mod tests {
     use super::*;
 
+    /// A small stand-in for a binary: the watch only looks at file identity.
     fn copy_self(dir: &Path, name: &str) -> PathBuf {
         let to = dir.join(name);
-        std::fs::copy(std::env::current_exe().unwrap(), &to).unwrap();
+        std::fs::write(&to, b"original binary contents").unwrap();
         to
     }
 
@@ -212,5 +225,25 @@ mod tests {
         let w = ExeWatch::of_path(&bin).unwrap();
         std::fs::remove_file(&bin).unwrap();
         assert!(w.stale().unwrap().contains("removed"));
+    }
+
+    #[test]
+    fn deleted_suffix_is_stripped() {
+        assert_eq!(strip_deleted("/x/bin (deleted)"), "/x/bin");
+        assert_eq!(strip_deleted("/x/bin"), "/x/bin");
+    }
+
+    #[test]
+    fn capture_of_the_running_process_is_not_stale() {
+        // Covers the real path: current_exe, /proc/self/exe identity and the on-disk compare.
+        let w = ExeWatch::capture().unwrap();
+        assert!(!w.is_stale());
+        assert_eq!(w.stale(), None);
+    }
+
+    #[test]
+    fn mismatch_with_stale_mentions_the_replaced_file() {
+        let m = mismatch("a", Some("b"), true, None).unwrap();
+        assert!(m.contains("build b but this binary is build a") && m.contains("replaced on disk"));
     }
 }

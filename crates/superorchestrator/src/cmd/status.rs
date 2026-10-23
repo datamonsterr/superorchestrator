@@ -119,7 +119,7 @@ mod tests {
         let w = daemon_warning(&s).unwrap();
         assert!(w.contains("old-1") && w.contains(build_id()), "{w}");
         assert!(
-            w.contains("restart the daemon") && w.contains("kill 42"),
+            w.contains("Restart the daemon") && w.contains("kill 42"),
             "{w}"
         );
         assert!(supervisor_line(&s).contains("build old-1"));
@@ -128,7 +128,7 @@ mod tests {
     #[test]
     fn stale_daemon_warns_even_with_equal_builds() {
         let w = daemon_warning(&status(Some(build_id()), true)).unwrap();
-        assert!(w.contains("replaced on disk") && w.contains("restart the daemon"));
+        assert!(w.contains("replaced on disk") && w.contains("Restart the daemon"));
     }
 
     #[test]

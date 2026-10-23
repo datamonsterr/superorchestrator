@@ -164,14 +164,15 @@ pub struct SupervisorState {
 }
 
 impl SupervisorState {
-    /// Why this daemon runs old code: its executable was replaced or removed after it
-    /// started, with the fix. `None` when it is current (or could not tell).
-    pub fn stale(&self) -> Option<String> {
+    /// Whether this daemon's executable was replaced or removed after it started.
+    pub fn is_stale(&self) -> bool {
+        self.exe.as_ref().is_some_and(|w| w.is_stale())
+    }
+
+    /// Why this daemon runs old code, `None` when it is current (or could not tell).
+    pub fn stale_reason(&self) -> Option<String> {
         let why = self.exe.as_ref()?.stale()?;
-        Some(format!(
-            "{why}; this daemon still runs the old build. {}",
-            so_core::buildinfo::restart_hint(Some(std::process::id()))
-        ))
+        Some(format!("{why}; this daemon still runs the old build"))
     }
 
     pub fn set_probe(&self, probe: Arc<dyn ActivityProbe>) {

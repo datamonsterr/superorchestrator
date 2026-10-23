@@ -166,17 +166,15 @@ async fn daemon_build_mismatch_is_in_the_instructions() {
     let me = so_core::buildinfo::build_id();
     assert_eq!(so_mcp::daemon_notice(&hello(Some(me), false)), None);
     let notice = so_mcp::daemon_notice(&hello(Some("other"), false)).unwrap();
-    assert!(notice.contains("other") && notice.contains("restart the daemon"));
+    assert!(notice.contains("other") && notice.contains("Restart the daemon"));
     assert!(so_mcp::daemon_notice(&hello(None, false)).is_some());
     assert!(so_mcp::daemon_notice(&hello(Some(me), true)).is_some());
 
     let f = fixture_with(false, Some(&notice)).await;
     let text = f.client.peer_info().unwrap().instructions.clone().unwrap();
     assert!(text.contains("list_harnesses"));
-    assert!(
-        text.contains("WARNING") && text.contains("restart the daemon"),
-        "{text}"
-    );
+    assert!(text.starts_with("WARNING: "), "{text}");
+    assert!(text.contains("Restart the daemon"), "{text}");
     f.sup.shutdown().await;
 
     let clean = fixture(false).await;

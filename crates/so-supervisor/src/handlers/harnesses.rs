@@ -275,7 +275,12 @@ pub fn harnesses_view(state: &SupervisorState) -> Result<HarnessesView, String> 
         }
     }
     accounts.sort_by(|a, b| a.name.cmp(&b.name));
-    let stale_reason = state.stale();
+    let stale_reason = state.stale_reason().map(|why| {
+        format!(
+            "{why}. {}",
+            so_core::buildinfo::restart_hint(Some(std::process::id()))
+        )
+    });
     Ok(HarnessesView {
         accounts,
         choices: state.config.choices.clone(),

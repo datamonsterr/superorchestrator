@@ -319,7 +319,7 @@ fn hello_result(
         run_id,
         depth,
         build_id: Some(so_core::buildinfo::build_id().to_string()),
-        stale: state.stale().is_some(),
+        stale: state.is_stale(),
     }
 }
 
@@ -332,7 +332,7 @@ pub async fn status_result(state: &Arc<SupervisorState>) -> Result<StatusResult,
             Ok((s.count_active_sessions()?, s.count_active_runs()?))
         })
         .await?;
-    let stale_reason = state.stale();
+    let stale_reason = state.stale_reason();
     Ok(StatusResult {
         build_id: Some(so_core::buildinfo::build_id().to_string()),
         stale: stale_reason.is_some(),

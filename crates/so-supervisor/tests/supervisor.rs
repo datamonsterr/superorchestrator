@@ -1015,7 +1015,7 @@ async fn replaced_executable_marks_status_hello_and_list_harnesses_stale() {
     use so_core::buildinfo::ExeWatch;
     let env = Env::new();
     let bin = env.dir.path().join("fake-daemon");
-    std::fs::copy(std::env::current_exe().unwrap(), &bin).unwrap();
+    std::fs::write(&bin, b"original daemon").unwrap();
     let watch = ExeWatch::of_path(&bin).unwrap();
     let opts = env
         .opts(Duration::from_secs(600))
@@ -1044,9 +1044,15 @@ async fn replaced_executable_marks_status_hello_and_list_harnesses_stale() {
 
     let st: StatusResult = c.call("status", json!({})).await.unwrap();
     assert!(st.stale);
-    assert!(st.stale_reason.unwrap().contains("restart the daemon"));
+    assert!(st.stale_reason.unwrap().contains("replaced on disk"));
     let full: Value = c.call("list_harnesses", json!({})).await.unwrap();
     assert_eq!(full["stale"], true);
+    assert!(
+        full["stale_reason"]
+            .as_str()
+            .unwrap()
+            .contains("Restart the daemon")
+    );
     let brief: Value = c
         .call("list_harnesses", json!({"brief": true}))
         .await
