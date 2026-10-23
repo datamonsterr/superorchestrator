@@ -388,6 +388,13 @@ fn route_lines(data: &serde_json::Value) -> Vec<String> {
     if !who.is_empty() {
         out.push(clean(&who.join(" / ")));
     }
+    let level = get("level");
+    if let Some(x) = data.get("complexity").and_then(|v| v.as_f64()) {
+        out.push(clean(&match level {
+            Some(l) => format!("complexity {x:.1}, level {l}"),
+            None => format!("complexity {x:.1}"),
+        }));
+    }
     if let Some(r) = get("rationale") {
         out.push(clean(r));
     }
@@ -443,6 +450,12 @@ mod tests {
         assert_eq!(
             route_lines(&v),
             vec!["jev / codex-fast / codex-1 / gpt", "small edit"]
+        );
+        let v =
+            serde_json::json!({"source":"jev","choice_id":"c","complexity":55.04,"level":"mid"});
+        assert_eq!(
+            route_lines(&v),
+            vec!["jev / c", "complexity 55.0, level mid"]
         );
         assert_eq!(route_lines(&serde_json::json!({"x":1})), vec![r#"{"x":1}"#]);
     }

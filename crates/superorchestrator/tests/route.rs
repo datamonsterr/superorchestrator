@@ -99,6 +99,8 @@ async fn route_json_goes_through_the_supervisor() {
     assert_eq!(v["harness"], "agy");
     assert!(v["account"].as_str().unwrap().starts_with("agy-"));
     assert_eq!(v["config_fingerprint"].as_str().unwrap().len(), 64);
+    assert!(v["complexity"].is_number(), "{v}");
+    assert!(v["level"].is_string(), "{v}");
 
     let mut cmd = e.cmd();
     cmd.args(["route", "--explain", "--role", "worker", "fix typo"]);
@@ -109,6 +111,10 @@ async fn route_json_goes_through_the_supervisor() {
     assert!(out.status.success());
     assert!(
         text.contains("account:") && text.contains("config:"),
+        "{text}"
+    );
+    assert!(
+        text.contains("complexity: ") && text.contains("(heuristic)") && text.contains("level:"),
         "{text}"
     );
 

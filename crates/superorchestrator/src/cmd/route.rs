@@ -58,14 +58,15 @@ async fn route(ctx: &Ctx, task: String, role: Option<String>, explain: bool) -> 
             r.choice_id, r.harness, r.model
         )?;
         writeln!(w, "account:  {}", r.account)?;
-        writeln!(
-            w,
-            "source:   {}",
-            serde_json::to_value(r.source)
-                .unwrap_or_default()
-                .as_str()
-                .unwrap_or("")
-        )?;
+        let source = serde_json::to_value(r.source).unwrap_or_default();
+        let source = source.as_str().unwrap_or("");
+        match r.complexity {
+            Some(x) => writeln!(w, "complexity: {x:.1} ({source})")?,
+            None => writeln!(w, "source:   {source}")?,
+        }
+        if let Some(level) = &r.level {
+            writeln!(w, "level:    {level}")?;
+        }
         writeln!(w, "why:      {}", r.rationale)?;
         if explain {
             if let Some(c) = r.confidence {
