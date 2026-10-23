@@ -1023,8 +1023,13 @@ async fn a_level_without_an_eligible_choice_falls_to_the_next_level() {
     ];
     let r = pick(2.2, mid_empty.clone()).await;
     assert_eq!(r.choice_id, "agy-fast");
-    assert_eq!(r.level.as_deref(), Some("mid"));
-    assert!(r.rationale.contains("no eligible choice in level `mid`"));
+    assert_eq!(r.level.as_deref(), Some("low"));
+    assert!(
+        r.rationale
+            .contains("maps to level `mid`; no eligible choice there; used level `low`"),
+        "{}",
+        r.rationale
+    );
     // Complexity 60: high is 20 away, low 21.
     assert_eq!(pick(2.4, mid_empty).await.choice_id, "codex-big");
     // A listed choice that is not eligible (claude ranks last) counts as none.
@@ -1038,7 +1043,7 @@ async fn a_level_without_an_eligible_choice_falls_to_the_next_level() {
     .await;
     assert_eq!(
         (r.choice_id.as_str(), r.level.as_deref()),
-        ("agy-fast", Some("high"))
+        ("agy-fast", Some("low"))
     );
 }
 
@@ -1047,7 +1052,12 @@ async fn no_level_with_a_choice_ranks_everything_by_the_heuristic_scorer() {
     let r = pick(3.6, vec![level("low", 0, 39, &[("claude-x", None)])]).await;
     assert_eq!(r.source, RouteSource::Jev);
     assert_eq!(r.choice_id, "codex-big");
-    assert_eq!(r.level.as_deref(), Some("low"));
+    assert_eq!(r.level, None);
+    assert!(
+        r.rationale.contains("maps to level `low`"),
+        "{}",
+        r.rationale
+    );
     assert!(r.rationale.contains("heuristic scorer"), "{}", r.rationale);
 }
 

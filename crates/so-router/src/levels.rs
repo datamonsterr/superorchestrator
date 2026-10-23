@@ -13,8 +13,12 @@ pub struct Selection {
     /// Indices into the candidates: the pick first, then the rest of its level, then every
     /// other candidate in the order given by `fallback_order`.
     pub order: Vec<usize>,
-    /// Name of the level the complexity falls in (or is nearest to).
+    /// Name of the level the choice came from; `None` when no level had an eligible choice.
     pub level: Option<String>,
+    /// Name of the level the complexity falls in (or is nearest to); `None` without levels.
+    pub mapped: Option<String>,
+    /// No level had an eligible choice: every eligible choice was ranked by the heuristic.
+    pub heuristic_fallback: bool,
     /// Why this choice won, for the rationale.
     pub why: String,
 }
@@ -125,21 +129,14 @@ pub fn select(
     fallback_order: &[usize],
 ) -> Selection {
     let by_distance = levels_by_distance(levels, complexity);
-    let level_name = by_distance.first().map(|&i| levels[i].name.clone());
-    for (n, &li) in by_distance.iter().enumerate() {
+    let mapped = by_distance.first().map(|&i| levels[i].name.clone());
+    for &li in &by_distance {
         let level = &levels[li];
         let ranked = rank(level, level_candidates(level, cands), cands);
         if ranked.is_empty() {
             continue;
         }
-        let mut why = why_won(level, &ranked, cands);
-        if n > 0 {
-            why = format!(
-                "no eligible choice in level `{}`; used level `{}`: {why}",
-                level_name.as_deref().unwrap_or(""),
-                level.name
-            );
-        }
+        let why = why_won(level, &ranked, cands);
         let mut order = ranked;
         let rest: Vec<usize> = fallback_order
             .iter()
@@ -149,15 +146,18 @@ pub fn select(
         order.extend(rest);
         return Selection {
             order,
-            level: level_name,
+            level: Some(level.name.clone()),
+            mapped,
+            heuristic_fallback: false,
             why,
         };
     }
     Selection {
         order: fallback_order.to_vec(),
-        level: level_name,
-        why: "no level has an eligible choice; ranked all eligible choices by the heuristic scorer"
-            .into(),
+        level: None,
+        mapped,
+        heuristic_fallback: true,
+        why: "all eligible choices ranked by the heuristic scorer".into(),
     }
 }
 

@@ -448,9 +448,11 @@ fn finish(
     if rated.source == RouteSource::Pinned {
         sel.order = fallback_order;
         sel.why = format!("pinned by the call; best match by heuristic score {top_score:.2}");
+        sel.level = sel.mapped.clone();
+        sel.heuristic_fallback = false;
     } else if let Some(w) = rated.forced_why {
         sel.why = w;
-    } else if sel.why.starts_with("no level") {
+    } else if sel.heuristic_fallback {
         sel.why = format!("{} (score {top_score:.2})", sel.why);
     }
     let pick = sel.order[0];
@@ -467,24 +469,28 @@ fn finish(
         .take(ALTERNATIVES)
         .map(|&i| alternative(&cands[i], None))
         .collect();
-    let level = sel
-        .level
-        .as_deref()
-        .map_or_else(|| "none".to_string(), |l| format!("`{l}`"));
+    let level = match (&sel.mapped, &sel.level) {
+        (None, _) => "no levels configured".to_string(),
+        (Some(_), Some(u)) if sel.mapped.as_ref() == Some(u) => format!("level `{u}`"),
+        (Some(m), Some(u)) => {
+            format!("maps to level `{m}`; no eligible choice there; used level `{u}`")
+        }
+        (Some(m), None) => format!("maps to level `{m}`; no level has an eligible choice"),
+    };
     let c = rated.complexity;
     let rationale = match (rated.source, &rated.note, rated.confidence) {
         (RouteSource::Jev, _, conf) => format!(
-            "Jev rated complexity {c:.1} (confidence {:.2}); level {level}; `{}` chosen: {}.",
+            "Jev rated complexity {c:.1} (confidence {:.2}); {level}; `{}` chosen: {}.",
             conf.unwrap_or(0.0),
             cand.choice.id,
             sel.why
         ),
         (RouteSource::Pinned, _, _) => format!(
-            "complexity {c:.1} (heuristic estimate); level {level}; `{}` chosen: {}.",
+            "complexity {c:.1} (heuristic estimate); {level}; `{}` chosen: {}.",
             cand.choice.id, sel.why
         ),
         (RouteSource::Heuristic, note, _) => format!(
-            "heuristic: {}; complexity {c:.1} (heuristic estimate); level {level}; `{}` chosen: {}.",
+            "heuristic: {}; complexity {c:.1} (heuristic estimate); {level}; `{}` chosen: {}.",
             note.as_deref().unwrap_or("no decider answer"),
             cand.choice.id,
             sel.why
