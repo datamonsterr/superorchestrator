@@ -312,7 +312,7 @@ impl Supervisor {
             let failed = tokio::task::spawn_blocking(move || {
                 let hook = st.hook.read().unwrap_or_else(|e| e.into_inner()).clone();
                 let failed = reconcile::reconcile(&st.store, hook.as_deref())?;
-                reconcile::cleanup_stale_run_tokens(&st.store, &st.paths);
+                reconcile::cleanup_stale_codex_ws_tokens(&st.store, &st.paths);
                 Ok::<_, SupervisorError>(failed)
             })
             .await

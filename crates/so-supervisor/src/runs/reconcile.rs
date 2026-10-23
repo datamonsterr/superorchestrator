@@ -91,7 +91,6 @@ impl RunManager {
         let account = self.load_account(&name).await.map_err(|e| e.message)?;
         let cwd = self.resume_cwd(row).await?;
         self.renew_run_token(&row.id).await.map_err(|e| e.message)?;
-        self.issue_run_token(&row.id).await.map_err(|e| e.message)?;
         let spec = self
             .build_spec(row, &account, cwd, prompt.to_string(), Some(native), false)
             .await?;

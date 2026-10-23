@@ -139,8 +139,8 @@ const V9: &str = "
 -- Per-run RPC identity proof. NULL on legacy runs deliberately refuses run claims.
 ALTER TABLE run_meta ADD COLUMN rpc_token_hash BLOB;
 ALTER TABLE workflow_runs ADD COLUMN owner_run_id TEXT;
-UPDATE schema_versions SET version = 9 WHERE table_name = 'workflow_runs';
-UPDATE schema_versions SET version = 9 WHERE table_name = 'runs';
+-- schema_versions is deliberately not touched: V3-V8 also only added columns without
+-- bumping it, and only PRAGMA user_version tracks the schema.
 ";
 
 /// Ordered migrations; entry `i` brings the database to version `i + 1`.

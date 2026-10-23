@@ -62,10 +62,10 @@ pub(crate) fn reconcile(store: &Store, hook: Option<&dyn ReconcileHook>) -> crat
     Ok(failed)
 }
 
-/// Remove Codex capability files left by crashes, including directories with no DB row.
+/// Remove Codex websocket capability-token files (not the per-run `rpc-token`) left by crashes, including directories with no DB row.
 /// Run after reconciliation: adopted/resuming runs are still active and keep their token.
 /// Keep transcripts and other run evidence; never traverse a symlinked run directory.
-pub(crate) fn cleanup_stale_run_tokens(store: &Store, paths: &so_core::Paths) -> usize {
+pub(crate) fn cleanup_stale_codex_ws_tokens(store: &Store, paths: &so_core::Paths) -> usize {
     // Snapshot all active IDs once. Never delete tokens if the DB cannot establish
     // which runs are active; cleanup must not prevent the supervisor from starting.
     let limit = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
