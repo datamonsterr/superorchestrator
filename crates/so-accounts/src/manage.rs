@@ -1,7 +1,7 @@
 //! High-level account operations used by the CLI (SPEC 5.4).
 
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use so_core::{AccountFile, Config, Harness, Paths, Platform};
@@ -18,12 +18,10 @@ fn wrapper_dir(cfg: &Config, host: &HostEnv) -> Result<PathBuf> {
     host.expand(&cfg.accounts.wrapper_dir)
 }
 
-/// Creates `dir` (and parents) with mode 0700 and tightens an existing `dir`.
-fn create_private_dir(dir: &Path) -> Result<()> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
+/// Creates and tightens directories owned by superorchestrator, not credential homes.
+/// If `dir` is a symlink (including config_dir), its target is tightened to 0700.
+fn ensure_private_dir(dir: &Path) -> Result<()> {
+    so_core::fsutil::create_private_dirs(dir)
         .and_then(|()| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
         .map_err(|e| AccountsError::io(dir, e))
 }
@@ -34,8 +32,8 @@ fn create_account_file(paths: &Paths, account: &AccountFile) -> Result<()> {
     account.validate()?;
     let text = toml::to_string_pretty(account).map_err(so_core::CoreError::from)?;
     let dir = paths.accounts_dir();
-    create_private_dir(&paths.config_dir)?;
-    create_private_dir(&dir)?;
+    ensure_private_dir(&paths.config_dir)?;
+    ensure_private_dir(&dir)?;
     let target = paths.account_file(&account.name);
     let mut n = 0u32;
     let (tmp, mut f) = loop {
@@ -151,11 +149,14 @@ pub fn add(
     check_single_agy(paths, host, name, harness)?;
     let dir = host.expand(&home_spec)?;
     ensure_disjoint_home(paths, host, name, &dir)?;
-    create_private_dir(&if harness == Harness::Agy {
+    let credential_dir = if harness == Harness::Agy {
         dir.join(".gemini")
     } else {
         dir
-    })?;
+    };
+    // Existing user-selected homes retain their permissions, including symlink targets.
+    so_core::fsutil::create_private_dirs(&credential_dir)
+        .map_err(|e| AccountsError::io(&credential_dir, e))?;
     finish(paths, cfg, host, &account)
 }
 
@@ -473,6 +474,28 @@ mod tests {
         let mut f = fx();
         f.host = host(f.d.path(), Platform::MacOs);
         f
+    }
+
+    #[test]
+    fn add_preserves_existing_credential_home_permissions() {
+        for home in ["~", "~/credentials", "~/linked"] {
+            let f = fx();
+            let target = if home == "~/linked" {
+                let target = f.d.path().join("credentials");
+                std::fs::create_dir_all(&target).unwrap();
+                std::os::unix::fs::symlink(&target, f.d.path().join("linked")).unwrap();
+                target
+            } else {
+                f.host.expand(home).unwrap()
+            };
+            std::fs::create_dir_all(&target).unwrap();
+            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+            add(&f.paths, &f.cfg, &f.host, Harness::Codex, "new", Some(home)).unwrap();
+            assert_eq!(
+                std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+                0o755
+            );
+        }
     }
 
     #[test]
