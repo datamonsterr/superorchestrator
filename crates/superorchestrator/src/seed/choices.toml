@@ -38,9 +38,9 @@ enabled = true
 [[choices]]
 id = "opencode-muse-long"
 harness = "opencode"
-model = "opencode/muse-spark-1.3-contributor-free"
+model = "opencode/muse-spark-1.3"
 roles = ["conductor", "worker"]
-description = "OpenCode worker on Muse Spark 1.3 free tier with a large context window. For work that is broad rather than deep: many components or files held in mind at once, comparing or structuring whole systems, long multi-step jobs, and managing other workers (planning, delegating, integrating results, final verification). Free capacity."
+description = "OpenCode worker on Muse Spark 1.3 with a large context window. For work that is broad rather than deep: many components or files held in mind at once, comparing or structuring whole systems, long multi-step jobs, and managing other workers (planning, delegating, integrating results, final verification)."
 enabled = true
 
 [[choices]]
