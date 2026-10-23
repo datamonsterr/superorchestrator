@@ -10,6 +10,7 @@ export function TableSkeleton({ rows = 5, columns = 4 }: { rows?: number; column
           <TableRow>
             {Array.from({ length: columns }, (_, c) => (
               <TableHead key={c}>
+                <span className="sr-only">Loading column {c + 1}</span>
                 <Skeleton className="h-4 w-20" />
               </TableHead>
             ))}
