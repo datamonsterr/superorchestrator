@@ -1085,3 +1085,25 @@ async fn startup_removes_token_after_failing_an_orphaned_run() {
     assert!(!dir.join("ws-token").exists());
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn review_startup_continues_after_a_token_cleanup_error() {
+    let env = Env::new();
+    let bad = env.paths.run_dir("bad");
+    std::fs::create_dir_all(bad.join("ws-token")).unwrap();
+    let good = env.paths.run_dir("good");
+    std::fs::create_dir_all(&good).unwrap();
+    std::fs::write(good.join("ws-token"), "stale").unwrap();
+    let h = env.start().await;
+    assert!(!good.join("ws-token").exists());
+    assert!(bad.join("ws-token").is_dir());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn review_startup_continues_when_runs_directory_cannot_be_read() {
+    let env = Env::new();
+    std::fs::write(env.paths.runs_dir(), "not a directory").unwrap();
+    let h = env.start().await;
+    h.shutdown().await;
+}
