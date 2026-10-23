@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use so_core::proto::{HelloResult, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR, StatusResult};
+use so_core::proto::{
+    HelloResult, INVALID_REQUEST, METHOD_NOT_FOUND, METHOD_UI_START, PARSE_ERROR, StatusResult,
+};
 use so_core::{Config, EventType, Harness, Paths, RunState, SessionKind, new_id};
 use so_store::{RunRow, SessionRow, Store};
 use so_supervisor::{
@@ -235,6 +237,105 @@ async fn inspect_hello_opens_no_session_and_refuses_spawns() {
             "{m}: {e:?}"
         );
     }
+    h.shutdown().await;
+}
+
+fn register_ui_login_probe(h: &SupervisorHandle) -> Arc<AtomicBool> {
+    let called = Arc::new(AtomicBool::new(false));
+    let probe = called.clone();
+    h.state().router.register(METHOD_UI_START, move |_ctx, _params| {
+        let probe = probe.clone();
+        async move {
+            probe.store(true, Ordering::SeqCst);
+            Ok(json!({"url": "http://127.0.0.1:7878/token#token=login-code", "already_running": true}))
+        }
+    });
+    called
+}
+
+fn assert_operator_required(error: ClientError) {
+    match error {
+        ClientError::Rpc(error) => {
+            assert_eq!(error.code, INVALID_REQUEST);
+            assert!(
+                error.message.contains("sessionless")
+                    && error.message.contains("runless")
+                    && error.message.contains("inspect"),
+                "{}",
+                error.message
+            );
+        }
+        other => panic!("expected an operator-only RPC error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ui_start_denies_session_clients_before_the_login_handler_runs() {
+    let env = Env::new();
+    let h = env.start().await;
+    let called = register_ui_login_probe(&h);
+    let client = connect(&h).await;
+    client.hello("so-mcp", "/w", None, None).await.unwrap();
+    assert_operator_required(
+        client
+            .call::<_, Value>(METHOD_UI_START, json!({}))
+            .await
+            .unwrap_err(),
+    );
+    assert!(
+        !called.load(Ordering::SeqCst),
+        "a denied session must never mint a code"
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn ui_start_denies_run_scoped_clients_even_with_an_inspect_hello() {
+    let env = Env::new();
+    let session = session_row();
+    env.store().insert_session(&session).unwrap();
+    let run = run_row(&session.id, RunState::Running, 0);
+    env.store().insert_run(&run).unwrap();
+    let h = env.start().await;
+    let called = register_ui_login_probe(&h);
+    for inspect in [false, true] {
+        let client = connect(&h).await;
+        let attached: HelloResult = client
+            .call(
+                "hello",
+                json!({"client": "so-mcp", "cwd": "/w", "run_id": run.id, "inspect": inspect}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(attached.run_id.as_deref(), Some(run.id.as_str()));
+        assert_operator_required(
+            client
+                .call::<_, Value>(METHOD_UI_START, json!({}))
+                .await
+                .unwrap_err(),
+        );
+        assert!(
+            !called.load(Ordering::SeqCst),
+            "a denied run must never mint a code"
+        );
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn ui_start_allows_sessionless_runless_inspect_clients() {
+    let env = Env::new();
+    let h = env.start().await;
+    let called = register_ui_login_probe(&h);
+    let client = connect(&h).await;
+    client.hello_inspect("cli", "/w", None).await.unwrap();
+    let result: Value = client.call(METHOD_UI_START, json!({})).await.unwrap();
+    assert_eq!(
+        result["url"],
+        "http://127.0.0.1:7878/token#token=login-code"
+    );
+    assert!(called.load(Ordering::SeqCst));
+    assert_eq!(env.store().count_active_sessions().unwrap(), 0);
     h.shutdown().await;
 }
 

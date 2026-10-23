@@ -59,6 +59,8 @@ impl LoginCodes {
         let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
         let now = tokio::time::Instant::now();
         pending.retain(|code| code.expires > now);
+        // Mint bursts may evict unused codes before their TTL; this is intentional
+        // to keep the store bounded.
         while pending.len() >= MAX_LOGIN_CODES {
             pending.pop_front();
         }
