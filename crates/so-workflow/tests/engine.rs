@@ -836,3 +836,17 @@ async fn ghsa_workflow_step_passes_canonical_contained_cwd_to_host() {
         assert_eq!(host.calls().last().unwrap().opts["cwd"], json!(expected));
     }
 }
+
+#[tokio::test]
+async fn dynamic_import_cannot_load_even_an_existing_module() {
+    let dir = tempfile::tempdir().unwrap();
+    let module = dir.path().join("module.js");
+    std::fs::write(&module, "export default 42;").unwrap();
+    let specifier = serde_json::to_string(&module.to_string_lossy()).unwrap();
+    let host = FakeHost::echo();
+    let err = run(&host, &format!("return await import({specifier});"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, WorkflowError::Script(_)), "{err}");
+    assert!(host.calls().is_empty());
+}
