@@ -10,7 +10,7 @@ pub mod skill;
 pub mod starter;
 
 pub use discover::{
-    Discovery, discover, discover_user, read_source_of, remove_files, resolve_for_spawn,
+    Discovery, discover, discover_user, read_source_of, remove_files, resolve, resolve_for_spawn,
     search_dirs,
 };
 pub use error::{AgentError, Result};

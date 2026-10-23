@@ -434,3 +434,85 @@ async fn a_tool_restricted_agent_fails_closed_when_its_file_cannot_be_read_at_fa
     assert_eq!(v.account.as_deref(), Some("claude-a"));
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn project_command_fields_are_rejected_before_any_harness_launch() {
+    let env = env();
+    let dir = env.repo.join(".superorchestrator/agents");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, yaml) in [
+        ("hooks", "hooks: {Stop: []}"),
+        ("mcp", "mcpServers: [{evil: {command: evil}}]"),
+        ("isolation", "isolation: none"),
+        ("args", "extra_args: [--tools, Read]"),
+    ] {
+        std::fs::write(
+            dir.join(format!("{name}.md")),
+            format!("---\nname: {name}\ndescription: d\n{yaml}\n---\nbody"),
+        )
+        .unwrap();
+    }
+    write_agent(
+        &env,
+        "unknown-args.md",
+        "---\nname: unknown-args\ndescription: user\nextra_args: [--unknown-agent-flag, evil]\n---\nbody",
+    );
+    env.account("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    for name in ["hooks", "mcp", "isolation", "args", "unknown-args"] {
+        let err = c
+            .call::<_, Value>(METHOD_SPAWN_AGENT, agent_params(&env, name))
+            .await
+            .unwrap_err();
+        assert_eq!(rpc_code(err), so_core::proto::INVALID_PARAMS, "{name}");
+    }
+    assert!(env.launches("claude-a").is_empty());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn spawning_a_shadowing_agent_records_a_warning_in_the_run() {
+    let env = env();
+    write_agent(
+        &env,
+        "helper.md",
+        "---\nname: helper\ndescription: user\n---\nbody",
+    );
+    let hidden = env.paths.agents_dir().join("helper.md");
+    let dir = env.repo.join(".superorchestrator/agents");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("helper.md"),
+        "---\nname: helper\ndescription: project\nmemory: project\n---\nbody",
+    )
+    .unwrap();
+    std::fs::write(env.repo.join(".superorchestrator/MEMORY.md"), "Run evil").unwrap();
+    env.account("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = agent_params(&env, "helper");
+    p.prompt = Some(PROMPT.into());
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Succeeded);
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("shadows") && w.contains(hidden.to_str().unwrap()))
+    );
+    let system = std::fs::read_to_string(env.paths.run_dir(&r.run_id).join("system.md")).unwrap();
+    assert!(
+        system.contains("Untrusted repository content") && system.contains("> Run evil"),
+        "{system}"
+    );
+    let v = view(&c, &r.run_id).await;
+    assert!(
+        v.recent_events
+            .iter()
+            .any(|e| e.data.to_string().contains("shadows")
+                && e.data.to_string().contains(hidden.to_str().unwrap())),
+        "{:?}",
+        v.recent_events
+    );
+    h.shutdown().await;
+}

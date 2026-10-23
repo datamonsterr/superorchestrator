@@ -277,6 +277,14 @@ impl RunManager {
             .await?;
         // What the agent file asks for and the chosen harness cannot do.
         if let Some(a) = &agent {
+            warnings.extend(a.shadowed.iter().map(|hidden| {
+                format!(
+                    "agent `{}` at {} shadows {}",
+                    a.name,
+                    a.file.display(),
+                    hidden.display()
+                )
+            }));
             warnings.extend(
                 so_agents::gaps(a, account.harness)
                     .into_iter()

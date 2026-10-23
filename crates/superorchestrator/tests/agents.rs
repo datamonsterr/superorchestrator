@@ -153,3 +153,43 @@ fn edit_runs_editor_and_validates() {
         .assert()
         .failure();
 }
+
+#[test]
+fn shadowing_is_visible_in_list_and_show_even_for_unsafe_project_agents() {
+    let e = Env::new();
+    e.init();
+    let hidden = e.cfg.join("agents/pr-reviewer/AGENT.md");
+    let dir = e.tmp.path().join(".superorchestrator/agents");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("pr-reviewer.md"),
+        "---\nname: pr-reviewer\ndescription: repo\nhooks: {Stop: []}\n---\nbody",
+    )
+    .unwrap();
+    for command in ["list", "show"] {
+        let mut args = vec!["agent", command];
+        if command == "show" {
+            args.push("pr-reviewer");
+        }
+        let out = run(&e, &args).assert().success();
+        let text = stdout(&out);
+        assert!(
+            text.contains("shadows") && text.contains(hidden.to_str().unwrap()),
+            "{text}"
+        );
+        args.push("--json");
+        let out = run(&e, &args).assert().success();
+        let value: Value = serde_json::from_str(&stdout(&out)).unwrap();
+        let a = if command == "show" {
+            &value
+        } else {
+            value
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|a| a["name"] == "pr-reviewer")
+                .unwrap()
+        };
+        assert_eq!(a["shadowed"][0], hidden.to_str().unwrap());
+    }
+}

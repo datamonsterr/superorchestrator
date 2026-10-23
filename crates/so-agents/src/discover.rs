@@ -64,8 +64,11 @@ fn discover_in(dirs: impl IntoIterator<Item = (PathBuf, AgentSource)>) -> Discov
                 continue;
             }
             match read_one(&file, folder, source, &stem) {
-                Ok(def) => match out.agents.iter().find(|a| a.name == def.name) {
-                    Some(winner) => out.shadowed.push((def.file, winner.file.clone())),
+                Ok(def) => match out.agents.iter_mut().find(|a| a.name == def.name) {
+                    Some(winner) => {
+                        winner.shadowed.push(def.file.clone());
+                        out.shadowed.push((def.file, winner.file.clone()));
+                    }
                     None => out.agents.push(def),
                 },
                 Err(e) => out.problems.push((file, e.to_string())),
@@ -137,8 +140,8 @@ pub fn remove_files(def: &AgentDef) -> Result<()> {
     }
 }
 
-/// Finds the agent a spawn asked for. Entry point for the supervisor.
-pub fn resolve_for_spawn(cwd: &Path, paths: &Paths, name: &str) -> Result<AgentDef> {
+/// Finds an agent for inspection, including definitions that cannot be spawned.
+pub fn resolve(cwd: &Path, paths: &Paths, name: &str) -> Result<AgentDef> {
     let d = discover(cwd, paths);
     if let Some(a) = d.agents.into_iter().find(|a| a.name == name) {
         // Like the listings: a symlinked agent may point outside the agents directories.
@@ -163,6 +166,14 @@ pub fn resolve_for_spawn(cwd: &Path, paths: &Paths, name: &str) -> Result<AgentD
     Err(AgentError::NotFound(name.to_string()))
 }
 
+/// Resolves and validates an agent before the supervisor selects isolation or launches it.
+/// Repeated on every launch attempt, including resume and failover.
+pub fn resolve_for_spawn(cwd: &Path, paths: &Paths, name: &str) -> Result<AgentDef> {
+    let def = resolve(cwd, paths, name)?;
+    crate::materialise::validate_for_spawn(&def, paths)?;
+    Ok(def)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,6 +185,114 @@ mod tests {
     fn write(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn project_command_fields_are_refused_at_spawn_but_remain_discoverable() {
+        let t = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(t.path().join("cfg"));
+        let cwd = t.path().join("proj");
+        let mut accepted = Vec::new();
+        for location in [".superorchestrator/agents", ".claude/agents"] {
+            for (field, yaml) in [
+                ("hooks", "hooks: {}"),
+                (
+                    "hooks",
+                    "hooks: {PreToolUse: [{hooks: [{type: command, command: evil}]}]}",
+                ),
+                ("mcpServers", "mcpServers: [{evil: {command: evil}}]"),
+                (
+                    "mcpServers",
+                    "mcpServers: [{evil: {command: [sh, -c, evil]}}]",
+                ),
+                ("mcpServers", "mcpServers: [{evil: {args: [sh, -c, evil]}}]"),
+                (
+                    "mcpServers",
+                    "mcpServers: [{evil: {url: https://example.test, command: evil}}]",
+                ),
+                ("mcpServers", "mcpServers: [{evil: [sh, -c, evil]}]"),
+                ("isolation", "isolation: none"),
+                ("extra_args", "extra_args: []"),
+                ("extra_args", "extra_args: [--tools, Read]"),
+                ("extra_args", "extraArgs: [--tools, Read]"),
+            ] {
+                let file = cwd.join(location).join("hostile.md");
+                write(
+                    &file,
+                    &format!("---\nname: hostile\ndescription: d\n{yaml}\n---\nbody"),
+                );
+                assert!(
+                    discover(&cwd, &paths)
+                        .agents
+                        .iter()
+                        .any(|a| a.name == "hostile")
+                );
+                let err = match resolve_for_spawn(&cwd, &paths, "hostile") {
+                    Err(e) => e.to_string(),
+                    Ok(_) => {
+                        accepted.push(format!("{location}: {yaml}"));
+                        std::fs::remove_file(file).unwrap();
+                        continue;
+                    }
+                };
+                for expected in [
+                    "hostile",
+                    file.to_str().unwrap(),
+                    field,
+                    paths.agents_dir().to_str().unwrap(),
+                ] {
+                    assert!(err.contains(expected), "{yaml}: missing {expected}: {err}");
+                }
+                std::fs::remove_file(file).unwrap();
+            }
+        }
+        assert!(accepted.is_empty(), "unsafe agents accepted: {accepted:?}");
+    }
+
+    #[test]
+    fn project_agents_can_use_named_and_remote_mcp_servers() {
+        let t = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(t.path().join("cfg"));
+        let cwd = t.path().join("proj");
+        for yaml in [
+            "mcpServers: [docs]",
+            "mcpServers: [{docs: {type: http, url: https://example.test, headers: {Authorization: token}}}]",
+            "mcpServers: [{docs: {type: sse, url: https://example.test}}]",
+        ] {
+            write(
+                &cwd.join(".superorchestrator/agents/helper.md"),
+                &format!("---\nname: helper\ndescription: d\n{yaml}\n---\nbody"),
+            );
+            assert!(resolve_for_spawn(&cwd, &paths, "helper").is_ok(), "{yaml}");
+        }
+    }
+
+    #[test]
+    fn a_refusal_names_all_offending_fields_and_trusted_user_agents_still_spawn() {
+        let t = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(t.path().join("cfg"));
+        let cwd = t.path().join("proj");
+        let text = "---\nname: hostile\ndescription: d\nhooks: {Stop: []}\nmcpServers: [{evil: {command: evil}}]\nisolation: none\nextra_args: [--tools, Read]\n---\nbody";
+        write(&cwd.join(".superorchestrator/agents/hostile.md"), text);
+        let err = resolve_for_spawn(&cwd, &paths, "hostile")
+            .unwrap_err()
+            .to_string();
+        for field in ["hooks", "mcpServers", "isolation", "extra_args"] {
+            assert!(err.contains(field), "{err}");
+        }
+        std::fs::remove_dir_all(cwd.join(".superorchestrator")).unwrap();
+        write(&paths.agents_dir().join("hostile.md"), text);
+        assert!(resolve_for_spawn(&cwd, &paths, "hostile").is_ok());
+        write(
+            &paths.agents_dir().join("hostile.md"),
+            "---\nname: hostile\ndescription: d\nextra_args: [--settings-unknown, evil]\n---\nbody",
+        );
+        assert!(
+            resolve_for_spawn(&cwd, &paths, "hostile")
+                .unwrap_err()
+                .to_string()
+                .contains("--settings-unknown")
+        );
     }
 
     #[test]

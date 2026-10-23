@@ -109,6 +109,9 @@ pub struct AgentDef {
     pub skills: Vec<String>,
     pub mcp_servers: Vec<McpRef>,
     pub hooks: Value,
+    /// Additional Claude arguments; only the materialisation allowlist is accepted.
+    /// Preserve field presence: even an explicit empty list requires user trust.
+    pub extra_args: Option<Vec<String>>,
     pub memory: Option<Memory>,
     pub max_turns: Option<u32>,
     pub isolation: Option<Isolation>,
@@ -120,6 +123,8 @@ pub struct AgentDef {
     /// The file that was parsed.
     pub file: PathBuf,
     pub source: AgentSource,
+    /// Same-named definitions hidden by this file, in discovery order.
+    pub shadowed: Vec<PathBuf>,
 }
 
 #[derive(Deserialize, Default)]
@@ -186,6 +191,8 @@ struct Raw {
     mcp_servers: Vec<Value>,
     #[serde(default)]
     hooks: Option<Value>,
+    #[serde(default, alias = "extra_args")]
+    extra_args: Option<Vec<String>>,
     memory: Option<Memory>,
     max_turns: Option<u32>,
     isolation: Option<String>,
@@ -394,9 +401,8 @@ pub fn parse_agent(
         disallowed_tools,
         skills,
         mcp_servers,
-        hooks: raw
-            .hooks
-            .unwrap_or_else(|| Value::Object(Default::default())),
+        hooks: raw.hooks.unwrap_or(Value::Null),
+        extra_args: raw.extra_args,
         memory: raw.memory,
         max_turns: raw.max_turns,
         isolation,
@@ -405,6 +411,7 @@ pub fn parse_agent(
         dir,
         file: file.to_path_buf(),
         source,
+        shadowed: Vec::new(),
     })
 }
 

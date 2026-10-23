@@ -77,7 +77,8 @@ pub fn build_args(spec: &LaunchSpec, session_id: &str) -> Vec<String> {
     if let Some(n) = spec.max_turns {
         a.extend(["--max-turns".into(), n.to_string()]);
     }
-    // The custom agent's tool lists and extra config; last because the lists are variadic.
+    // `launch` validates the agent arguments against the shared explicit allowlist.
+    // Tool lists and extra config come last because permission lists are variadic.
     a.extend(spec.agent.extra_args.iter().cloned());
     a
 }
@@ -112,6 +113,8 @@ impl Driver for ClaudeDriver {
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
         check_effort(Harness::Claude, spec.effort.as_deref())?;
+        so_agents::materialise::validate_claude_extra_args(&spec.agent.extra_args)
+            .map_err(DriverError::Other)?;
         write_run_files(&spec)?;
         let session_id = spec
             .resume

@@ -43,6 +43,21 @@ impl RunManager {
             })
             .await
             .map_err(|e| e.message)??;
+        for hidden in &def.shadowed {
+            let warning = format!(
+                "agent `{}` at {} shadows {}",
+                def.name,
+                def.file.display(),
+                hidden.display()
+            );
+            tracing::warn!(run_id = %row.id, "{warning}");
+            self.emit(
+                &row.session_id,
+                Some(&row.id),
+                so_core::EventType::Progress,
+                serde_json::json!({"step": "agent discovery", "status": "warning", "note": warning}),
+            ).await;
+        }
         if !m.system_addendum_extra.trim().is_empty() {
             spec.system_addendum.push_str("\n\n");
             spec.system_addendum
@@ -58,30 +73,15 @@ impl RunManager {
     }
 }
 
-/// The only flags an agent may add to Claude's argv (SPEC 10).
-const ALLOWED_FLAGS: [&str; 7] = [
-    "--tools",
-    "--allowedTools",
-    "--disallowedTools",
-    "--max-turns",
-    "--mcp-config",
-    "--settings",
-    "--add-dir",
-];
-
 /// Keeps `args` only if every flag is allowed and every value is not itself a flag. The run's
 /// turn budget is on the row and reaches the harness through the driver, so the copy
 /// materialisation put in Claude's argv is dropped (the call may have overridden it).
 fn checked_args(args: Vec<String>) -> Result<Vec<String>, String> {
+    so_agents::materialise::validate_claude_extra_args(&args)?;
     let mut out = Vec::with_capacity(args.len());
     let mut dropping = false;
     for a in args {
         if a.starts_with('-') {
-            if !ALLOWED_FLAGS.contains(&a.as_str()) {
-                return Err(format!(
-                    "the agent would add the argument `{a}`, which is not allowed"
-                ));
-            }
             dropping = a == "--max-turns";
             if !dropping {
                 out.push(a);
