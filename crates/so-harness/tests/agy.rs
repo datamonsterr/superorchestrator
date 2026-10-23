@@ -653,3 +653,36 @@ fn prepare_checks_entry_symlinks_against_the_shared_canonical_root() {
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(!dir.join("config/escape.json").exists());
 }
+
+#[test]
+fn review_real_group_writable_config_inside_account_is_allowed() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    std::fs::remove_file(account.join("config")).unwrap();
+    std::fs::create_dir(account.join("config")).unwrap();
+    std::fs::set_permissions(
+        account.join("config"),
+        std::fs::Permissions::from_mode(0o775),
+    )
+    .unwrap();
+    std::fs::write(account.join("config/settings.json"), "local settings").unwrap();
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config/settings.json")).unwrap(),
+        "local settings"
+    );
+}
+
+#[test]
+fn review_dangling_config_entry_is_skipped() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    std::os::unix::fs::symlink(
+        account.join("missing"),
+        account.join("config/dangling.json"),
+    )
+    .unwrap();
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert!(!dir.join("config/dangling.json").exists());
+    assert!(dir.join("config/settings.json").exists());
+}

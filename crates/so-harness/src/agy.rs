@@ -161,16 +161,19 @@ pub fn prepare_gemini_dir(spec: &LaunchSpec, account: &Path) -> std::io::Result<
     let denied = || {
         std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "agy config root must be a directory owned by the current uid without group/world write access; entries must stay inside the config root or account directory",
+            "agy shared config root must be a directory owned by the current uid without group/world write access; entries must stay inside the config root or account directory",
         )
     };
     match std::fs::symlink_metadata(&source_config) {
-        Ok(_) => {
-            // Operator-managed accounts share a config-root symlink (ADR-0005).
-            // Trust its canonical directory only when its owner and permissions are safe.
+        Ok(root_metadata) => {
+            // Preserve local account-directory permissions. Operator-managed shared
+            // roots (ADR-0005) need the additional ownership and mode checks.
             let source_config = source_config.canonicalize()?;
             let metadata = std::fs::metadata(&source_config)?;
-            if !trusted_config_root(&metadata, rustix::process::getuid().as_raw()) {
+            let shared = root_metadata.is_symlink() || !source_config.starts_with(&account);
+            if !metadata.is_dir()
+                || (shared && !trusted_config_root(&metadata, rustix::process::getuid().as_raw()))
+            {
                 return Err(denied());
             }
             for entry in std::fs::read_dir(&source_config)? {
@@ -178,7 +181,17 @@ pub fn prepare_gemini_dir(spec: &LaunchSpec, account: &Path) -> std::io::Result<
                 let path = entry.path();
                 let metadata = std::fs::symlink_metadata(&path)?;
                 if metadata.is_file() || metadata.is_symlink() {
-                    let source = path.canonicalize()?;
+                    let source = match path.canonicalize() {
+                        Ok(source) => source,
+                        Err(e)
+                            if metadata.is_symlink()
+                                && e.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            tracing::warn!(path = %path.display(), "skipping dangling agy config symlink");
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
                     if !source.starts_with(&account) && !source.starts_with(&source_config) {
                         return Err(denied());
                     }
