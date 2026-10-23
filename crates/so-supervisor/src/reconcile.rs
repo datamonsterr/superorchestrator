@@ -61,3 +61,41 @@ pub(crate) fn reconcile(store: &Store, hook: Option<&dyn ReconcileHook>) -> crat
     }
     Ok(failed)
 }
+
+/// Remove Codex capability files left by crashes, including directories with no DB row.
+/// Run after reconciliation: adopted/resuming runs are still active and keep their token.
+/// Keep transcripts and other run evidence; never traverse a symlinked run directory.
+pub(crate) fn cleanup_stale_run_tokens(
+    store: &Store,
+    paths: &so_core::Paths,
+) -> crate::Result<usize> {
+    let entries = match std::fs::read_dir(paths.runs_dir()) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e.into()),
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        // Query each row rather than imposing an active-run list limit that could
+        // accidentally classify a live run as stale. Non-UTF-8 names cannot be run IDs.
+        if let Some(id) = name.to_str()
+            && store.get_run(id)?.is_some_and(|run| run.state.is_active())
+        {
+            continue;
+        }
+        match std::fs::remove_file(entry.path().join("ws-token")) {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    if removed > 0 {
+        tracing::info!(removed, "removed stale run capability files on startup");
+    }
+    Ok(removed)
+}
