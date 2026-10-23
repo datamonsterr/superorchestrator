@@ -3,7 +3,9 @@
 //! Everything that ends a run goes through [`RunManager::finish`], so cleanup happens
 //! exactly once and a waiter never sees a run as done before it is wrapped up.
 
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use sha2::{Digest, Sha256};
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -157,12 +159,51 @@ impl RunManager {
             .is_some_and(|rt| rt.cancel_requested)
     }
 
-    fn mcp_spec(&self, run_id: &str) -> McpServerSpec {
-        McpServerSpec {
+    pub(super) async fn issue_run_token(&self, run_id: &str) -> R<()> {
+        // A workflow retries the same run id after hitting its parent's child cap.
+        // Reuse its already issued identity rather than replacing a live MCP secret.
+        let id = run_id.to_string();
+        if self.db(move |s| s.get_run_token_hash(&id)).await?.is_some() {
+            return Ok(());
+        }
+        let dir = self.inner.paths.run_dir(run_id);
+        let hash = self
+            .blocking(move || -> Result<Vec<u8>, String> {
+                let mut bytes = [0u8; 32];
+                getrandom::fill(&mut bytes)
+                    .map_err(|_| "could not generate run identity token".to_string())?;
+                let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                create_private_dir(&dir)
+                    .map_err(|_| "could not create private run directory".to_string())?;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(dir.join("rpc-token"))
+                    .map_err(|_| "could not create run identity file".to_string())?;
+                file.write_all(token.as_bytes())
+                    .map_err(|_| "could not write run identity file".to_string())?;
+                Ok(Sha256::digest(token.as_bytes()).to_vec())
+            })
+            .await?
+            .map_err(crate::dispatch::internal)?;
+        let id = run_id.to_string();
+        self.db(move |s| s.set_run_token_hash(&id, &hash)).await
+    }
+
+    async fn mcp_spec(&self, run_id: &str) -> Result<McpServerSpec, String> {
+        let token_file = self.inner.paths.run_dir(run_id).join("rpc-token");
+        let token = self
+            .blocking(move || std::fs::read_to_string(token_file))
+            .await
+            .map_err(|_| "could not read run identity file".to_string())?
+            .map_err(|_| "could not read run identity file".to_string())?;
+        Ok(McpServerSpec {
             command: self.inner.mcp_exe.clone(),
             args: vec!["mcp".to_string()],
             env: vec![
                 ("SUPERORCHESTRATOR_RUN_ID".into(), run_id.to_string()),
+                ("SUPERORCHESTRATOR_RUN_TOKEN".into(), token),
                 (
                     "SUPERORCHESTRATOR_SOCKET".into(),
                     self.inner.socket_path.to_string_lossy().into_owned(),
@@ -172,7 +213,7 @@ impl RunManager {
                     self.inner.paths.config_dir.to_string_lossy().into_owned(),
                 ),
             ],
-        }
+        })
     }
 
     /// Builds the launch spec for a run and creates its private run directory.
@@ -211,7 +252,7 @@ impl RunManager {
                 row.parent_run_id.as_deref(),
                 output_schema.as_ref(),
             ),
-            mcp: self.mcp_spec(&row.id),
+            mcp: self.mcp_spec(&row.id).await?,
             output_schema,
             max_turns: row.max_turns,
             resume,

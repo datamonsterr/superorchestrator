@@ -216,7 +216,7 @@ async fn a_workflow_left_running_by_a_dead_supervisor_is_failed_on_start() {
         })
         .unwrap();
     let h = env.start().await;
-    let c = env.client(&h).await;
+    let c = env.inspect_client(&h).await;
     let s = status(&c, "wf-orphan").await;
     assert_eq!(s.state, "failed");
     assert!(s.error.unwrap().contains("supervisor stopped"));
@@ -344,7 +344,7 @@ async fn a_depth_two_run_cannot_start_a_workflow() {
     let h = env.start().await;
     let deep = insert_session_and_run(&env.store(), 2, RunState::Running);
     let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
-    c.hello("child", "/", Some(deep.id), None).await.unwrap();
+    hello_run(&c, &env.store(), &env.paths, &deep.id).await;
     let err = c
         .call::<_, Value>(METHOD_RUN_WORKFLOW, json!({"script": "return 1;"}))
         .await
@@ -405,7 +405,7 @@ return await agent("do the task", {harness: "claude", isolation: "none"});
     assert!(h.state().busy(), "idle exit must wait for the workflow");
 
     // It finishes after the reset, and only then does the session end.
-    let c = env.client(&h).await;
+    let c = env.inspect_client(&h).await;
     let s = wait_workflow(&c, &id, "succeeded").await;
     assert_eq!(s.result, Some(json!("done")));
     for _ in 0..200 {
@@ -474,7 +474,7 @@ async fn a_waiting_caller_that_goes_away_cancels_the_workflow() {
     env.account("claude-a", 2, &idle_script());
     let h = env.start().await;
     let script_src = r#"return await agent("do the task", {harness: "claude", account: "claude-a", isolation: "none"});"#;
-    let watcher = env.client(&h).await;
+    let watcher = env.inspect_client(&h).await;
     let caller = env.client(&h).await;
     let call = tokio::spawn(async move {
         let _ = caller
@@ -541,7 +541,7 @@ async fn steps_over_the_parents_child_limit_wait_for_one_to_finish() {
     let h = env.start().await;
     let parent = insert_session_and_run(&env.store(), 1, RunState::Running);
     let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
-    c.hello("child", "/", Some(parent.id), None).await.unwrap();
+    hello_run(&c, &env.store(), &env.paths, &parent.id).await;
     let src = r#"
 return await parallel([
   (a) => a("do the task", {harness: "claude", account: "claude-a", isolation: "none", model: "m1"}),

@@ -61,7 +61,7 @@ Before coding against `rmcp`, `axum`, `rquickjs` or any harness protocol, check 
                                                   └─► [bwrap …] agy -p= stream-json (per run, --gemini_dir)
                                                         │
                                 each child has its own superorchestrator mcp,
-                                with SUPERORCHESTRATOR_RUN_ID set, so it can
+                                with a run id and secret token, so it can
                                 message its parent and spawn children
                                                   │
                                            state.db (SQLite, WAL)
@@ -70,7 +70,7 @@ Before coding against `rmcp`, `axum`, `rquickjs` or any harness protocol, check 
 
 ### 3.1 Processes
 
-- **`superorchestrator mcp`.** A stdio MCP server started by the MCP client. It is a thin client: each tool call is forwarded to the supervisor over `$XDG_RUNTIME_DIR/superorchestrator.sock` (on macOS, `~/Library/Caches/superorchestrator/sock`). If no supervisor is running, it starts one and waits up to 5 s for the socket. At startup it opens a **session**. A session has no run id, unless `SUPERORCHESTRATOR_RUN_ID` is set, in which case the process acts for that run.
+- **`superorchestrator mcp`.** A stdio MCP server started by the MCP client. It is a thin client: each tool call is forwarded to the supervisor over `$XDG_RUNTIME_DIR/superorchestrator.sock` (on macOS, `~/Library/Caches/superorchestrator/sock`). If no supervisor is running, it starts one and waits up to 5 s for the socket. At startup it opens a **session**. A session has no run id. A spawned run instead supplies `SUPERORCHESTRATOR_RUN_ID` and `SUPERORCHESTRATOR_RUN_TOKEN` in `hello` to attach to its existing session. The supervisor requires the matching per-run token before binding run identity and depth; missing or incorrect tokens, including claims for legacy tokenless runs, are refused.
 - **Supervisor (`superorchestrator daemon`).** One per user ([ADR-0001](docs/adr/0001-per-user-supervisor-owns-runs.md)). It holds a single-instance lock file. It owns every run's harness process, the router, caps, the usage probes, stall detection, notifications and the web UI. It exits after `supervisor.idle_exit` (default 10 min) with no active runs, no connected `mcp` clients and no open UI streams. On restart it reconciles `state.db`: runs marked active whose process is gone are resumed from their native session when the harness supports resume, and marked `failed` otherwise.
 - **`superorchestrator exec <account> -- <args>`.** Called by wrappers. It writes a session row (kind `interactive`) and a pid, sets the account's environment, then `exec`s the real binary. If `state.db` is unavailable, it still launches the binary. It never blocks on the supervisor.
 - **`superorchestrator ui`.** Ensures the supervisor runs and opens the browser at the UI URL. `ui --install-service` writes a systemd user unit (Linux) or a launchd agent (macOS) that keeps the supervisor running.
@@ -651,7 +651,7 @@ desktop = true
 on = ["escalated", "question_waiting_10m", "session_finished", "account_exhausted"]
 ```
 
-Environment variables: `SUPERORCHESTRATOR_CONFIG_DIR`, `SUPERORCHESTRATOR_RUN_ID`, `SUPERORCHESTRATOR_SOCKET`, `SUPERORCHESTRATOR_LOG`, `SUPERORCHESTRATOR_ROUTER_MODEL`, `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL`.
+Environment variables: `SUPERORCHESTRATOR_CONFIG_DIR`, `SUPERORCHESTRATOR_RUN_ID`, `SUPERORCHESTRATOR_RUN_TOKEN`, `SUPERORCHESTRATOR_SOCKET`, `SUPERORCHESTRATOR_LOG`, `SUPERORCHESTRATOR_ROUTER_MODEL`, `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL`.
 
 The default `min_confidence` (0.45) and `min_margin` (0.15) were tuned on 2026-10-23 against `jev-1.14-20261014` (`~typesafe/jev-latest`). With the first, untuned descriptions, correct answers had confidence 0.47-0.56 and margin 0.29-0.42, while answers that should be rejected had confidence 0.20-0.36 and margin 0.00-0.22; the defaults sit in that gap. Live results with the shipped seeds, routing instruction and these defaults (one run each on 2026-10-23): on `inception/mercury-decide:free` the tuning set scored 87% (13 of 15, no fallbacks) and the held-out set 88% (14 of 16, one fallback); on `~typesafe/jev-latest` the tuning set scored 87% (3 fallbacks) and the held-out set 75% (2 fallbacks). The remaining misses were mostly a neighbouring tier (flash-high for sonnet-thinking work). Without a decider the heuristic scores 73% on the tuning set and 50% on the held-out set. Choices already in a user's `config.toml` keep their old descriptions: `init` never rewrites them (8.2), so copy the seeded descriptions to benefit from the tuning. The free `mercury-decide` tier can be rate limited or withdrawn and resolves to a dated snapshot; the fallback covers outages, and `SUPERORCHESTRATOR_ROUTER_MODEL=~typesafe/jev-latest` switches the primary.
 
@@ -664,12 +664,12 @@ The default `min_confidence` (0.45) and `min_margin` (0.15) were tuned on 2026-1
 | `attempts` | id, run_id, account, started_at, ended_at, outcome |
 | `events` | id, session_id, run_id, ts, type, data_json (indexed by session_id, ts) |
 | `messages` | as in section 9 |
-| `run_meta` | run_id, checks_json (review checks), fork_from (native session a fork resumes), resume_prompt (set while a finished run waits in `queued` to be resumed). No foreign key: written before the run row. Deleted by `worktrees prune`. |
+| `run_meta` | run_id, checks_json (review checks), rpc_token_hash (SHA-256 run identity proof, excluded from public rows and views), fork_from (native session a fork resumes), resume_prompt (set while a finished run waits in `queued` to be resumed). No foreign key: written before the run row. `worktrees prune` clears launch/review metadata while preserving the run identity hash. |
 | `headroom` | account, pool, five_hour_remaining_pct, five_hour_resets_at, weekly_remaining_pct, weekly_resets_at, status, source, observed_at |
 | `ledger` | account, pool, run_id, ts, input_tokens, output_tokens, cost |
 | `flags` | account, pool, until, reason |
 | `workflow_cache` | key_hash, workflow, result_json, created_at |
-| `workflow_runs` | id, name, session_id, state, args_json, started_at, finished_at |
+| `workflow_runs` | id, name, session_id, owner_run_id, state, args_json, started_at, finished_at |
 | `workflow_steps` | id, workflow_run_id, step_index, phase, prompt_hash, run_id, state, started_at, finished_at |
 
 Migrations are embedded and run on open. Each table has a schema version.
@@ -729,6 +729,9 @@ The supervisor sends notifications for the events listed in `notifications.on`, 
   - The UI binds to loopback by default. A non-loopback bind requires a token.
   - Codex app-server websockets bind to `127.0.0.1` with a per-run token.
   - `opencode serve` uses a per-run password.
+- **RPC sessions and run ownership.** Session-bearing connections may read or control only runs and workflows in their own session. Workflows record their initiating run; a run caller can inspect or cancel only workflows owned by its subtree, and cannot act on orchestrator or legacy workflows without a recorded run owner. A run caller may read, wait on, join, review or cancel only itself and descendants; `fork_agent` retains its direct-parent restriction. It may message itself, descendants, its parent and other ancestors. Siblings are refused. `read_messages` reads only the caller's inbox; `ask_parent` and `report_progress` address the caller's parent. Depth-0 orchestrator connections retain access to their session's runs.
+- **Run identity.** At spawn the supervisor generates a random 256-bit token, stores its SHA-256 hash in `run_meta` and keeps the token in `runs/<run_id>/rpc-token` (0600, directory 0700) for resume and supervisor restart. The run's MCP server environment carries it alongside the run id. `hello` compares hashes in constant time. Tokens are excluded from public run views, results, events and debug output.
+- **Local operator boundary.** The socket is per-UID. Sessionless `inspect` connections used by CLI/TUI keep operator access to run reads, waits, cancel, join and workflow status/cancel without opening a session. They cannot spawn, message, review or fork. A run id in any `hello`, including `inspect`, still requires its token. These checks isolate cooperative MCP sessions and run identities; they do not isolate processes with the same UID or a subagent with unrestricted shell access from the local operator.
 - **Task text.** Task text is passed to children as argv elements or JSON, never through a shell string. It cannot change routing eligibility.
 - **Permissions.** Children run with full permissions, so worktree isolation is the default. `isolation: none` must be set explicitly per call or per agent.
 - **Destructive commands.** `account remove`, `worktrees prune` and `migrate --apply` ask for confirmation unless `--yes` is passed.

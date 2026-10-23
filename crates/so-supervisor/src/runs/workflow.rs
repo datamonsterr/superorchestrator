@@ -284,7 +284,9 @@ impl RunManager {
             result_json: None,
             error: None,
         };
-        self.db(move |s| s.insert_workflow_run(&row)).await?;
+        let owner = ctx.run_id.clone();
+        self.db(move |s| s.insert_workflow_run_owned(&row, owner.as_deref()))
+            .await?;
         self.publish_workflow(&id, &name, "running", None, Some(session_id));
 
         let host = Arc::new(StepHost {
@@ -351,6 +353,37 @@ impl RunManager {
             out
         });
         Ok(Started { id, done })
+    }
+
+    pub(super) async fn authorize_workflow_or_inspect(&self, ctx: &ConnCtx, id: &str) -> R<()> {
+        if ctx.greeted && ctx.session_id.is_none() && ctx.run_id.is_none() {
+            return Ok(());
+        }
+        let id = id.to_string();
+        let (row, owner) = self
+            .db(move |s| {
+                let row = s.get_workflow_run_by_prefix(&id)?;
+                let owner = s.get_workflow_owner(&row.id)?;
+                Ok((row, owner))
+            })
+            .await?;
+        if ctx.session_id.is_none() || ctx.session_id != row.session_id {
+            return Err(rpc(
+                INVALID_PARAMS,
+                "that workflow belongs to another session",
+            ));
+        }
+        if ctx.run_id.is_some() {
+            let owner = owner.ok_or_else(|| {
+                rpc(
+                    INVALID_PARAMS,
+                    "that workflow is outside the caller's subtree",
+                )
+            })?;
+            self.authorize_run(ctx, &self.resolve_run(&owner).await?, false)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Stops a running workflow: the engine is interrupted and every step run is cancelled.

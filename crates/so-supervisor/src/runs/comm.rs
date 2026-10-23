@@ -191,12 +191,69 @@ impl RunManager {
             .await;
     }
 
-    fn same_session(ctx: &ConnCtx, row: &RunRow) -> R<()> {
+    pub(super) fn same_session(ctx: &ConnCtx, row: &RunRow) -> R<()> {
         if ctx.session_id.as_deref() == Some(row.session_id.as_str()) {
             Ok(())
         } else {
             Err(rpc(INVALID_PARAMS, "that run belongs to another session"))
         }
+    }
+
+    /// Run callers own their subtree. Messaging may also travel towards ancestors.
+    pub(super) async fn authorize_run(
+        &self,
+        ctx: &ConnCtx,
+        row: &RunRow,
+        ancestors: bool,
+    ) -> R<()> {
+        Self::same_session(ctx, row)?;
+        let Some(caller) = ctx.run_id.clone() else {
+            return Ok(());
+        };
+        let target = row.id.clone();
+        let session = row.session_id.clone();
+        let allowed = self
+            .db(move |s| {
+                let contains = |root: &str, leaf: &str| -> so_store::Result<bool> {
+                    let mut next = Some(leaf.to_string());
+                    let mut seen = std::collections::HashSet::new();
+                    while let Some(id) = next {
+                        if !seen.insert(id.clone()) {
+                            return Ok(false);
+                        }
+                        let Some(r) = s.get_run(&id)? else {
+                            return Ok(false);
+                        };
+                        if r.session_id != session {
+                            return Ok(false);
+                        }
+                        if r.id == root {
+                            return Ok(true);
+                        }
+                        next = r.parent_run_id;
+                    }
+                    Ok(false)
+                };
+                Ok(contains(&caller, &target)? || (ancestors && contains(&target, &caller)?))
+            })
+            .await?;
+        if allowed {
+            Ok(())
+        } else {
+            Err(rpc(
+                INVALID_PARAMS,
+                "that run is outside the caller's subtree",
+            ))
+        }
+    }
+
+    /// Sessionless inspect connections are the local operator over the 0600 socket.
+    /// Only handlers already available to inspect clients may use this exception.
+    pub(super) async fn authorize_run_or_inspect(&self, ctx: &ConnCtx, row: &RunRow) -> R<()> {
+        if ctx.greeted && ctx.session_id.is_none() && ctx.run_id.is_none() {
+            return Ok(());
+        }
+        self.authorize_run(ctx, row, false).await
     }
 
     // ------------------------------------------------------------ send_message
@@ -209,7 +266,7 @@ impl RunManager {
             return Err(rpc(INVALID_PARAMS, "text must not be empty"));
         }
         let row = self.resolve_run(&p.run).await?;
-        Self::same_session(ctx, &row)?;
+        self.authorize_run(ctx, &row, true).await?;
         // A message to a run at the review gate acts like a reject: it takes the run's
         // review turn (always before the gate lock), so it waits for an accept or reject
         // in flight and then sees the state that left behind.
@@ -347,6 +404,9 @@ impl RunManager {
             .session_id
             .clone()
             .ok_or_else(|| rpc(INVALID_REQUEST, "hello required"))?;
+        if let Some(id) = &ctx.run_id {
+            Self::same_session(ctx, &self.resolve_run(id).await?)?;
+        }
         let to = ctx.run_id.clone();
         let rows = self
             .db(move |s| {
@@ -373,6 +433,7 @@ impl RunManager {
     pub async fn report_progress(&self, ctx: &ConnCtx, p: ReportProgressParams) -> R<AckResult> {
         let run_id = Self::caller_run(ctx, "report_progress")?;
         let row = self.resolve_run(&run_id).await?;
+        Self::same_session(ctx, &row)?;
         let body = match &p.note {
             Some(n) => format!("{}: {} ({n})", p.step, p.status),
             None => format!("{}: {}", p.step, p.status),
@@ -401,6 +462,7 @@ impl RunManager {
     pub async fn ask_parent(&self, ctx: &ConnCtx, p: AskParentParams) -> R<AskParentResult> {
         let run_id = Self::caller_run(ctx, "ask_parent")?;
         let row = self.resolve_run(&run_id).await?;
+        Self::same_session(ctx, &row)?;
         let timeout = self.config().runs.ask_timeout.as_duration();
         let mut tick = self.inner.msg_tick.subscribe();
         // An answer to an earlier question that timed out must not answer this one.

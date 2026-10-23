@@ -74,6 +74,24 @@ async fn spawn_wait_get_succeeds_and_removes_untouched_worktree() {
     assert!(run_dir.join("system.md").exists());
     let mcp = std::fs::read_to_string(run_dir.join("mcp.json")).unwrap();
     assert!(mcp.contains("SUPERORCHESTRATOR_RUN_ID") && mcp.contains(&r.run_id));
+    let token_file = run_dir.join("rpc-token");
+    let token = std::fs::read_to_string(&token_file).unwrap();
+    assert!(token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()));
+    assert_eq!(
+        std::fs::metadata(token_file).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(mcp.contains("SUPERORCHESTRATOR_RUN_TOKEN") && mcp.contains(&token));
+    use sha2::{Digest, Sha256};
+    assert!(
+        env.store()
+            .get_run_token_hash(&r.run_id)
+            .unwrap()
+            .as_deref()
+            == Some(Sha256::digest(token.as_bytes()).as_slice())
+    );
+    let public = serde_json::to_string(&v).unwrap();
+    assert!(!public.contains(&token) && !public.contains("rpc_token_hash"));
     assert!(
         mcp.contains("SUPERORCHESTRATOR_SOCKET") && mcp.contains("SUPERORCHESTRATOR_CONFIG_DIR")
     );
@@ -309,9 +327,7 @@ async fn depth_two_caller_cannot_spawn_and_children_are_capped() {
     let shallow = insert_session_and_run(&env.store(), 1, RunState::Running);
 
     let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
-    c.hello("child", "/", Some(deep.id.clone()), None)
-        .await
-        .unwrap();
+    hello_run(&c, &env.store(), &env.paths, &deep.id).await;
     let e = c
         .call::<_, SpawnResult>(METHOD_SPAWN_AGENT, env.spawn_params("claude-acc1"))
         .await
@@ -319,9 +335,7 @@ async fn depth_two_caller_cannot_spawn_and_children_are_capped() {
     assert_eq!(rpc_code(e), DEPTH_LIMIT);
 
     let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
-    c.hello("child", "/", Some(shallow.id.clone()), None)
-        .await
-        .unwrap();
+    hello_run(&c, &env.store(), &env.paths, &shallow.id).await;
     let mut p = env.spawn_params("claude-acc1");
     p.isolation = Some(so_core::Isolation::None);
     let first = spawn(&c, p.clone()).await;
@@ -376,9 +390,7 @@ async fn cancel_cancels_descendants() {
     wait_state(&c, &parent.run_id, RunState::Running).await;
 
     let cc = SupervisorClient::connect(h.socket_path()).await.unwrap();
-    cc.hello("child", "/", Some(parent.run_id.clone()), None)
-        .await
-        .unwrap();
+    hello_run(&cc, &env.store(), &env.paths, &parent.run_id).await;
     p.account = Some("claude-acc2".into());
     let child = spawn(&cc, p).await;
     wait_state(&c, &child.run_id, RunState::Running).await;
@@ -543,6 +555,7 @@ fn orphan(env: &Env, native: Option<&str>) -> RunRow {
     row.cwd = Some(env.repo.to_string_lossy().into_owned());
     row.prompt = Some(PROMPT.into());
     store.insert_run(&row).unwrap();
+    seed_run_identity(&store, &env.paths, &row.id);
     row
 }
 
@@ -560,7 +573,7 @@ async fn reconcile_resumes_a_run_with_a_native_session() {
     );
     let row = orphan(&env, Some("native-1"));
     let h = env.start().await;
-    let c = env.client(&h).await;
+    let c = env.inspect_client(&h).await;
     wait_state(&c, &row.id, RunState::Succeeded).await;
     assert_eq!(view(&c, &row.id).await.result, Some(json!("done")));
     h.shutdown().await;
@@ -572,7 +585,7 @@ async fn reconcile_fails_a_run_without_a_native_session() {
     env.account("claude-acc1", 2, &ok_script(&[]));
     let row = orphan(&env, None);
     let h = env.start().await;
-    let c = env.client(&h).await;
+    let c = env.inspect_client(&h).await;
     assert_eq!(view(&c, &row.id).await.state, RunState::Failed);
     h.shutdown().await;
 }
@@ -713,5 +726,28 @@ async fn slow_launch_fails_the_run() {
             .contains("did not start"),
         "{finished:?}"
     );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn run_tokens_are_distinct_and_authenticate_after_supervisor_restart() {
+    let env = Env::new();
+    env.account("claude-acc1", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let first = spawn(&c, env.spawn_params("claude-acc1")).await;
+    wait_for(&c, &first.run_id).await;
+    let second = spawn(&c, env.spawn_params("claude-acc1")).await;
+    wait_for(&c, &second.run_id).await;
+    let first_token =
+        std::fs::read_to_string(env.paths.run_dir(&first.run_id).join("rpc-token")).unwrap();
+    let second_token =
+        std::fs::read_to_string(env.paths.run_dir(&second.run_id).join("rpc-token")).unwrap();
+    assert!(first_token != second_token);
+    h.shutdown().await;
+    let h = env.start().await;
+    let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
+    hello_run(&c, &env.store(), &env.paths, &first.run_id).await;
+    assert_eq!(view(&c, &first.run_id).await.state, RunState::Succeeded);
     h.shutdown().await;
 }

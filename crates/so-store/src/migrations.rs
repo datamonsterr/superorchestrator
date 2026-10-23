@@ -135,8 +135,16 @@ const V8: &str = "
 ALTER TABLE sessions ADD COLUMN pid_start TEXT;
 ";
 
+const V9: &str = "
+-- Per-run RPC identity proof. NULL on legacy runs deliberately refuses run claims.
+ALTER TABLE run_meta ADD COLUMN rpc_token_hash BLOB;
+ALTER TABLE workflow_runs ADD COLUMN owner_run_id TEXT;
+UPDATE schema_versions SET version = 9 WHERE table_name = 'workflow_runs';
+UPDATE schema_versions SET version = 9 WHERE table_name = 'runs';
+";
+
 /// Ordered migrations; entry `i` brings the database to version `i + 1`.
-const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8];
+const MIGRATIONS: &[&str] = &[V1, V2, V3, V4, V5, V6, V7, V8, V9];
 
 /// Latest schema version known to this build.
 pub fn latest_version() -> i64 {
@@ -162,4 +170,28 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
     }
     tx.commit()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod token_tests {
+    #[test]
+    fn run_identity_migrates_from_v8_without_authenticating_old_runs() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        for sql in super::MIGRATIONS.iter().take(8) {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch(
+            "PRAGMA user_version = 8; INSERT INTO run_meta (run_id) VALUES ('legacy');",
+        )
+        .unwrap();
+        super::migrate(&mut conn).unwrap();
+        let hash: Option<Vec<u8>> = conn
+            .query_row(
+                "SELECT rpc_token_hash FROM run_meta WHERE run_id = 'legacy'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(hash.is_none());
+    }
 }

@@ -66,8 +66,17 @@ impl Store {
     }
 
     pub fn insert_workflow_run(&self, w: &WorkflowRunRow) -> Result<()> {
+        self.insert_workflow_run_owned(w, None)
+    }
+
+    /// Inserts the workflow and its initiating run together. None is a depth-0 owner.
+    pub fn insert_workflow_run_owned(
+        &self,
+        w: &WorkflowRunRow,
+        owner_run_id: Option<&str>,
+    ) -> Result<()> {
         self.conn().execute(
-            &format!("INSERT INTO workflow_runs ({COLS}) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)"),
+            &format!("INSERT INTO workflow_runs ({COLS}, owner_run_id) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"),
             params![
                 w.id,
                 w.name,
@@ -77,10 +86,20 @@ impl Store {
                 ts_to_sql(&w.started_at),
                 opt_ts_to_sql(&w.finished_at),
                 w.result_json,
-                w.error
+                w.error,
+                owner_run_id,
             ],
         )?;
         Ok(())
+    }
+
+    /// The initiating run, absent for orchestrator and legacy workflows.
+    pub fn get_workflow_owner(&self, id: &str) -> Result<Option<String>> {
+        Ok(self.conn().query_row(
+            "SELECT owner_run_id FROM workflow_runs WHERE id = ?1",
+            [id],
+            |r| r.get(0),
+        )?)
     }
 
     /// Ends a run: the final state with its result (on success) or error, and the finish

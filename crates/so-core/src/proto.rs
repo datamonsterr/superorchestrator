@@ -150,19 +150,35 @@ fn is_false(b: &bool) -> bool {
 
 // ---------------------------------------------------------------- params
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HelloParams {
     pub client: String,
     pub cwd: String,
     #[serde(default)]
     pub run_id: Option<String>,
+    /// Secret proof for `run_id`; never included in a hello result or public run view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_token: Option<String>,
     #[serde(default)]
     pub pid: Option<u32>,
     /// Read or control calls only: no session row is opened (SPEC 3.1: only `mcp` opens a
     /// session at startup), so `spawn_agent` and `run_workflow` are refused on the connection.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inspect: bool,
+}
+
+impl std::fmt::Debug for HelloParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HelloParams")
+            .field("client", &self.client)
+            .field("cwd", &self.cwd)
+            .field("run_id", &self.run_id)
+            .field("run_token", &self.run_token.as_ref().map(|_| "[REDACTED]"))
+            .field("pid", &self.pid)
+            .field("inspect", &self.inspect)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -916,5 +932,19 @@ mod tests {
         let j = serde_json::to_string(&r).unwrap();
         assert_eq!(serde_json::from_str::<RouteResult>(&j).unwrap(), r);
         assert!(j.contains("\"source\":\"heuristic\""));
+    }
+}
+
+#[cfg(test)]
+mod hello_security_tests {
+    #[test]
+    fn hello_debug_never_discloses_run_token() {
+        let hello: super::HelloParams = serde_json::from_value(serde_json::json!({
+            "client": "test", "cwd": "/", "run_id": "r", "run_token": "private-test-token"
+        }))
+        .unwrap();
+        let debug = format!("{hello:?}");
+        assert!(!debug.contains("private-test-token"));
+        assert!(debug.contains("[REDACTED]"));
     }
 }

@@ -245,14 +245,7 @@ impl Env {
     /// What `superorchestrator mcp` does inside a run: a connection that acts for it.
     async fn as_run(&self, h: &SupervisorHandle, run: &str) -> SupervisorClient {
         let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
-        c.hello(
-            "mcp",
-            self.repo.to_str().unwrap(),
-            Some(run.to_string()),
-            None,
-        )
-        .await
-        .unwrap();
+        common::hello_run(&c, &self.store(), &self.paths, run).await;
         c
     }
 

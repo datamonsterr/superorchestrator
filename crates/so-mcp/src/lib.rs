@@ -21,6 +21,7 @@ use std::path::PathBuf;
 
 use anyhow::Context;
 use rmcp::ServiceExt;
+use so_core::proto::HelloParams;
 use so_supervisor::{SupervisorClient, spawn_daemon_process};
 
 pub use bridge::{McpBridge, mcp_reply, rpc_args};
@@ -44,13 +45,20 @@ pub struct McpOptions {
 /// stdin closes.
 pub async fn serve_stdio(opts: McpOptions) -> anyhow::Result<()> {
     let cwd = opts.cwd.to_string_lossy().into_owned();
-    let (client, hello) = SupervisorClient::connect_or_spawn_hello(
+    let (client, hello) = SupervisorClient::connect_or_spawn_authenticated(
         &opts.socket_path,
         || spawn_daemon_process(&opts.spawn_exe, &opts.config_dir),
-        &opts.client_name,
-        &cwd,
-        opts.run_id.clone(),
-        Some(std::process::id()),
+        HelloParams {
+            client: opts.client_name.clone(),
+            cwd,
+            run_id: opts.run_id.clone(),
+            run_token: opts
+                .run_id
+                .as_ref()
+                .and_then(|_| std::env::var("SUPERORCHESTRATOR_RUN_TOKEN").ok()),
+            pid: Some(std::process::id()),
+            inspect: false,
+        },
     )
     .await
     .context("connecting to the supervisor")?;

@@ -7,6 +7,7 @@ use std::sync::{Arc, RwLock};
 
 use serde::Serialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use so_core::SessionKind;
 use so_core::proto::{
     HelloParams, HelloResult, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_CANCEL_AGENT,
@@ -16,6 +17,7 @@ use so_core::proto::{
     Response, RpcError, StatusResult,
 };
 use so_store::SessionRow;
+use subtle::ConstantTimeEq;
 use tokio::sync::{mpsc, watch};
 
 use crate::server::SupervisorState;
@@ -284,6 +286,19 @@ async fn hello(
             .db(move |s| s.get_run(&id))
             .await?
             .ok_or_else(|| RpcError::new(NOT_FOUND, format!("run not found: {run_id}")))?;
+        let id = run.id.clone();
+        let expected = state.db(move |s| s.get_run_token_hash(&id)).await?;
+        let valid = p
+            .run_token
+            .as_deref()
+            .zip(expected.as_deref())
+            .is_some_and(|(token, hash)| {
+                let actual = Sha256::digest(token.as_bytes());
+                bool::from(actual.as_slice().ct_eq(hash))
+            });
+        if !valid {
+            return Err(RpcError::new(INVALID_REQUEST, "invalid run identity token"));
+        }
         HelloResult {
             session_id: run.session_id,
             run_id: Some(run.id),
