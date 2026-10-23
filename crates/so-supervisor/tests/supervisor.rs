@@ -1470,9 +1470,13 @@ async fn sibling_and_orchestrator_workflows_are_outside_a_run_subtree() {
     .await
     .unwrap();
     let orchestrator = connect(&h).await;
-    let session = hello(&orchestrator).await;
+    let session = orchestrator
+        .hello("test", env.dir.path().to_str().unwrap(), None, Some(7))
+        .await
+        .unwrap();
     let store = env.store();
-    let owner = run_row(&session.session_id, RunState::Running, 1);
+    let mut owner = run_row(&session.session_id, RunState::Running, 1);
+    owner.cwd = Some(env.dir.path().to_string_lossy().into_owned());
     let sibling = run_row(&session.session_id, RunState::Running, 1);
     store.insert_run(&owner).unwrap();
     store.insert_run(&sibling).unwrap();
@@ -1480,8 +1484,11 @@ async fn sibling_and_orchestrator_workflows_are_outside_a_run_subtree() {
     hello_run(&owner_client, &store, &owner.id, false).await;
     let sibling_client = connect(&h).await;
     hello_run(&sibling_client, &store, &sibling.id, false).await;
+    // Subagents may only run saved workflows by name (GHSA-8hc9).
+    std::fs::create_dir_all(env.paths.workflows_dir()).unwrap();
+    std::fs::write(env.paths.workflows_dir().join("owned.js"), "return 1;").unwrap();
     let owned: Value = owner_client
-        .call("run_workflow", json!({"script": "return 1;"}))
+        .call("run_workflow", json!({"name": "owned"}))
         .await
         .unwrap();
     let top: Value = orchestrator

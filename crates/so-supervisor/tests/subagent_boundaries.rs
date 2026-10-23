@@ -28,9 +28,7 @@ async fn ghsa_subagent_checks_allow_only_ci_and_pr_threads() {
     let h = env.start().await;
     let parent = insert_session_and_run_in(&env.store(), 1, RunState::Running, &env.repo);
     let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
-    c.hello("subagent", "/", Some(parent.id), None)
-        .await
-        .unwrap();
+    hello_run(&c, &env.store(), &env.paths, &parent.id).await;
     let mut p = env.spawn_params("claude-a");
     p.review = true;
     p.isolation = Some(Isolation::None);
@@ -90,9 +88,7 @@ async fn ghsa_subagent_cwd_is_confined_to_its_worktree() {
         )
         .unwrap();
     let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
-    c.hello("subagent", "/", Some(parent.id), None)
-        .await
-        .unwrap();
+    hello_run(&c, &env.store(), &env.paths, &parent.id).await;
     let mut p = env.spawn_params("claude-a");
     p.isolation = Some(Isolation::None);
     for cwd in [
@@ -147,9 +143,7 @@ async fn ghsa_subagent_workflow_rejects_script_but_runs_saved_steps_in_run_cwd()
         )
         .unwrap();
     let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
-    c.hello("subagent", "/", Some(parent.id), None)
-        .await
-        .unwrap();
+    hello_run(&c, &env.store(), &env.paths, &parent.id).await;
     let e = c
         .call::<_, Value>(METHOD_RUN_WORKFLOW, json!({"script":"return 1;"}))
         .await
@@ -195,9 +189,7 @@ async fn ghsa_subagent_saved_workflows_ignore_project_scripts_and_shadowing() {
         )
         .unwrap();
     let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
-    c.hello("subagent", "/", Some(parent.id), None)
-        .await
-        .unwrap();
+    hello_run(&c, &env.store(), &env.paths, &parent.id).await;
     let e = c
         .call::<_, Value>(METHOD_RUN_WORKFLOW, json!({"name":"evil"}))
         .await
