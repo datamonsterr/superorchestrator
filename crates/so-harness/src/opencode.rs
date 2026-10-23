@@ -392,6 +392,18 @@ fn num_at(v: &Value, path: &[&str]) -> u64 {
         .map_or(0, |n| n.max(0.0) as u64)
 }
 
+/// opencode rejects an id it does not list with `Model not found: <id>. Did you mean: ...`.
+/// That is the run's configuration, not the account, so it is checked before the shared
+/// patterns (the "did you mean" list can carry words those match). Other harnesses use
+/// their own wording and stay unclassified until it is recorded.
+fn classify_text(text: &str) -> ErrorKind {
+    if text.to_lowercase().contains("model not found") {
+        ErrorKind::Config
+    } else {
+        classify_common(text)
+    }
+}
+
 /// Kind and text of a `session.error` / message `error` object.
 fn classify_api_error(error: &Value) -> (ErrorKind, String) {
     let name = error.get("name").and_then(Value::as_str).unwrap_or("Error");
@@ -406,7 +418,7 @@ fn classify_api_error(error: &Value) -> (ErrorKind, String) {
         (_, Some(402)) => ErrorKind::Quota,
         (_, Some(429)) => ErrorKind::RateLimit,
         (_, Some(401 | 403)) | ("ProviderAuthError", _) => ErrorKind::Auth,
-        _ => classify_common(&text),
+        _ => classify_text(&text),
     };
     (kind, text)
 }
@@ -1045,6 +1057,12 @@ impl Driver for OpencodeDriver {
     }
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
+        crate::driver::check_launch_values(
+            Harness::Opencode,
+            spec.model.as_deref(),
+            spec.effort.as_deref(),
+            spec.resume.as_deref(),
+        )?;
         create_private_dir(&spec.run_dir)?;
         let defaults = PromptDefaults {
             agent: spec.agent.agent_name.clone(),
@@ -1078,6 +1096,9 @@ impl Driver for OpencodeDriver {
                     .envs(spec.launch.vars.iter().map(|(k, v)| (k, v)))
                     .env("OPENCODE_CONFIG", &config_path)
                     .env("OPENCODE_SERVER_USERNAME", USERNAME)
+                    // OpenCode only documents environment-based server auth:
+                    // https://opencode.ai/docs/server/#authentication
+                    // Its own tool subprocesses may inherit this per-run password.
                     .env(PASSWORD_ENV, &password)
                     .current_dir(&spec.cwd);
                 let sup = spawn_supervised(
@@ -1085,6 +1106,7 @@ impl Driver for OpencodeDriver {
                     &spec.run_dir,
                     self.config.shutdown_grace,
                     ListenParser { url: Some(url_tx) },
+                    &spec.launch.pass_env,
                 )?;
                 let out = Out::new(tx, sup.transcript.clone());
                 let mut exit = sup.handle.exit.clone();
@@ -1270,7 +1292,7 @@ impl Driver for OpencodeDriver {
     }
 
     fn classify_error(&self, text: &str) -> ErrorKind {
-        classify_common(text)
+        classify_text(text)
     }
 }
 

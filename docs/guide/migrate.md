@@ -37,6 +37,10 @@ If it finds any legacy artifact, it also runs `init` and `install`. On a clean m
 - Claude Code's own `~/.claude.json` is not backed up, because `claude mcp add` edits it and it holds account data.
 - A second `--apply` finds nothing to do and writes nothing.
 
+## Environment variables
+
+The old scripts ran harnesses in your shell environment. Supervisor-launched runs now start with an allowlisted environment, so API keys, `GH_TOKEN`, `SSH_AUTH_SOCK` and corporate CA variables are not inherited. If a migrated account needs one, list its name in `pass_env` (per account, or `accounts.pass_env` in `config.toml` for all), then restart the supervisor. `superorchestrator doctor` warns about common names that are set but not passed. See [accounts](accounts.md#inherited-environment).
+
 ## Undo
 
 Copy files back from `legacy-backup/<timestamp>/`. Paths inside mirror the originals.

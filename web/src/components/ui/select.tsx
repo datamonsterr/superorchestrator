@@ -1,3 +1,4 @@
+import { styleNonce } from "@/lib/style-nonce"
 import * as React from "react"
 import { cn } from "@/lib/utils"
 import { Select as SelectPrimitive } from "radix-ui"
@@ -73,6 +74,7 @@ function SelectContent({
       >
         <SelectScrollUpButton />
         <SelectPrimitive.Viewport
+          nonce={styleNonce()}
           data-position={position}
           className={cn(
             "data-[position=popper]:h-(--radix-select-trigger-height) data-[position=popper]:w-full data-[position=popper]:min-w-(--radix-select-trigger-width)",

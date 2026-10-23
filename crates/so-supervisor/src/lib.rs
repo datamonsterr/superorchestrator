@@ -10,6 +10,7 @@ mod lines;
 pub mod lock;
 pub mod notify;
 pub mod reconcile;
+mod run_identity;
 pub mod runs;
 pub mod server;
 pub mod services;

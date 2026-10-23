@@ -44,6 +44,8 @@ fn reject_modules(trimmed: &str) -> Result<(), String> {
             r.is_empty() || r.starts_with(|c: char| c.is_whitespace() || "{*'\"(".contains(c))
         })
     };
+    // Dynamic import() parses here but fails at runtime because WorkflowEngine installs
+    // no module loader. Preserve that restriction when changing runtime setup.
     if starts("import") && !trimmed.starts_with("import(") {
         return Err(
             "workflow scripts cannot use import; put work that needs a library in an agent's task"

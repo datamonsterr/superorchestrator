@@ -586,12 +586,7 @@ impl RunManager {
 
     async fn pending_review_run(&self, ctx: &ConnCtx, run: &str) -> R<RunRow> {
         let row = self.resolve_run(run).await?;
-        if ctx.session_id.as_deref() != Some(row.session_id.as_str()) {
-            return Err(rpc(
-                so_core::proto::INVALID_PARAMS,
-                "that run belongs to another session",
-            ));
-        }
+        self.authorize_run(ctx, &row, false).await?;
         if row.state != RunState::PendingReview {
             return Err(rpc(
                 INVALID_REQUEST,

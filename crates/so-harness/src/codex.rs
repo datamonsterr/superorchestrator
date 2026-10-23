@@ -20,7 +20,7 @@
 //! `developerInstructions`), not in files. Their env values are redacted in
 //! the transcript.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Read as _;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -38,7 +38,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 
 use crate::driver::{
     Channel, Driver, DriverConfig, DriverError, HarnessEvent, JoinCommand, JoinInfo, LaunchSpec,
-    RateLimits, RunControl, RunHandle, ShutdownOutcome, check_effort, classify_common,
+    RateLimits, RunControl, RunHandle, ShutdownOutcome, check_launch_values, classify_common,
 };
 use crate::process::{
     EventSink, ExitWatch, LineParser, ProcessHandle, ProducerGuard, Supervised, create_private_dir,
@@ -153,7 +153,12 @@ impl Driver for CodexDriver {
     }
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
-        check_effort(Harness::Codex, spec.effort.as_deref())?;
+        check_launch_values(
+            Harness::Codex,
+            spec.model.as_deref(),
+            spec.effort.as_deref(),
+            spec.resume.as_deref(),
+        )?;
         create_private_dir(&spec.run_dir)?;
         let token = random_token()?;
         let token_file = spec.run_dir.join("ws-token");
@@ -173,6 +178,7 @@ impl Driver for CodexDriver {
             self.config.shutdown_grace,
             banner.clone(),
             Some(Box::new(banner)),
+            &spec.launch.pass_env,
         )?;
         let guard = sup.producer_guard();
         let Supervised {
@@ -883,6 +889,34 @@ fn item_ok(item: &Value) -> bool {
     item["status"].as_str() == Some("completed") && item["success"].as_bool() != Some(false)
 }
 
+// Bound unfinished agent-message content even when item/completed never arrives.
+// Count both retained copies of item IDs; the item count also bounds map/queue overhead.
+const MAX_DELTA_BYTES: usize = 8 * 1024 * 1024;
+const MAX_ITEM_DELTA_BYTES: usize = 1024 * 1024;
+const MAX_DELTA_ITEMS: usize = 1024;
+const MAX_DELTA_ID_BYTES: usize = 1024;
+const DELTA_TRUNCATED: &str = "[... deltas truncated ...]\n";
+
+/// Keeps the newest UTF-8 text and visibly marks dropped earlier content.
+fn mark_truncated(text: &mut String) {
+    let mut start = text
+        .len()
+        .saturating_sub(MAX_ITEM_DELTA_BYTES - DELTA_TRUNCATED.len());
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text.drain(..start);
+    if !text.starts_with(DELTA_TRUNCATED) {
+        text.insert_str(0, DELTA_TRUNCATED);
+    }
+}
+
+#[derive(Debug)]
+struct BufferedDelta {
+    generation: u64,
+    text: String,
+}
+
 /// Turns server notifications and responses into [`HarnessEvent`]s.
 #[derive(Debug)]
 pub struct CodexParser {
@@ -890,7 +924,11 @@ pub struct CodexParser {
     expects_structured: bool,
     session_started: bool,
     /// `agentMessage` text collected from deltas, by item id.
-    deltas: HashMap<String, String>,
+    deltas: HashMap<String, BufferedDelta>,
+    /// Oldest updated item first (bounded LRU order).
+    delta_order: BTreeMap<u64, String>,
+    delta_generation: u64,
+    delta_bytes: usize,
     final_text: Option<String>,
     last_text: Option<String>,
     /// Turn that already ended through an `error` notification.
@@ -904,6 +942,9 @@ impl CodexParser {
             expects_structured,
             session_started: false,
             deltas: HashMap::new(),
+            delta_order: BTreeMap::new(),
+            delta_generation: 0,
+            delta_bytes: 0,
             final_text: None,
             last_text: None,
             errored_turn: None,
@@ -953,13 +994,14 @@ impl CodexParser {
                 if let Some(id) = p["turn"]["id"].as_str() {
                     self.shared().begin(id);
                 }
+                self.clear_deltas();
                 self.final_text = None;
                 self.last_text = None;
                 vec![HarnessEvent::TurnStarted]
             }
             Some("item/agentMessage/delta") => {
                 if let (Some(id), Some(d)) = (p["itemId"].as_str(), p["delta"].as_str()) {
-                    self.deltas.entry(id.to_string()).or_default().push_str(d);
+                    self.append_delta(id, d);
                 }
                 vec![]
             }
@@ -986,6 +1028,60 @@ impl CodexParser {
         }
     }
 
+    fn take_delta(&mut self, id: &str) -> Option<String> {
+        let buffered = self.deltas.remove(id)?;
+        self.delta_bytes -= 2 * id.len() + buffered.text.len();
+        self.delta_order.remove(&buffered.generation);
+        Some(buffered.text)
+    }
+
+    fn clear_deltas(&mut self) {
+        self.deltas.clear();
+        self.delta_order.clear();
+        self.delta_generation = 0;
+        self.delta_bytes = 0;
+    }
+
+    fn append_delta(&mut self, id: &str, delta: &str) {
+        if delta.is_empty() {
+            return;
+        }
+        if id.len() > MAX_DELTA_ID_BYTES {
+            tracing::warn!("discarding codex delta with oversized item id");
+            return;
+        }
+        if self.delta_generation == u64::MAX {
+            tracing::debug!("resetting codex delta buffer after generation exhaustion");
+            self.clear_deltas();
+        }
+        let generation = self.delta_generation;
+        self.delta_generation += 1;
+        let mut text = self.take_delta(id).unwrap_or_default();
+        // Slice before copying: even a single oversized notification cannot make
+        // this buffer allocate its entire text. Temporary content is at most 2 MiB.
+        let mut start = delta.len().saturating_sub(MAX_ITEM_DELTA_BYTES);
+        while !delta.is_char_boundary(start) {
+            start += 1;
+        }
+        text.push_str(&delta[start..]);
+        if start > 0 || text.len() > MAX_ITEM_DELTA_BYTES {
+            mark_truncated(&mut text);
+        }
+        let cost = 2 * id.len() + text.len();
+        while self.delta_bytes + cost > MAX_DELTA_BYTES || self.deltas.len() >= MAX_DELTA_ITEMS {
+            let Some((_, oldest)) = self.delta_order.first_key_value() else {
+                break;
+            };
+            let oldest = oldest.clone();
+            self.take_delta(&oldest);
+            tracing::debug!(item_id = %oldest, "evicted unfinished codex delta item");
+        }
+        self.delta_bytes += cost;
+        self.delta_order.insert(generation, id.to_string());
+        self.deltas
+            .insert(id.to_string(), BufferedDelta { generation, text });
+    }
+
     fn item_completed(&mut self, item: &Value) -> Vec<HarnessEvent> {
         if let Some(name) = tool_name(item) {
             return vec![HarnessEvent::ToolCallFinished {
@@ -996,7 +1092,7 @@ impl CodexParser {
         if item["type"] != "agentMessage" {
             return vec![];
         }
-        let buffered = item["id"].as_str().and_then(|id| self.deltas.remove(id));
+        let buffered = item["id"].as_str().and_then(|id| self.take_delta(id));
         let text = item["text"]
             .as_str()
             .filter(|t| !t.is_empty())
@@ -1040,7 +1136,7 @@ impl CodexParser {
         self.shared().finish(id);
         let final_text = self.final_text.take();
         let last_text = self.last_text.take();
-        self.deltas.clear();
+        self.clear_deltas();
         if id.is_some() && self.errored_turn.take().as_deref() == id {
             return vec![];
         }
@@ -1110,7 +1206,7 @@ impl CodexParser {
         shared.finish(turn_id.as_deref());
         drop(shared);
         self.errored_turn = turn_id.or(current);
-        self.deltas.clear();
+        self.clear_deltas();
         let partial = self.final_text.take().or_else(|| self.last_text.take());
         vec![HarnessEvent::TurnFinished {
             result_text: partial,
@@ -1267,6 +1363,63 @@ mod tests {
     }
 
     #[test]
+    fn deltas_bound_one_item_and_mark_utf8_truncation() {
+        let mut p = parser(false);
+        let text = "é".repeat(600_000);
+        p.notification(&json!({"method": "item/agentMessage/delta", "params": {"itemId": "large", "delta": text}}));
+        p.notification(&json!({"method": "item/agentMessage/delta", "params": {"itemId": "large", "delta": "tail"}}));
+        let events = p.notification(&json!({"method": "item/completed", "params": {"item": {"type": "agentMessage", "id": "large", "text": ""}}}));
+        let HarnessEvent::AssistantMessage { text } = &events[0] else {
+            panic!("missing text")
+        };
+        assert!(text.len() <= 1024 * 1024);
+        assert!(text.contains("[... deltas truncated ...]"));
+        assert!(text.ends_with("tail"));
+    }
+
+    #[test]
+    fn deltas_bound_total_bytes_and_evict_oldest() {
+        let mut p = parser(false);
+        for i in 0..12 {
+            p.notification(&json!({"method": "item/agentMessage/delta", "params": {"itemId": format!("m{i}"), "delta": "x".repeat(1024 * 1024)}}));
+        }
+        let bytes: usize = p.deltas.iter().map(|(k, v)| k.len() + v.text.len()).sum();
+        assert!(bytes <= 8 * 1024 * 1024, "retained {bytes} bytes");
+        assert!(!p.deltas.contains_key("m0"));
+        assert!(!p.deltas["m11"].text.contains("[... deltas truncated ...]"));
+        p.notification(&json!({"method": "turn/completed", "params": {"turn": {"id": "t", "status": "completed"}}}));
+        assert!(p.deltas.is_empty());
+        assert_eq!(p.delta_bytes, 0);
+        assert!(p.delta_order.is_empty());
+    }
+
+    #[test]
+    fn deltas_bound_item_count_and_item_ids() {
+        let mut p = parser(false);
+        for i in 0..1100 {
+            p.notification(&json!({"method": "item/agentMessage/delta", "params": {"itemId": format!("m{i}"), "delta": "x"}}));
+        }
+        assert!(p.deltas.len() <= 1024);
+        let id = "i".repeat(2048);
+        p.notification(
+            &json!({"method": "item/agentMessage/delta", "params": {"itemId": id, "delta": "x"}}),
+        );
+        assert!(!p.deltas.contains_key(&id));
+    }
+
+    #[test]
+    fn repeated_deltas_keep_one_order_entry_and_release_their_budget() {
+        let mut p = parser(false);
+        for _ in 0..2048 {
+            p.append_delta("message", "x");
+        }
+        assert_eq!(p.delta_order.len(), 1);
+        assert_eq!(p.take_delta("message").unwrap(), "x".repeat(2048));
+        assert_eq!(p.delta_bytes, 0);
+        assert!(p.delta_order.is_empty());
+    }
+
+    #[test]
     fn deltas_fill_an_empty_final_item() {
         let mut p = parser(false);
         p.notification(&json!({"method": "item/agentMessage/delta",
@@ -1281,6 +1434,8 @@ mod tests {
                 text: "done".into()
             }]
         );
+        assert_eq!(p.delta_bytes, 0);
+        assert!(p.delta_order.is_empty());
     }
 
     #[test]
@@ -1483,6 +1638,7 @@ mod tests {
             account: so_core::AccountFile::new("codex-acc1", Harness::Codex, "~/.codex", "codex")
                 .unwrap(),
             launch: so_accounts::Launch {
+                pass_env: vec![],
                 program: "/bin/codex".into(),
                 vars: vec![],
                 argv_prefix: vec![],

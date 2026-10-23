@@ -150,13 +150,16 @@ fn is_false(b: &bool) -> bool {
 
 // ---------------------------------------------------------------- params
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct HelloParams {
     pub client: String,
     pub cwd: String,
     #[serde(default)]
     pub run_id: Option<String>,
+    /// Secret proof for `run_id`; never included in a hello result or public run view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_token: Option<String>,
     #[serde(default)]
     pub pid: Option<u32>,
     /// Read or control calls only: no session row is opened (SPEC 3.1: only `mcp` opens a
@@ -165,12 +168,31 @@ pub struct HelloParams {
     pub inspect: bool,
 }
 
+impl std::fmt::Debug for HelloParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HelloParams")
+            .field("client", &self.client)
+            .field("cwd", &self.cwd)
+            .field("run_id", &self.run_id)
+            .field("run_token", &self.run_token.as_ref().map(|_| "[REDACTED]"))
+            .field("pid", &self.pid)
+            .field("inspect", &self.inspect)
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct HelloResult {
     pub session_id: String,
     #[serde(default)]
     pub run_id: Option<String>,
     pub depth: u32,
+    /// Build id of the daemon's executable (see `buildinfo`); absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
+    /// Set when the daemon's executable was replaced on disk after it started.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -180,6 +202,14 @@ pub struct StatusResult {
     pub uptime_s: u64,
     pub sessions: u32,
     pub active_runs: u32,
+    /// Build id of the daemon's executable; absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
+    /// The daemon's executable was replaced on disk after it started: it runs old code.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -287,6 +317,7 @@ pub struct SpawnParams {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// Relative to the caller's cwd; subagents must stay inside their run's worktree/cwd.
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
@@ -296,7 +327,7 @@ pub struct SpawnParams {
     pub output_schema: Option<Value>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub review: bool,
-    /// `"ci"`, `"pr_threads"` or `"cmd:<shell command>"`.
+    /// `"ci"`, `"pr_threads"` or `"cmd:<shell command>"`. Only depth-0 callers may use `cmd:`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<String>,
     /// Block until the run finishes.
@@ -621,6 +652,12 @@ pub struct HarnessesView {
     pub accounts: Vec<AccountView>,
     #[serde(default)]
     pub choices: Vec<Choice>,
+    /// Set when the daemon's executable was replaced after it started; `stale_reason` says
+    /// what to do.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -653,9 +690,10 @@ fn yes() -> bool {
 #[serde(deny_unknown_fields)]
 pub struct RunWorkflowParams {
     /// A saved workflow (`<config>/workflows/<name>.js` or `.superorchestrator/workflows`).
+    /// Subagent callers may use only workflows from the user config directory.
     #[serde(default)]
     pub name: Option<String>,
-    /// Inline JavaScript instead of a saved one.
+    /// Inline JavaScript instead of a saved one. Only depth-0 callers may supply this.
     #[serde(default)]
     pub script: Option<String>,
     /// Passed to the script as `args`.
@@ -916,5 +954,16 @@ mod tests {
         let j = serde_json::to_string(&r).unwrap();
         assert_eq!(serde_json::from_str::<RouteResult>(&j).unwrap(), r);
         assert!(j.contains("\"source\":\"heuristic\""));
+    }
+
+    #[test]
+    fn hello_debug_never_discloses_run_token() {
+        let hello: super::HelloParams = serde_json::from_value(serde_json::json!({
+            "client": "test", "cwd": "/", "run_id": "r", "run_token": "private-test-token"
+        }))
+        .unwrap();
+        let debug = format!("{hello:?}");
+        assert!(!debug.contains("private-test-token"));
+        assert!(debug.contains("[REDACTED]"));
     }
 }

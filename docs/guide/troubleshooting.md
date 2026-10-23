@@ -11,6 +11,7 @@ Start with `superorchestrator doctor`. It prints one line per check. A check is 
 | `config dir` | The directory is missing. Run `superorchestrator init`. |
 | `config.toml` | It does not load. Read the error, then `superorchestrator config edit`. A missing file is a warning, and defaults apply. |
 | `choices` | Codex choices from an older `init` are still off. Set `enabled = true` on them. |
+| `pass_env` | Common secret variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `SSH_AUTH_SOCK`, `GH_TOKEN` and so on) are set in the supervisor's environment but no `pass_env` lists them, so harness runs do not see them. Names only are printed. Add the ones a harness needs; see the entry below. |
 | `state.db` | `not created yet` is normal before first use. A failure means the database does not open. |
 | `supervisor` | `not running` is normal, because it starts on demand. `stale socket` means the socket file is left over from a crash. Remove the file, or run `superorchestrator daemon`. |
 | `ui port` | The UI port is free, or held by the supervisor. A warning means another process has it. Change `ui.port`. |
@@ -21,6 +22,8 @@ Start with `superorchestrator doctor`. It prints one line per check. A check is 
 
 ## Common problems
 
+**A harness run fails to authenticate, cannot reach git over SSH, or fails TLS after an upgrade.** Supervisor-launched processes start with an allowlisted environment, so API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`), `ANTHROPIC_BASE_URL`, `GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK` and CA variables such as `NODE_EXTRA_CA_CERTS` are no longer inherited. `doctor` lists the ones it sees in the supervisor's environment that are not passed. Opt in by name, in `accounts.pass_env` in `config.toml` (every account) or `pass_env` in one account's file, then restart the supervisor. See [accounts](accounts.md#inherited-environment).
+
 **Claude Code does not list the tools.** Run `superorchestrator install` (or install the plugin, not both), then restart Claude Code. `claude mcp list` should show `superorchestrator`.
 
 **`harness: auto` never picks an account.** Run `superorchestrator route "task" --explain`. The choice may be disabled, the account signed out, flagged, exhausted or at its cap. Check `superorchestrator status` and `superorchestrator account list`.
@@ -30,6 +33,10 @@ Start with `superorchestrator doctor`. It prints one line per check. A check is 
 **A run is `stalled` or `escalated`.** No event arrived for `runs.stall_ms`. The supervisor nudges it three times, then escalates. Open it in the UI, or run `superorchestrator join <run>` and look.
 
 **A run failed with a quota or auth error.** The account is flagged until its reset. Failover moves the work to another account when one exists. Clear a flag with `superorchestrator account flag <name> --clear`.
+
+**I installed a fix but behaviour is unchanged.** The daemon keeps running the binary it started with, so reinstalling does not reach it. `superorchestrator status` shows the daemon's version and build id next to the CLI's, and prints a warning when they differ or the daemon's executable was replaced on disk. The MCP server warns in its instructions the same way, and `list_harnesses` carries `stale: true` with a reason. Restart the daemon: wait for active runs to finish, `kill` the pid `status` shows, and run any command (it starts the new binary on demand). Stopping the daemon ends its active runs. Nothing restarts it for you. The check compares the file's inode, size and mtime, so `touch` or a reinstall of identical content also shows as changed.
+
+**Live message to an agy run is ignored.** `send_message` succeeds, but the agent does not act on the message, and a child that calls `read_messages` does not see it either. Cause: agy's `Queued Messages` setting defaults to `Queue`. agy holds the message until the current turn ends and then starts a new turn with it. The supervisor treats the first `result` event as the end of the run and stops the process, so that turn is cut off. The message is marked read when it is written to stdin, so it is lost. Fix: set `"queuedMessages": "send-immediately"` in the account's `.gemini/antigravity-cli/settings.json`, as shown in [agy: queued messages](accounts.md#agy-queued-messages).
 
 **The wrapper command is not found.** Put `~/.local/bin` (or your `accounts.wrapper_dir`) on `PATH`.
 

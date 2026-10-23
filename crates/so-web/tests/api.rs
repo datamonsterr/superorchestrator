@@ -22,6 +22,7 @@ use so_web::{WebOptions, router};
 use tempfile::TempDir;
 use tower::ServiceExt;
 
+const TEST_TOKEN: &str = "fixture-token";
 const SECRET: &str = "sk-abcdef1234567890";
 
 struct Fx {
@@ -198,7 +199,8 @@ async fn fx_cfg(token: Option<&str>, config: Config) -> Fx {
             token: token.map(Into::into),
             ..WebOptions::default()
         },
-    );
+    )
+    .unwrap();
     Fx {
         session,
         run: run.id,
@@ -209,10 +211,19 @@ async fn fx_cfg(token: Option<&str>, config: Config) -> Fx {
 }
 
 async fn fx() -> Fx {
-    fx_with(None).await
+    fx_with(Some(TEST_TOKEN)).await
 }
 
 fn request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {
+    let mut request = anonymous_request(method, uri, body);
+    request.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {TEST_TOKEN}").parse().unwrap(),
+    );
+    request
+}
+
+fn anonymous_request(method: &str, uri: &str, body: Option<Value>) -> Request<Body> {
     let mut b = Request::builder()
         .method(method)
         .uri(uri)
@@ -716,6 +727,292 @@ async fn choices_config_and_worktrees() {
 
 // --------------------------------------------------------------------- security
 
+fn browser_login_url(server: &so_web::WebServer) -> String {
+    server.login_url().unwrap()
+}
+
+async fn exchange_login_code(server: &so_web::WebServer, code: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let body = json!({"token": code}).to_string();
+    let mut socket = tokio::net::TcpStream::connect(server.addr()).await.unwrap();
+    socket.write_all(format!("POST /api/v1/token HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", server.addr(), body.len()).as_bytes()).await.unwrap();
+    let mut response = String::new();
+    socket.read_to_string(&mut response).await.unwrap();
+    response
+}
+
+async fn code_server(f: &Fx) -> so_web::WebServer {
+    so_web::start(
+        f.handle.state().clone(),
+        WebOptions {
+            port: 0,
+            token: Some(TEST_TOKEN.into()),
+            ..WebOptions::default()
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn login_code_works_once_and_replays_count_as_failures() {
+    let f = fx().await;
+    let server = code_server(&f).await;
+    let url = browser_login_url(&server);
+    let code = url.split("#token=").nth(1).unwrap();
+    let first = exchange_login_code(&server, code).await;
+    assert!(first.starts_with("HTTP/1.1 204"), "{first}");
+    assert!(
+        first.contains(&format!(
+            "so_token={}",
+            so_web::security::cookie_value(TEST_TOKEN)
+        )),
+        "code sets the existing token cookie"
+    );
+    for _ in 0..5 {
+        let replay = exchange_login_code(&server, code).await;
+        assert!(replay.starts_with("HTTP/1.1 401"), "{replay}");
+    }
+    assert!(
+        exchange_login_code(&server, code)
+            .await
+            .starts_with("HTTP/1.1 429")
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn login_code_expires_at_sixty_seconds_and_counts_as_a_failure() {
+    let f = fx().await;
+    let server = code_server(&f).await;
+    let url = browser_login_url(&server);
+    let code = url.split("#token=").nth(1).unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::resume();
+    let expired = exchange_login_code(&server, code).await;
+    assert!(expired.starts_with("HTTP/1.1 401"), "{expired}");
+    for _ in 0..4 {
+        assert!(
+            exchange_login_code(&server, "wrong")
+                .await
+                .starts_with("HTTP/1.1 401")
+        );
+    }
+    assert!(
+        exchange_login_code(&server, "wrong")
+            .await
+            .starts_with("HTTP/1.1 429")
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn login_code_store_is_bounded_and_urls_never_carry_the_token() {
+    let f = fx().await;
+    let server = code_server(&f).await;
+    let urls: Vec<_> = (0..65).map(|_| browser_login_url(&server)).collect();
+    for url in &urls {
+        assert!(!url.contains(TEST_TOKEN), "long-lived token leaked in URL");
+        let code = url.split("#token=").nth(1).unwrap();
+        assert_eq!(code.len(), 64);
+        assert!(code.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+    let code = |i: usize| urls[i].split("#token=").nth(1).unwrap();
+    assert!(
+        exchange_login_code(&server, code(0))
+            .await
+            .starts_with("HTTP/1.1 401"),
+        "oldest code must be evicted at capacity"
+    );
+    assert!(
+        exchange_login_code(&server, code(1))
+            .await
+            .starts_with("HTTP/1.1 204")
+    );
+    assert!(
+        exchange_login_code(&server, code(64))
+            .await
+            .starts_with("HTTP/1.1 204")
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn generated_token_protects_loopback_and_survives_restart() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let f = fx().await;
+    let state = f.handle.state().clone();
+    let opts = WebOptions {
+        port: 0,
+        ..WebOptions::default()
+    };
+    let server = so_web::start(state.clone(), opts.clone()).await.unwrap();
+    let mut socket = tokio::net::TcpStream::connect(server.addr()).await.unwrap();
+    socket
+        .write_all(
+            format!(
+                "GET /api/v1/status HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+                server.addr()
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut response = String::new();
+    socket.read_to_string(&mut response).await.unwrap();
+    assert!(
+        response.starts_with("HTTP/1.1 401"),
+        "unauthenticated loopback must be rejected: {response}"
+    );
+    let token = std::fs::read_to_string(f.path("cfg/ui-token")).unwrap();
+    assert_eq!(token.len(), 64);
+    assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
+    assert!(!browser_login_url(&server).contains(&token));
+    let mut socket = tokio::net::TcpStream::connect(server.addr()).await.unwrap();
+    socket.write_all(format!("GET /api/v1/status HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n", server.addr()).as_bytes()).await.unwrap();
+    response.clear();
+    socket.read_to_string(&mut response).await.unwrap();
+    assert!(
+        response.starts_with("HTTP/1.1 200"),
+        "authenticated request: {response}"
+    );
+    server.shutdown().await;
+    let restarted = so_web::start(state, opts).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(f.path("cfg/ui-token")).unwrap(),
+        token
+    );
+    assert!(!browser_login_url(&restarted).contains(&token));
+    restarted.shutdown().await;
+}
+
+#[tokio::test]
+async fn invalid_or_exposed_generated_token_files_fail_closed() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let f = fx().await;
+    let token_file = f.path("cfg/ui-token");
+    let opts = WebOptions {
+        port: 0,
+        ..WebOptions::default()
+    };
+    std::fs::write(&token_file, "not-a-valid-generated-token").unwrap();
+    std::fs::set_permissions(&token_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let err = so_web::start(f.handle.state().clone(), opts.clone())
+        .await
+        .err()
+        .expect("malformed token must fail")
+        .to_string();
+    assert!(err.contains("64 hex characters"), "{err}");
+    assert!(
+        err.contains(&format!("remove {} to regenerate it", token_file.display())),
+        "{err}"
+    );
+    std::fs::write(&token_file, "a".repeat(64)).unwrap();
+    std::fs::set_permissions(&token_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let err = so_web::start(f.handle.state().clone(), opts.clone())
+        .await
+        .err()
+        .expect("0644 token must fail")
+        .to_string();
+    assert!(err.contains("0600"), "{err}");
+    assert!(err.contains("to regenerate it"), "{err}");
+    std::fs::remove_file(&token_file).unwrap();
+    let target = f.path("outside-token");
+    std::fs::write(&target, "b".repeat(64)).unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
+    symlink(&target, &token_file).unwrap();
+    let err = so_web::start(f.handle.state().clone(), opts)
+        .await
+        .err()
+        .expect("symlinked token must fail")
+        .to_string();
+    assert!(err.contains("symlink"), "{err}");
+    assert!(err.contains("to regenerate it"), "{err}");
+}
+
+#[tokio::test]
+async fn generated_token_file_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fx().await;
+    let server = so_web::start(
+        f.handle.state().clone(),
+        WebOptions {
+            port: 0,
+            ..WebOptions::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        std::fs::metadata(f.path("cfg/ui-token"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn generated_router_token_rejects_unauthenticated_requests() {
+    let f = fx_with(None).await;
+    assert_eq!(
+        send(&f.app, anonymous_request("GET", "/api/v1/status", None))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[tokio::test]
+async fn sign_in_command_quotes_hostile_credential_home() {
+    use so_core::AccountFile;
+    use std::os::unix::fs::PermissionsExt;
+    let f = fx().await;
+    let (status, body) = post(
+        &f.app,
+        "/api/v1/accounts",
+        Some(json!({"harness": "codex", "name": "codex-acc1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let paths = &f.handle.state().paths;
+    let mut account = AccountFile::load(&paths.account_file("codex-acc1")).unwrap();
+    let home = f.path("home/a $(touch INJECTED) ' \" ; touch INJECTED; #");
+    account.home = home.to_string_lossy().into_owned();
+    account.save(paths).unwrap();
+    let bin = f.path("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let harness = bin.join("codex");
+    std::fs::write(
+        &harness,
+        "#!/bin/sh\nprintf '%s\\n' \"$CODEX_HOME\" \"$@\"\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&harness, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let (status, body) = post(&f.app, "/api/v1/accounts/codex-acc1/login", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(body["command"].as_str().unwrap())
+        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .current_dir(f.dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("{}\nlogin\n--device-auth\n", home.display())
+    );
+    assert!(!f.path("INJECTED").exists());
+}
+
 #[tokio::test]
 async fn host_and_origin_are_checked_everywhere() {
     let f = fx().await;
@@ -723,7 +1020,8 @@ async fn host_and_origin_are_checked_everywhere() {
         let mut b = Request::builder()
             .method(method)
             .uri(uri)
-            .header(header::HOST, host);
+            .header(header::HOST, host)
+            .header(header::AUTHORIZATION, format!("Bearer {TEST_TOKEN}"));
         if let Some(o) = origin {
             b = b.header(header::ORIGIN, o);
         }
@@ -796,7 +1094,7 @@ async fn request_bodies_must_be_json() {
 #[tokio::test]
 async fn token_flow_cookie_and_rate_limit() {
     let f = fx_with(Some("s3cret-token")).await;
-    let (s, v) = get(&f.app, "/api/v1/status").await;
+    let (s, _, v) = send(&f.app, anonymous_request("GET", "/api/v1/status", None)).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     assert_eq!(v["error"]["code"], "unauthorized");
     // The SPA itself loads without a token (it shows the token prompt).
@@ -841,6 +1139,7 @@ async fn token_flow_cookie_and_rate_limit() {
         .insert(header::COOKIE, "so_token=nope".parse().unwrap());
     assert_eq!(send(&f.app, bad).await.0, StatusCode::UNAUTHORIZED);
 
+    let f = fx_with(Some("s3cret-token")).await;
     for _ in 0..5 {
         let (s, _, _) = send(
             &f.app,
@@ -870,31 +1169,26 @@ async fn token_flow_cookie_and_rate_limit() {
 }
 
 #[tokio::test]
-async fn non_loopback_bind_requires_a_token() {
+async fn every_bind_gets_a_token_when_none_is_configured() {
     let f = fx().await;
-    let state = f.handle.state().clone();
-    let open = WebOptions {
-        bind: "0.0.0.0".into(),
-        port: 0,
-        ..WebOptions::default()
-    };
-    let err = so_web::start(state.clone(), open).await.err().unwrap();
-    assert!(matches!(err, so_web::WebError::TokenRequired(_)), "{err}");
-    let empty = WebOptions {
-        bind: "0.0.0.0".into(),
-        port: 0,
-        token: Some(String::new()),
-        ..WebOptions::default()
-    };
-    assert!(so_web::start(state.clone(), empty).await.is_err());
-    let ok = WebOptions {
-        bind: "127.0.0.1".into(),
-        port: 0,
-        ..WebOptions::default()
-    };
-    let server = so_web::start(state, ok).await.unwrap();
-    assert!(server.url().starts_with("http://127.0.0.1:"));
-    server.shutdown().await;
+    for bind in ["0.0.0.0", "127.0.0.1"] {
+        for token in [None, Some(String::new())] {
+            let server = so_web::start(
+                f.handle.state().clone(),
+                WebOptions {
+                    bind: bind.into(),
+                    port: 0,
+                    token,
+                    ..WebOptions::default()
+                },
+            )
+            .await
+            .unwrap();
+            let token = std::fs::read_to_string(f.path("cfg/ui-token")).unwrap();
+            assert!(!browser_login_url(&server).contains(&token));
+            server.shutdown().await;
+        }
+    }
 }
 
 #[tokio::test]
@@ -1121,7 +1415,7 @@ async fn non_loopback_stream_requires_an_origin() {
         token: Some("tok".into()),
         ..WebOptions::default()
     };
-    let app = router(f.handle.state().clone(), opts);
+    let app = router(f.handle.state().clone(), opts).unwrap();
     let build = |origin: Option<&str>| {
         let mut b = Request::builder()
             .uri("/api/v1/stream")
@@ -1169,6 +1463,29 @@ async fn wrong_credentials_count_toward_the_rate_limit() {
 }
 
 #[tokio::test]
+async fn html_style_nonces_are_unique_and_match_the_policy() {
+    let f = fx().await;
+    let mut previous = String::new();
+    for path in ["/", "/token", "/dashboard"] {
+        let (s, headers, body) = send(&f.app, request("GET", path, None)).await;
+        assert_eq!(s, StatusCode::OK);
+        let html = body.as_str().unwrap();
+        let nonce = html
+            .split("<meta name=\"so-style-nonce\" content=\"")
+            .nth(1)
+            .and_then(|v| v.split('"').next())
+            .expect("HTML must carry a per-response style nonce");
+        assert_eq!(nonce.len(), 64);
+        assert_ne!(nonce, previous);
+        let csp = headers[header::CONTENT_SECURITY_POLICY].to_str().unwrap();
+        assert!(csp.contains(&format!("'nonce-{nonce}'")), "{csp}");
+        assert!(!csp.contains("style-src 'self' 'unsafe-inline'"));
+        assert!(!csp.contains("style-src-elem 'self' 'unsafe-inline'"));
+        previous = nonce.into();
+    }
+}
+
+#[tokio::test]
 async fn html_responses_forbid_framing() {
     let f = fx().await;
     let (_, h, _) = send(&f.app, request("GET", "/", None)).await;
@@ -1177,6 +1494,8 @@ async fn html_responses_forbid_framing() {
         "frame-ancestors 'none'",
         "base-uri 'none'",
         "form-action 'self'",
+        "style-src 'self';",
+        "style-src-attr 'unsafe-inline'",
     ] {
         assert!(csp.contains(want), "{csp}");
     }
@@ -1246,7 +1565,7 @@ async fn stream_without_origin_needs_same_origin_fetch_metadata_off_loopback() {
         token: Some("tok".into()),
         ..WebOptions::default()
     };
-    let app = router(f.handle.state().clone(), opts);
+    let app = router(f.handle.state().clone(), opts).unwrap();
     let build = |site: Option<&str>| {
         let mut b = Request::builder()
             .uri("/api/v1/stream")
@@ -1289,9 +1608,10 @@ async fn shutdown_ends_open_streams() {
     };
     let server = so_web::start(f.handle.state().clone(), opts).await.unwrap();
     let addr = server.addr();
+    let token = std::fs::read_to_string(f.path("cfg/ui-token")).unwrap();
     let mut sock = tokio::net::TcpStream::connect(addr).await.unwrap();
     let req = format!(
-        "GET /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: keep-alive\r\n\r\n",
+        "GET /api/v1/stream HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {token}\r\nConnection: keep-alive\r\n\r\n",
         addr.port()
     );
     sock.write_all(req.as_bytes()).await.unwrap();
@@ -1325,10 +1645,10 @@ async fn oversized_transcript_entries_are_skipped_not_loaded() {
 }
 
 #[tokio::test]
-async fn stale_cookies_are_cleared_and_never_lock_anyone_out() {
+async fn wrong_cookies_are_cleared_and_count_toward_rate_limit() {
     let f = fx_with(Some("good-token")).await;
-    for _ in 0..6 {
-        let mut r = request("GET", "/api/v1/status", None);
+    for _ in 0..5 {
+        let mut r = anonymous_request("GET", "/api/v1/status", None);
         r.headers_mut()
             .insert(header::COOKIE, "so_token=stale".parse().unwrap());
         let (s, h, _) = send(&f.app, r).await;
@@ -1339,13 +1659,17 @@ async fn stale_cookies_are_cleared_and_never_lock_anyone_out() {
             "{set}"
         );
     }
-    let mut good = request("GET", "/api/v1/status", None);
+    let mut bad = anonymous_request("GET", "/api/v1/status", None);
+    bad.headers_mut()
+        .insert(header::COOKIE, "so_token=wrong-again".parse().unwrap());
+    assert_eq!(send(&f.app, bad).await.0, StatusCode::TOO_MANY_REQUESTS);
+    let mut good = anonymous_request("GET", "/api/v1/status", None);
     good.headers_mut()
         .insert(header::AUTHORIZATION, "Bearer good-token".parse().unwrap());
     assert_eq!(send(&f.app, good).await.0, StatusCode::OK);
     let (s, _, _) = send(
         &f.app,
-        request(
+        anonymous_request(
             "POST",
             "/api/v1/token",
             Some(json!({"token": "good-token"})),
@@ -1354,11 +1678,11 @@ async fn stale_cookies_are_cleared_and_never_lock_anyone_out() {
     .await;
     assert_eq!(
         s,
-        StatusCode::NO_CONTENT,
-        "login still works after stale cookies"
+        StatusCode::TOO_MANY_REQUESTS,
+        "cookie guesses also limit the token exchange"
     );
     // No credentials at all: plain 401, no cookie to clear.
-    let (s, h, _) = send(&f.app, request("GET", "/api/v1/status", None)).await;
+    let (s, h, _) = send(&f.app, anonymous_request("GET", "/api/v1/status", None)).await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
     assert!(h.get(header::SET_COOKIE).is_none());
 }
@@ -1489,7 +1813,7 @@ async fn route_previews_without_recording_anything() {
         }],
         ..Config::default()
     };
-    let f = fx_cfg(None, cfg).await;
+    let f = fx_cfg(Some(TEST_TOKEN), cfg).await;
     let (s, v) = post(
         &f.app,
         "/api/v1/accounts",
@@ -1681,9 +2005,11 @@ fn app_in(f: &Fx, project: &std::path::Path) -> Router {
         f.handle.state().clone(),
         WebOptions {
             project_dir: Some(project.to_path_buf()),
+            token: Some(TEST_TOKEN.into()),
             ..WebOptions::default()
         },
     )
+    .unwrap()
 }
 
 #[tokio::test]
@@ -1978,9 +2304,11 @@ async fn running_a_saved_workflow_returns_at_once_and_streams_its_state() {
         f.handle.state().clone(),
         WebOptions {
             project_dir: Some(project),
+            token: Some(TEST_TOKEN.into()),
             ..WebOptions::default()
         },
-    );
+    )
+    .unwrap();
     let res = app.clone().oneshot(stream_request(None)).await.unwrap();
     let mut stream = res.into_body();
     let _ = read_until(&mut stream, "event: hello").await;

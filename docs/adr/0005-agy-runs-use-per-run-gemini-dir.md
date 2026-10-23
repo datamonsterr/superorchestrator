@@ -11,3 +11,5 @@ We therefore select an agy account with `--gemini_dir` alone and never bind it o
 - `HOME` is unchanged, as in ADR-0003.
 
 The macOS single-account rule in SPEC 6.4 stays until it is checked on a Mac.
+
+**Update (2026-10):** the per-run `config/` is copied from the account's `config`, which may be a symlink to a shared root. That root must be a directory owned by the current uid that is not world-writable; group write is accepted only when its group is the user's primary group. Top-level entries that are symlinks resolving outside the account and the config root are skipped with a warning, as dangling links are, rather than failing the launch.

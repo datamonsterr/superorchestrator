@@ -81,6 +81,7 @@ impl Rig {
             account: AccountFile::new("claude-acc1", Harness::Claude, "~/.claude", "claude")
                 .unwrap(),
             launch: Launch {
+                pass_env: vec![],
                 program: PathBuf::from(env!("CARGO_BIN_EXE_fake-harness")),
                 vars: vec![
                     (
@@ -773,4 +774,26 @@ async fn effort_thinking_is_refused_before_spawn() {
             .contains("effort `thinking` is not valid for claude (low|medium|high|xhigh|max)"),
         "{err}"
     );
+}
+
+#[tokio::test]
+async fn unknown_or_malformed_agent_arguments_are_refused_before_launch() {
+    for args in [
+        vec!["--unknown-agent-flag", "evil"],
+        vec!["--tools", "Read", "--unknown-agent-flag=evil"],
+        vec!["--add-dir"],
+        vec!["--max-turns", "--verbose"],
+        vec!["stray"],
+    ] {
+        let rig = Rig::new();
+        let mut spec = rig.spec("");
+        spec.agent.extra_args = args.iter().map(|s| s.to_string()).collect();
+        let err = match driver().launch(spec).await {
+            Err(err) => err.to_string(),
+            Ok(_) => panic!("accepted {args:?}"),
+        };
+        assert!(err.contains("agent") && err.contains("argument"), "{err}");
+        assert!(rig.log().is_empty());
+        assert!(!rig.run_dir().exists());
+    }
 }

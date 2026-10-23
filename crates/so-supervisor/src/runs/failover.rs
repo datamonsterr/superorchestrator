@@ -23,7 +23,7 @@ use so_store::{Reassign, RunRow};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::lifecycle::{LaunchFail, Limit, Outcome, excerpt};
-use super::routing::RoutePins;
+use super::routing::{ChoiceFilter, RoutePins};
 use super::{Inner, RunManager, SHUTDOWN_DEADLINE, lock};
 
 /// Moves a run may make to another account. Each one costs a limit hit on a real account,
@@ -98,7 +98,7 @@ pub(super) fn spawn_failover(inner: &Arc<Inner>, mut rx: UnboundedReceiver<Failo
 fn failover_kind(kind: ErrorKind) -> bool {
     matches!(
         kind,
-        ErrorKind::Quota | ErrorKind::RateLimit | ErrorKind::Auth
+        ErrorKind::Quota | ErrorKind::RateLimit | ErrorKind::Auth | ErrorKind::Config
     )
 }
 
@@ -133,9 +133,17 @@ impl RunManager {
         else {
             return false;
         };
-        let routed = pins
-            .and_then(|j| serde_json::from_str::<RoutePins>(&j).ok())
-            .is_some_and(|p| p.account.is_none());
+        let pins = pins.and_then(|j| serde_json::from_str::<RoutePins>(&j).ok());
+        // A bad model the caller pinned (or a harness pin with no choice behind it) is the
+        // same on every account: fail now with the real error.
+        // A pins record that is missing or unreadable counts as pinned, so a Config failure
+        // fails fast rather than failing over blind.
+        if kind == ErrorKind::Config
+            && (pins.as_ref().is_none_or(|p| p.model.is_some()) || self.run_is_pinned(run_id).await)
+        {
+            return false;
+        }
+        let routed = pins.is_some_and(|p| p.account.is_none());
         let moves = attempts
             .iter()
             .filter(|a| a.outcome.as_deref() == Some("failover"))
@@ -153,6 +161,15 @@ impl RunManager {
                 limit: limit.clone(),
             })
             .is_ok()
+    }
+
+    /// The run was routed to a pin, not to one of the configured choices.
+    async fn run_is_pinned(&self, run_id: &str) -> bool {
+        let id = run_id.to_string();
+        matches!(
+            self.db(move |s| s.get_run(&id)).await,
+            Ok(Some(r)) if r.choice_id.as_deref().is_some_and(so_core::is_pinned_choice)
+        )
     }
 
     async fn failover(&self, req: FailoverRequest) {
@@ -176,7 +193,7 @@ impl RunManager {
                         }
                         // The bound is reached (or the run cannot move): the account that
                         // failed here was not flagged by a move, so flag it now.
-                        if failover_kind(fail.kind) {
+                        if fail.kind.flags_account() {
                             self.flag_account(&run_id, &fail.message, Some(&limit))
                                 .await;
                         }
@@ -231,7 +248,10 @@ impl RunManager {
         let on = row.harness;
         self.blocking(move || {
             let all = AccountFile::list(&paths).unwrap_or_default();
-            let def = cwd.and_then(|c| so_agents::resolve_for_spawn(&c, &paths, &name).ok());
+            // Eligibility only asks which harnesses can enforce tool controls. A trust
+            // refusal must not look like an unreadable definition and hide those controls;
+            // apply_agent still validates trust before every launch attempt.
+            let def = cwd.and_then(|c| so_agents::resolve(&c, &paths, &name).ok());
             let others = all.into_iter().filter(|a| a.harness != on);
             match def {
                 Some(def) => others
@@ -278,7 +298,10 @@ impl RunManager {
         }
         // The account that hit the limit is marked whatever happens next, and its process
         // goes away before another one starts for the same run.
-        self.flag_account(&id, &req.reason, Some(&req.limit)).await;
+        // A bad model is the choice's fault, not the account's: no cooldown for it.
+        if req.kind.flags_account() {
+            self.flag_account(&id, &req.reason, Some(&req.limit)).await;
+        }
         let pins: RoutePins = route
             .and_then(|j| serde_json::from_str(&j).ok())
             .ok_or("the run has no route to repeat")?;
@@ -313,32 +336,30 @@ impl RunManager {
             .find(|a| a.ended_at.is_none())
             .map(|a| a.id.clone());
         let mut chosen = None;
+        // A model error is the choice's: move to a different choice instead.
+        let choice = if req.kind == ErrorKind::Config {
+            ChoiceFilter {
+                avoid: row.choice_id.as_deref(),
+                ..Default::default()
+            }
+        } else {
+            ChoiceFilter {
+                only: row.choice_id.as_deref(),
+                ..Default::default()
+            }
+        };
         // Set once the decider is found down: this recovery does not ask it again.
         let outage = std::sync::atomic::AtomicBool::new(false);
         for _ in 0..MAX_ROUTE_TRIES {
             let routed = match self
-                .route_run(
-                    &prompt,
-                    &pins,
-                    &tried,
-                    row.choice_id.as_deref(),
-                    false,
-                    Some(&outage),
-                )
+                .route_run(&prompt, &pins, &tried, choice, false, Some(&outage))
                 .await
             {
                 Ok(r) => r,
                 // Nothing has a free slot: wait in the queue for one, if any could take it.
                 Err(e) => {
                     let queued = self
-                        .route_run(
-                            &prompt,
-                            &pins,
-                            &tried,
-                            row.choice_id.as_deref(),
-                            true,
-                            Some(&outage),
-                        )
+                        .route_run(&prompt, &pins, &tried, choice, true, Some(&outage))
                         .await
                         .map_err(|_| fail(&tried, e.message.clone()))?;
                     return self
@@ -477,6 +498,9 @@ impl RunManager {
         let cwd = self.resume_cwd(&row).await.map_err(LaunchFail::other)?;
         let mut prompt = self.turn_prompt(&row).await;
         prompt.push_str(FAILOVER_NOTE);
+        self.issue_run_token(&row.id)
+            .await
+            .map_err(|e| LaunchFail::other(e.message))?;
         let spec = self
             .build_spec(&row, &next.account, cwd, prompt, None, false)
             .await
@@ -525,5 +549,58 @@ fn reassign_of(r: &so_core::proto::RouteResult, account: &AccountFile) -> Reassi
         choice_id: Some(r.choice_id.clone()),
         model: Some(r.model.clone()).filter(|m| !m.is_empty()),
         effort: r.effort.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runs::testutil::{insert_run, manager};
+
+    #[tokio::test]
+    async fn eligibility_reads_tool_controls_even_when_the_definition_is_untrusted() {
+        let (m, dir) = manager();
+        for (name, harness) in [
+            ("codex-t", Harness::Codex),
+            ("opencode-t", Harness::Opencode),
+        ] {
+            AccountFile::new(name, harness, "/credential-home", "/nonexistent")
+                .unwrap()
+                .save(&m.inner.paths)
+                .unwrap();
+        }
+        let cwd = dir.path().join("project");
+        let file = cwd.join(".superorchestrator/agents/helper.md");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            file,
+            "---\nname: helper\ndescription: d\ntools: [Read]\nhooks: {}\n---\nbody",
+        )
+        .unwrap();
+        let mut row = insert_run(&m, RunState::Running);
+        row.agent = Some("helper".into());
+        row.cwd = Some(cwd.display().to_string());
+        // Eligibility is a tool-capability query; launch must still refuse this file.
+        assert!(so_agents::resolve_for_spawn(&cwd, &m.inner.paths, "helper").is_err());
+        for tool_controls in [false, true] {
+            assert_eq!(
+                m.tool_ineligible_accounts(&row, tool_controls).await,
+                ["codex-t"],
+                "tool_controls={tool_controls}"
+            );
+        }
+    }
+
+    #[test]
+    fn config_errors_fail_over_and_other_errors_do_not() {
+        for k in [
+            ErrorKind::Quota,
+            ErrorKind::RateLimit,
+            ErrorKind::Auth,
+            ErrorKind::Config,
+        ] {
+            assert!(failover_kind(k), "{k:?}");
+        }
+        assert!(!failover_kind(ErrorKind::Other));
     }
 }

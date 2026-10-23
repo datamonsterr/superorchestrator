@@ -86,7 +86,7 @@ pub fn ok_script(extra_before: &[Value]) -> String {
 pub fn result_msg(extra: Value) -> Value {
     let mut base = json!({
         "type": "result", "subtype": "success", "is_error": false, "result": "done",
-        "session_id": "s", "total_cost_usd": 0.01,
+        "session_id": "11111111-2222-7333-8444-555555555555", "total_cost_usd": 0.01,
         "usage": {"input_tokens": 3, "output_tokens": 4},
     });
     base.as_object_mut()
@@ -96,7 +96,7 @@ pub fn result_msg(extra: Value) -> Value {
 }
 
 pub fn init_msg() -> Value {
-    json!({"type": "system", "subtype": "init", "session_id": "s"})
+    json!({"type": "system", "subtype": "init", "session_id": "11111111-2222-7333-8444-555555555555"})
 }
 
 pub struct Env {
@@ -140,12 +140,17 @@ impl Env {
         git(&repo, &["add", "."]);
         git(&repo, &["commit", "-q", "-m", "init"]);
         let sock = dir.path().join("run/s.sock");
+        let mut config = Config::default();
+        // The supervisor strips its children's environment. Under `cargo llvm-cov` the
+        // instrumented fake harness would then write `default_*.profraw` into its cwd
+        // (the run worktree) and dirty it, so pass the profile path through.
+        config.accounts.pass_env = vec!["LLVM_PROFILE_FILE".into()];
         Env {
             paths: Paths::from_dir(cfg),
             sock,
             repo,
             home,
-            config: Config::default(),
+            config,
             dir,
         }
     }
@@ -307,6 +312,14 @@ impl Env {
         c
     }
 
+    pub async fn inspect_client(&self, h: &SupervisorHandle) -> SupervisorClient {
+        let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
+        c.hello_inspect("test-operator", self.repo.to_str().unwrap(), None)
+            .await
+            .unwrap();
+        c
+    }
+
     pub fn spawn_params(&self, account: &str) -> SpawnParams {
         SpawnParams {
             prompt: Some(PROMPT.into()),
@@ -366,6 +379,10 @@ pub fn rpc_code(e: ClientError) -> i64 {
 
 /// A session with one run of the given depth and state, written straight to the store.
 pub fn insert_session_and_run(store: &Store, depth: i64, state: RunState) -> RunRow {
+    insert_session_and_run_in(store, depth, state, &std::env::current_dir().unwrap())
+}
+
+pub fn insert_session_and_run_in(store: &Store, depth: i64, state: RunState, cwd: &Path) -> RunRow {
     let session = SessionRow {
         id: new_id(),
         kind: SessionKind::Orchestrator,
@@ -390,7 +407,7 @@ pub fn insert_session_and_run(store: &Store, depth: i64, state: RunState) -> Run
         account: None,
         model: None,
         effort: None,
-        cwd: None,
+        cwd: Some(cwd.to_string_lossy().into_owned()),
         worktree_path: None,
         branch: None,
         native_session_id: None,
@@ -419,4 +436,46 @@ pub fn sibling_bin(name: &str) -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     let debug = exe.parent().unwrap().parent().unwrap();
     debug.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// Gives a manually inserted fixture the identity a real enqueue would create.
+pub fn seed_run_identity(store: &Store, paths: &Paths, run: &str) {
+    // Hash independently of production code to check the persisted SHA-256 contract.
+    use sha2::{Digest, Sha256};
+    let dir = paths.run_dir(run);
+    std::fs::create_dir_all(&dir).unwrap();
+    let token = "test-only-run-token";
+    std::fs::write(dir.join("rpc-token"), token).unwrap();
+    store
+        .set_run_token_hash(run, &Sha256::digest(token.as_bytes()))
+        .unwrap();
+}
+
+/// Authenticates a test run, using its real spawn token where available.
+pub async fn hello_run(
+    c: &SupervisorClient,
+    store: &Store,
+    paths: &Paths,
+    run: &str,
+) -> so_core::proto::HelloResult {
+    // Hash independently of production code to check the persisted SHA-256 contract.
+    use sha2::{Digest, Sha256};
+    let token =
+        std::fs::read_to_string(paths.run_dir(run).join("rpc-token")).unwrap_or_else(|_| {
+            assert!(
+                store.get_run_token_hash(run).unwrap().is_none(),
+                "spawn token file must exist"
+            );
+            let token = "test-only-run-token".to_string();
+            store
+                .set_run_token_hash(run, &Sha256::digest(token.as_bytes()))
+                .unwrap();
+            token
+        });
+    c.call(
+        "hello",
+        json!({"client": "subagent-test", "cwd": "/", "run_id": run, "run_token": token}),
+    )
+    .await
+    .unwrap()
 }

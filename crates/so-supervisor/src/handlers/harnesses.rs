@@ -209,6 +209,10 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
         .collect();
 
     let mut out = Map::new();
+    if let Some(why) = &view.stale_reason {
+        out.insert("stale".into(), json!(true));
+        out.insert("stale_reason".into(), json!(why));
+    }
     out.insert("accounts".into(), Value::Array(rows));
     out.insert("choices".into(), Value::Array(choices));
     // Free models of opencode, once (the catalog is per harness, not per account).
@@ -273,9 +277,17 @@ pub fn harnesses_view(state: &SupervisorState) -> Result<HarnessesView, String> 
         }
     }
     accounts.sort_by(|a, b| a.name.cmp(&b.name));
+    let stale_reason = state.stale_reason().map(|why| {
+        format!(
+            "{why}. {}",
+            so_core::buildinfo::restart_hint(Some(std::process::id()))
+        )
+    });
     Ok(HarnessesView {
         accounts,
         choices: state.config.choices.clone(),
+        stale: stale_reason.is_some(),
+        stale_reason,
     })
 }
 

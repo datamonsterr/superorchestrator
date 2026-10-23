@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 
 use crate::driver::{
     Channel, Driver, DriverConfig, DriverError, HarnessEvent, JoinCommand, JoinInfo, LaunchSpec,
-    RateLimits, RunControl, RunHandle, ShutdownOutcome, check_effort, classify_common,
+    RateLimits, RunControl, RunHandle, ShutdownOutcome, check_launch_values, classify_common,
 };
 use crate::process::{
     LineParser, ProcessHandle, create_private_dir, default_truncated_event, spawn_supervised,
@@ -77,7 +77,8 @@ pub fn build_args(spec: &LaunchSpec, session_id: &str) -> Vec<String> {
     if let Some(n) = spec.max_turns {
         a.extend(["--max-turns".into(), n.to_string()]);
     }
-    // The custom agent's tool lists and extra config; last because the lists are variadic.
+    // `launch` validates the agent arguments against the shared explicit allowlist.
+    // Tool lists and extra config come last because permission lists are variadic.
     a.extend(spec.agent.extra_args.iter().cloned());
     a
 }
@@ -111,7 +112,14 @@ impl Driver for ClaudeDriver {
     }
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
-        check_effort(Harness::Claude, spec.effort.as_deref())?;
+        check_launch_values(
+            Harness::Claude,
+            spec.model.as_deref(),
+            spec.effort.as_deref(),
+            spec.resume.as_deref(),
+        )?;
+        so_agents::materialise::validate_claude_extra_args(&spec.agent.extra_args)
+            .map_err(DriverError::Other)?;
         write_run_files(&spec)?;
         let session_id = spec
             .resume
@@ -130,6 +138,7 @@ impl Driver for ClaudeDriver {
             &spec.run_dir,
             self.config.shutdown_grace,
             ClaudeParser::new(acks.clone()),
+            &spec.launch.pass_env,
         )?;
         let control = ClaudeControl {
             proc: Arc::new(sup.handle),

@@ -104,14 +104,26 @@ fn canonical(v: &Value) -> String {
     }
 }
 
-/// Canonical working directory of a step: the `cwd` option (relative to the run's cwd) or
-/// the run's cwd. Falls back to the unresolved path when it does not exist.
-fn resolve_cwd(base: &Path, opt: Option<&str>) -> String {
-    let p = match opt {
-        Some(o) => base.join(o),
-        None => base.to_path_buf(),
-    };
-    p.canonicalize().unwrap_or(p).to_string_lossy().into_owned()
+/// Resolve before cache lookup and pass this same canonical directory to the host.
+/// Every workflow step stays inside its workflow base, including through symlinks.
+fn resolve_cwd(base: &Path, opt: Option<&str>) -> Result<String, String> {
+    let base = base
+        .canonicalize()
+        .map_err(|e| format!("workflow base cwd is not usable: {e}"))?;
+    let requested = opt.map_or_else(|| base.clone(), |o| base.join(o));
+    let cwd = requested
+        .canonicalize()
+        .map_err(|e| format!("cwd {} is not usable: {e}", requested.display()))?;
+    if !cwd.starts_with(&base) {
+        return Err(format!(
+            "cwd must resolve inside workflow base {}",
+            base.display()
+        ));
+    }
+    if !cwd.is_dir() {
+        return Err(format!("cwd {} is not a directory", cwd.display()));
+    }
+    Ok(cwd.to_string_lossy().into_owned())
 }
 
 async fn db<T: Send + 'static>(
@@ -152,14 +164,22 @@ impl RunState {
     /// Registers an `agent()` call. Runs synchronously at call time so the step index and
     /// the occurrence number follow the script's call order.
     pub fn begin(&self, prompt: &str, opts_json: &str, phase: &str) -> Result<usize, String> {
-        let opts: Value =
+        let mut opts: Value =
             serde_json::from_str(opts_json).map_err(|e| format!("bad options: {e}"))?;
         let step = self.started.fetch_add(1, Ordering::SeqCst);
         if step >= MAX_AGENTS {
             return Err(format!("a workflow may start at most {MAX_AGENTS} agents"));
         }
-        let cwd = resolve_cwd(&self.base_cwd, opts.get("cwd").and_then(Value::as_str));
+        let requested = match opts.get("cwd") {
+            Some(Value::String(cwd)) => Some(cwd.as_str()),
+            Some(_) => return Err("cwd must be a string".into()),
+            None => None,
+        };
+        let cwd = resolve_cwd(&self.base_cwd, requested)?;
         let base = sha_hex(&[&self.name, prompt, &canonical(&opts), &cwd]);
+        if requested.is_some() {
+            opts["cwd"] = Value::String(cwd);
+        }
         let n = {
             let mut occ = self.occurrences.lock().map_err(|e| e.to_string())?;
             let n = occ.entry(base.clone()).or_insert(0);

@@ -30,6 +30,7 @@ use tokio::sync::mpsc;
 const TASK: &str = include_str!("fixtures/opencode/task.sse");
 const ABORT: &str = include_str!("fixtures/opencode/abort.sse");
 const QUOTA: &str = include_str!("fixtures/opencode/error-402.sse");
+const MODEL_MISSING: &str = include_str!("fixtures/opencode/error-model-not-found.sse");
 const SESSION: &str = include_str!("fixtures/opencode/session-create.response.json");
 const SESSION_ID: &str = "ses_e9d0e831fffejyPMluk5gnwrFx";
 const FIXTURE_ID: &str = "ses_e9d0c9735ffeANTApp10GZgEp6";
@@ -260,6 +261,7 @@ impl Rig {
             account: AccountFile::new("opencode-acc1", Harness::Opencode, "~/.oc", "opencode")
                 .unwrap(),
             launch: Launch {
+                pass_env: vec![],
                 program: PathBuf::from("/bin/sh"),
                 vars: vec![("XDG_DATA_HOME".into(), "/acct/data".into())],
                 argv_prefix: vec![],
@@ -584,6 +586,38 @@ async fn insufficient_funds_is_quota() {
     let text = error_text.clone().unwrap();
     assert!(text.contains("402") && text.contains("Insufficient account funds"));
     assert_eq!(d.classify_error(&text), ErrorKind::Quota);
+}
+
+#[tokio::test]
+async fn model_not_found_is_a_config_error() {
+    let (url, _fake) = serve(Fake {
+        on_prompt: fixture_lines(MODEL_MISSING),
+        ..Fake::default()
+    })
+    .await;
+    let rig = Rig::new();
+    let d = driver(&url, "pw");
+    let mut h = d.launch(rig.spec()).await.unwrap();
+    let events = until(&mut h, is_turn).await;
+    let Some(HarnessEvent::TurnFinished {
+        is_error,
+        error_kind,
+        error_text,
+        ..
+    }) = events.last()
+    else {
+        panic!("no turn end");
+    };
+    assert!(is_error);
+    assert_eq!(*error_kind, Some(ErrorKind::Config));
+    let text = error_text.clone().unwrap();
+    assert!(text.contains("Model not found"));
+    assert_eq!(d.classify_error(&text), ErrorKind::Config);
+    // The message carries a "did you mean" list; the plain text path agrees.
+    assert_eq!(
+        d.classify_error("quota: Model not found: x"),
+        ErrorKind::Config
+    );
 }
 
 #[tokio::test]

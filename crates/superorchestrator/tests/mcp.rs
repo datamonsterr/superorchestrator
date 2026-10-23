@@ -54,6 +54,7 @@ async fn mcp_serves_tools_and_list_harnesses_returns_configured_accounts() {
             .env("HOME", &home)
             .env("SUPERORCHESTRATOR_SOCKET", &sock)
             .env_remove("SUPERORCHESTRATOR_RUN_ID")
+            .env_remove("SUPERORCHESTRATOR_RUN_TOKEN")
             .env_remove("SUPERORCHESTRATOR_CONFIG_DIR");
     }))
     .unwrap();
@@ -100,4 +101,54 @@ async fn mcp_serves_tools_and_list_harnesses_returns_configured_accounts() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(!sock.exists(), "supervisor did not exit");
+}
+
+#[tokio::test]
+async fn mcp_forwards_run_identity_token_in_hello() {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let dir = tempfile::Builder::new()
+        .prefix("so-hello-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let sock = dir.path().join("s.sock");
+    let listener = tokio::net::UnixListener::bind(&sock).unwrap();
+    let supervisor = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let (read, mut write) = stream.into_split();
+        let mut read = BufReader::new(read);
+        let mut line = String::new();
+        read.read_line(&mut line).await.unwrap();
+        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["method"], "hello");
+        assert_eq!(request["params"]["run_id"], "test-run");
+        assert!(request["params"]["run_token"].as_str() == Some("test-only-run-secret"));
+        let response = serde_json::json!({"jsonrpc": "2.0", "id": request["id"],
+            "result": {"session_id": "test-session", "run_id": "test-run", "depth": 1}});
+        write
+            .write_all(format!("{response}\n").as_bytes())
+            .await
+            .unwrap();
+        line.clear();
+        let _ = read.read_line(&mut line).await;
+    });
+    let exe = assert_cmd::cargo::cargo_bin("superorchestrator");
+    let transport = TokioChildProcess::new(tokio::process::Command::new(exe).configure(|c| {
+        c.arg("--config-dir")
+            .arg(dir.path().join("cfg"))
+            .arg("mcp")
+            .env("HOME", dir.path())
+            .env("SUPERORCHESTRATOR_SOCKET", &sock)
+            .env("SUPERORCHESTRATOR_RUN_ID", "test-run")
+            .env("SUPERORCHESTRATOR_RUN_TOKEN", "test-only-run-secret");
+    }))
+    .unwrap();
+    let client = tokio::time::timeout(Duration::from_secs(20), ().serve(transport))
+        .await
+        .unwrap()
+        .unwrap();
+    let tools = client.list_all_tools().await.unwrap();
+    assert!(tools.iter().any(|t| t.name == "ask_parent"));
+    assert!(tools.iter().any(|t| t.name == "report_progress"));
+    client.cancel().await.unwrap();
+    supervisor.abort();
 }

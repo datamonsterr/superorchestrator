@@ -495,7 +495,7 @@ One-to-one with `proto.rs` and `types.rs`. T2.3 writes these by hand as stubs so
 export type Harness = "codex" | "agy" | "opencode" | "claude";
 export type RunState = "queued" | "starting" | "running" | "waiting" | "stalled" | "escalated"
   | "pending_review" | "succeeded" | "failed" | "cancelled";
-export type ErrorKind = "quota" | "rate_limit" | "auth" | "other";
+export type ErrorKind = "quota" | "rate_limit" | "auth" | "config" | "refused" | "other";
 export type Isolation = "worktree" | "none";
 export type MessageKind = "message" | "progress" | "question" | "answer" | "nudge" | "result";
 export type SignInState = "signed_in" | "signed_out" | "unknown";
@@ -575,7 +575,7 @@ Tailwind `dark` class strategy on `<html>`, three-way toggle (system default). A
 - Stream offline: amber pill and the 5 s polling fallback (2.3).
 
 ### 7.5 Security
-- Loopback binding: no auth. Non-loopback: the server requires `--token`; unauthenticated API calls return 401; the SPA shows `TokenPage` (single `Input type=password`), posts `POST /auth`, and the server sets an HttpOnly, SameSite=Strict cookie. The token is never kept in JS, `localStorage` or URLs.
+- Every bind requires token authentication, including loopback. Without `--token` or `ui.token`, the supervisor generates and reuses an owner-only `ui-token` file in the config directory. Unauthenticated API calls return 401. The CLI opens `TokenPage` with a fresh, single-use 60-second login code obtained over the private supervisor socket. The page removes the fragment before posting its value unchanged via `POST /auth` for the existing HttpOnly, SameSite=Strict cookie. The long-lived token never enters the URL. A manually opened page prompts with `Input type=password`. The token is never persisted in JS or `localStorage`, and never sent in a URL path or query.
 - Never displayed or served: API key values (OpenRouter and any harness key), env values of join commands, credential-home file contents, auth files. Credential-home **paths** are shown (account rows, run `cwd`), contents never.
 - `RunViewPublic` has no `join_command`, `join_cwd` or `join_env`. The only route to a join command is `POST /runs/:id/join`, which writes a `join_command_issued` event and returns `argv` with any secret-looking value redacted (values of env names and of arguments matching the redaction list replaced with `***`), plus `env_names` only.
 - `GET /runs/:id/transcript` serves only the normalised lines (role, text, tool name and ok), never the raw harness lines, and passes every line through the server redactor (known key patterns, values of configured secret env vars) before sending.

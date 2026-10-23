@@ -581,7 +581,9 @@ async fn cache_is_scoped_by_cwd_and_fresh_bypasses_it() {
     assert_eq!(h.calls().len(), 3, "fresh runs again");
     run_in(&eng, &h, src, a.path(), false).await.unwrap();
     assert_eq!(h.calls().len(), 3, "fresh results are cached");
-    let with_opt = format!("return await agent('p', {{cwd: {:?}}});", b.path());
+    let inside = a.path().join("inside");
+    std::fs::create_dir(&inside).unwrap();
+    let with_opt = format!("return await agent('p', {{cwd: {:?}}});", inside);
     run_in(&eng, &h, &with_opt, a.path(), false).await.unwrap();
     assert_eq!(h.calls().len(), 4, "cwd option is part of the key");
 }
@@ -787,4 +789,64 @@ async fn stall_restart_reports_running_before_the_host_restarts() {
     run(&host, "await agent('x');").await.unwrap();
     let st: Vec<_> = host.statuses().into_iter().map(|(_, s)| s).collect();
     assert_eq!(st, ["running", "stalled", "running", "succeeded"]);
+}
+
+#[tokio::test]
+async fn ghsa_workflow_step_cwd_rejects_canonical_escapes_before_host_or_cache() {
+    let (eng, store) = engine();
+    let (base, outside) = dirs();
+    std::os::unix::fs::symlink(outside.path(), base.path().join("escape")).unwrap();
+    let host = FakeHost::echo();
+    for cwd in [
+        "..".to_string(),
+        outside.path().to_string_lossy().into_owned(),
+        "escape".into(),
+        "missing".into(),
+    ] {
+        let src = format!("return await agent('p', {{cwd: {}}});", json!(cwd));
+        let error = run_in(&eng, &host, &src, base.path(), false)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("cwd"), "{error:?}");
+    }
+    assert!(host.calls().is_empty());
+    assert!(
+        store
+            .list_workflow_runs(10)
+            .unwrap()
+            .iter()
+            .all(|r| store.list_workflow_steps(&r.id).unwrap().is_empty())
+    );
+}
+
+#[tokio::test]
+async fn ghsa_workflow_step_passes_canonical_contained_cwd_to_host() {
+    let (eng, _) = engine();
+    let (base, _) = dirs();
+    std::fs::create_dir(base.path().join("inside")).unwrap();
+    let host = FakeHost::echo();
+    for cwd in [
+        "inside".to_string(),
+        "inside/..".into(),
+        base.path().join("inside").to_string_lossy().into_owned(),
+    ] {
+        let src = format!("return await agent('p', {{cwd: {}}});", json!(cwd));
+        run_in(&eng, &host, &src, base.path(), true).await.unwrap();
+        let expected = base.path().join(cwd).canonicalize().unwrap();
+        assert_eq!(host.calls().last().unwrap().opts["cwd"], json!(expected));
+    }
+}
+
+#[tokio::test]
+async fn dynamic_import_cannot_load_even_an_existing_module() {
+    let dir = tempfile::tempdir().unwrap();
+    let module = dir.path().join("module.js");
+    std::fs::write(&module, "export default 42;").unwrap();
+    let specifier = serde_json::to_string(&module.to_string_lossy()).unwrap();
+    let host = FakeHost::echo();
+    let err = run(&host, &format!("return await import({specifier});"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, WorkflowError::Script(_)), "{err}");
+    assert!(host.calls().is_empty());
 }

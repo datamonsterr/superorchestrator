@@ -58,9 +58,11 @@ pub enum ResponseMatcher {
 
 #[derive(Debug, Clone)]
 pub struct ProbeRequest {
+    /// Additional inherited names from the account and global settings.
+    pub pass_env: Vec<String>,
     pub program: PathBuf,
     pub args: Vec<String>,
-    /// Added to the inherited environment.
+    /// Explicit variables added on top of the isolated environment.
     pub env: Vec<(String, String)>,
     pub stdin_lines: Vec<String>,
     pub wait_for: ResponseMatcher,
@@ -113,7 +115,9 @@ fn rpc_id(line: &str) -> Option<Value> {
 }
 
 async fn run_process(req: ProbeRequest) -> Result<ProbeOutput> {
-    let mut child = Command::new(&req.program)
+    let mut command = Command::new(&req.program);
+    so_core::child_env::isolate(command.as_std_mut(), &req.pass_env);
+    let mut child = command
         .args(&req.args)
         .envs(req.env.iter().map(|(k, v)| (k, v)))
         .stdin(std::process::Stdio::piped())
@@ -415,11 +419,13 @@ impl UsageService {
     }
 
     async fn probe_codex(&self, account: &AccountFile) -> Result<Vec<WindowReading>> {
-        let launch = build_launch(account, &self.host)?;
+        let launch = build_launch(account, &self.host)?
+            .with_default_pass_env(&self.config.accounts.pass_env);
         let mut args = launch.argv_prefix.clone();
         args.extend(launch.extra_args.clone());
         args.extend(["app-server".into(), "--listen".into(), "stdio://".into()]);
         let req = ProbeRequest {
+            pass_env: launch.pass_env,
             program: launch.program,
             args,
             env: launch.vars,
@@ -447,6 +453,7 @@ impl UsageService {
         let program = resolve_binary(&account.binary, self.host.path_var.as_deref())?;
         let home = self.host.expand(&account.home)?;
         let req = ProbeRequest {
+            pass_env: account.effective_pass_env(&self.config.accounts.pass_env),
             program,
             args: vec![
                 format!("--gemini_dir={}", home.join(".gemini").display()),
@@ -562,7 +569,9 @@ mod tests {
     #[tokio::test]
     async fn codex_ttl_force_and_request_lines() {
         let fake = Fake::new(codex_reply());
-        let (d, svc, acct) = setup(fake.clone(), Harness::Codex, "codex");
+        let (d, mut svc, mut acct) = setup(fake.clone(), Harness::Codex, "codex");
+        acct.pass_env = vec!["SO_ACCOUNT_VAR".into()];
+        svc.config.accounts.pass_env = vec!["SO_GLOBAL_VAR".into()];
         let now = DateTime::from_timestamp(Utc::now().timestamp(), 0).unwrap();
         let h = svc.refresh_at(&acct, false, now).await.unwrap();
         assert_eq!(fake.n(), 1);
@@ -594,6 +603,7 @@ mod tests {
 
         let call = fake.calls.lock().unwrap()[0].clone();
         assert_eq!(call.args, ["app-server", "--listen", "stdio://"]);
+        assert_eq!(call.pass_env, ["SO_ACCOUNT_VAR", "SO_GLOBAL_VAR"]);
         assert_eq!(
             call.env,
             vec![(
@@ -639,9 +649,12 @@ mod tests {
     async fn agy_probe_per_pool_and_not_eligible() {
         let ok = std::fs::read_to_string(format!("{FX}/agy/usage-exhausted.txt")).unwrap();
         let fake = Fake::new(Ok(ProbeOutput::ok(ok)));
-        let (d, svc, acct) = setup(fake.clone(), Harness::Agy, "agy");
+        let (d, mut svc, mut acct) = setup(fake.clone(), Harness::Agy, "agy");
+        acct.pass_env = vec!["SO_ACCOUNT_VAR".into()];
+        svc.config.accounts.pass_env = vec!["SO_GLOBAL_VAR".into()];
         let h = svc.refresh_at(&acct, false, Utc::now()).await.unwrap();
         let call = fake.calls.lock().unwrap()[0].clone();
+        assert_eq!(call.pass_env, ["SO_ACCOUNT_VAR", "SO_GLOBAL_VAR"]);
         assert_eq!(
             call.args,
             [
@@ -862,11 +875,48 @@ mod tests {
         assert_eq!(fake.n(), 6);
     }
 
+    #[test]
+    fn probe_environment_isolation() {
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--ignored",
+                "--exact",
+                "probe::tests::probe_environment_child",
+                "--nocapture",
+            ])
+            .env("SO_ENV_TEST_CHILD", "1")
+            .env("SO_TEST_SECRET", "must-not-inherit")
+            .env("LC_SO_TEST", "allowlisted")
+            .env("SO_ACCOUNT_VAR", "account")
+            .env("SO_DRIVER_VAR", "parent")
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    /// Helper run only by `probe_environment_isolation` in a fresh process (`--ignored
+    /// --exact`), so no test mutates this process's environment.
+    #[tokio::test]
+    #[ignore = "helper: run by probe_environment_isolation"]
+    async fn probe_environment_child() {
+        let req = ProbeRequest {
+            pass_env: vec!["SO_ACCOUNT_VAR".into(), "SO_DRIVER_VAR".into(), "MISSING_OPT_IN".into()],
+            program: "/bin/sh".into(),
+            args: vec!["-c".into(), "test \"$SO_ACCOUNT_VAR\" = account && test -z \"${SO_TEST_SECRET+x}\" && test \"$LC_SO_TEST\" = allowlisted && test \"$SO_DRIVER_VAR\" = explicit".into()],
+            env: vec![("SO_DRIVER_VAR".into(), "explicit".into())],
+            stdin_lines: vec![],
+            wait_for: ResponseMatcher::Eof,
+            timeout: Duration::from_secs(5),
+        };
+        assert!(TokioProbeRunner.run(req).await.unwrap().success);
+    }
+
     #[tokio::test]
     async fn real_runner_jsonrpc_and_eof() {
         // A shell stand-in for app-server proves line-by-line request/response handling.
         let script = r#"read a; echo '{"id":1,"result":{}}'; read b; read c; echo '{"id":2,"result":{"ok":true}}'"#;
         let req = ProbeRequest {
+            pass_env: vec![],
             program: "sh".into(),
             args: vec!["-c".into(), script.into()],
             env: vec![],
@@ -877,6 +927,7 @@ mod tests {
         let out = TokioProbeRunner.run(req).await.unwrap();
         assert!(out.stdout.contains("\"ok\":true"));
         let req = ProbeRequest {
+            pass_env: vec![],
             program: "sh".into(),
             args: vec!["-c".into(), "echo hi".into()],
             env: vec![],
@@ -886,6 +937,7 @@ mod tests {
         };
         assert_eq!(TokioProbeRunner.run(req).await.unwrap().stdout.trim(), "hi");
         let req = ProbeRequest {
+            pass_env: vec![],
             program: "sleep".into(),
             args: vec!["5".into()],
             env: vec![],
@@ -899,6 +951,7 @@ mod tests {
         ));
         // Nonzero exit is reported, and output is capped at 1 MiB.
         let req = ProbeRequest {
+            pass_env: vec![],
             program: "sh".into(),
             args: vec!["-c".into(), "echo err; exit 3".into()],
             env: vec![],
@@ -909,6 +962,7 @@ mod tests {
         let out = TokioProbeRunner.run(req).await.unwrap();
         assert!(!out.success);
         let req = ProbeRequest {
+            pass_env: vec![],
             program: "sh".into(),
             args: vec!["-c".into(), "yes | head -c 5000000".into()],
             env: vec![],
@@ -922,6 +976,7 @@ mod tests {
         }
         // Exactly at the cap is still accepted.
         let req = ProbeRequest {
+            pass_env: vec![],
             program: "sh".into(),
             args: vec!["-c".into(), "head -c 1048576 /dev/zero".into()],
             env: vec![],
@@ -942,6 +997,7 @@ mod tests {
         // A grandchild that would outlive a plain child kill.
         let script = format!("sleep 30 & echo $! > {}; wait", pidfile.display());
         let req = ProbeRequest {
+            pass_env: vec![],
             program: "sh".into(),
             args: vec!["-c".into(), script],
             env: vec![],

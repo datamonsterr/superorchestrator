@@ -21,9 +21,7 @@ impl RunManager {
             return Err(rpc(INVALID_PARAMS, "prompt must not be empty"));
         }
         let src = self.resolve_run(&p.run).await?;
-        if ctx.session_id.as_deref() != Some(src.session_id.as_str()) {
-            return Err(rpc(INVALID_PARAMS, "that run belongs to another session"));
-        }
+        Self::same_session(ctx, &src)?;
         // The fork takes the source's place under its parent, so only that parent may
         // fork it, and the depth limit still applies (`max_children` is enforced when the
         // run is inserted).

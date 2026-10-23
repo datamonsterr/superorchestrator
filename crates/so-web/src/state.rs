@@ -6,7 +6,7 @@ use std::sync::Arc;
 use so_supervisor::SupervisorState;
 
 use crate::error::{ApiError, ApiResult};
-use crate::security::RateLimiter;
+use crate::security::{LoginCodes, RateLimiter};
 use crate::stream::Hub;
 
 /// How the web server listens and who may talk to it.
@@ -16,8 +16,8 @@ pub struct WebOptions {
     pub bind: String,
     /// Port; `0` picks a free one (the real port is in [`crate::WebServer::addr`]).
     pub port: u16,
-    /// Shared secret. Required for any non-loopback bind; when set on a loopback bind it is
-    /// enforced there too.
+    /// Shared secret for every bind. When absent or empty, startup loads or creates
+    /// the private `ui-token` file in the supervisor config directory.
     pub token: Option<String>,
     /// Mark the session cookie `Secure` when a trusted proxy says the request was HTTPS
     /// (`X-Forwarded-Proto: https`). Off by default: the header is client-controlled.
@@ -79,6 +79,7 @@ pub struct AppState {
     pub hub: Arc<Hub>,
     pub opts: Arc<WebOptions>,
     pub limiter: Arc<RateLimiter>,
+    pub login_codes: Arc<LoginCodes>,
     /// Set to `true` to stop the server; open SSE streams end when it is.
     pub stop: Arc<tokio::sync::watch::Sender<bool>>,
     /// One model refresh at a time.

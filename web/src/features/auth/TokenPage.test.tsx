@@ -42,3 +42,33 @@ it('shows the API error and stays on the page', async () => {
   expect(await screen.findByRole('alert')).toHaveTextContent('invalid token')
   expect(screen.getByLabelText('Access token')).toBeInTheDocument()
 })
+
+
+it('posts the CLI login code unchanged and removes the fragment before posting', async () => {
+  let body: unknown
+  let requests = 0
+  server.use(http.post('*/api/v1/auth', async ({ request }) => {
+    requests++
+    expect(window.location.hash).toBe('')
+    body = await request.json()
+    return new HttpResponse(null, { status: 204 })
+  }))
+  window.history.replaceState(null, '', '/token#token=secret%20%23%26%2B%25')
+  renderWithProviders(ui, { route: '/token#token=secret%20%23%26%2B%25' })
+  expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument()
+  expect(body).toEqual({ token: 'secret #&+%' })
+  expect(requests).toBe(1)
+  expect(window.location.hash).toBe('')
+  window.history.replaceState(null, '', '/')
+})
+
+it('clears a rejected CLI fragment and allows a manual retry', async () => {
+  server.use(http.post('*/api/v1/auth', () => HttpResponse.json({ error: { code: -32000, message: 'invalid token' } }, { status: 401 })))
+  window.history.replaceState(null, '', '/token#token=bad')
+  renderWithProviders(ui, { route: '/token#token=bad' })
+  expect(await screen.findByRole('alert')).toHaveTextContent('invalid token')
+  expect(window.location.hash).toBe('')
+  expect(screen.getByLabelText('Access token')).toHaveValue('')
+  expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled()
+  window.history.replaceState(null, '', '/')
+})

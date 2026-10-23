@@ -112,17 +112,20 @@ impl RunManager {
                 ),
             ));
         }
+        if ctx.run_id.is_some() && p.script.is_some() {
+            return Err(rpc(
+                INVALID_PARAMS,
+                "inline script requires a depth-0 caller; subagents must use a saved workflow by name from the user config dir",
+            ));
+        }
         let sid = session_id.clone();
         let session = self
             .db(move |s| s.get_session(&sid))
             .await?
             .ok_or_else(|| rpc(NOT_FOUND, format!("session not found: {session_id}")))?;
-        let cwd = session
-            .cwd
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("/"));
-        let (name, source) = self.resolve_workflow(&cwd, &p).await?;
+        let cwd = self.caller_cwd(ctx, session.cwd, None).await?;
+        let project_cwd = ctx.run_id.is_none().then_some(cwd.as_path());
+        let (name, source) = self.resolve_workflow(project_cwd, &p).await?;
         let started = self
             .start_workflow(
                 ctx.detached(),
@@ -183,7 +186,7 @@ impl RunManager {
             name: Some(name.to_string()),
             ..RunWorkflowParams::default()
         };
-        let (name, source) = self.resolve_workflow(&cwd, &p).await?;
+        let (name, source) = self.resolve_workflow(Some(&cwd), &p).await?;
         let session = SessionRow {
             id: new_id(),
             kind: SessionKind::Orchestrator,
@@ -229,23 +232,34 @@ impl RunManager {
 
     /// The script of a saved workflow, or of an inline one under a name derived from it (so
     /// two different inline scripts never share cached steps).
-    async fn resolve_workflow(&self, cwd: &Path, p: &RunWorkflowParams) -> R<(String, String)> {
+    /// `project_cwd: None` restricts lookup to the user config directory for subagents.
+    async fn resolve_workflow(
+        &self,
+        project_cwd: Option<&Path>,
+        p: &RunWorkflowParams,
+    ) -> R<(String, String)> {
         match (&p.name, &p.script) {
             (Some(name), None) => {
                 let (dir, cwd, name) = (
                     self.inner.paths.workflows_dir(),
-                    cwd.to_path_buf(),
+                    project_cwd.map(Path::to_path_buf),
                     name.clone(),
                 );
-                self.blocking(move || SavedWorkflows::new(dir, cwd).load(&name))
-                    .await?
-                    .map(|(w, src)| (w.name, src))
-                    .map_err(|e| match e {
-                        WorkflowError::NotFound(n) => {
-                            rpc(NOT_FOUND, format!("no saved workflow named `{n}`"))
-                        }
-                        other => rpc(UNAVAILABLE, other.to_string()),
-                    })
+                self.blocking(move || {
+                    let saved = match cwd {
+                        Some(cwd) => SavedWorkflows::new(dir, cwd),
+                        None => SavedWorkflows::config_only(dir),
+                    };
+                    saved.load(&name)
+                })
+                .await?
+                .map(|(w, src)| (w.name, src))
+                .map_err(|e| match e {
+                    WorkflowError::NotFound(n) => {
+                        rpc(NOT_FOUND, format!("no saved workflow named `{n}`"))
+                    }
+                    other => rpc(UNAVAILABLE, other.to_string()),
+                })
             }
             (None, Some(script)) if !script.trim().is_empty() => {
                 let digest = Sha256::digest(script.as_bytes());
@@ -284,7 +298,9 @@ impl RunManager {
             result_json: None,
             error: None,
         };
-        self.db(move |s| s.insert_workflow_run(&row)).await?;
+        let owner = ctx.run_id.clone();
+        self.db(move |s| s.insert_workflow_run_owned(&row, owner.as_deref()))
+            .await?;
         self.publish_workflow(&id, &name, "running", None, Some(session_id));
 
         let host = Arc::new(StepHost {
@@ -351,6 +367,34 @@ impl RunManager {
             out
         });
         Ok(Started { id, done })
+    }
+
+    pub(super) async fn authorize_workflow_or_inspect(&self, ctx: &ConnCtx, id: &str) -> R<()> {
+        if ctx.is_inspect() {
+            return Ok(());
+        }
+        let id = id.to_string();
+        let (row, owner) = self
+            .db(move |s| {
+                let row = s.get_workflow_run_by_prefix(&id)?;
+                let owner = s.get_workflow_owner(&row.id)?;
+                Ok((row, owner))
+            })
+            .await?;
+        if ctx.session_id.is_none() || ctx.session_id != row.session_id {
+            return Err(super::not_found("workflow run"));
+        }
+        if ctx.run_id.is_some() {
+            let owner = owner.ok_or_else(|| {
+                rpc(
+                    INVALID_PARAMS,
+                    "that workflow is outside the caller's subtree",
+                )
+            })?;
+            self.authorize_run(ctx, &self.resolve_run(&owner).await?, false)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Stops a running workflow: the engine is interrupted and every step run is cancelled.

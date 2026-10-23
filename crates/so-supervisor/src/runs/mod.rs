@@ -58,8 +58,17 @@ pub(crate) fn rpc(code: i64, msg: impl Into<String>) -> RpcError {
     RpcError::new(code, msg)
 }
 
+pub(super) fn not_found(entity: &str) -> RpcError {
+    rpc(NOT_FOUND, format!("{entity} not found"))
+}
+
 fn store_rpc(e: StoreError) -> RpcError {
     match e {
+        StoreError::NotFound { entity: "run", .. } => not_found("run"),
+        StoreError::NotFound {
+            entity: "workflow run",
+            ..
+        } => not_found("workflow run"),
         StoreError::NotFound { .. } => rpc(NOT_FOUND, e.to_string()),
         StoreError::AmbiguousPrefix { .. } => rpc(INVALID_PARAMS, e.to_string()),
         other => rpc(INTERNAL_ERROR, other.to_string()),

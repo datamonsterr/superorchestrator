@@ -52,6 +52,25 @@ _Avoid_: Home dir, config dir, profile folder
 The command on `PATH` named after an account that launches its harness with that account's credential home.
 _Avoid_: Shim, alias, launcher
 
+**Pass-through environment**:
+The extra inherited environment variable names explicitly allowed by an account's
+`pass_env` and the global `accounts.pass_env`, in addition to the baseline
+allowlist of supervisor-launched processes. Values come from the supervisor's environment and are not saved in account config. Interactive CLI commands keep the operator's environment.
+
+### Access and identity
+
+**Run identity token**:
+The random per-run secret that proves a connection belongs to one run. The supervisor stores only its hash, the run's `superorchestrator mcp` process presents it in `hello`, and it is rotated when the run is resumed.
+_Avoid_: RPC key, run password, session token
+
+**Inspect connection**:
+A sessionless, runless connection to the supervisor socket that acts as the operator (the CLI, the terminal UI, the web UI). It is not scoped to a session or subtree, and it is the only kind that may call `ui_start`.
+_Avoid_: Admin connection, root connection, operator session
+
+**Login code**:
+A single-use browser sign-in secret valid for 60 seconds, minted per `ui_start` call and carried in the login URL fragment. The browser exchanges it for the session cookie; it is never the persistent UI token.
+_Avoid_: One-time token, magic link, session key
+
 ### Routing and usage
 
 **Route**:
