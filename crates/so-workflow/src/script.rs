@@ -44,6 +44,9 @@ fn reject_modules(trimmed: &str) -> Result<(), String> {
             r.is_empty() || r.starts_with(|c: char| c.is_whitespace() || "{*'\"(".contains(c))
         })
     };
+    // Dynamic import() is valid inside the async wrapper. It still fails at runtime:
+    // WorkflowEngine installs no QuickJS module loader. Keep that sandbox boundary;
+    // adding a loader would grant scripts access to modules beyond the workflow API.
     if starts("import") && !trimmed.starts_with("import(") {
         return Err(
             "workflow scripts cannot use import; put work that needs a library in an agent's task"

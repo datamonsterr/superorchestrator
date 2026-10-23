@@ -788,3 +788,18 @@ async fn stall_restart_reports_running_before_the_host_restarts() {
     let st: Vec<_> = host.statuses().into_iter().map(|(_, s)| s).collect();
     assert_eq!(st, ["running", "stalled", "running", "succeeded"]);
 }
+
+#[tokio::test]
+async fn dynamic_import_cannot_load_even_an_existing_module() {
+    let dir = tempfile::tempdir().unwrap();
+    let module = dir.path().join("module.js");
+    std::fs::write(&module, "export default 42;").unwrap();
+    let specifier = serde_json::to_string(&module.to_string_lossy()).unwrap();
+    let host = FakeHost::echo();
+    let err = run(&host, &format!("return await import({specifier});"))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, WorkflowError::Script(_)), "{err}");
+    assert!(err.to_string().contains("load"), "{err}");
+    assert!(host.calls().is_empty());
+}
