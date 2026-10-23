@@ -35,11 +35,12 @@ rust-embed = { workspace = true, features = ["interpolate-folder-path", "mime-gu
 toml.workspace = true
 subtle = "2"
 sha2 = "0.11"
+rustix = { version = "1", default-features = false, features = ["std", "fs", "process"] }
+tempfile.workspace = true
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
-tempfile.workspace = true
 so-harness = { path = "../so-harness" }
 
 [[bin]]

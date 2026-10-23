@@ -9,6 +9,7 @@ use so_accounts::{HostEnv, manage};
 use so_core::proto::{AccountView, AckResult, SignInState};
 use so_core::{AccountFile, Config, validate_account_name};
 use so_supervisor::harnesses_view;
+use so_supervisor::runs::display_argv;
 use so_supervisor::services::accounts::{FlagAction, apply_flag, flag_pools};
 
 use crate::error::{ApiError, ApiResult};
@@ -234,12 +235,15 @@ pub async fn login_start(
     s.blocking(move || {
         let account = load(&st, &name)?;
         let plan = manage::login_command(&account, &host(&st)?, false)?;
-        let env: Vec<String> = plan.env.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        let command = if env.is_empty() {
-            plan.argv.join(" ")
-        } else {
-            format!("{} {}", env.join(" "), plan.argv.join(" "))
-        };
+        // `env` makes each K=V a regular argument, so quoting the entire assignment
+        // preserves both shell safety and environment-assignment semantics.
+        let mut argv = Vec::new();
+        if !plan.env.is_empty() {
+            argv.push("env".to_string());
+            argv.extend(plan.env.iter().map(|(k, v)| format!("{k}={v}")));
+        }
+        argv.extend(plan.argv);
+        let command = display_argv(&argv);
         Ok(Json(SignInStart::Manual {
             command,
             cwd: None,

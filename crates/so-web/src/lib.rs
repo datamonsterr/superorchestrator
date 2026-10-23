@@ -11,7 +11,8 @@
 //!
 //! # Security
 //!
-//! Loopback by default. A non-loopback bind needs a token ([`WebError::TokenRequired`]).
+//! Loopback by default. Every bind requires a token; startup generates and persists one
+//! when no explicit token is configured.
 //! Over plain HTTP the token and cookie travel in the clear; put TLS in front of a
 //! non-loopback bind. Every request is checked for an allowed `Host`; `/api` requests also
 //! for a same-origin `Origin`. Config changes made over the API are written to
@@ -26,6 +27,7 @@ pub mod page;
 pub mod security;
 pub mod state;
 pub mod stream;
+mod token;
 pub mod tsgen;
 pub mod types;
 
@@ -46,6 +48,8 @@ pub use state::{AppState, WebOptions};
 pub enum WebError {
     #[error("binding the UI to {0} requires a token (--token or ui.token)")]
     TokenRequired(String),
+    #[error("could not load or create the private UI token: {0}")]
+    TokenFile(#[source] std::io::Error),
     #[error("{0}")]
     BadAddress(String),
     #[error("could not listen on {addr}: {source}")]
@@ -69,8 +73,17 @@ fn make_app(state: Arc<SupervisorState>, opts: WebOptions) -> AppState {
 }
 
 /// Builds the router for `state` with a running [`stream::Hub`] pump.
-pub fn router(state: Arc<SupervisorState>, opts: WebOptions) -> Router {
-    build(make_app(state, opts))
+pub fn router(state: Arc<SupervisorState>, mut opts: WebOptions) -> Result<Router, WebError> {
+    prepare(&state, &mut opts)?;
+    Ok(build(make_app(state, opts)))
+}
+
+fn prepare(state: &SupervisorState, opts: &mut WebOptions) -> Result<(), WebError> {
+    if opts.token.as_deref().is_none_or(str::is_empty) {
+        opts.token =
+            Some(token::load_or_create(&state.paths.config_dir).map_err(WebError::TokenFile)?);
+    }
+    validate(opts)
 }
 
 fn build(app: AppState) -> Router {
@@ -83,7 +96,7 @@ fn build(app: AppState) -> Router {
 fn validate(opts: &WebOptions) -> Result<(), WebError> {
     opts.bind_ip()
         .map_err(|e| WebError::BadAddress(format!("{e:?}")))?;
-    if !opts.is_loopback() && opts.token.as_deref().is_none_or(str::is_empty) {
+    if opts.token.as_deref().is_none_or(str::is_empty) {
         return Err(WebError::TokenRequired(opts.bind.clone()));
     }
     Ok(())
@@ -92,6 +105,7 @@ fn validate(opts: &WebOptions) -> Result<(), WebError> {
 /// A running web server.
 pub struct WebServer {
     addr: SocketAddr,
+    token: String,
     task: Option<JoinHandle<()>>,
     stop: Arc<tokio::sync::watch::Sender<bool>>,
 }
@@ -111,7 +125,8 @@ impl WebServer {
         self.addr
     }
 
-    /// `http://host:port` as a browser should open it.
+    /// Browser sign-in URL. The fragment is never sent in an HTTP request.
+    /// This URL carries a secret; only return it over the private supervisor socket.
     pub fn url(&self) -> String {
         let host = if self.addr.ip().is_unspecified() {
             "localhost".to_string()
@@ -120,7 +135,11 @@ impl WebServer {
         } else {
             self.addr.ip().to_string()
         };
-        format!("http://{host}:{}", self.addr.port())
+        format!(
+            "http://{host}:{}/token#token={}",
+            self.addr.port(),
+            token::fragment(&self.token)
+        )
     }
 
     /// Stops accepting, ends open streams and waits for the server task.
@@ -137,7 +156,17 @@ pub async fn start(
     state: Arc<SupervisorState>,
     mut opts: WebOptions,
 ) -> Result<WebServer, WebError> {
-    validate(&opts)?;
+    let st = state.clone();
+    opts = tokio::task::spawn_blocking(move || {
+        prepare(&st, &mut opts)?;
+        Ok::<_, WebError>(opts)
+    })
+    .await
+    .map_err(|e| WebError::TokenFile(std::io::Error::other(e)))??;
+    let token = opts
+        .token
+        .clone()
+        .ok_or_else(|| WebError::TokenRequired(opts.bind.clone()))?;
     let ip = opts
         .bind_ip()
         .map_err(|e| WebError::BadAddress(format!("{e:?}")))?;
@@ -173,6 +202,7 @@ pub async fn start(
     tracing::info!(%addr, "web UI listening");
     Ok(WebServer {
         addr,
+        token,
         task: Some(task),
         stop,
     })

@@ -104,9 +104,9 @@ superorchestrator config edit
 
 | Key | Default | Meaning |
 |---|---|---|
-| `bind` | `"127.0.0.1"` | Address to bind. Anything but loopback needs a token. |
+| `bind` | `"127.0.0.1"` | Address to bind. Every bind needs authentication; a private token is generated when unset. |
 | `port` | `7878` | Port |
-| `token` | unset | Shared secret for the UI. Plain text. The API cannot set it. |
+| `token` | unset | Shared-secret override for the UI (plain text). When unset, the supervisor reuses or creates the private `ui-token` file. The API cannot set it. |
 | `enabled` | `false` | Start the UI whenever the supervisor starts. `ui --install-service` sets it. |
 
 ### `[supervisor]`

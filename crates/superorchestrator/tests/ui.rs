@@ -53,6 +53,14 @@ fn ui_command_starts_the_server_inside_the_supervisor() {
     let v: serde_json::Value = serde_json::from_str(&common::stdout(&out)).unwrap();
     let url = v["url"].as_str().unwrap();
     assert!(url.starts_with("http://127.0.0.1:"), "{url}");
+    let token_path = e.cfg.join("ui-token");
+    let token = std::fs::read_to_string(&token_path).unwrap();
+    assert_eq!(token.len(), 64);
+    assert_eq!(
+        std::fs::metadata(&token_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(url.ends_with(&format!("/token#token={token}")));
     // A second call reports the running server.
     let out = e
         .cmd()
@@ -61,6 +69,10 @@ fn ui_command_starts_the_server_inside_the_supervisor() {
         .success();
     let v2: serde_json::Value = serde_json::from_str(&common::stdout(&out)).unwrap();
     assert_eq!(v2["already_running"], true);
+    assert_eq!(
+        v2["url"], v["url"],
+        "CLI calls agree on the running token and URL"
+    );
     // Stop the supervisor this test started.
     let st = e.cmd().args(["--json", "status"]).assert().success();
     let st: serde_json::Value = serde_json::from_str(&common::stdout(&st)).unwrap();

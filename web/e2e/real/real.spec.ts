@@ -8,6 +8,18 @@ import { expect, test as base, type Page } from '@playwright/test'
 const test = base
 // Set by global-setup.ts before any worker loads this file.
 test.use({ baseURL: process.env.E2E_REAL_URL })
+// Exercise the same fragment-to-cookie exchange used by the local CLI, rather than
+// bypassing the browser flow with an Authorization header.
+test.beforeEach(async ({ page, request }) => {
+  const loginUrl = process.env.E2E_REAL_LOGIN_URL!
+  await page.goto(loginUrl)
+  await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible()
+  await expect(page).toHaveURL(`${process.env.E2E_REAL_URL}/dashboard`)
+  const token = new URLSearchParams(new URL(loginUrl).hash.slice(1)).get('token')
+  const response = await request.post('/api/v1/token', { data: { token } })
+  expect(response.status()).toBe(204)
+})
+
 const session = () => process.env.E2E_REAL_SESSION!
 const runs = () => JSON.parse(process.env.E2E_REAL_RUNS!) as Record<string, string>
 

@@ -521,7 +521,7 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
 
 ## 14. Web UI
 
-`superorchestrator ui` serves at `127.0.0.1:7878` (`ui.bind`, `ui.port`). Binding to anything other than loopback requires `--token`. The browser then asks for the token once and stores it in an HttpOnly cookie. Credential homes and auth files are never served.
+`superorchestrator ui` serves at `127.0.0.1:7878` (`ui.bind`, `ui.port`). Every bind requires token authentication, including loopback. Without `--token` or `ui.token`, the supervisor generates a 256-bit OS-random token and reuses it from an owner-only `ui-token` file in the config directory. The CLI URL carries the token in a fragment, which the browser removes before exchanging it for an HttpOnly cookie. Credential homes and auth files are never served.
 
 **Pages:**
 - **Dashboard.**
@@ -726,7 +726,7 @@ The supervisor sends notifications for the events listed in `notifications.on`, 
 - **Credentials.** Never printed, logged, copied into prompts, served by the UI, or committed. Probes and sign-in checks test only that auth files exist. The supervisor log redacts tokens matching known key patterns.
 - **Socket and UI.**
   - The socket is created with mode `0600` in a user-only directory.
-  - The UI binds to loopback by default. A non-loopback bind requires a token.
+  - The UI binds to loopback by default. Every bind requires a token; an owner-only persisted token is generated when none is configured.
   - Codex app-server websockets bind to `127.0.0.1` with a per-run token.
   - `opencode serve` uses a per-run password.
 - **Task text.** Task text is passed to children as argv elements or JSON, never through a shell string. It cannot change routing eligibility.
