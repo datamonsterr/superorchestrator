@@ -276,8 +276,15 @@ pub struct RouteResult {
     pub rationale: String,
     #[serde(default)]
     pub confidence: Option<f64>,
+    /// The decider's per-anchor probabilities, keyed "0" to "4".
     #[serde(default)]
     pub probabilities: BTreeMap<String, f64>,
+    /// Complexity 0 to 100; `source` says whether the decider or the heuristic estimated it.
+    #[serde(default)]
+    pub complexity: Option<f64>,
+    /// Name of the level the complexity falls in (or is nearest to).
+    #[serde(default)]
+    pub level: Option<String>,
     #[serde(default)]
     pub usage: RouteUsage,
     #[serde(default)]
@@ -944,6 +951,8 @@ mod tests {
             rationale: "why".into(),
             confidence: None,
             probabilities: BTreeMap::new(),
+            complexity: None,
+            level: None,
             usage: RouteUsage::default(),
             alternatives: vec![],
             config_fingerprint: "f".into(),
