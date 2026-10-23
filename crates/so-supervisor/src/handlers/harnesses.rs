@@ -9,6 +9,7 @@ use so_accounts::{HostEnv, SignIn, sign_in_state};
 use so_core::proto::{AccountFlag, AccountView, HarnessesView, METHOD_LIST_HARNESSES, SignInState};
 use so_core::{AccountFile, Harness, Headroom, HeadroomSource, HeadroomStatus};
 use so_router::{Catalog, Snapshot, eligible::candidate};
+use so_usage::effective_with;
 
 use crate::dispatch::internal;
 use crate::server::SupervisorState;
@@ -247,9 +248,10 @@ pub fn harnesses_view(state: &SupervisorState) -> Result<HarnessesView, String> 
         index.insert((h.account.as_str(), h.pool.as_str()), h);
     }
 
+    let now = Utc::now();
     let flags = state
         .store
-        .active_flags(Utc::now(), HEADROOM_LIMIT)
+        .active_flags(now, HEADROOM_LIMIT)
         .map_err(|e| e.to_string())?;
 
     let dir = state.paths.accounts_dir();
@@ -266,7 +268,7 @@ pub fn harnesses_view(state: &SupervisorState) -> Result<HarnessesView, String> 
     let mut accounts = Vec::with_capacity(files.len());
     for path in files {
         match AccountFile::load(&path) {
-            Ok(account) => accounts.push(account_view(state, host, &index, &flags, &account)),
+            Ok(account) => accounts.push(account_view(state, host, &index, &flags, now, &account)),
             Err(e) => accounts.push(broken_account(&path, first_line(&e.to_string()))),
         }
     }
@@ -282,6 +284,7 @@ fn account_view(
     host: &HostEnv,
     index: &HashMap<(&str, &str), &Headroom>,
     flags: &[so_store::FlagRow],
+    now: DateTime<Utc>,
     account: &AccountFile,
 ) -> AccountView {
     let mut errors = Vec::new();
@@ -315,7 +318,15 @@ fn account_view(
         .map(|pool| {
             index
                 .get(&(account.name.as_str(), pool.as_str()))
-                .map_or_else(|| unknown_headroom(&account.name, pool), |h| (*h).clone())
+                .map_or_else(
+                    || unknown_headroom(&account.name, pool),
+                    |h| {
+                        let flagged = flags
+                            .iter()
+                            .any(|f| f.account == account.name && f.pool == *pool);
+                        effective_with(h, f64::from(state.config.usage.low_pct), flagged, now)
+                    },
+                )
         })
         .collect();
     AccountView {
