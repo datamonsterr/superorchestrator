@@ -79,6 +79,8 @@ For each task, the router picks like this:
 4. Among the candidates, the lowest `priority` number wins. Candidates without a priority come after those with one.
 5. Ties, including two candidates without a priority, go to the choice whose best account has the most headroom for its pool. Then the one with fewer active runs on that account, then the one listed first in config.
 
+An explicit empty list, `router.levels = []`, loads and turns levels off. The decider still scores the task, but `level` is null and every eligible choice is ranked by the heuristic scorer. The rationale says "no levels configured". The defaults apply only when `router.levels` is absent from the file.
+
 `route --explain` shows the complexity, where it came from and the level, for example `complexity: 55.0 (jev)` and `level: mid`. The result of the MCP `route` tool carries the same fields.
 
 ## Previewing a route

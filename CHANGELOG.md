@@ -52,7 +52,7 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 ### Added
 
 - Complexity levels: `[[router.levels]]` with `name`, `min`, `max`, an optional `tier` and `choices` (`id`, optional `priority`). With no levels set, low 0-39, mid 40-79 and high 80-100 apply. Overlaps, unknown choice ids and duplicates are refused at load.
-- `route --explain` prints the complexity, its source and the level. `doctor` has a "levels" check. The TUI and web route views show complexity, level and per-anchor probabilities. The seeded config has a commented `[[router.levels]]` example.
+- `route --explain` prints the complexity, its source and the level. `doctor` has a "levels" check. The TUI and web route views show complexity, level and per-anchor probabilities. The seed `config_header.toml` has a commented `[[router.levels]]` example.
 - `docs/guide/routing.md` has a "Complexity levels" section; `docs/adr/0006-decider-scores-complexity.md` records the decision.
 - A daemon left running after a reinstall is now reported (#12). Build identity: the build id (executable size and mtime) is
   shown by `status` next to the daemon's and the CLI's version, and is sent in the `hello`

@@ -100,7 +100,7 @@ Each level maps a range of complexity (0 to 100, from the decider or from the he
 | `tier` | unset | `high`, `mid` or `fast`. Used only when `choices` is empty: then every eligible choice of that tier is a candidate. Ignored when `choices` is set. |
 | `choices` | `[]` | List of `{ id = "...", priority = 1 }` entries. `id` names a `[[choices]]` entry and may appear once per level. `priority` is optional; a lower number is preferred, and choices without one come after those with one. |
 
-With no `[[router.levels]]` in the file, the defaults are `low` 0-39 (tier `fast`), `mid` 40-79 (tier `mid`) and `high` 80-100 (tier `high`), with no choices. Gaps between levels are allowed. A complexity that falls in a gap goes to the nearest level, and a tie goes to the higher one.
+With no `[[router.levels]]` in the file, the defaults are `low` 0-39 (tier `fast`), `mid` 40-79 (tier `mid`) and `high` 80-100 (tier `high`), with no choices. Gaps between levels are allowed. A complexity that falls in a gap goes to the nearest level, and a tie goes to the higher one. An explicit empty list, `router.levels = []`, loads and turns levels off: `level` is null and every eligible choice is ranked by the heuristic scorer. The defaults apply only when the key is absent.
 
 The file is refused at load when:
 
@@ -110,7 +110,12 @@ The file is refused at load when:
 - a level has neither `choices` nor `tier`
 - a `choices` entry names an `id` that is not in `[[choices]]`, or a level lists the same id twice
 
-`doctor` reports the levels under "levels". It warns about a level with no enabled `worker` choice, listed ids that are disabled or unknown, a `tier` that is ignored because `choices` is set, and a model catalog that is unavailable.
+`doctor` reports the levels under "levels" and warns when:
+
+- every listed choice of a level is disabled or unknown, so the level falls through to the nearest one
+- `tier` is set together with a non-empty `choices` list, so `tier` is ignored
+- a level with only `tier` has no enabled `worker` choice of that tier
+- the model catalog is unavailable, so tier checks are skipped
 
 ```toml
 [[router.levels]]

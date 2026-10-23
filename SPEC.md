@@ -350,7 +350,7 @@ enabled = true
      Complexity = `score / 4 × 100`, rounded to one decimal place. Permanent auth or validation errors from the decider are not retried.
    - **Heuristic.** Used when there is no key, when validation or the gate rejects the answer, when only one choice is eligible (the decider is not called), or when the decider is unreachable and `router.jev.on_unreachable = "heuristic"`. The estimate counts keywords and prompt length: refactor, architecture, migrate, concurrency and security raise it; typo, rename, format and docs lower it. It maps to 20 (low), 55 (mid) or 85 (high), which fall in the default levels.
      With the default `on_unreachable = "error"`, a configured decider that cannot be reached after its fallback (transport error, timeout, 5xx, 429, a missing model, or a refused key) fails the call instead: `route` exits non-zero, the MCP tool returns `isError`, `spawn_agent` with `harness: auto` spawns nothing, `POST /route` returns 502 and `route eval` counts an error. The message names the models, the cause and the next step, never the key. With no key at all, routing uses the heuristic and records `fallback_reason`.
-3. **Level.** Pick the level whose span contains the complexity. A level `min..max` spans `[min, max + 1)`, so 39.5 falls in `0..=39`, and a level with `max = 100` also includes 100.0. Levels never overlap (validated at load). Outside every level (a gap), pick the level with the nearest bound; ties go to the higher level.
+3. **Level.** Pick the level whose span contains the complexity. A level `min..max` spans `[min, max + 1)`, so 39.5 falls in `0..=39`, and a level with `max = 100` also includes 100.0. Levels never overlap (validated at load). Outside every level (a gap), pick the level with the nearest bound; ties go to the higher level. An explicit empty `router.levels = []` loads and disables levels: the decider still scores the task, but `level` is null and every eligible choice is ranked by the heuristic scorer (step 4), with the rationale "no levels configured". The defaults apply only when the key is absent.
 4. **Candidates.** A level's candidates are:
    - its listed `choices`, in listed order, that are eligible; or, when it lists none,
    - the eligible choices whose catalog tier equals the level's `tier`, in config order.
@@ -394,7 +394,7 @@ On a quota, rate-limit or auth error during a run:
 
 Other non-zero exits are not retried. The run fails and the parent is told.
 
-Failing on an unreachable decider (8.3 step 4) applies to explicit routing requests only: `route`, `spawn_agent` with `harness: auto`, `POST /route` and `route eval`. Recovery of a run that already exists never fails because the decider is down. A failover and the re-routing of a queued run route with the heuristic in that case, record a `route_decision` whose `fallback_reason` is `decider unreachable: <models>`, log a warning, and ask the decider at most once (primary model, then fallback) for that recovery.
+Failing on an unreachable decider (8.3 step 2) applies to explicit routing requests only: `route`, `spawn_agent` with `harness: auto`, `POST /route` and `route eval`. Recovery of a run that already exists never fails because the decider is down. A failover and the re-routing of a queued run route with the heuristic in that case, record a `route_decision` whose `fallback_reason` is `decider unreachable: <models>`, log a warning, and ask the decider at most once (primary model, then fallback) for that recovery.
 
 ### 8.6 Evaluation
 
@@ -673,7 +673,7 @@ on = ["escalated", "question_waiting_10m", "session_finished", "account_exhauste
 
 Environment variables: `SUPERORCHESTRATOR_CONFIG_DIR`, `SUPERORCHESTRATOR_RUN_ID`, `SUPERORCHESTRATOR_RUN_TOKEN`, `SUPERORCHESTRATOR_SOCKET`, `SUPERORCHESTRATOR_LOG`, `SUPERORCHESTRATOR_ROUTER_MODEL`, `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL`.
 
-The default `min_confidence` (0.45) was tuned on 2026-10-23 against `jev-1.14-20261014` (`~typesafe/jev-latest`) for the earlier decider, which picked a choice and was gated by `min_margin` too. That tuning does not carry over to complexity scoring: the decider now answers a score, and `min_margin` is ignored. Re-run `route eval --require-live` with your levels, the routing instruction and the choice descriptions you use, and adjust `min_confidence` from those results. The free `mercury-decide` tier can be rate limited or withdrawn and resolves to a dated snapshot; the fallback covers outages, and `SUPERORCHESTRATOR_ROUTER_MODEL=~typesafe/jev-latest` switches the primary.
+The default `min_confidence` (0.45) was tuned on 2026-10-23 against `jev-1.14-20261014` (`~typesafe/jev-latest`) for the earlier decider, which picked a choice and was gated by `min_margin` too. That tuning does not carry over to complexity scoring: the decider now answers a score, and `min_margin` is ignored. Re-run `route eval --require-live` with your levels and routing instruction, and adjust `min_confidence` from those results. The free `mercury-decide` tier can be rate limited or withdrawn and resolves to a dated snapshot; the fallback covers outages, and `SUPERORCHESTRATOR_ROUTER_MODEL=~typesafe/jev-latest` switches the primary.
 
 ## 17. Data model (SQLite)
 
