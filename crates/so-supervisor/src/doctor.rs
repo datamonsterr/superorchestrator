@@ -84,7 +84,11 @@ pub fn run_checks(paths: &Paths, host: &HostEnv) -> DoctorReport {
     check_binaries(&mut c, host, &accounts);
     let cfg = check_config(&mut c, paths);
     check_decider(&mut c, cfg.as_ref());
-    check_levels(&mut c, cfg.as_ref(), &so_router::Catalog::load(paths).ok());
+    check_levels(
+        &mut c,
+        cfg.as_ref(),
+        so_router::Catalog::load(paths).ok().as_ref(),
+    );
     check_pass_env(&mut c, cfg.as_ref(), &accounts, &|n| {
         std::env::var_os(n).is_some()
     });
@@ -102,9 +106,10 @@ pub fn run_checks(paths: &Paths, host: &HostEnv) -> DoctorReport {
     }
 }
 
-/// The routing decider (it scores complexity; code picks the choice): the models in effect (env > config > default), the fallback and
-/// whether a key is present. Environment variables are read from this process, so a
-/// supervisor started with a different environment may differ.
+/// The routing decider (it scores complexity; code picks the choice): the models in effect
+/// (env > config > default), the fallback and whether a key is present. Environment variables
+/// are read from this process, so a supervisor started with a different environment may
+/// differ.
 fn check_decider(c: &mut Checks, cfg: Option<&Config>) {
     let Some(cfg) = cfg else { return };
     let jev = &cfg.router.jev;
@@ -131,21 +136,24 @@ fn check_decider(c: &mut Checks, cfg: Option<&Config>) {
     }
 }
 
-/// Complexity levels with nothing to route to: every listed choice is disabled (or the list
-/// names none), or no enabled choice has the level's tier. A level that sets both `tier` and
-/// `choices` ignores the tier. Account headroom is not checked: it changes by the minute.
-fn check_levels(c: &mut Checks, cfg: Option<&Config>, catalog: &Option<so_router::Catalog>) {
+/// Complexity levels with nothing to route to for role `worker`: every listed choice is
+/// disabled, unknown or not a worker choice, or no enabled worker choice has the level's tier.
+/// A level that sets both `tier` and `choices` ignores the tier. Account headroom is not
+/// checked: it changes by the minute.
+fn check_levels(c: &mut Checks, cfg: Option<&Config>, catalog: Option<&so_router::Catalog>) {
     let Some(cfg) = cfg else { return };
+    let usable = |ch: &so_core::types::Choice| ch.enabled && ch.roles.iter().any(|r| r == "worker");
     let mut problems = Vec::new();
+    let mut tiers_skipped = false;
     for l in &cfg.router.levels {
         if !l.choices.is_empty() {
-            let usable = l
+            let any = l
                 .choices
                 .iter()
-                .any(|lc| cfg.choices.iter().any(|ch| ch.id == lc.id && ch.enabled));
-            if !usable {
+                .any(|lc| cfg.choices.iter().any(|ch| ch.id == lc.id && usable(ch)));
+            if !any {
                 problems.push(format!(
-                    "level {}: every listed choice is disabled, so it falls through to the nearest level",
+                    "level {}: every listed choice is disabled or unknown, so it falls through to the nearest level",
                     l.name
                 ));
             }
@@ -155,17 +163,17 @@ fn check_levels(c: &mut Checks, cfg: Option<&Config>, catalog: &Option<so_router
                     l.name
                 ));
             }
-        } else if let (Some(tier), Some(catalog)) = (l.tier, catalog) {
-            let want = match tier {
-                so_core::config::LevelTier::High => so_router::Tier::High,
-                so_core::config::LevelTier::Mid => so_router::Tier::Mid,
-                so_core::config::LevelTier::Fast => so_router::Tier::Fast,
+        } else if let Some(tier) = l.tier {
+            let Some(catalog) = catalog else {
+                tiers_skipped = true;
+                continue;
             };
-            let usable = cfg
+            let want = so_router::levels::tier_of(tier);
+            if !cfg
                 .choices
                 .iter()
-                .any(|ch| ch.enabled && catalog.tier(ch.harness, &ch.model) == want);
-            if !usable {
+                .any(|ch| usable(ch) && catalog.tier(ch.harness, &ch.model) == want)
+            {
                 problems.push(format!(
                     "level {}: no enabled choice has tier {tier:?}, so it falls through to the nearest level",
                     l.name
@@ -173,13 +181,19 @@ fn check_levels(c: &mut Checks, cfg: Option<&Config>, catalog: &Option<so_router
             }
         }
     }
+    if tiers_skipped {
+        problems.push("tier checks skipped: catalog unavailable".to_string());
+    }
     if problems.is_empty() {
         c.ok(
             "levels",
-            format!("{} level(s) have a usable choice", cfg.router.levels.len()),
+            format!(
+                "{} level(s) have a usable choice for role worker",
+                cfg.router.levels.len()
+            ),
         );
     } else {
-        c.warn("levels", problems.join("; "));
+        c.warn("levels", format!("{} (role worker)", problems.join("; ")));
     }
 }
 
@@ -533,7 +547,7 @@ mod tests {
 
     fn levels_detail(cfg: &Config) -> (Status, String) {
         let mut c = Checks::default();
-        check_levels(&mut c, Some(cfg), &None);
+        check_levels(&mut c, Some(cfg), None);
         let x = c.0.into_iter().find(|x| x.name == "levels").unwrap();
         (x.status, x.detail)
     }
@@ -547,7 +561,7 @@ mod tests {
             harness: Harness::Agy,
             model: "m".into(),
             effort: None,
-            roles: Vec::new(),
+            roles: vec!["worker".to_string()],
             description: String::new(),
             enabled: false,
         });
@@ -560,18 +574,22 @@ mod tests {
         cfg.router.levels = vec![l];
         let (st, d) = levels_detail(&cfg);
         assert_eq!(st, Status::Warn);
-        assert!(d.contains("every listed choice is disabled"), "{d}");
+        assert!(d.contains("disabled or unknown"), "{d}");
         assert!(d.contains("`tier` is ignored"), "{d}");
         cfg.choices[0].enabled = true;
         let (st, d) = levels_detail(&cfg);
         assert_eq!(st, Status::Warn);
-        assert!(!d.contains("disabled"), "{d}");
+        assert!(!d.contains("disabled or unknown"), "{d}");
     }
 
     #[test]
-    fn levels_ok_when_defaults_have_enabled_choices() {
-        let (st, _) = levels_detail(&Config::default());
-        assert_eq!(st, Status::Ok);
+    fn levels_without_a_catalog_skip_tier_checks_with_a_warning() {
+        let (st, d) = levels_detail(&Config::default());
+        assert_eq!(st, Status::Warn);
+        assert!(
+            d.contains("tier checks skipped: catalog unavailable"),
+            "{d}"
+        );
     }
 
     #[test]

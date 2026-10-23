@@ -82,7 +82,8 @@ pub struct CaseRecord {
     /// The decider model that answered (also when its answer was rejected).
     pub decider_model: Option<String>,
     pub confidence: Option<f64>,
-    /// Jev's probabilities per eligible choice, also kept when the gate rejected the answer.
+    /// Jev's probabilities per complexity anchor ("0".."4"), also kept when the gate rejected
+    /// the answer.
     pub probabilities: BTreeMap<String, f64>,
     /// Why the decider's answer was not used (no task text, no credentials).
     pub fallback_reason: Option<String>,

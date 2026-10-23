@@ -23,7 +23,7 @@ pub struct Selection {
     pub why: String,
 }
 
-fn tier_of(t: LevelTier) -> Tier {
+pub fn tier_of(t: LevelTier) -> Tier {
     match t {
         LevelTier::High => Tier::High,
         LevelTier::Mid => Tier::Mid,

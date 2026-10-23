@@ -257,8 +257,8 @@ pub struct RouteAlternative {
     pub choice_id: String,
     #[serde(default)]
     pub account: Option<String>,
-    /// Source-dependent, so scores are not comparable across results: for `jev` it is the
-    /// decider's probability for the choice, for `heuristic` and `pinned` the heuristic score.
+    /// Not set today: alternatives are listed in routing order (the rest of the level, then
+    /// other eligible choices), not scored.
     #[serde(default)]
     pub score: Option<f64>,
 }

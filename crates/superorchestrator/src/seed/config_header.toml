@@ -39,7 +39,7 @@
 # name = "high"
 # min = 80
 # max = 100
-# choices = [{ id = "codex-gpt-high", priority = 1 }, { id = "agy-pro-high" }]
+# choices = [{ id = "agy-flash-high", priority = 1 }, { id = "agy-flash-medium" }]
 
 # [worktrees]
 # dir = "{repo_parent}/{repo}-worktrees"

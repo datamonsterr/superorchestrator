@@ -57,17 +57,17 @@ async fn route(ctx: &Ctx, task: String, role: Option<String>, explain: bool) -> 
             "{}  ({} / {}, effort {effort})",
             r.choice_id, r.harness, r.model
         )?;
-        writeln!(w, "account:  {}", r.account)?;
+        writeln!(w, "account:    {}", r.account)?;
         let source = serde_json::to_value(r.source).unwrap_or_default();
         let source = source.as_str().unwrap_or("");
         match r.complexity {
             Some(x) => writeln!(w, "complexity: {x:.1} ({source})")?,
-            None => writeln!(w, "source:   {source}")?,
+            None => writeln!(w, "source:     {source}")?,
         }
         if let Some(level) = &r.level {
-            writeln!(w, "level:    {level}")?;
+            writeln!(w, "level:      {level}")?;
         }
-        writeln!(w, "why:      {}", r.rationale)?;
+        writeln!(w, "why:        {}", r.rationale)?;
         if explain {
             if let Some(c) = r.confidence {
                 writeln!(w, "confidence: {c:.2}")?;
@@ -95,16 +95,16 @@ async fn route(ctx: &Ctx, task: String, role: Option<String>, explain: bool) -> 
             }
             writeln!(
                 w,
-                "usage:    {} in, {} out, cost {}",
+                "usage:      {} in, {} out, cost {}",
                 r.usage.input_tokens, r.usage.output_tokens, r.usage.cost
             )?;
             if let Some(m) = &r.decider_models {
-                writeln!(w, "decider:  {}", m.describe())?;
+                writeln!(w, "decider:    {}", m.describe())?;
             }
             if let Some(m) = &r.decider_model {
-                writeln!(w, "answered: {m}")?;
+                writeln!(w, "answered:   {m}")?;
             }
-            writeln!(w, "config:   {}", r.config_fingerprint)?;
+            writeln!(w, "config:     {}", r.config_fingerprint)?;
         }
         Ok(())
     })
