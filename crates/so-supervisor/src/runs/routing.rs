@@ -49,6 +49,15 @@ pub(crate) struct Routed {
     pub decision: Value,
 }
 
+/// Which choice a route favours or steers clear of.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ChoiceFilter<'a> {
+    /// Try this choice first (SPEC 8.5: the next account of the same choice).
+    pub only: Option<&'a str>,
+    /// Never route to this choice (a failover must not retry the one that failed).
+    pub avoid: Option<&'a str>,
+}
+
 /// Least time between two re-routing passes for the same queued run.
 const REROUTE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -63,7 +72,7 @@ impl RunManager {
         }
     }
 
-    /// Routes `prompt` within `pins`, skipping `exclude_accounts`. With `only_choice` the
+    /// Routes `prompt` within `pins`, skipping `exclude_accounts`. With `choice.only` the
     /// same choice is tried first (SPEC 8.5: the next account of the same choice) and the
     /// whole set only when that has no account left.
     ///
@@ -79,8 +88,7 @@ impl RunManager {
         prompt: &str,
         pins: &RoutePins,
         exclude_accounts: &[String],
-        only_choice: Option<&str>,
-        avoid_choice: Option<&str>,
+        choice: ChoiceFilter<'_>,
         queue_over_cap: bool,
         recovery: Option<&AtomicBool>,
     ) -> R<Routed> {
@@ -91,8 +99,7 @@ impl RunManager {
                     prompt,
                     pins,
                     exclude_accounts,
-                    only_choice,
-                    avoid_choice,
+                    choice,
                     queue_over_cap,
                 )
                 .await;
@@ -110,8 +117,7 @@ impl RunManager {
                 prompt,
                 pins,
                 exclude_accounts,
-                only_choice,
-                avoid_choice,
+                choice,
                 queue_over_cap,
             )
             .await?;
@@ -134,8 +140,7 @@ impl RunManager {
         prompt: &str,
         pins: &RoutePins,
         exclude_accounts: &[String],
-        only_choice: Option<&str>,
-        avoid_choice: Option<&str>,
+        choice: ChoiceFilter<'_>,
         queue_over_cap: bool,
     ) -> R<Routed> {
         let role = pins.role.clone().unwrap_or_else(|| "worker".into());
@@ -165,7 +170,7 @@ impl RunManager {
         };
         let env = self.route_env(config, false);
         let mut attempt = None;
-        if let Some(cid) = only_choice {
+        if let Some(cid) = choice.only {
             params.exclude = config
                 .choices
                 .iter()
@@ -176,7 +181,7 @@ impl RunManager {
             params.exclude.clear();
         }
         // A choice whose model the harness lacks is skipped, whatever else is eligible.
-        params.exclude.extend(avoid_choice.map(str::to_string));
+        params.exclude.extend(choice.avoid.map(str::to_string));
         let mut outcome = match attempt {
             Some(Ok(o)) => Ok(o),
             // An unreachable decider fails the same way on the wider route: do not ask again.
@@ -335,8 +340,7 @@ impl RunManager {
                 &prompt,
                 &pins,
                 &exclude,
-                None,
-                None,
+                ChoiceFilter::default(),
                 false,
                 Some(&AtomicBool::new(false)),
             )

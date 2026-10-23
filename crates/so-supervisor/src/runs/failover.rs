@@ -23,7 +23,7 @@ use so_store::{Reassign, RunRow};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use super::lifecycle::{LaunchFail, Limit, Outcome, excerpt};
-use super::routing::RoutePins;
+use super::routing::{ChoiceFilter, RoutePins};
 use super::{Inner, RunManager, SHUTDOWN_DEADLINE, lock};
 
 /// Moves a run may make to another account. Each one costs a limit hit on a real account,
@@ -334,39 +334,29 @@ impl RunManager {
             .map(|a| a.id.clone());
         let mut chosen = None;
         // A model error is the choice's: move to a different choice instead.
-        let (same_choice, avoid_choice) = if req.kind == ErrorKind::Config {
-            (None, row.choice_id.as_deref())
+        let choice = if req.kind == ErrorKind::Config {
+            ChoiceFilter {
+                avoid: row.choice_id.as_deref(),
+                ..Default::default()
+            }
         } else {
-            (row.choice_id.as_deref(), None)
+            ChoiceFilter {
+                only: row.choice_id.as_deref(),
+                ..Default::default()
+            }
         };
         // Set once the decider is found down: this recovery does not ask it again.
         let outage = std::sync::atomic::AtomicBool::new(false);
         for _ in 0..MAX_ROUTE_TRIES {
             let routed = match self
-                .route_run(
-                    &prompt,
-                    &pins,
-                    &tried,
-                    same_choice,
-                    avoid_choice,
-                    false,
-                    Some(&outage),
-                )
+                .route_run(&prompt, &pins, &tried, choice, false, Some(&outage))
                 .await
             {
                 Ok(r) => r,
                 // Nothing has a free slot: wait in the queue for one, if any could take it.
                 Err(e) => {
                     let queued = self
-                        .route_run(
-                            &prompt,
-                            &pins,
-                            &tried,
-                            same_choice,
-                            avoid_choice,
-                            true,
-                            Some(&outage),
-                        )
+                        .route_run(&prompt, &pins, &tried, choice, true, Some(&outage))
                         .await
                         .map_err(|_| fail(&tried, e.message.clone()))?;
                     return self
