@@ -78,8 +78,16 @@ The ranked choice of account, model and effort for a piece of work, with a ratio
 _Avoid_: Decision, selection, placement
 
 **Choice**:
-One routable combination of harness, model and effort that the operator has approved, with a description of the work it suits. Routing picks among choices, then picks an account for the choice.
+One routable combination of harness, model and effort that the operator has approved, with a description of the work it suits. Routing picks a choice from the level that the task's complexity falls in, then picks an account for the choice.
 _Avoid_: Option, route option, model config
+
+**Complexity**:
+The 0 to 100 estimate of how much reasoning, analysis and multi-step work a task needs. The decider scores it against fixed anchors, or the heuristic estimates it when no decider answers.
+_Avoid_: Difficulty, size
+
+**Level**:
+A named, operator-defined range of complexity, with the choices allowed for tasks in that range or a model tier when it lists none. A level's choice list is not a Pool.
+_Avoid_: Tier, bucket, band, pool
 
 **Pool**:
 A separately metered slice of one account's usage, such as agy's Gemini and Claude model families. Most accounts have one pool.

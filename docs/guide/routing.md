@@ -21,6 +21,66 @@ enabled = true
 
 Edit choices with `superorchestrator config edit`, or on the Choices page of the web UI. The installed `use-superorchestrator-mcp` skill lists enabled choices and refreshes when they change.
 
+## How the router decides
+
+1. **Eligible choices.** A choice is eligible when it is enabled, matches the role, and has an account that is signed in, not flagged, not exhausted and below its cap. Claude ranks last (see below).
+2. **Complexity.** The router needs a number from 0 to 100 that says how much reasoning, analysis and multi-step work the task needs. If a Jev key is set (below) and more than one choice is eligible, the decider rates the task against five fixed anchors, from trivial to highly complex, and the router maps its answer to that scale. Without a key, or when the decider's answer is rejected, the router estimates the complexity from the task's keywords and length. The estimate is 20, 55 or 85.
+3. **Level.** The router finds the complexity level that contains that number (see [Complexity levels](#complexity-levels)). Outside every level, it takes the nearest one.
+4. **Choice.** It takes the level's candidate choices, the eligible ones you listed for the level, and picks the one with the lowest `priority` number. If the level has no eligible candidate, it tries the other levels, nearest first.
+5. **Account.** Among that choice's accounts: most headroom first, then fewest active runs, then `priority`, then least recently used.
+
+The decider sees only the task text, the role and the routing instruction. It never sees account names, quota or usage, and it does not choose a choice. A rejected answer is ignored, and the heuristic estimate is used instead. The answer is accepted only when it is a complete score with probabilities over the five anchors that sum to 1 (within 0.02), and its confidence is at least `router.policy.min_confidence` (0.45). `router.policy.min_margin` is deprecated and ignored.
+
+Task text is data. It cannot change which choices are eligible.
+
+Claude ranks last. The router picks a Claude choice only when you name it, when nothing else has headroom, or when it is the only match for the role.
+
+## Complexity levels
+
+A complexity level is a named range of complexity with the choices allowed for tasks in that range. You define levels in `config.toml`:
+
+```toml
+[[router.levels]]
+name = "low"
+min = 0
+max = 39
+tier = "fast"            # used only when `choices` is empty
+
+[[router.levels]]
+name = "mid"
+min = 40
+max = 79
+tier = "mid"
+
+[[router.levels]]
+name = "high"
+min = 80
+max = 100
+choices = [
+  { id = "codex-gpt-high", priority = 1 },   # id must match a [[choices]] entry
+  { id = "agy-pro-high" },                   # no priority: after the ones that have one
+]
+```
+
+- `min` and `max` are integers from 0 to 100. The range covers complexity from `min` up to, but not including, `max + 1`, so a complexity of 39.5 is in `low`. A level with `max = 100` also includes 100.
+- Level names must be non-empty and unique. Ranges must not overlap. Gaps are allowed: a complexity in a gap goes to the nearest level, and a tie goes to the higher one.
+- A level needs `choices`, `tier`, or both. `tier` is the catalog's model class (`high`, `mid` or `fast`). It is used only when `choices` is empty, and then every eligible choice of that tier is a candidate, in config order. When `choices` is not empty, `tier` is ignored.
+- Each `choices` entry names a choice from `[[choices]]`. A choice may appear only once in a level. `priority` is optional, and a lower number is preferred.
+
+When you set no levels, the defaults apply: `low` for 0-39 with tier `fast`, `mid` for 40-79 with tier `mid`, and `high` for 80-100 with tier `high`.
+
+A level's choice list is not a pool. A pool is a separately metered slice of an account's usage, so the config key is `choices` and the docs call them the level's choices.
+
+For each task, the router picks like this:
+
+1. Its candidates are the level's eligible choices. With an empty `choices` list, these are the eligible choices of the level's tier.
+2. If the level has no eligible candidate, the other levels are tried, nearest to the complexity first, and the higher level first on a tie.
+3. If no level has an eligible candidate, every eligible choice is ranked by the heuristic scorer. The rationale says so, and `level` in the result is null.
+4. Among the candidates, the lowest `priority` number wins. Candidates without a priority come after those with one.
+5. Ties, including two candidates without a priority, go to the choice whose best account has the most headroom for its pool. Then the one with fewer active runs on that account, then the one listed first in config.
+
+`route --explain` shows the complexity, where it came from and the level, for example `complexity: 55.0 (jev)` and `level: mid`. The result of the MCP `route` tool carries the same fields.
+
 ## Previewing a route
 
 ```sh
@@ -28,18 +88,6 @@ superorchestrator route "Rename the foo module to bar" --explain
 ```
 
 `route` previews only. It reserves nothing. The task needs no quotes: `route fix a typo in README` routes "fix a typo in README". A task that starts with `eval` or `-` needs `--` first, as in `route -- eval the parser`, because `route eval` is the evaluation command. Use `--role` to route for another role (default `worker`). The MCP tool `route` does the same.
-
-## How the router decides
-
-1. **Eligible choices.** A choice is eligible when it is enabled, matches the role, and has an account that is signed in, not flagged, not exhausted and below its cap.
-2. **Decider.** If a Jev key is set (below), the router asks the decider to pick among the eligible choices.
-3. **Validation.** The answer is rejected unless it is a valid pick from the eligible set, with probabilities that sum to 1 and a confidence and margin above `router.policy.min_confidence` (0.45) and `router.policy.min_margin` (0.15).
-4. **Heuristic.** With no key, or when the decider's answer is rejected by validation or the gate, a scorer picks: fit to the task, headroom, load, cost and harness priority. The weights are `router.weights`. The default priority is `agy`, `opencode`, `codex`, `claude`.
-5. **Account.** Among the chosen choice's accounts: most headroom first, then fewest active runs, then `priority`, then least recently used.
-
-Task text is data. It cannot change which choices are eligible.
-
-Claude ranks last. The router picks a Claude choice only when you name it, when nothing else has headroom, or when it is the only match for the role.
 
 ## Jev key setup
 
@@ -111,7 +159,11 @@ superorchestrator route eval --require-live --min-accuracy 0.8
 - `--require-live` fails when there is no Jev key, and when any case fell back from Jev.
 - `--min-accuracy X` (0 to 1) fails when accuracy is lower.
 
-The command exits non-zero when a check fails. Tune `router.policy.min_confidence` and `router.policy.min_margin` from live results. The decider reads only the choice descriptions and the routing instruction, so write descriptions that separate the tiers. Choices already in your `config.toml` keep the descriptions they were seeded with; copy newer seeded descriptions by hand if you want them.
+The command exits non-zero when a check fails.
+
+Accuracy depends on your levels. A case passes when the router picks one of its `expected_choices`, and the pick comes from the level the task's complexity falls in, then the level's priorities. A case that misses may mean its complexity landed in the wrong level, or that a level lists the wrong choices, rather than that the decider is wrong. Check the level and the complexity in `route --explain` before you change the decider or `router.instruction`. Tune `router.policy.min_confidence` from live results.
+
+The decider reads the task text and `router.instruction`. It does not read choice descriptions, so those descriptions no longer affect routing. They still describe the choices to people and to the installed skill.
 
 ## Defaults
 
