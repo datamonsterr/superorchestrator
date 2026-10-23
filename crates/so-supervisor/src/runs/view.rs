@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use so_core::proto::{JoinResult, RunDiff, RunView, UNAVAILABLE, UsageTotals};
+use so_core::proto::{JoinResult, NOT_FOUND, RunDiff, RunView, UNAVAILABLE, UsageTotals};
 use so_core::{Event, EventType};
 use so_harness::{AnyDriver, Driver, JoinCommand, JoinInfo};
 use so_store::RunRow;
@@ -183,7 +183,18 @@ impl RunManager {
             }),
         )
         .await;
+        let mut pass_env = self.config().accounts.pass_env.clone();
+        if let Some(name) = row.account.as_deref() {
+            match self.load_account(name).await {
+                Ok(account) => pass_env.extend(account.pass_env),
+                // Stored native-session join metadata outlives account removal.
+                // Without that file, inherit no additional account variables.
+                Err(error) if error.code == NOT_FOUND => {}
+                Err(error) => return Err(error),
+            }
+        }
         Ok(JoinResult {
+            pass_env,
             argv: join.argv,
             env: join.env,
             cwd: join.cwd.to_string_lossy().into_owned(),

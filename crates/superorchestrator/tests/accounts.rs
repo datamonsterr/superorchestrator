@@ -480,3 +480,44 @@ fn account_add_partial_failure_keeps_hints_and_exits_non_zero() {
         "no second error print"
     );
 }
+
+#[test]
+fn login_and_wrapper_isolate_environment_and_honor_pass_env() {
+    let e = Env::new();
+    e.init();
+    e.script(
+        "codex",
+        r#"set -eu
+ test -z "${SO_TEST_SECRET+x}"
+ test -z "${OPENCODE_SERVER_PASSWORD+x}"
+ test "$LC_SO_TEST" = allowlisted
+ test "$SO_ACCOUNT_VAR" = account
+ test "$SO_GLOBAL_VAR" = global
+ test "$CODEX_HOME" = "$HOME/.codex-acc1"
+ echo isolated"#,
+    );
+    import_one(&e, "codex-acc1");
+    let paths = e.paths();
+    let mut account = so_core::AccountFile::load(&paths.account_file("codex-acc1")).unwrap();
+    account.pass_env = vec!["SO_ACCOUNT_VAR".into(), "CODEX_HOME".into()];
+    account.save(&paths).unwrap();
+    let mut config = so_core::Config::load(&paths).unwrap();
+    config.accounts.pass_env = vec!["SO_GLOBAL_VAR".into()];
+    config.save(&paths).unwrap();
+    for args in [
+        ["account", "login", "codex-acc1"].as_slice(),
+        ["exec", "codex-acc1", "--"].as_slice(),
+    ] {
+        e.cmd()
+            .args(args)
+            .env("SO_TEST_SECRET", "secret")
+            .env("OPENCODE_SERVER_PASSWORD", "unrelated-password")
+            .env("LC_SO_TEST", "allowlisted")
+            .env("SO_ACCOUNT_VAR", "account")
+            .env("SO_GLOBAL_VAR", "global")
+            .env("CODEX_HOME", "/wrong-parent-account")
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("isolated"));
+    }
+}

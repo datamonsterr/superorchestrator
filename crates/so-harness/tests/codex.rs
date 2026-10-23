@@ -132,6 +132,7 @@ impl Rig {
             cwd: self.dir.path().to_path_buf(),
             account: AccountFile::new("codex-acc2", Harness::Codex, "~/.codex", "codex").unwrap(),
             launch: Launch {
+                pass_env: vec![],
                 program: PathBuf::from(env!("CARGO_BIN_EXE_fake-codex")),
                 vars: vec![
                     (

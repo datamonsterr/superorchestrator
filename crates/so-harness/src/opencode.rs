@@ -1075,9 +1075,13 @@ impl Driver for OpencodeDriver {
                 cmd.args(&spec.launch.argv_prefix)
                     .args(&spec.launch.extra_args)
                     .args(["serve", "--hostname", "127.0.0.1", "--port", "0"])
+                    .envs(so_core::child_env::pass_vars(&spec.launch.pass_env))
                     .envs(spec.launch.vars.iter().map(|(k, v)| (k, v)))
                     .env("OPENCODE_CONFIG", &config_path)
                     .env("OPENCODE_SERVER_USERNAME", USERNAME)
+                    // OpenCode only documents environment-based server auth:
+                    // https://opencode.ai/docs/server/#authentication
+                    // Its own tool subprocesses may inherit this per-run password.
                     .env(PASSWORD_ENV, &password)
                     .current_dir(&spec.cwd);
                 let sup = spawn_supervised(

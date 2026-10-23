@@ -484,7 +484,11 @@ const CLAUDE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Runs the resolved `claude` with `args`, killing it after [`CLAUDE_TIMEOUT`].
 fn run_claude(bin: &Path, args: &[&str]) -> Result<std::process::Output> {
-    let mut child = Command::new(bin)
+    let mut command = Command::new(bin);
+    // Installation reads this selected user-scope config in claude_user_config;
+    // the CLI must update that same file rather than the default account.
+    so_core::child_env::isolate(&mut command, &["CLAUDE_CONFIG_DIR".into()]);
+    let mut child = command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

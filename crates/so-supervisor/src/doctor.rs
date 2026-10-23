@@ -148,7 +148,9 @@ fn human_duration(d: Duration) -> String {
 
 /// Runs `<bin> --version`, killing it after `timeout`. Returns the first output line.
 fn version_of(bin: &std::path::Path, timeout: Duration) -> Result<String, String> {
-    let mut child = Command::new(bin)
+    let mut command = Command::new(bin);
+    so_core::child_env::isolate(&mut command, &[]);
+    let mut child = command
         .arg("--version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

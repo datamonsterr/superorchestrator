@@ -52,6 +52,11 @@ _Avoid_: Home dir, config dir, profile folder
 The command on `PATH` named after an account that launches its harness with that account's credential home.
 _Avoid_: Shim, alias, launcher
 
+**Pass-through environment**:
+The extra inherited environment variable names explicitly allowed by an account's
+`pass_env` and the global `accounts.pass_env`, in addition to the baseline harness
+allowlist. Values come from the launching process and are not saved in account config.
+
 ### Routing and usage
 
 **Route**:

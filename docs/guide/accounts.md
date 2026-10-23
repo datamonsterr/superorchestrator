@@ -15,9 +15,48 @@ priority = 0                 # tie-breaker inside a harness, higher first
 cap = 2                      # most concurrent runs, interactive sessions included
 enabled = true
 pools = ["default"]          # agy: ["gemini", "claude"]
+pass_env = []                # exact inherited variable names, e.g. ["GITHUB_TOKEN"]
 ```
 
 A name matches `^[a-z][a-z0-9-]{1,31}$`. The name is also the wrapper command, so it must not be `codex`, `agy`, `opencode` or `claude`, and it must not shadow another command: `account add` and `account import` fail when the name already resolves on `PATH` to an executable that is not one of our wrappers (for example `ls`).
+
+## Inherited environment
+
+Harness processes start with an empty environment and inherit only `PATH`, `HOME`,
+`USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `COLORTERM`, `TZ`, `TMPDIR`,
+`XDG_*`, proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, in any
+case), `SSL_CERT_FILE` and `SSL_CERT_DIR`. `DBUS_SESSION_BUS_ADDRESS` is also inherited
+so agy can access the user's keyring (ADR-0003).
+
+API keys, cloud credentials, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, `DISPLAY`,
+`WAYLAND_DISPLAY` and harness account selectors from the supervisor environment
+are excluded by default. If a harness or its tools need one, opt in by exact name:
+
+```toml
+# accounts/codex-acc2.toml
+pass_env = ["GITHUB_TOKEN", "SSH_AUTH_SOCK"]
+```
+
+`accounts.pass_env` in `config.toml` supplies additional names for every account:
+
+```toml
+[accounts]
+pass_env = ["SSL_CERT_CUSTOM_PATH"]
+```
+
+The two lists are combined; both default to empty. Names are literal (no `*`
+expansion), and unset names are skipped. Values are read from the launching process
+when it starts the harness; supervised runs and probes use the supervisor's
+inherited environment, so restart it after changing that environment. Only names
+are saved in configuration. Account credential-home variables and driver-set
+variables override inherited values, even when explicitly passed through.
+
+This policy also covers usage and model probes, sign-in commands, wrappers and
+interactive joins. Diagnostic `--version` launches receive the baseline environment. Claude installation
+helpers also preserve `CLAUDE_CONFIG_DIR`, because it selects the user configuration
+that installation reads and updates. User-authored review `cmd:` checks keep the user's
+command environment. Passing a variable through makes it available to the harness
+and potentially its tool subprocesses; this policy does not restrict file access.
 
 ## Credential homes
 

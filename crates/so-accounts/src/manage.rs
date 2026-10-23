@@ -378,6 +378,8 @@ pub fn set_enabled(
 /// How to log in to an account. The caller runs `argv` with `env` added.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginPlan {
+    /// Additional inherited names; do not resolve these into displayed login commands.
+    pub pass_env: Vec<String>,
     pub argv: Vec<String>,
     pub env: Vec<(String, String)>,
     pub needs_tty: bool,
@@ -390,6 +392,7 @@ pub fn login_command(account: &AccountFile, host: &HostEnv, has_tty: bool) -> Re
     let env = build_launch_vars(account, host)?;
     Ok(match account.harness {
         Harness::Codex => LoginPlan {
+            pass_env: account.pass_env.clone(),
             argv: if has_tty {
                 vec![bin, "login".into()]
             } else {
@@ -400,18 +403,21 @@ pub fn login_command(account: &AccountFile, host: &HostEnv, has_tty: bool) -> Re
             note: None,
         },
         Harness::Opencode => LoginPlan {
+            pass_env: account.pass_env.clone(),
             argv: vec![bin, "auth".into(), "login".into()],
             env,
             needs_tty: true,
             note: None,
         },
         Harness::Claude => LoginPlan {
+            pass_env: account.pass_env.clone(),
             argv: vec![account.name.clone()],
             env: Vec::new(),
             needs_tty: true,
             note: wrapper_note("run `/login` inside the session"),
         },
         Harness::Agy => LoginPlan {
+            pass_env: account.pass_env.clone(),
             argv: vec![account.name.clone()],
             env: Vec::new(),
             needs_tty: true,

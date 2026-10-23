@@ -182,6 +182,7 @@ impl Effect {
 /// A command to run with the terminal handed over to it (login, join).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Launch {
+    pub pass_env: Vec<String>,
     pub title: String,
     /// Printed before the command runs.
     pub note: Option<String>,

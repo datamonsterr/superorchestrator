@@ -717,3 +717,24 @@ fn a_crlf_claude_md_keeps_its_line_endings_and_reinstall_changes_nothing() {
     cmd(&e).arg("uninstall").assert().success();
     assert_eq!(read(&claude_md(&e)), "# Mine\r\n- keep\r\n");
 }
+
+#[test]
+fn install_honors_claude_config_dir_without_inheriting_secrets() {
+    let e = Env::new();
+    e.init();
+    let selected = e.home.join("selected-claude-config");
+    std::fs::create_dir_all(&selected).unwrap();
+    e.script("claude", r#"set -eu
+ test -z "${SO_TEST_SECRET+x}"
+ test -n "${CLAUDE_CONFIG_DIR:-}"
+ printf '{"mcpServers":{"superorchestrator":{"command":"test"}}}' > "$CLAUDE_CONFIG_DIR/.claude.json"
+ "#);
+    cmd(&e)
+        .arg("install")
+        .env("CLAUDE_CONFIG_DIR", &selected)
+        .env("SO_TEST_SECRET", "secret")
+        .assert()
+        .success();
+    assert!(selected.join(".claude.json").is_file());
+    assert!(!e.home.join(".claude.json").exists());
+}

@@ -557,6 +557,7 @@ pub fn spawn_supervised_with(
     parser: impl LineParser,
     stderr_parser: Option<Box<dyn LineParser>>,
 ) -> Result<Supervised, DriverError> {
+    so_core::child_env::isolate(cmd.as_std_mut(), &[]);
     let program = cmd.as_std().get_program().to_string_lossy().into_owned();
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -281,6 +281,7 @@ fn run_launch(terminal: &mut DefaultTerminal, l: &Launch, stop: &Stop) -> io::Re
     writeln!(out)?;
     out.flush()?;
     let mut cmd = Command::new(&l.program);
+    so_core::child_env::isolate(&mut cmd, &l.pass_env);
     cmd.args(&l.args).envs(l.env.iter().map(|(k, v)| (k, v)));
     if let Some(c) = &l.cwd {
         cmd.current_dir(c);

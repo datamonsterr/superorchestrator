@@ -260,6 +260,7 @@ impl Rig {
             account: AccountFile::new("opencode-acc1", Harness::Opencode, "~/.oc", "opencode")
                 .unwrap(),
             launch: Launch {
+                pass_env: vec![],
                 program: PathBuf::from("/bin/sh"),
                 vars: vec![("XDG_DATA_HOME".into(), "/acct/data".into())],
                 argv_prefix: vec![],

@@ -99,6 +99,7 @@ superorchestrator config edit
 | Key | Default | Meaning |
 |---|---|---|
 | `wrapper_dir` | `"~/.local/bin"` | Where wrappers are written |
+| `pass_env` | `[]` | Exact names of extra inherited variables for every account; combined with each account's `pass_env`. See [accounts](accounts.md#inherited-environment). |
 
 ### `[ui]`
 

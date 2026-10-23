@@ -341,7 +341,9 @@ pub fn join(ctx: &Ctx, run: &str, exec: bool) -> Result<ExitCode> {
     if exec {
         let (program, args) = j.argv.split_first().context("empty join command")?;
         // Only returns on failure; success replaces this process.
-        let err = Command::new(program)
+        let mut command = Command::new(program);
+        so_core::child_env::isolate(&mut command, &j.pass_env);
+        let err = command
             .args(args)
             .envs(j.env.iter().map(|(k, v)| (k, v)))
             .current_dir(&j.cwd)

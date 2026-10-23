@@ -249,6 +249,7 @@ impl Driver for AgyDriver {
                     .filter(|a| !a.starts_with(GEMINI_DIR_FLAG)),
             )
             .args(build_args(&spec))
+            .envs(so_core::child_env::pass_vars(&spec.launch.pass_env))
             .envs(spec.launch.vars.iter().map(|(k, v)| (k, v)))
             .current_dir(&spec.cwd);
 
@@ -461,11 +462,9 @@ fn first_child(parent: u32) -> Option<u32> {
 /// `pgrep` exits 1 when nothing matches, which leaves no output and yields `None`.
 #[cfg(any(test, not(target_os = "linux")))]
 fn pgrep_child(parent: u32) -> Option<u32> {
-    let out = std::process::Command::new("pgrep")
-        .arg("-P")
-        .arg(parent.to_string())
-        .output()
-        .ok()?;
+    let mut command = std::process::Command::new("pgrep");
+    so_core::child_env::isolate(&mut command, &[]);
+    let out = command.arg("-P").arg(parent.to_string()).output().ok()?;
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|l| l.trim().parse::<u32>().ok())
