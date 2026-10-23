@@ -80,6 +80,8 @@ System prompt body…
 
 `description` is required. Every other field is optional, and the name defaults to the folder or file name. Model selection order: call argument, agent file, `defaults` in `config.toml`, router.
 
+`model` and `effort` values (from a call, an agent file, `defaults` or a choice) are checked before launch: they must be non-empty, must not start with `-`, and may use only the characters `[A-Za-z0-9:/_.@\-\[\]]`. Characters such as `~`, `+` and `#` are rejected, so a model id that uses them cannot be passed through; the run fails with `invalid model` or `invalid effort` before any process starts.
+
 ## Commands
 
 | Command | What it does |
