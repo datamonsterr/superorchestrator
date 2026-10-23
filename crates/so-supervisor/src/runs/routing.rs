@@ -250,7 +250,7 @@ impl RunManager {
         };
         Ok(RouteOutcome {
             result: RouteResult {
-                choice_id: format!("pinned-{harness}"),
+                choice_id: so_core::pinned_choice_id(harness, None),
                 harness,
                 account: first,
                 model: params.model.clone().unwrap_or_default(),

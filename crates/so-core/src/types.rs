@@ -335,6 +335,20 @@ pub enum ErrorKind {
     Other,
 }
 
+/// Id of the synthetic choice a run gets when the caller pinned a harness (and a model)
+/// and no configured choice covers it.
+pub fn pinned_choice_id(harness: Harness, model: Option<&str>) -> String {
+    match model {
+        Some(m) => format!("pinned-{harness}-{m}"),
+        None => format!("pinned-{harness}"),
+    }
+}
+
+/// Whether `id` came from [`pinned_choice_id`]: no configured choice stands behind it.
+pub fn is_pinned_choice(id: &str) -> bool {
+    id.starts_with("pinned-")
+}
+
 impl ErrorKind {
     /// The failure is the account's (a limit or a login), so the account is flagged.
     /// A `Config` failure is the run's own model, and the account is fine.

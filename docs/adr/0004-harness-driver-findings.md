@@ -105,9 +105,9 @@ Errors (`agy/errors.txt`): exhausted quota -> stderr `error: Individual quota re
 | Harness | quota | rate_limit | auth | config | other |
 |---|---|---|---|---|---|
 | codex | `codexErrorInfo` `usageLimitExceeded`, `sessionBudgetExceeded`; `rateLimitReachedType` set | `rateLimitExceeded`, `serverOverloaded` | `unauthorized` | | the rest |
-| claude | `rate_limit_event` status not `allowed` (text patterns unverified) | same | text "Please run /login" (unverified) | text `Model not found` (shared pattern, unverified) | `unrecognized_model` |
+| claude | `rate_limit_event` status not `allowed` (text patterns unverified) | same | text "Please run /login" (unverified) | | `unrecognized_model` |
 | opencode | `session.error` `APIError` 402 ("Insufficient account funds") | `APIError` 429 (unverified) | 401/403 (unverified) | `Model not found: <id>` | other `UnknownError` |
-| agy | text `Individual quota reached` / `RESOURCE_EXHAUSTED` | `RESOURCE_EXHAUSTED` with `retryable:true` and no "quota" (unverified) | `Eligibility check failed` | text `Model not found` | `invalid model selection` |
+| agy | text `Individual quota reached` / `RESOURCE_EXHAUSTED` | `RESOURCE_EXHAUSTED` with `retryable:true` and no "quota" (unverified) | `Eligibility check failed` | | `invalid model selection` |
 
 ## Consequences
 

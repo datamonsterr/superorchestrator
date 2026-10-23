@@ -512,12 +512,7 @@ pub fn classify_common(text: &str) -> ErrorKind {
     let t = text.to_lowercase();
     let has = |pats: &[&str]| pats.iter().any(|p| t.contains(p));
     let word = |pats: &[&str]| pats.iter().any(|p| has_word(&t, p));
-    // A harness that lacks the model says so (opencode: `Model not found: <id>. Did you
-    // mean: ...`). That is the run's configuration, not the account, and the "did you
-    // mean" list can carry words the patterns below match, so it comes first.
-    if has(&["model not found"]) {
-        ErrorKind::Config
-    } else if has(&[
+    if has(&[
         "quota",
         "usage limit",
         "resource_exhausted",

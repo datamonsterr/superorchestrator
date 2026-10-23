@@ -166,7 +166,7 @@ impl RunManager {
         let id = run_id.to_string();
         matches!(
             self.db(move |s| s.get_run(&id)).await,
-            Ok(Some(r)) if r.choice_id.as_deref().is_some_and(|c| c.starts_with("pinned-"))
+            Ok(Some(r)) if r.choice_id.as_deref().is_some_and(so_core::is_pinned_choice)
         )
     }
 
