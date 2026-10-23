@@ -310,13 +310,7 @@ async fn ui_start_denies_run_scoped_clients_even_with_an_inspect_hello() {
     let called = register_ui_login_probe(&h);
     for inspect in [false, true] {
         let client = connect(&h).await;
-        let attached: HelloResult = client
-            .call(
-                "hello",
-                json!({"client": "so-mcp", "cwd": "/w", "run_id": run.id, "inspect": inspect}),
-            )
-            .await
-            .unwrap();
+        let attached = hello_run(&client, &env.store(), &run.id, inspect).await;
         assert_eq!(attached.run_id.as_deref(), Some(run.id.as_str()));
         assert_operator_required(
             client
