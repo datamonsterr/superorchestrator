@@ -521,7 +521,7 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
 
 ## 14. Web UI
 
-`superorchestrator ui` serves at `127.0.0.1:7878` (`ui.bind`, `ui.port`). Every bind requires token authentication, including loopback. Without `--token` or `ui.token`, the supervisor generates a 256-bit OS-random token and reuses it from an owner-only `ui-token` file in the config directory. The CLI URL carries the token in a fragment, which the browser removes before exchanging it for an HttpOnly cookie. Credential homes and auth files are never served.
+`superorchestrator ui` serves at `127.0.0.1:7878` (`ui.bind`, `ui.port`). Every bind requires token authentication, including loopback. Without `--token` or `ui.token`, the supervisor generates a 256-bit OS-random token and reuses it from an owner-only `ui-token` file in the config directory. The CLI obtains a fresh, single-use 60-second login code over the private supervisor socket. Its URL carries that code in a fragment, which the browser removes before exchanging it for the existing HttpOnly cookie; the long-lived token never enters the URL. Credential homes and auth files are never served.
 
 **Pages:**
 - **Dashboard.**

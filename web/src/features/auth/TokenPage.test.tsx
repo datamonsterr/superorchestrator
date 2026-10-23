@@ -44,7 +44,7 @@ it('shows the API error and stays on the page', async () => {
 })
 
 
-it('exchanges the CLI fragment once and removes it before posting', async () => {
+it('posts the CLI login code unchanged and removes the fragment before posting', async () => {
   let body: unknown
   let requests = 0
   server.use(http.post('*/api/v1/auth', async ({ request }) => {

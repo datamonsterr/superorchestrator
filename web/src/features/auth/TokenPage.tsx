@@ -7,7 +7,7 @@ import { Input } from '@/components/ui/input'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { endpoints } from '@/api/endpoints'
 
-/** Exchanges the CLI fragment or a manually entered token for the session cookie. */
+/** Exchanges a single-use CLI code or a manually entered token for the session cookie. */
 export function TokenPage() {
   const [token, setToken] = useState('')
   const [pending, setPending] = useState(false)

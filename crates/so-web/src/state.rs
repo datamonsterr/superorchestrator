@@ -6,7 +6,7 @@ use std::sync::Arc;
 use so_supervisor::SupervisorState;
 
 use crate::error::{ApiError, ApiResult};
-use crate::security::RateLimiter;
+use crate::security::{LoginCodes, RateLimiter};
 use crate::stream::Hub;
 
 /// How the web server listens and who may talk to it.
@@ -79,6 +79,7 @@ pub struct AppState {
     pub hub: Arc<Hub>,
     pub opts: Arc<WebOptions>,
     pub limiter: Arc<RateLimiter>,
+    pub login_codes: Arc<LoginCodes>,
     /// Set to `true` to stop the server; open SSE streams end when it is.
     pub stop: Arc<tokio::sync::watch::Sender<bool>>,
     /// One model refresh at a time.

@@ -1,4 +1,5 @@
 import { expect, test as base, type Page } from '@playwright/test'
+import { execFileSync } from 'node:child_process'
 
 /**
  * Runs against a real supervisor with seeded data (see global-setup.ts), so it catches what the MSW mocks hide:
@@ -10,12 +11,22 @@ const test = base
 test.use({ baseURL: process.env.E2E_REAL_URL })
 // Exercise the same fragment-to-cookie exchange used by the local CLI, rather than
 // bypassing the browser flow with an Authorization header.
+function freshLoginUrl(): string {
+  const result = execFileSync(process.env.E2E_REAL_CLI!, [
+    '--config-dir', process.env.E2E_REAL_CONFIG_DIR!, '--json', 'ui', '--no-open',
+  ], { encoding: 'utf8', env: {
+    ...process.env, HOME: process.env.E2E_REAL_HOME!,
+    SUPERORCHESTRATOR_SOCKET: process.env.E2E_REAL_SOCKET!,
+  } })
+  return JSON.parse(result).url
+}
+
 test.beforeEach(async ({ page, request }) => {
-  const loginUrl = process.env.E2E_REAL_LOGIN_URL!
+  const loginUrl = freshLoginUrl()
   await page.goto(loginUrl)
   await expect(page.getByRole('heading', { level: 1, name: 'Dashboard' })).toBeVisible()
   await expect(page).toHaveURL(`${process.env.E2E_REAL_URL}/dashboard`)
-  const token = new URLSearchParams(new URL(loginUrl).hash.slice(1)).get('token')
+  const token = new URLSearchParams(new URL(freshLoginUrl()).hash.slice(1)).get('token')
   const response = await request.post('/api/v1/token', { data: { token } })
   expect(response.status()).toBe(204)
 })
@@ -107,4 +118,11 @@ test('the run panel opens from a lane', async ({ page }) => {
 test('inspection-only CLI calls leave no empty sessions behind', async ({ request }) => {
   const page = await (await request.get('/api/v1/sessions')).json()
   expect(page.items.map((s: { client: string }) => s.client).sort()).toEqual(['e2e-empty', 'e2e-seed'])
+})
+
+
+test('a CLI login code can be exchanged only once', async ({ request }) => {
+  const code = new URLSearchParams(new URL(freshLoginUrl()).hash.slice(1)).get('token')
+  expect((await request.post('/api/v1/token', { data: { token: code } })).status()).toBe(204)
+  expect((await request.post('/api/v1/token', { data: { token: code } })).status()).toBe(401)
 })

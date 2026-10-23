@@ -727,6 +727,117 @@ async fn choices_config_and_worktrees() {
 
 // --------------------------------------------------------------------- security
 
+fn browser_login_url(server: &so_web::WebServer) -> String {
+    server.login_url().unwrap()
+}
+
+async fn exchange_login_code(server: &so_web::WebServer, code: &str) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let body = json!({"token": code}).to_string();
+    let mut socket = tokio::net::TcpStream::connect(server.addr()).await.unwrap();
+    socket.write_all(format!("POST /api/v1/token HTTP/1.1\r\nHost: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", server.addr(), body.len()).as_bytes()).await.unwrap();
+    let mut response = String::new();
+    socket.read_to_string(&mut response).await.unwrap();
+    response
+}
+
+async fn code_server(f: &Fx) -> so_web::WebServer {
+    so_web::start(
+        f.handle.state().clone(),
+        WebOptions {
+            port: 0,
+            token: Some(TEST_TOKEN.into()),
+            ..WebOptions::default()
+        },
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn login_code_works_once_and_replays_count_as_failures() {
+    let f = fx().await;
+    let server = code_server(&f).await;
+    let url = browser_login_url(&server);
+    let code = url.split("#token=").nth(1).unwrap();
+    let first = exchange_login_code(&server, code).await;
+    assert!(first.starts_with("HTTP/1.1 204"), "{first}");
+    assert!(
+        first.contains(&format!(
+            "so_token={}",
+            so_web::security::cookie_value(TEST_TOKEN)
+        )),
+        "code sets the existing token cookie"
+    );
+    for _ in 0..5 {
+        let replay = exchange_login_code(&server, code).await;
+        assert!(replay.starts_with("HTTP/1.1 401"), "{replay}");
+    }
+    assert!(
+        exchange_login_code(&server, code)
+            .await
+            .starts_with("HTTP/1.1 429")
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn login_code_expires_at_sixty_seconds_and_counts_as_a_failure() {
+    let f = fx().await;
+    let server = code_server(&f).await;
+    let url = browser_login_url(&server);
+    let code = url.split("#token=").nth(1).unwrap();
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(60)).await;
+    tokio::time::resume();
+    let expired = exchange_login_code(&server, code).await;
+    assert!(expired.starts_with("HTTP/1.1 401"), "{expired}");
+    for _ in 0..4 {
+        assert!(
+            exchange_login_code(&server, "wrong")
+                .await
+                .starts_with("HTTP/1.1 401")
+        );
+    }
+    assert!(
+        exchange_login_code(&server, "wrong")
+            .await
+            .starts_with("HTTP/1.1 429")
+    );
+    server.shutdown().await;
+}
+
+#[tokio::test]
+async fn login_code_store_is_bounded_and_urls_never_carry_the_token() {
+    let f = fx().await;
+    let server = code_server(&f).await;
+    let urls: Vec<_> = (0..65).map(|_| browser_login_url(&server)).collect();
+    for url in &urls {
+        assert!(!url.contains(TEST_TOKEN), "long-lived token leaked in URL");
+        let code = url.split("#token=").nth(1).unwrap();
+        assert_eq!(code.len(), 64);
+        assert!(code.bytes().all(|b| b.is_ascii_hexdigit()));
+    }
+    let code = |i: usize| urls[i].split("#token=").nth(1).unwrap();
+    assert!(
+        exchange_login_code(&server, code(0))
+            .await
+            .starts_with("HTTP/1.1 401"),
+        "oldest code must be evicted at capacity"
+    );
+    assert!(
+        exchange_login_code(&server, code(1))
+            .await
+            .starts_with("HTTP/1.1 204")
+    );
+    assert!(
+        exchange_login_code(&server, code(64))
+            .await
+            .starts_with("HTTP/1.1 204")
+    );
+    server.shutdown().await;
+}
+
 #[tokio::test]
 async fn generated_token_protects_loopback_and_survives_restart() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -757,7 +868,7 @@ async fn generated_token_protects_loopback_and_survives_restart() {
     let token = std::fs::read_to_string(f.path("cfg/ui-token")).unwrap();
     assert_eq!(token.len(), 64);
     assert!(token.bytes().all(|b| b.is_ascii_hexdigit()));
-    assert!(server.url().ends_with(&format!("/token#token={token}")));
+    assert!(!browser_login_url(&server).contains(&token));
     let mut socket = tokio::net::TcpStream::connect(server.addr()).await.unwrap();
     socket.write_all(format!("GET /api/v1/status HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n", server.addr()).as_bytes()).await.unwrap();
     response.clear();
@@ -768,7 +879,11 @@ async fn generated_token_protects_loopback_and_survives_restart() {
     );
     server.shutdown().await;
     let restarted = so_web::start(state, opts).await.unwrap();
-    assert!(restarted.url().ends_with(&format!("/token#token={token}")));
+    assert_eq!(
+        std::fs::read_to_string(f.path("cfg/ui-token")).unwrap(),
+        token
+    );
+    assert!(!browser_login_url(&restarted).contains(&token));
     restarted.shutdown().await;
 }
 
@@ -1057,7 +1172,7 @@ async fn every_bind_gets_a_token_when_none_is_configured() {
             .await
             .unwrap();
             let token = std::fs::read_to_string(f.path("cfg/ui-token")).unwrap();
-            assert!(server.url().ends_with(&format!("/token#token={token}")));
+            assert!(!browser_login_url(&server).contains(&token));
             server.shutdown().await;
         }
     }

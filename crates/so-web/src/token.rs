@@ -1,4 +1,4 @@
-//! The persistent UI token, shared by supervisor startup and the local CLI URL.
+//! The persistent UI token. Browser URLs carry independently minted single-use codes.
 
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -67,17 +67,4 @@ pub(crate) fn load_or_create(config_dir: &Path) -> io::Result<String> {
         Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => read_private(&path),
         Err(e) => Err(e.error),
     }
-}
-
-pub(crate) fn fragment(token: &str) -> String {
-    token
-        .bytes()
-        .map(|b| {
-            if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
-                char::from(b).to_string()
-            } else {
-                format!("%{b:02X}")
-            }
-        })
-        .collect()
 }

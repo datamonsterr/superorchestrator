@@ -39,6 +39,7 @@ rustix = { version = "1", default-features = false, features = ["std", "fs", "pr
 tempfile.workspace = true
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 so-harness = { path = "../so-harness" }

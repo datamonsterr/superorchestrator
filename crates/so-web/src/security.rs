@@ -38,6 +38,53 @@ const TOKEN_PATHS: [&str; 2] = ["/api/v1/token", "/api/v1/auth"];
 #[derive(Debug, Clone, Copy)]
 pub struct ClientIp(pub IpAddr);
 
+/// CLI login codes live for one minute and never authorize API bearer requests.
+const LOGIN_CODE_TTL: Duration = Duration::from_secs(60);
+const MAX_LOGIN_CODES: usize = 64;
+
+struct LoginCode {
+    secret: String,
+    expires: tokio::time::Instant,
+}
+
+/// Small, per-UI store of short-lived, single-use browser login codes.
+#[derive(Default)]
+pub struct LoginCodes {
+    pending: Mutex<VecDeque<LoginCode>>,
+}
+
+impl LoginCodes {
+    pub(crate) fn mint(&self) -> std::io::Result<String> {
+        let secret = crate::token::random_token()?;
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let now = tokio::time::Instant::now();
+        pending.retain(|code| code.expires > now);
+        while pending.len() >= MAX_LOGIN_CODES {
+            pending.pop_front();
+        }
+        pending.push_back(LoginCode {
+            secret: secret.clone(),
+            expires: now + LOGIN_CODE_TTL,
+        });
+        Ok(secret)
+    }
+
+    pub(crate) fn consume(&self, secret: &str) -> bool {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let now = tokio::time::Instant::now();
+        pending.retain(|code| code.expires > now);
+        // Compare every retained code in constant time; remove the match under the
+        // same lock so simultaneous exchanges cannot both consume it.
+        let mut matched = None;
+        for (index, code) in pending.iter().enumerate() {
+            if ct_eq(secret, &code.secret) {
+                matched = Some(index);
+            }
+        }
+        matched.is_some_and(|index| pending.remove(index).is_some())
+    }
+}
+
 /// Failed-login counter per IP.
 #[derive(Default)]
 pub struct RateLimiter {
@@ -296,7 +343,8 @@ pub async fn guard(State(st): State<AppState>, mut req: Request, next: Next) -> 
     res
 }
 
-/// `POST /api/v1/token` (and its alias `/auth`): trades the token for the session cookie.
+/// `POST /api/v1/token` (and `/auth`): exchanges a token or single-use CLI code for the
+/// same session cookie derived from the long-lived token.
 pub async fn post_token(
     State(st): State<AppState>,
     Extension(ClientIp(ip)): Extension<ClientIp>,
@@ -310,7 +358,7 @@ pub async fn post_token(
         .filter(|t| !t.is_empty())
         .ok_or_else(ApiError::unauthorized)?;
     st.limiter.check(ip).map_err(ApiError::rate_limited)?;
-    if !ct_eq(&body.token, token) {
+    if !ct_eq(&body.token, token) && !st.login_codes.consume(&body.token) {
         st.limiter.record_failure(ip);
         return Err(ApiError::unauthorized());
     }
@@ -416,6 +464,25 @@ mod tests {
             assert!(limiter.check(ip).is_err(), "active failures lost for {ip}");
         }
         assert_eq!(limiter.failures.lock().unwrap().len(), MAX_TRACKED_IPS);
+    }
+
+    #[test]
+    fn concurrent_code_redemptions_accept_exactly_once() {
+        let codes = std::sync::Arc::new(LoginCodes::default());
+        let code = codes.mint().unwrap();
+        let accepted = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    let (codes, code) = (codes.clone(), code.clone());
+                    scope.spawn(move || usize::from(codes.consume(&code)))
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .sum::<usize>()
+        });
+        assert_eq!(accepted, 1);
     }
 
     #[test]
