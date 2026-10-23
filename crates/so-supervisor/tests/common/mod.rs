@@ -366,6 +366,10 @@ pub fn rpc_code(e: ClientError) -> i64 {
 
 /// A session with one run of the given depth and state, written straight to the store.
 pub fn insert_session_and_run(store: &Store, depth: i64, state: RunState) -> RunRow {
+    insert_session_and_run_in(store, depth, state, &std::env::current_dir().unwrap())
+}
+
+pub fn insert_session_and_run_in(store: &Store, depth: i64, state: RunState, cwd: &Path) -> RunRow {
     let session = SessionRow {
         id: new_id(),
         kind: SessionKind::Orchestrator,
@@ -390,7 +394,7 @@ pub fn insert_session_and_run(store: &Store, depth: i64, state: RunState) -> Run
         account: None,
         model: None,
         effort: None,
-        cwd: None,
+        cwd: Some(cwd.to_string_lossy().into_owned()),
         worktree_path: None,
         branch: None,
         native_session_id: None,

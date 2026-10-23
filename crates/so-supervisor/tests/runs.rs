@@ -306,7 +306,7 @@ async fn depth_two_caller_cannot_spawn_and_children_are_capped() {
     env.account("claude-acc1", 4, &ok_script(&[json!({"sleep_ms": 1500})]));
     let h = env.start().await;
     let deep = insert_session_and_run(&env.store(), 2, RunState::Running);
-    let shallow = insert_session_and_run(&env.store(), 1, RunState::Running);
+    let shallow = insert_session_and_run_in(&env.store(), 1, RunState::Running, &env.repo);
 
     let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
     c.hello("child", "/", Some(deep.id.clone()), None)

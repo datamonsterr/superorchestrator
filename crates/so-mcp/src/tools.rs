@@ -55,7 +55,11 @@ const PARAM_DOCS: &[(&str, &str, &str)] = &[
         "review",
         "hold at pending_review: accept_run or reject_run",
     ),
-    ("spawn_agent", "checks", "ci, pr_threads or cmd:<shell>"),
+    (
+        "spawn_agent",
+        "checks",
+        "ci, pr_threads; cmd:<shell> only at depth 0",
+    ),
     ("spawn_agent", "timeout", "e.g. 30m"),
     ("send_message", "kind", "answer replies to a question"),
     ("run_workflow", "wait", "default true"),
@@ -159,7 +163,7 @@ const fn spec(
 }
 
 /// What a workflow script can call, from `so_workflow::GLOBALS` and `prelude.js`.
-const RUN_WORKFLOW_DESCRIPTION: &str = "Run a JS workflow (saved `name` or inline `script`) whose agent() calls are runs on any harness. Streams progress, returns the script's return value; wait=false returns the id, then workflow_status.\n\
+const RUN_WORKFLOW_DESCRIPTION: &str = "Run a JS workflow by saved name or inline script. Inline script requires depth 0; subagents use saved name. Step cwd stays inside workflow base. Streams progress and returns the script result; wait=false returns id for workflow_status.\n\
 Top-level await and return; no import; Date.now, Math.random disabled.\n\
 agent(prompt, {harness, account, model, effort, cwd, isolation, schema, name, maxTurns, timeout, stallMs, agent}) -> result; throws on failure.\n\
 parallel([fn(ag) | promise]) -> results in order, null for failures; ag defaults to isolation worktree.\n\
@@ -178,7 +182,7 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "spawn_agent",
-        "Start a run; unpinned harness, account and model are auto-routed. Returns run_id and state; wait=true blocks until it finishes or reaches the review gate and adds the result.",
+        "Start a run; unpinned harness/account/model are auto-routed. wait=true blocks to finish or review gate. cmd: checks require depth 0; subagents may use only ci/pr_threads and cwd inside their run worktree/cwd.",
         true,
         false,
         schema_of::<SpawnParams>,

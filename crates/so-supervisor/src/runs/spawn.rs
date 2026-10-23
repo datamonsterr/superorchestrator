@@ -109,6 +109,31 @@ impl RunManager {
         Ok(account)
     }
 
+    /// Subagents resolve against their own run, never the orchestrator session directory.
+    /// Missing run directory metadata fails closed instead of widening the base.
+    pub(super) async fn caller_cwd(
+        &self,
+        ctx: &ConnCtx,
+        session_cwd: Option<String>,
+        requested: Option<String>,
+    ) -> R<PathBuf> {
+        let confined = ctx.run_id.is_some();
+        let base = if let Some(id) = &ctx.run_id {
+            let id = id.clone();
+            let run = self
+                .db(move |s| s.get_run(&id))
+                .await?
+                .ok_or_else(|| rpc(NOT_FOUND, "calling run not found"))?;
+            Some(PathBuf::from(run.worktree_path.or(run.cwd).ok_or_else(
+                || rpc(INVALID_PARAMS, "calling run has no worktree/cwd"),
+            )?))
+        } else {
+            session_cwd.map(PathBuf::from)
+        };
+        self.blocking(move || resolve_cwd(base, requested, confined))
+            .await?
+    }
+
     async fn validate(&self, ctx: &ConnCtx, p: &SpawnParams) -> R<Validated> {
         let session_id = ctx
             .session_id
@@ -150,10 +175,7 @@ impl RunManager {
             .db(move |s| s.get_session(&sid))
             .await?
             .ok_or_else(|| rpc(NOT_FOUND, format!("session not found: {session_id}")))?;
-        let (base, requested) = (session.cwd.map(PathBuf::from), p.cwd.clone());
-        let cwd = self
-            .blocking(move || resolve_cwd(base, requested))
-            .await??;
+        let cwd = self.caller_cwd(ctx, session.cwd, p.cwd.clone()).await?;
 
         // The agent, if any, supplies defaults the call can override (SPEC 7.2: call
         // argument, then agent file, then config, then the router).
@@ -174,7 +196,7 @@ impl RunManager {
             _ => return Err(rpc(INVALID_PARAMS, "prompt is required")),
         };
         let review = p.review || agent.as_ref().is_some_and(|a| a.review);
-        validate_checks(review, &p.checks)?;
+        validate_checks(review, &p.checks, ctx.run_id.is_some())?;
         let defaults = &self.config().defaults;
         let harness_pin = match p.harness.as_deref() {
             Some("auto") => None,
@@ -438,11 +460,17 @@ impl RunManager {
 
 /// `checks` are `ci`, `pr_threads` or `cmd:<shell command>`, and only make sense with
 /// `review: true`.
-fn validate_checks(review: bool, checks: &[String]) -> R<()> {
+fn validate_checks(review: bool, checks: &[String], subagent: bool) -> R<()> {
     if !checks.is_empty() && !review {
         return Err(rpc(INVALID_PARAMS, "checks need review: true"));
     }
     for c in checks {
+        if subagent && c != "ci" && c != "pr_threads" {
+            return Err(rpc(
+                INVALID_PARAMS,
+                "subagent callers may use only ci and pr_threads checks; cmd: requires a depth-0 caller",
+            ));
+        }
         let ok = c == "ci"
             || c == "pr_threads"
             || c.strip_prefix("cmd:")
@@ -457,15 +485,14 @@ fn validate_checks(review: bool, checks: &[String]) -> R<()> {
     Ok(())
 }
 
-/// The directory a spawn works in: `requested` relative to the session's, which falls
-/// back to the supervisor's own.
-fn resolve_cwd(base: Option<PathBuf>, requested: Option<String>) -> R<PathBuf> {
+/// Resolve a requested directory and, for subagents, confine it to the calling run base.
+fn resolve_cwd(base: Option<PathBuf>, requested: Option<String>, confined: bool) -> R<PathBuf> {
     let base = base
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("/"));
     let cwd = match requested {
         Some(c) => base.join(c),
-        None => base,
+        None => base.clone(),
     };
     let cwd = cwd.canonicalize().map_err(|e| {
         rpc(
@@ -473,6 +500,23 @@ fn resolve_cwd(base: Option<PathBuf>, requested: Option<String>) -> R<PathBuf> {
             format!("cwd {} is not usable: {e}", cwd.display()),
         )
     })?;
+    if confined {
+        let base = base.canonicalize().map_err(|e| {
+            rpc(
+                INVALID_PARAMS,
+                format!("calling run base cwd is not usable: {e}"),
+            )
+        })?;
+        if !cwd.starts_with(&base) {
+            return Err(rpc(
+                INVALID_PARAMS,
+                format!(
+                    "subagent cwd must resolve inside calling run base {}",
+                    base.display()
+                ),
+            ));
+        }
+    }
     if !cwd.is_dir() {
         return Err(rpc(
             INVALID_PARAMS,

@@ -4,7 +4,7 @@ A workflow is a JavaScript script that starts many agents and combines their res
 
 ## Running a workflow
 
-- MCP: the `run_workflow` tool takes a saved name or a script, and `args`. `workflow_status` reports on a run.
+- MCP: the `run_workflow` tool takes a saved name or a script, and `args`. Inline `script` is restricted to orchestrators (depth 0). Subagents may run saved workflows by `name`. `workflow_status` reports on a run.
 - CLI: `superorchestrator workflow run <name>` or `workflow run --file script.js`. Add `--args '<json>'` to pass `args`, `--detach` to return the run id at once, and `--fresh` to ignore cached results.
 - `superorchestrator workflow list` shows saved workflows and recent runs. `workflow status <id>` shows steps and the result. `workflow cancel <id>` stops a run and its steps.
 - `superorchestrator runs watch --workflow <id>` follows the steps live.
@@ -35,6 +35,8 @@ phase("review", async () => {
 | `phase(name, fn)` | Groups steps under a name in the status and the UI. |
 | `log(msg)` | Writes a progress line. |
 | `args` | The JSON you passed, or `undefined`. |
+
+Every step's `cwd` resolves relative to the workflow base and must canonicalise to an existing directory inside it. Parent-directory escapes, absolute paths outside the base and symlinks leading outside are rejected before cache lookup or spawn. This applies to all workflows, including those started at depth 0. A subagent-started workflow uses the calling run's worktree, or its cwd when there is no worktree, as its base.
 
 `parallel()` defaults `isolation` to `worktree` for the steps it starts. Calls made after an `await` inside an item keep their own options.
 

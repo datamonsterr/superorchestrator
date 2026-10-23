@@ -112,16 +112,18 @@ impl RunManager {
                 ),
             ));
         }
+        if ctx.run_id.is_some() && p.script.is_some() {
+            return Err(rpc(
+                INVALID_PARAMS,
+                "inline script requires a depth-0 caller; subagents must use a saved workflow by name",
+            ));
+        }
         let sid = session_id.clone();
         let session = self
             .db(move |s| s.get_session(&sid))
             .await?
             .ok_or_else(|| rpc(NOT_FOUND, format!("session not found: {session_id}")))?;
-        let cwd = session
-            .cwd
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("/"));
+        let cwd = self.caller_cwd(ctx, session.cwd, None).await?;
         let (name, source) = self.resolve_workflow(&cwd, &p).await?;
         let started = self
             .start_workflow(

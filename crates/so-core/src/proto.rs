@@ -287,6 +287,7 @@ pub struct SpawnParams {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// Relative to the caller's cwd; subagents must stay inside their run's worktree/cwd.
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
@@ -296,7 +297,7 @@ pub struct SpawnParams {
     pub output_schema: Option<Value>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub review: bool,
-    /// `"ci"`, `"pr_threads"` or `"cmd:<shell command>"`.
+    /// `"ci"`, `"pr_threads"` or `"cmd:<shell command>"`. Only depth-0 callers may use `cmd:`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<String>,
     /// Block until the run finishes.
@@ -655,7 +656,7 @@ pub struct RunWorkflowParams {
     /// A saved workflow (`<config>/workflows/<name>.js` or `.superorchestrator/workflows`).
     #[serde(default)]
     pub name: Option<String>,
-    /// Inline JavaScript instead of a saved one.
+    /// Inline JavaScript instead of a saved one. Only depth-0 callers may supply this.
     #[serde(default)]
     pub script: Option<String>,
     /// Passed to the script as `args`.
