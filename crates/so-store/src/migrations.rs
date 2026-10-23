@@ -173,7 +173,7 @@ pub fn migrate(conn: &mut Connection) -> Result<()> {
 }
 
 #[cfg(test)]
-mod token_tests {
+mod tests {
     #[test]
     fn run_identity_migrates_from_v8_without_authenticating_old_runs() {
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -184,7 +184,17 @@ mod token_tests {
             "PRAGMA user_version = 8; INSERT INTO run_meta (run_id) VALUES ('legacy');",
         )
         .unwrap();
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            8
+        );
         super::migrate(&mut conn).unwrap();
+        assert_eq!(
+            conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            super::latest_version()
+        );
         let hash: Option<Vec<u8>> = conn
             .query_row(
                 "SELECT rpc_token_hash FROM run_meta WHERE run_id = 'legacy'",

@@ -418,7 +418,11 @@ async fn send_message_to_a_finished_run_resumes_its_session() {
         .native_session_id
         .unwrap();
 
+    let old_token = std::fs::read_to_string(env.paths.run_dir(&id).join("rpc-token")).unwrap();
     send(&c, &id, "one more thing", None).await;
+    assert!(
+        std::fs::read_to_string(env.paths.run_dir(&id).join("rpc-token")).unwrap() != old_token
+    );
     // Back to running, then finished again by the resumed session's turn.
     for _ in 0..200 {
         if env.launches("claude-a").len() == 2 {
@@ -1588,6 +1592,7 @@ async fn a_message_to_a_finished_run_waits_in_the_queue_when_the_account_is_full
     let blocker = spawn(&c, env.params("claude-a")).await;
     wait_state(&c, &blocker, RunState::Running).await;
 
+    let old_token = std::fs::read_to_string(env.paths.run_dir(&done).join("rpc-token")).unwrap();
     send(&c, &done, "later", None).await;
     let v = view(&c, &done).await;
     assert_eq!(v.state, RunState::Queued, "no free slot");
@@ -1600,6 +1605,9 @@ async fn a_message_to_a_finished_run_waits_in_the_queue_when_the_account_is_full
         }
         tokio::time::sleep(Duration::from_millis(25)).await;
     };
+    assert!(
+        std::fs::read_to_string(env.paths.run_dir(&done).join("rpc-token")).unwrap() != old_token
+    );
     let launches = env.launches("claude-a");
     let resumed = launches
         .iter()

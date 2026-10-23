@@ -933,10 +933,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<RouteResult>(&j).unwrap(), r);
         assert!(j.contains("\"source\":\"heuristic\""));
     }
-}
 
-#[cfg(test)]
-mod hello_security_tests {
     #[test]
     fn hello_debug_never_discloses_run_token() {
         let hello: super::HelloParams = serde_json::from_value(serde_json::json!({

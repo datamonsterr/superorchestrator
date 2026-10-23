@@ -1033,11 +1033,25 @@ async fn cross_session_run_request(method: &str) {
         "fork_agent" => json!({"run": run.id, "prompt": "forbidden"}),
         _ => json!({"run": run.id}),
     };
-    let e = c.call::<_, Value>(method, p).await.unwrap_err();
-    assert!(
-        matches!(e, ClientError::Rpc(ref e) if e.message.contains("another session")),
-        "{method}: {e:?}"
-    );
+    let e = c.call::<_, Value>(method, p.clone()).await.unwrap_err();
+    let mut missing = p;
+    if method == "wait_agent" {
+        missing["runs"] = json!(["missing-run"]);
+    } else {
+        missing["run"] = json!("missing-run");
+    }
+    let absent = c.call::<_, Value>(method, missing).await.unwrap_err();
+    match (e, absent) {
+        (ClientError::Rpc(denied), ClientError::Rpc(absent)) => {
+            assert_eq!(denied.code, so_core::proto::NOT_FOUND, "{method}");
+            assert_eq!(
+                (denied.code, denied.message),
+                (absent.code, absent.message),
+                "{method}"
+            );
+        }
+        other => panic!("expected RPC errors: {other:?}"),
+    }
     assert_eq!(
         store.get_run(&run.id).unwrap().unwrap().state,
         RunState::PendingReview
@@ -1117,10 +1131,21 @@ async fn cross_session_workflow_requests_refused() {
             .call::<_, Value>(method, json!({"id": row.id}))
             .await
             .unwrap_err();
-        assert!(
-            matches!(e, ClientError::Rpc(ref e) if e.message.contains("another session")),
-            "{method}: {e:?}"
-        );
+        let absent = c
+            .call::<_, Value>(method, json!({"id": "missing-workflow"}))
+            .await
+            .unwrap_err();
+        match (e, absent) {
+            (ClientError::Rpc(denied), ClientError::Rpc(absent)) => {
+                assert_eq!(denied.code, so_core::proto::NOT_FOUND, "{method}");
+                assert_eq!(
+                    (denied.code, denied.message),
+                    (absent.code, absent.message),
+                    "{method}"
+                );
+            }
+            other => panic!("expected RPC errors: {other:?}"),
+        }
     }
     h.shutdown().await;
 }

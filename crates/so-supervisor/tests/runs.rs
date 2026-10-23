@@ -555,7 +555,6 @@ fn orphan(env: &Env, native: Option<&str>) -> RunRow {
     row.cwd = Some(env.repo.to_string_lossy().into_owned());
     row.prompt = Some(PROMPT.into());
     store.insert_run(&row).unwrap();
-    seed_run_identity(&store, &env.paths, &row.id);
     row
 }
 
@@ -572,10 +571,60 @@ async fn reconcile_resumes_a_run_with_a_native_session() {
         ]),
     );
     let row = orphan(&env, Some("native-1"));
+    assert!(env.store().get_run_token_hash(&row.id).unwrap().is_none());
+    assert!(!env.paths.run_dir(&row.id).join("rpc-token").exists());
     let h = env.start().await;
     let c = env.inspect_client(&h).await;
     wait_state(&c, &row.id, RunState::Succeeded).await;
     assert_eq!(view(&c, &row.id).await.result, Some(json!("done")));
+    assert_valid_run_token(&env, &h, &row.id).await;
+    h.shutdown().await;
+}
+
+async fn assert_valid_run_token(env: &Env, h: &so_supervisor::SupervisorHandle, id: &str) {
+    use sha2::{Digest, Sha256};
+    let token = std::fs::read_to_string(env.paths.run_dir(id).join("rpc-token")).unwrap();
+    assert!(
+        env.store().get_run_token_hash(id).unwrap().as_deref()
+            == Some(Sha256::digest(token.as_bytes()).as_slice())
+    );
+    let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
+    hello_run(&c, &env.store(), &env.paths, id).await;
+}
+
+#[tokio::test]
+async fn a_finished_legacy_run_resumes_with_a_new_valid_identity() {
+    let env = Env::new();
+    env.account(
+        "claude-acc1",
+        2,
+        &script(&[
+            json!({"expect_stdin_contains": "Continue."}),
+            json!({"stdout": init_msg()}),
+            json!({"stdout": result_msg(json!({}))}),
+        ]),
+    );
+    let h = env.start().await;
+    let row = orphan(&env, Some("native-1"));
+    env.store()
+        .update_run_state(&row.id, RunState::Running, RunState::Succeeded)
+        .unwrap();
+    assert!(env.store().get_run_token_hash(&row.id).unwrap().is_none());
+    h.state()
+        .runs
+        .send_message(
+            &so_supervisor::ConnCtx::acting_in(&row.session_id),
+            so_core::proto::SendMessageParams {
+                run: row.id.clone(),
+                text: "Continue.".into(),
+                kind: None,
+            },
+        )
+        .await
+        .unwrap();
+    let c = env.inspect_client(&h).await;
+    wait_state(&c, &row.id, RunState::Succeeded).await;
+    assert_valid_run_token(&env, &h, &row.id).await;
     h.shutdown().await;
 }
 

@@ -235,6 +235,7 @@ impl SupervisorClient {
         loop {
             attempt += 1;
             let c = Self::connect_with(socket_path, &mut spawn).await?;
+            // An inspect hello that claims a run id must still prove that run's identity.
             let hello = if params.inspect && params.run_id.is_none() {
                 c.hello_inspect(&params.client, &params.cwd, params.pid)
                     .await

@@ -356,7 +356,7 @@ impl RunManager {
     }
 
     pub(super) async fn authorize_workflow_or_inspect(&self, ctx: &ConnCtx, id: &str) -> R<()> {
-        if ctx.greeted && ctx.session_id.is_none() && ctx.run_id.is_none() {
+        if ctx.is_inspect() {
             return Ok(());
         }
         let id = id.to_string();
@@ -368,10 +368,7 @@ impl RunManager {
             })
             .await?;
         if ctx.session_id.is_none() || ctx.session_id != row.session_id {
-            return Err(rpc(
-                INVALID_PARAMS,
-                "that workflow belongs to another session",
-            ));
+            return Err(super::not_found("workflow run"));
         }
         if ctx.run_id.is_some() {
             let owner = owner.ok_or_else(|| {

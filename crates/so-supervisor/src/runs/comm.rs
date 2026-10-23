@@ -195,7 +195,7 @@ impl RunManager {
         if ctx.session_id.as_deref() == Some(row.session_id.as_str()) {
             Ok(())
         } else {
-            Err(rpc(INVALID_PARAMS, "that run belongs to another session"))
+            Err(super::not_found("run"))
         }
     }
 
@@ -250,7 +250,7 @@ impl RunManager {
     /// Sessionless inspect connections are the local operator over the 0600 socket.
     /// Only handlers already available to inspect clients may use this exception.
     pub(super) async fn authorize_run_or_inspect(&self, ctx: &ConnCtx, row: &RunRow) -> R<()> {
-        if ctx.greeted && ctx.session_id.is_none() && ctx.run_id.is_none() {
+        if ctx.is_inspect() {
             return Ok(());
         }
         self.authorize_run(ctx, row, false).await

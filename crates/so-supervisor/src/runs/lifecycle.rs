@@ -3,7 +3,6 @@
 //! Everything that ends a run goes through [`RunManager::finish`], so cleanup happens
 //! exactly once and a waiter never sees a run as done before it is wrapped up.
 
-use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -21,6 +20,7 @@ use super::instructions::{MAX_DEPTH, child_instructions};
 use super::pump::PumpCtx;
 use super::worktree;
 use super::{LiveRun, R, RunManager, SHUTDOWN_DEADLINE, lock};
+use crate::run_identity::run_token_hash;
 
 enum Step {
     Won(Box<RunRow>),
@@ -166,6 +166,11 @@ impl RunManager {
         if self.db(move |s| s.get_run_token_hash(&id)).await?.is_some() {
             return Ok(());
         }
+        self.renew_run_token(run_id).await
+    }
+
+    /// The old process is gone: replace its identity before launching a resumed process.
+    pub(super) async fn renew_run_token(&self, run_id: &str) -> R<()> {
         let dir = self.inner.paths.run_dir(run_id);
         let hash = self
             .blocking(move || -> Result<Vec<u8>, String> {
@@ -177,16 +182,24 @@ impl RunManager {
                     .map_err(|_| "could not create private run directory".to_string())?;
                 let mut file = std::fs::OpenOptions::new()
                     .write(true)
-                    .create_new(true)
+                    .create(true)
+                    .truncate(true)
                     .mode(0o600)
-                    .open(dir.join("rpc-token"))
+                    .open(dir.join("rpc-token.tmp"))
                     .map_err(|_| "could not create run identity file".to_string())?;
+                file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                    .map_err(|_| "could not protect run identity file".to_string())?;
                 file.write_all(token.as_bytes())
+                    .and_then(|()| file.sync_all())
                     .map_err(|_| "could not write run identity file".to_string())?;
-                Ok(Sha256::digest(token.as_bytes()).to_vec())
+                drop(file);
+                std::fs::rename(dir.join("rpc-token.tmp"), dir.join("rpc-token"))
+                    .map_err(|_| "could not replace run identity file".to_string())?;
+                Ok(run_token_hash(&token).to_vec())
             })
             .await?
             .map_err(crate::dispatch::internal)?;
+        // Keep rpc-token and its hash with the run for resume, rotating on resume.
         let id = run_id.to_string();
         self.db(move |s| s.set_run_token_hash(&id, &hash)).await
     }
@@ -457,6 +470,9 @@ impl RunManager {
         }
         prompt.push_str(&early);
         let fork = fork_from.is_some() && resume_prompt.is_none();
+        if resume_prompt.is_some() {
+            self.renew_run_token(&row.id).await.map_err(|e| e.message)?;
+        }
         let spec = self
             .build_spec(row, &account, cwd, prompt, fork_from, fork)
             .await?;
@@ -1149,6 +1165,41 @@ fn collect_subtree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn interrupted_token_issuance_recovers_and_retry_reuses_identity() {
+        use super::super::testutil::manager;
+        use sha2::{Digest, Sha256};
+        let (m, _dir) = manager();
+        let id = "interrupted-issuance";
+        let dir = m.inner.paths.run_dir(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rpc-token"), "orphaned-token").unwrap();
+        std::fs::write(dir.join("rpc-token.tmp"), "interrupted-temp-token").unwrap();
+        std::fs::set_permissions(
+            dir.join("rpc-token.tmp"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        m.issue_run_token(id).await.unwrap();
+        let token = std::fs::read_to_string(dir.join("rpc-token")).unwrap();
+        assert!(token.len() == 64 && token != "orphaned-token");
+        assert!(
+            m.store().get_run_token_hash(id).unwrap().as_deref()
+                == Some(Sha256::digest(token.as_bytes()).as_slice())
+        );
+        assert_eq!(
+            std::fs::metadata(dir.join("rpc-token"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(!dir.join("rpc-token.tmp").exists());
+        m.issue_run_token(id).await.unwrap();
+        assert!(std::fs::read_to_string(dir.join("rpc-token")).unwrap() == token);
+    }
 
     #[test]
     fn excerpt_is_bounded() {

@@ -95,11 +95,18 @@ impl Store {
 
     /// The initiating run, absent for orchestrator and legacy workflows.
     pub fn get_workflow_owner(&self, id: &str) -> Result<Option<String>> {
-        Ok(self.conn().query_row(
-            "SELECT owner_run_id FROM workflow_runs WHERE id = ?1",
-            [id],
-            |r| r.get(0),
-        )?)
+        use rusqlite::OptionalExtension;
+        self.conn()
+            .query_row(
+                "SELECT owner_run_id FROM workflow_runs WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .ok_or_else(|| StoreError::NotFound {
+                entity: "workflow run",
+                id: id.into(),
+            })
     }
 
     /// Ends a run: the final state with its result (on success) or error, and the finish
@@ -402,6 +409,14 @@ impl Store {
 mod tests {
     use super::*;
     use so_core::new_id;
+
+    #[test]
+    fn missing_workflow_owner_lookup_is_not_found() {
+        let s = Store::open_in_memory().unwrap();
+        assert!(
+            matches!(s.get_workflow_owner("missing"), Err(StoreError::NotFound { entity: "workflow run", id }) if id == "missing")
+        );
+    }
 
     #[test]
     fn cache_roundtrip() {
