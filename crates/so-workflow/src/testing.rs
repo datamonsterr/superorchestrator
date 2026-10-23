@@ -30,6 +30,8 @@ pub struct FakeHost {
     n: AtomicUsize,
     hang: Mutex<Vec<String>>,
     dropped: Arc<AtomicUsize>,
+    hung: AtomicUsize,
+    hung_entered: tokio::sync::Notify,
 }
 
 impl FakeHost {
@@ -53,6 +55,8 @@ impl FakeHost {
             n: AtomicUsize::new(0),
             hang: Mutex::default(),
             dropped: Arc::default(),
+            hung: AtomicUsize::new(0),
+            hung_entered: tokio::sync::Notify::new(),
         })
     }
 
@@ -62,6 +66,8 @@ impl FakeHost {
     }
 
     /// Makes `spawn_and_wait` for this prompt never finish (until its future is dropped).
+    /// Calls for other prompts wait until every hung prompt has started, so tests do not
+    /// depend on how the scheduler orders the steps.
     pub fn hang_on(&self, prompt: &str) {
         self.hang.lock().unwrap().push(prompt.to_string());
     }
@@ -100,9 +106,23 @@ impl WorkflowHost for FakeHost {
         Box::pin(async move {
             let start = Instant::now();
             let n = self.n.fetch_add(1, Ordering::SeqCst);
-            if self.hang.lock().unwrap().contains(&req.prompt) {
+            let (hangs, expected) = {
+                let h = self.hang.lock().unwrap();
+                (h.contains(&req.prompt), h.len())
+            };
+            if hangs {
                 let _guard = DropCount(self.dropped.clone());
+                self.hung.fetch_add(1, Ordering::SeqCst);
+                self.hung_entered.notify_waiters();
                 std::future::pending::<()>().await;
+            }
+            loop {
+                let mut entered = std::pin::pin!(self.hung_entered.notified());
+                entered.as_mut().enable();
+                if self.hung.load(Ordering::SeqCst) >= expected {
+                    break;
+                }
+                entered.await;
             }
             tokio::time::sleep(self.delay).await;
             self.calls.lock().unwrap().push(Call {
