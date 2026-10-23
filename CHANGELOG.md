@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+Fixes for the GitHub security advisories below. Several of them change behaviour; see "Changed (breaking)".
+
+- Child environment (GHSA-rfwj): processes the supervisor launches (harness runs, usage and model probes, `doctor` version checks) start with an empty environment plus an allowlist. Interactive CLI commands keep your environment.
+- Web UI (GHSA-4j5v, GHSA-gm3j): a token is required on every bind, loopback included. Without `--token` or `ui.token`, a 256-bit token is generated into a 0600 `ui-token` file. `superorchestrator ui` opens a single-use login URL valid for 60 seconds, never the persistent token. `ui_start` is limited to the sessionless operator (inspect) connection. A rejected `ui-token` file (not 0600, a symlink, malformed) now fails with the path, the reason and `remove <path> to regenerate it`.
+- Project agents (GHSA-8hc9): an agent file found in a project directory is refused when it sets `hooks`, `mcpServers`, `isolation: none` or `extra_args`. Claude `extra_args` parsing is stricter for user agents too: no `--flag=value`, and `--max-turns` takes an integer.
+- Subagents (GHSA-8hc9, GHSA-jxj2): subagent callers lose `cmd:` checks, inline workflow `script`, and saved workflows from project directories (only the user config directory is searched). Their spawn `cwd` is confined to the calling run's worktree. A workflow step `cwd` must exist inside the workflow base, at depth 0 as well, after symlink resolution.
+- Run identity (GHSA-vw56): every run gets a per-run RPC token, checked in `hello`; only its hash is stored (store migration V9). Connections are bound to their session and run, and subtree authorization limits what a run can see or change. A request for another session's run is answered as not found.
+- Accounts (GHSA-jxj2): the account name `superorchestrator` is reserved, and a wrapper refuses to run if its target is the running executable. Overlapping credential homes are refused by `account add` and `account import`.
+- Input validation (GHSA-jxj2): `model`, `effort` and stored resume ids are validated before launch.
+- Redaction (GHSA-jxj2): log redaction also covers `AIza...` and `hf_...` tokens.
+- Release CI (GHSA-jxj2): workflow actions are pinned by commit SHA and installers are checksum-verified.
+- Other hardening from the jxj2 review.
+
+### Changed (breaking)
+
+- Supervisor-launched children no longer inherit provider API keys, `ANTHROPIC_BASE_URL`, `GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK` or CA variables such as `NODE_EXTRA_CA_CERTS`. Opt in by name with `pass_env` on an account or `accounts.pass_env` in `config.toml`, then restart the supervisor. `doctor` warns when common names are set but not passed.
+- Old bookmarks of `http://127.0.0.1:7878` now show the token prompt. Use `superorchestrator ui`.
+- Project agents using `hooks`, `mcpServers`, `isolation: none` or `extra_args` are refused. Subagents that relied on `cmd:` checks, inline workflow scripts or project-directory workflows must move that to the orchestrator or the user config directory.
+- `model` and `effort` accept only `[A-Za-z0-9:/_.@\-\[\]]`; `~`, `+` and `#` are rejected. A stored resume id that is not a UUID makes the resume fail.
+- Upgrading from a build before the run token: legacy runs are issued a token when launched or resumed, and legacy workflows have a NULL owner. In-flight pre-upgrade runs lose their MCP connection across a supervisor restart.
+- agy shared config roots (ADR-0005): a root writable by your primary group is accepted; world-writable or foreign-owned roots are refused. A top-level config symlink that resolves outside the account and the root is skipped with a warning instead of aborting the launch.
+
 ## [0.1.0] - 2026-10-23
 
 First release.
