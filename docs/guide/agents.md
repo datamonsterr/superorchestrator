@@ -34,7 +34,10 @@ For every source, Claude agent arguments use this explicit allowlist: `--tools`,
 are refused. Tool permission lists accept multiple values; the other flags require
 one value, and `--max-turns` requires an unsigned integer. Prefer the dedicated
 frontmatter fields; `extra_args` is a YAML list of separate flag/value strings for
-trusted user agents and applies only to Claude.
+trusted user agents and applies only to Claude. These trusted definitions may
+pass `--settings` or `--mcp-config` files. Argument validation uses the actual
+selected harness, which can override the definition's harness preference; other
+harnesses ignore user `extra_args`.
 
 `memory: project` remains allowed. For a project-sourced agent, project and local
 memory are labelled **Untrusted repository content** and quoted as data, with an
@@ -43,12 +46,16 @@ instruction to ignore commands and trust claims in that content.
 Search order stays the same. `agent list` marks a winning agent with `shadows` and
 lists the hidden definition paths. `agent show` includes the same paths. Spawning
 a shadowing agent returns a warning and records a warning progress event in its
-run, identifying both source paths. Unsafe definitions remain available to
+run, identifying both source paths. This progress warning repeats for every launch
+attempt, including resume and failover. Unsafe definitions remain available to
 `agent list` and `agent show` so you can inspect them.
 
 ## File format
 
-`AGENT.md` has YAML frontmatter, then the system prompt.
+`AGENT.md` has YAML frontmatter, then the system prompt. The SPEC example below
+is a user agent definition because it explicitly sets `hooks`. For a project
+definition, omit `hooks`; absent or YAML `null` hooks mean no hook configuration,
+while an explicit empty map still requires user trust.
 
 ```yaml
 ---
@@ -62,13 +69,13 @@ tools: [Read, Grep, Bash]
 disallowedTools: [Write]
 skills: [gh-cli]
 mcpServers: [github]
-# hooks: {}             # user agents only
+hooks: {}
 memory: project          # user | project | local
 maxTurns: 40
 isolation: worktree
 review: false
 ---
-System prompt body.
+System prompt body…
 ```
 
 `description` is required. Every other field is optional, and the name defaults to the folder or file name. Model selection order: call argument, agent file, `defaults` in `config.toml`, router.

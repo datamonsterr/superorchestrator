@@ -17,7 +17,8 @@ const AGENT_DIR: &str = "agent";
 impl RunManager {
     /// Adds the agent's instructions, tool controls and extra config to `spec`. Model, effort
     /// and max turns are already on the run row (resolved at spawn in the order call, agent,
-    /// config).
+    /// config). Shadowing progress warnings repeat per launch attempt, including resume
+    /// and failover, so every attempt records the definition it actually uses.
     pub(crate) async fn apply_agent(
         &self,
         row: &RunRow,
@@ -43,20 +44,19 @@ impl RunManager {
             })
             .await
             .map_err(|e| e.message)??;
-        for hidden in &def.shadowed {
-            let warning = format!(
-                "agent `{}` at {} shadows {}",
-                def.name,
-                def.file.display(),
-                hidden.display()
-            );
+        for warning in def.shadow_warnings() {
             tracing::warn!(run_id = %row.id, "{warning}");
             self.emit(
                 &row.session_id,
                 Some(&row.id),
                 so_core::EventType::Progress,
-                serde_json::json!({"step": "agent discovery", "status": "warning", "note": warning}),
-            ).await;
+                serde_json::json!({
+                    "step": "agent discovery",
+                    "status": "warning",
+                    "note": warning,
+                }),
+            )
+            .await;
         }
         if !m.system_addendum_extra.trim().is_empty() {
             spec.system_addendum.push_str("\n\n");

@@ -108,6 +108,7 @@ pub struct AgentDef {
     pub disallowed_tools: Vec<String>,
     pub skills: Vec<String>,
     pub mcp_servers: Vec<McpRef>,
+    /// `Null` means absent or YAML `null`; an explicit empty map is configured hooks.
     pub hooks: Value,
     /// Additional Claude arguments; only the materialisation allowlist is accepted.
     /// Preserve field presence: even an explicit empty list requires user trust.
@@ -125,6 +126,23 @@ pub struct AgentDef {
     pub source: AgentSource,
     /// Same-named definitions hidden by this file, in discovery order.
     pub shadowed: Vec<PathBuf>,
+}
+
+impl AgentDef {
+    /// Warnings identifying every definition hidden by this agent, in discovery order.
+    pub fn shadow_warnings(&self) -> Vec<String> {
+        self.shadowed
+            .iter()
+            .map(|hidden| {
+                format!(
+                    "agent `{}` at {} shadows {}",
+                    self.name,
+                    self.file.display(),
+                    hidden.display()
+                )
+            })
+            .collect()
+    }
 }
 
 #[derive(Deserialize, Default)]

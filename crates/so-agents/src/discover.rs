@@ -167,10 +167,12 @@ pub fn resolve(cwd: &Path, paths: &Paths, name: &str) -> Result<AgentDef> {
 }
 
 /// Resolves and validates an agent before the supervisor selects isolation or launches it.
-/// Repeated on every launch attempt, including resume and failover.
+/// Repeated on every launch attempt, including resume and failover. The actual harness is
+/// not known during resolution; Claude argument checks happen after selection or at
+/// materialisation, since the definition's preference can be overridden.
 pub fn resolve_for_spawn(cwd: &Path, paths: &Paths, name: &str) -> Result<AgentDef> {
     let def = resolve(cwd, paths, name)?;
-    crate::materialise::validate_for_spawn(&def, paths)?;
+    crate::materialise::validate_for_spawn(&def, paths, None)?;
     Ok(def)
 }
 
@@ -185,6 +187,29 @@ mod tests {
     fn write(path: &Path, text: &str) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn trust_refusal_hints_only_mention_a_project_copy_that_precedes_user_agents() {
+        let t = tempfile::tempdir().unwrap();
+        let cwd = t.path().join("proj");
+        let paths = Paths::from_dir(t.path().join("cfg"));
+        for (location, project_hint) in [
+            (".claude/agents", false),
+            (".superorchestrator/agents", true),
+        ] {
+            let file = cwd.join(location).join("unsafe.md");
+            write(
+                &file,
+                "---\nname: unsafe\ndescription: d\nhooks: {}\n---\nbody",
+            );
+            let err = resolve_for_spawn(&cwd, &paths, "unsafe")
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err.contains("remove any same-named"), project_hint, "{err}");
+            assert!(err.contains(paths.agents_dir().to_str().unwrap()), "{err}");
+            std::fs::remove_file(file).unwrap();
+        }
     }
 
     #[test]
@@ -287,12 +312,8 @@ mod tests {
             &paths.agents_dir().join("hostile.md"),
             "---\nname: hostile\ndescription: d\nextra_args: [--settings-unknown, evil]\n---\nbody",
         );
-        assert!(
-            resolve_for_spawn(&cwd, &paths, "hostile")
-                .unwrap_err()
-                .to_string()
-                .contains("--settings-unknown")
-        );
+        // Resolution has not selected a harness, so Claude argument validation waits.
+        assert!(resolve_for_spawn(&cwd, &paths, "hostile").is_ok());
     }
 
     #[test]
