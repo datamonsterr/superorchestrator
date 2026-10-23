@@ -247,7 +247,8 @@ fn related(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
 }
 
-/// Shared overlap check; purge alone exempts existing accounts on harness defaults.
+/// Finds overlapping homes, allowing strict descendants of an existing $HOME home.
+/// `ignored` supplies additional purge-only exemptions for legacy default homes.
 fn overlapping_home(
     paths: &Paths,
     host: &HostEnv,
@@ -263,8 +264,8 @@ fn overlapping_home(
         let oh = host.expand(&other.home)?;
         let oc = canon(&oh).map_err(|e| AccountsError::io(&oh, e))?;
         // A legacy account on $HOME must not reserve every credential subdirectory.
-        // Equality still conflicts, and a new $HOME home cannot contain another account.
-        if oc == chost && home != oc {
+        // Equality and ancestors still conflict, including a new $HOME over another account.
+        if oc == chost && home.starts_with(&oc) && home != oc {
             continue;
         }
         if !ignored.contains(&oc) && related(home, &oc) {
@@ -352,12 +353,12 @@ fn check_purge(
         }
     }
     // Preserve the purge exception for legacy accounts on shared default homes.
-    let mut shared = vec![chost];
+    let mut shared = Vec::new();
     for p in default_homes(host) {
         shared.push(canon(&p).map_err(|e| io("a harness default home", e))?);
     }
     if let Some(other) = overlapping_home(paths, host, &account.name, &chome, &shared)? {
-        return Err(refuse(format!("account `{other}` has an overlapping home")));
+        return Err(refuse(format!("it overlaps the home of account `{other}`")));
     }
     Ok(Some(chome))
 }
@@ -483,24 +484,62 @@ mod tests {
     }
 
     #[test]
-    fn add_preserves_existing_credential_home_permissions() {
-        for home in ["~", "~/credentials", "~/linked"] {
-            let f = fx();
-            let target = if home == "~/linked" {
-                let target = f.d.path().join("credentials");
-                std::fs::create_dir_all(&target).unwrap();
-                std::os::unix::fs::symlink(&target, f.d.path().join("linked")).unwrap();
-                target
+    fn a_home_directory_account_refuses_an_ancestor_home() {
+        for importing in [false, true] {
+            let mut f = fx();
+            f.host.home = f.d.path().join("home");
+            std::fs::create_dir_all(&f.host.home).unwrap();
+            AccountFile::new("existing", Harness::Codex, "~", "codex")
+                .unwrap()
+                .save(&f.paths)
+                .unwrap();
+            let ancestor = f.d.path().to_str().unwrap();
+            let result = if importing {
+                import(&f.paths, &f.cfg, &f.host, "new", Harness::Codex, ancestor)
             } else {
-                f.host.expand(home).unwrap()
+                add(
+                    &f.paths,
+                    &f.cfg,
+                    &f.host,
+                    Harness::Codex,
+                    "new",
+                    Some(ancestor),
+                )
             };
-            std::fs::create_dir_all(&target).unwrap();
-            std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
-            add(&f.paths, &f.cfg, &f.host, Harness::Codex, "new", Some(home)).unwrap();
-            assert_eq!(
-                std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
-                0o755
+            let err = result.unwrap_err();
+            assert!(
+                matches!(err, AccountsError::OverlappingHome { .. }),
+                "{err}"
             );
+            assert!(!f.paths.account_file("new").exists());
+        }
+    }
+
+    #[test]
+    fn add_and_import_preserve_existing_credential_home_permissions() {
+        for importing in [false, true] {
+            for home in ["~", "~/credentials", "~/linked"] {
+                let f = fx();
+                let target = if home == "~/linked" {
+                    let target = f.d.path().join("credentials");
+                    std::fs::create_dir_all(&target).unwrap();
+                    std::os::unix::fs::symlink(&target, f.d.path().join("linked")).unwrap();
+                    target
+                } else {
+                    f.host.expand(home).unwrap()
+                };
+                std::fs::create_dir_all(&target).unwrap();
+                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+                if importing {
+                    import(&f.paths, &f.cfg, &f.host, "new", Harness::Codex, home).unwrap();
+                } else {
+                    add(&f.paths, &f.cfg, &f.host, Harness::Codex, "new", Some(home)).unwrap();
+                }
+                assert_eq!(
+                    std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+                    0o755
+                );
+            }
         }
     }
 
