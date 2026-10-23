@@ -108,6 +108,7 @@ impl Rig {
             cwd: self.dir.path().to_path_buf(),
             account: AccountFile::new("agy-acc1", Harness::Agy, "~/acct", "agy").unwrap(),
             launch: Launch {
+                pass_env: vec![],
                 program: PathBuf::from(env!("CARGO_BIN_EXE_fake-harness")),
                 vars: vec![
                     (

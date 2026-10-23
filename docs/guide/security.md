@@ -11,6 +11,29 @@ Superorchestrator runs coding agents with full permissions on your machine. This
 - The supervisor log redacts text that matches known key patterns. Treat the log as sensitive anyway.
 - The Jev key and the Discord webhook URL come from the environment or a dotenv file. They are not stored in `config.toml`, and the UI never shows them. The one secret in `config.toml` is `ui.token`, if you set it. The file is mode 0600.
 
+## Harness environment
+
+Processes the supervisor launches (harness runs, usage and model probes, `doctor`
+version checks) use an inherited-variable allowlist, followed by explicit account and
+driver variables. Supervisor API keys and cloud credentials (`OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GH_TOKEN`, `SSH_AUTH_SOCK`, and so on) are
+excluded unless named in `pass_env`. Interactive CLI commands keep your own
+environment. The supervisor's other spawns (review `cmd:` and `gh` checks, git
+worktrees, notifications, process inspection) are intentionally not isolated. See
+[accounts](accounts.md#inherited-environment) for the allowlist, corporate CA
+variables, loader-hook warning (`LD_PRELOAD`, `NODE_OPTIONS`) and opt-in
+configuration. The baseline includes `XDG_*` and `DBUS_SESSION_BUS_ADDRESS`, so every
+harness sees your config/data home variables and session bus. This limits accidental
+environment disclosure; harnesses still run with the user's file access and
+permissions.
+
+OpenCode limitation: its [server authentication documentation](https://opencode.ai/docs/server/#authentication)
+requires `OPENCODE_SERVER_PASSWORD` in the server environment and provides no
+password-file or stdin option. The driver therefore sets a fresh password for each
+run. OpenCode may pass this password to its own tool subprocesses; the supervisor
+cannot clear another process's environment after startup. A supervisor-inherited
+OpenCode password is excluded from other harnesses by default.
+
 ## Local interfaces
 
 - The supervisor socket has mode 0600 in a directory only you can use. Anyone who can write to it can start runs, so keep it private.

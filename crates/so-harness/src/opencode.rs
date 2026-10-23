@@ -1084,6 +1084,9 @@ impl Driver for OpencodeDriver {
                     .envs(spec.launch.vars.iter().map(|(k, v)| (k, v)))
                     .env("OPENCODE_CONFIG", &config_path)
                     .env("OPENCODE_SERVER_USERNAME", USERNAME)
+                    // OpenCode only documents environment-based server auth:
+                    // https://opencode.ai/docs/server/#authentication
+                    // Its own tool subprocesses may inherit this per-run password.
                     .env(PASSWORD_ENV, &password)
                     .current_dir(&spec.cwd);
                 let sup = spawn_supervised(
@@ -1091,6 +1094,7 @@ impl Driver for OpencodeDriver {
                     &spec.run_dir,
                     self.config.shutdown_grace,
                     ListenParser { url: Some(url_tx) },
+                    &spec.launch.pass_env,
                 )?;
                 let out = Out::new(tx, sup.transcript.clone());
                 let mut exit = sup.handle.exit.clone();

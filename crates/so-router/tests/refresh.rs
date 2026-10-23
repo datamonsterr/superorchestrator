@@ -98,6 +98,7 @@ async fn refresh_merges_reports_and_caches_models_dev() {
     let http = reqwest::Client::new();
     let runner = Fake::default();
     let env = RefreshEnv {
+        pass_env: &[],
         paths: &paths,
         host: &host,
         accounts: &accounts,

@@ -620,6 +620,7 @@ mod tests {
                         vars: vec![],
                         argv_prefix: vec![],
                         extra_args: vec![],
+                        pass_env: vec![],
                     },
                     model: None,
                     effort: None,
@@ -791,6 +792,7 @@ mod tests {
             cwd: "/cwd".into(),
             account: AccountFile::new("claude-acc1", Harness::Claude, "~/.c", "claude").unwrap(),
             launch: Launch {
+                pass_env: vec![],
                 program: "/bin/claude".into(),
                 vars: vec![("TOKEN_VAR".into(), "launch-secret".into())],
                 argv_prefix: vec![],

@@ -15,9 +15,59 @@ priority = 0                 # tie-breaker inside a harness, higher first
 cap = 2                      # most concurrent runs, interactive sessions included
 enabled = true
 pools = ["default"]          # agy: ["gemini", "claude"]
+pass_env = []                # exact inherited variable names, e.g. ["GITHUB_TOKEN"]
 ```
 
 A name matches `^[a-z][a-z0-9-]{1,31}$`. The name is also the wrapper command, so it must not be `codex`, `agy`, `opencode` or `claude`, and it must not shadow another command: `account add` and `account import` fail when the name already resolves on `PATH` to an executable that is not one of our wrappers (for example `ls`).
+
+## Inherited environment
+
+Processes the supervisor launches (run harnesses, usage and model probes, `doctor`
+version checks) start with an empty environment and inherit only `PATH`, `HOME`,
+`USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `COLORTERM`, `TZ`, `TMPDIR`,
+`XDG_*`, proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, in any
+case), `SSL_CERT_FILE` and `SSL_CERT_DIR`. The `XDG_*` prefix means the harness also
+sees `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and the other XDG directory variables.
+`DBUS_SESSION_BUS_ADDRESS` is inherited so agy can reach the user's keyring
+(ADR-0003); this exposes your session bus to every harness.
+
+Interactive CLI commands (`account login`, `exec`, `runs join`, the terminal UI and
+`install`) run in your own terminal and keep your environment unchanged.
+
+API keys and cloud credentials are not inherited. In particular `OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN` and
+`SSH_AUTH_SOCK` must be opted in, as must `DISPLAY` and `WAYLAND_DISPLAY`. Corporate
+CA variables (`NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`) also need
+`pass_env`; only `SSL_CERT_FILE` and `SSL_CERT_DIR` are in the baseline. Opt in by
+exact name:
+
+```toml
+# accounts/codex-acc2.toml
+pass_env = ["GH_TOKEN", "SSH_AUTH_SOCK"]
+```
+
+`accounts.pass_env` in `config.toml` supplies additional names for every account:
+
+```toml
+[accounts]
+pass_env = ["NODE_EXTRA_CA_CERTS"]
+```
+
+The two lists are combined and deduplicated; both default to empty. Names are
+literal (no `*` expansion), and names that are not set are skipped silently. Values
+are read from the supervisor's environment when it starts the process, so restart
+the supervisor after changing that environment. Only names are saved in
+configuration. Account credential-home variables and driver-set variables override
+inherited values, even when explicitly passed through.
+
+Warning: do not pass loader-hook variables such as `LD_PRELOAD`, `LD_LIBRARY_PATH` or
+`NODE_OPTIONS`. They change how the harness binary and its tools execute code.
+Passing a variable makes it available to the harness and its tool subprocesses; this
+policy does not restrict file access.
+
+Supervisor spawns that are not harnesses are intentionally not isolated: review
+`cmd:` and `gh` checks, git worktree commands, notifications and process inspection
+keep the supervisor's environment.
 
 ## Credential homes
 

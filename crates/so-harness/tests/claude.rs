@@ -81,6 +81,7 @@ impl Rig {
             account: AccountFile::new("claude-acc1", Harness::Claude, "~/.claude", "claude")
                 .unwrap(),
             launch: Launch {
+                pass_env: vec![],
                 program: PathBuf::from(env!("CARGO_BIN_EXE_fake-harness")),
                 vars: vec![
                     (

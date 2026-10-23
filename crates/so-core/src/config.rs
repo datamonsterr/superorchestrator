@@ -289,12 +289,15 @@ impl Default for Worktrees {
 #[serde(default, deny_unknown_fields)]
 pub struct AccountsCfg {
     pub wrapper_dir: String,
+    /// Extra inherited environment variable names for every account.
+    pub pass_env: Vec<String>,
 }
 
 impl Default for AccountsCfg {
     fn default() -> Self {
         Self {
             wrapper_dir: "~/.local/bin".to_string(),
+            pass_env: Vec::new(),
         }
     }
 }
@@ -426,6 +429,17 @@ fn to_edit_value(v: &toml::Value) -> toml_edit::Value {
 
 impl Config {
     fn validate(&self) -> std::result::Result<(), String> {
+        if self
+            .accounts
+            .pass_env
+            .iter()
+            .any(|name| !crate::child_env::valid_name(name))
+        {
+            return Err(
+                "accounts.pass_env must contain non-empty environment names without NUL or ="
+                    .into(),
+            );
+        }
         if self.limits.global_cap == 0 {
             return Err("limits.global_cap must be at least 1".into());
         }
@@ -712,6 +726,18 @@ mod tests {
     }
 
     #[test]
+    fn global_pass_env_parses_and_validates_names() {
+        let path = std::path::Path::new("config.toml");
+        let config = Config::parse("[accounts]\npass_env = [\"GITHUB_TOKEN\"]", path).unwrap();
+        assert_eq!(config.accounts.pass_env, ["GITHUB_TOKEN"]);
+        for name in ["", "BAD=NAME", "BAD\0NAME"] {
+            let mut config = Config::default();
+            config.accounts.pass_env = vec![name.into()];
+            assert!(config.validate().is_err());
+        }
+    }
+
+    #[test]
     fn every_spec_default() {
         let c = Config::default();
         assert_eq!((c.limits.global_cap, c.limits.max_children), (16, 8));
@@ -761,6 +787,7 @@ mod tests {
         assert_eq!(c.worktrees.dir, "{repo_parent}/{repo}-worktrees");
         assert_eq!(c.worktrees.branch_prefix, "so/");
         assert_eq!(c.accounts.wrapper_dir, "~/.local/bin");
+        assert!(c.accounts.pass_env.is_empty());
         assert_eq!(
             (c.ui.bind.as_str(), c.ui.port, c.ui.token.clone()),
             ("127.0.0.1", 7878, None)

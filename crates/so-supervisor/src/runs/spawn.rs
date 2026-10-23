@@ -70,12 +70,14 @@ impl RunManager {
         let host = self
             .host()
             .ok_or_else(|| rpc(UNAVAILABLE, "the host environment (HOME) is not available"))?;
-        build_launch(account, host).map_err(|e| {
-            rpc(
-                UNAVAILABLE,
-                format!("cannot launch account {}: {e}", account.name),
-            )
-        })
+        build_launch(account, host)
+            .map(|launch| launch.with_default_pass_env(&self.config().accounts.pass_env))
+            .map_err(|e| {
+                rpc(
+                    UNAVAILABLE,
+                    format!("cannot launch account {}: {e}", account.name),
+                )
+            })
     }
 
     /// An account a run can start on now: it exists, is enabled, matches `harness` when one

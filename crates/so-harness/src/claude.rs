@@ -138,6 +138,7 @@ impl Driver for ClaudeDriver {
             &spec.run_dir,
             self.config.shutdown_grace,
             ClaudeParser::new(acks.clone()),
+            &spec.launch.pass_env,
         )?;
         let control = ClaudeControl {
             proc: Arc::new(sup.handle),

@@ -306,6 +306,7 @@ impl Driver for AgyDriver {
             &spec.run_dir,
             self.config.shutdown_grace,
             AgyParser::new(spec.output_schema.is_some(), spec.resume.is_some(), id_tx),
+            &spec.launch.pass_env,
         )?;
         let control = AgyControl {
             proc: Arc::new(sup.handle),
@@ -558,11 +559,9 @@ fn first_child(parent: u32) -> Option<u32> {
 /// `pgrep` exits 1 when nothing matches, which leaves no output and yields `None`.
 #[cfg(any(test, not(target_os = "linux")))]
 fn pgrep_child(parent: u32) -> Option<u32> {
-    let out = std::process::Command::new("pgrep")
-        .arg("-P")
-        .arg(parent.to_string())
-        .output()
-        .ok()?;
+    let mut command = std::process::Command::new("pgrep");
+    so_core::child_env::isolate(&mut command, &[]);
+    let out = command.arg("-P").arg(parent.to_string()).output().ok()?;
     String::from_utf8_lossy(&out.stdout)
         .lines()
         .filter_map(|l| l.trim().parse::<u32>().ok())

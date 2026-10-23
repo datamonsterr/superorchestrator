@@ -178,6 +178,7 @@ impl Driver for CodexDriver {
             self.config.shutdown_grace,
             banner.clone(),
             Some(Box::new(banner)),
+            &spec.launch.pass_env,
         )?;
         let guard = sup.producer_guard();
         let Supervised {
@@ -1637,6 +1638,7 @@ mod tests {
             account: so_core::AccountFile::new("codex-acc1", Harness::Codex, "~/.codex", "codex")
                 .unwrap(),
             launch: so_accounts::Launch {
+                pass_env: vec![],
                 program: "/bin/codex".into(),
                 vars: vec![],
                 argv_prefix: vec![],
