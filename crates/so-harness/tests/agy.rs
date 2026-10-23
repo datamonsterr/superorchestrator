@@ -591,7 +591,7 @@ async fn invalid_effort_fails_before_spawn() {
 }
 
 #[test]
-fn prepare_refuses_config_file_symlinks_outside_the_account() {
+fn prepare_skips_config_file_symlinks_outside_the_account() {
     let rig = Rig::new();
     let account = rig.account_gemini();
     std::fs::remove_dir_all(account.join("config")).unwrap();
@@ -599,10 +599,9 @@ fn prepare_refuses_config_file_symlinks_outside_the_account() {
     let outside = rig.dir.path().join("secret");
     std::fs::write(&outside, "private secret").unwrap();
     std::os::unix::fs::symlink(&outside, account.join("config/settings.json")).unwrap();
-    let error =
-        so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
-    assert!(!rig.run_dir().join("gemini/config/settings.json").exists());
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert!(!dir.join("config/settings.json").exists());
+    assert!(dir.join("config/mcp_config.json").exists());
 }
 
 #[test]
@@ -649,10 +648,9 @@ fn prepare_checks_entry_symlinks_against_the_shared_canonical_root() {
     let outside = rig.dir.path().join("secret");
     std::fs::write(&outside, "private secret").unwrap();
     std::os::unix::fs::symlink(outside, config.join("escape.json")).unwrap();
-    let error =
-        so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
     assert!(!dir.join("config/escape.json").exists());
+    assert!(dir.join("config/linked.json").exists());
 }
 
 #[test]
@@ -686,4 +684,25 @@ fn review_dangling_config_entry_is_skipped() {
     let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
     assert!(!dir.join("config/dangling.json").exists());
     assert!(dir.join("config/settings.json").exists());
+}
+
+#[test]
+fn prepare_allows_group_writable_shared_root_in_own_group_but_not_world_writable() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    let source = tempfile::tempdir().unwrap();
+    std::fs::write(source.path().join("settings.json"), "trusted settings").unwrap();
+    std::fs::remove_dir_all(account.join("config")).unwrap();
+    std::os::unix::fs::symlink(source.path(), account.join("config")).unwrap();
+    // A fresh temp dir belongs to our primary group (user-private group, umask 002).
+    std::fs::set_permissions(source.path(), std::fs::Permissions::from_mode(0o775)).unwrap();
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config/settings.json")).unwrap(),
+        "trusted settings"
+    );
+    std::fs::set_permissions(source.path(), std::fs::Permissions::from_mode(0o757)).unwrap();
+    let error =
+        so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
 }

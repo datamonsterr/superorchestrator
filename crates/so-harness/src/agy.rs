@@ -124,8 +124,13 @@ fn account_gemini_dir(spec: &LaunchSpec) -> Result<PathBuf, DriverError> {
         .ok_or_else(|| DriverError::Other("agy launch has no --gemini_dir".into()))
 }
 
-fn trusted_config_root(metadata: &std::fs::Metadata, uid: u32) -> bool {
-    metadata.is_dir() && metadata.uid() == uid && metadata.mode() & 0o022 == 0
+/// A shared config root is trusted when it is a directory owned by `uid` that
+/// others cannot write. Group write is accepted only when the directory's group
+/// is the user's primary group (`gid`): with user-private groups and umask 002
+/// that group holds only the user.
+fn trusted_config_root(metadata: &std::fs::Metadata, uid: u32, gid: u32) -> bool {
+    let group_ok = metadata.mode() & 0o020 == 0 || metadata.gid() == gid;
+    metadata.is_dir() && metadata.uid() == uid && metadata.mode() & 0o002 == 0 && group_ok
 }
 
 /// Builds `<run_dir>/gemini` (ADR-0005): symlinks to the account's shared
@@ -161,7 +166,7 @@ pub fn prepare_gemini_dir(spec: &LaunchSpec, account: &Path) -> std::io::Result<
     let denied = || {
         std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            "agy shared config root must be a directory owned by the current uid without group/world write access; entries must stay inside the config root or account directory",
+            "agy shared config root must be a directory owned by the current uid without world write access (group write only for the user's primary group)",
         )
     };
     match std::fs::symlink_metadata(&source_config) {
@@ -172,7 +177,12 @@ pub fn prepare_gemini_dir(spec: &LaunchSpec, account: &Path) -> std::io::Result<
             let metadata = std::fs::metadata(&source_config)?;
             let shared = root_metadata.is_symlink() || !source_config.starts_with(&account);
             if !metadata.is_dir()
-                || (shared && !trusted_config_root(&metadata, rustix::process::getuid().as_raw()))
+                || (shared
+                    && !trusted_config_root(
+                        &metadata,
+                        rustix::process::getuid().as_raw(),
+                        rustix::process::getgid().as_raw(),
+                    ))
             {
                 return Err(denied());
             }
@@ -193,7 +203,11 @@ pub fn prepare_gemini_dir(spec: &LaunchSpec, account: &Path) -> std::io::Result<
                         Err(e) => return Err(e),
                     };
                     if !source.starts_with(&account) && !source.starts_with(&source_config) {
-                        return Err(denied());
+                        tracing::warn!(
+                            path = %path.display(),
+                            "skipping agy config symlink that resolves outside the account and config root"
+                        );
+                        continue;
                     }
                     if std::fs::metadata(&source)?.is_file() {
                         write_private(&config.join(entry.file_name()), &std::fs::read(source)?)?;
@@ -975,15 +989,25 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::tempdir().unwrap();
         let uid = rustix::process::getuid().as_raw();
+        let gid = rustix::process::getgid().as_raw();
         let metadata = std::fs::metadata(root.path()).unwrap();
-        assert!(trusted_config_root(&metadata, uid));
-        assert!(!trusted_config_root(&metadata, uid.wrapping_add(1)));
-        for mode in [0o775, 0o757] {
+        assert!(trusted_config_root(&metadata, uid, gid));
+        assert!(!trusted_config_root(&metadata, uid.wrapping_add(1), gid));
+        // Group write is fine when the directory's group is the primary gid.
+        std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o775)).unwrap();
+        let metadata = std::fs::metadata(root.path()).unwrap();
+        assert!(trusted_config_root(&metadata, uid, metadata.gid()));
+        // ... but not for any other group.
+        assert!(!trusted_config_root(
+            &metadata,
+            uid,
+            metadata.gid().wrapping_add(1)
+        ));
+        // World write is always refused.
+        for mode in [0o757, 0o777, 0o702] {
             std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(mode)).unwrap();
-            assert!(!trusted_config_root(
-                &std::fs::metadata(root.path()).unwrap(),
-                uid
-            ));
+            let metadata = std::fs::metadata(root.path()).unwrap();
+            assert!(!trusted_config_root(&metadata, uid, metadata.gid()));
         }
     }
 

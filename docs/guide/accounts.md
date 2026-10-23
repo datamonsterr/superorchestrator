@@ -148,4 +148,6 @@ For Claude on macOS, and for the default `~/.claude`, credentials may live in th
 
 ## macOS
 
+agy shared config root: an account's `.gemini/config` may be a symlink to a shared directory (for example an agent-farm profile). The launch accepts it only when the directory is owned by you and is not world-writable. Group write is accepted when the directory's group is your primary group (user-private-group systems with umask 002); a directory writable by any other group is refused. A top-level entry in that directory that is a symlink resolving outside the account and the config root, or a dangling one, is skipped with a warning in the supervisor log instead of aborting the launch.
+
 agy multi-account is Linux only until it is checked on a Mac. On macOS one agy account may be enabled, and it uses the real `~/.gemini`. `doctor` reports this.
