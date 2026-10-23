@@ -332,6 +332,9 @@ pub enum ErrorKind {
     Auth,
     /// The run's own configuration is wrong (an unknown model): no retry on it can succeed.
     Config,
+    /// The model refused the request (a provider safety filter): the account is fine and
+    /// the same prompt would be refused again.
+    Refused,
     Other,
 }
 
@@ -351,7 +354,7 @@ pub fn is_pinned_choice(id: &str) -> bool {
 
 impl ErrorKind {
     /// The failure is the account's (a limit or a login), so the account is flagged.
-    /// A `Config` failure is the run's own model, and the account is fine.
+    /// `Config` and `Refused` failures are not the account's, and the account is fine.
     pub fn flags_account(self) -> bool {
         matches!(self, Self::Quota | Self::RateLimit | Self::Auth)
     }
@@ -362,6 +365,7 @@ str_enum!(ErrorKind, |s| CoreError::UnknownValue { kind: "error kind", value: s 
     RateLimit => "rate_limit",
     Auth => "auth",
     Config => "config",
+    Refused => "refused",
     Other => "other",
 });
 

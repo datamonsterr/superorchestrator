@@ -95,7 +95,7 @@ Before coding against `rmcp`, `axum`, `rquickjs` or any harness protocol, check 
 
 ## 4. Harness drivers
 
-Each driver implements: `launch(run) -> Handle`, an `events()` stream normalised to the event types in section 12, `send(message)`, `cancel()`, `resume(native_session_id)`, `join_command(run) -> argv`, and `classify_error(text) -> {quota, rate_limit, auth, config, other}`.
+Each driver implements: `launch(run) -> Handle`, an `events()` stream normalised to the event types in section 12, `send(message)`, `cancel()`, `resume(native_session_id)`, `join_command(run) -> argv`, and `classify_error(text) -> {quota, rate_limit, auth, config, refused, other}`.
 
 | Harness | Launch | Native session id | Live message to child | Join |
 |---|---|---|---|---|

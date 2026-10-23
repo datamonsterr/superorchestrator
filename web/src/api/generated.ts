@@ -184,7 +184,7 @@ export interface DoctorReport {
 }
 
 /** Classification of a failed run's error. */
-export type ErrorKind = "quota" | "rate_limit" | "auth" | "config" | "other";
+export type ErrorKind = "quota" | "rate_limit" | "auth" | "config" | "refused" | "other";
 
 /** One appended fact in the timeline. */
 export interface Event {

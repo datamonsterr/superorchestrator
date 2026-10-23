@@ -10,6 +10,7 @@ const ERROR_TEXT: Record<string, string> = {
   rate_limit: 'The account was rate limited.',
   auth: 'The account is not signed in or its login expired.',
   config: 'The harness does not have the run\'s model. Pick another choice or model.',
+  refused: 'The model refused the request (a provider safety filter). Rephrase the prompt or pick another model.',
   other: 'The run failed for another reason.',
 }
 

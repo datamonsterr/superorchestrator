@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ErrorKind::Config` (`"config"`): a harness that does not have the run's model
   ("Model not found") is classified as a config error. A routed run fails over to a different
   choice without putting the account in cooldown; a run pinned to a model fails at once (#7).
+- `ErrorKind::Refused` (`"refused"`): an agy turn blocked by the Gemini safety filter ("This
+  request was blocked by Gemini's filters") finishes the run as `failed` instead of
+  `succeeded`, and does not count as a router success. The account is not flagged and the run
+  does not fail over; `send_message` with a rephrased prompt still resumes it (#13).
 - `models refresh` reports `missing_choice_models`: enabled choices whose model a harness did not
   list (#7).
 

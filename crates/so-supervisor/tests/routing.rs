@@ -584,6 +584,41 @@ async fn a_startup_exit_with_an_auth_error_flags_the_account_and_fails_over() {
     h.shutdown().await;
 }
 
+/// A Gemini safety-filter refusal ends the run `failed`/`refused`: no success for the choice,
+/// no cooldown on the account, no failover (hand-made script from issue #13).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_gemini_refusal_fails_the_run_as_refused_without_flagging_the_account() {
+    let env = agy_env();
+    env.agy_account(
+        "agy-acc2",
+        2,
+        &script(&[
+            json!({"expect_stdin_contains": PROMPT}),
+            json!({"stdout": {"event": "init", "conversation_id": "c1", "init": {}}}),
+            json!({"stdout": {"event": "result", "result": {
+                "conversation_id": "c1", "status": "SUCCESS",
+                "response": "This request was blocked by Gemini's filters. They can occasionally trigger by mistake on safe coding, security, or biology-related queries. Please try rephrasing your prompt.",
+                "usage": {}}}}),
+        ]),
+    );
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Failed, "{r:?}");
+    assert_eq!(r.error_kind, Some(ErrorKind::Refused));
+    let v = view(&c, &r.run_id).await;
+    assert!(events(&v, "failover").is_empty(), "{:?}", types(&v));
+    assert!(
+        env.store()
+            .get_flag("agy-acc2", "gemini")
+            .unwrap()
+            .is_none()
+    );
+    h.shutdown().await;
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_startup_exit_that_fails_everywhere_ends_with_the_classified_kind() {

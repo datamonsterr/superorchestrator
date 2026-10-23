@@ -495,7 +495,7 @@ One-to-one with `proto.rs` and `types.rs`. T2.3 writes these by hand as stubs so
 export type Harness = "codex" | "agy" | "opencode" | "claude";
 export type RunState = "queued" | "starting" | "running" | "waiting" | "stalled" | "escalated"
   | "pending_review" | "succeeded" | "failed" | "cancelled";
-export type ErrorKind = "quota" | "rate_limit" | "auth" | "config" | "other";
+export type ErrorKind = "quota" | "rate_limit" | "auth" | "config" | "refused" | "other";
 export type Isolation = "worktree" | "none";
 export type MessageKind = "message" | "progress" | "question" | "answer" | "nudge" | "result";
 export type SignInState = "signed_in" | "signed_out" | "unknown";
