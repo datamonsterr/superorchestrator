@@ -136,6 +136,8 @@ impl RunManager {
         let pins = pins.and_then(|j| serde_json::from_str::<RoutePins>(&j).ok());
         // A bad model the caller pinned (or a harness pin with no choice behind it) is the
         // same on every account: fail now with the real error.
+        // A pins record that is missing or unreadable counts as pinned, so a Config failure
+        // fails fast rather than failing over blind.
         if kind == ErrorKind::Config
             && (pins.as_ref().is_none_or(|p| p.model.is_some()) || self.run_is_pinned(run_id).await)
         {

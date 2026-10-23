@@ -101,8 +101,8 @@ impl McpBridge {
     }
 
     /// Tells the orchestrator, in the server instructions it reads at connect, that the
-    /// daemon is not this build. Computed once at connect, so it
-    /// does not notice a replacement that happens later (`list_harnesses` does). Only the first notice is kept.
+    /// daemon is not this build. Computed once at connect, so it does not notice a
+    /// replacement that happens later (`list_harnesses` does). Only the first notice is kept.
     pub fn set_daemon_notice(&self, notice: String) {
         let _ = self.inner.notice.set(notice);
     }
