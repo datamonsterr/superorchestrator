@@ -234,11 +234,11 @@ queued ─► starting ─► running ⇄ waiting
 | `harness` | `auto` (default), or a harness name |
 | `account` | Account name, or omitted for the router's choice |
 | `model`, `effort` | Overrides |
-| `cwd` | Working directory, default the caller's cwd |
+| `cwd` | Working directory, default the caller's cwd. For subagents, canonical resolution must remain inside the calling run's worktree/cwd. |
 | `isolation` | `worktree` (default) or `none` |
 | `output_schema` | JSON Schema for the final result |
 | `review` | `true` puts the run in `pending_review` |
-| `checks` | Verify steps run before `pending_review`: `"ci"`, `"pr_threads"`, `"cmd:<shell command>"` |
+| `checks` | Verify steps run before `pending_review`: `"ci"`, `"pr_threads"`, `"cmd:<shell command>"`. Only orchestrators (depth 0, no calling run) may supply `cmd:`; subagents may use only `ci` and `pr_threads`. |
 | `wait` | `true` blocks until the run finishes (an MCP task when the client supports tasks) |
 | `max_turns`, `timeout` | Budget. Claude uses the CLI flag where available. Other harnesses get a turn or time budget enforced by superorchestrator. |
 | `name` | Short label for the UI |
@@ -445,7 +445,7 @@ System prompt body…
 
 ## 11. Workflows
 
-`run_workflow(name|script, args)` runs a JavaScript workflow in embedded QuickJS. The API matches Claude Code workflow scripts:
+`run_workflow(name|script, args)` runs a JavaScript workflow in embedded QuickJS. Inline `script` requires an orchestrator (depth 0, no calling run); subagents may invoke saved workflows by `name` only from the user config directory. Project/run workflow directories are never searched for subagents. All step cwd options must canonicalise inside the workflow base, including when started at depth 0. A subagent-started workflow uses the calling run's worktree/cwd as its base. The API matches Claude Code workflow scripts:
 - `agent(prompt, opts)`: opts are the spawn options from 7.2, so any harness can be used.
 - `parallel([...])`: defaults to `isolation: worktree`. A failed agent gives `null`.
 - `pipeline([...])`

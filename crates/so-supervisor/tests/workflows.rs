@@ -539,7 +539,7 @@ async fn steps_over_the_parents_child_limit_wait_for_one_to_finish() {
     env.config.limits.max_children = 1;
     env.account("claude-a", 4, &ok_script(&[json!({"sleep_ms": 300})]));
     let h = env.start().await;
-    let parent = insert_session_and_run(&env.store(), 1, RunState::Running);
+    let parent = insert_session_and_run_in(&env.store(), 1, RunState::Running, &env.repo);
     let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
     c.hello("child", "/", Some(parent.id), None).await.unwrap();
     let src = r#"
@@ -548,7 +548,9 @@ return await parallel([
   (a) => a("do the task", {harness: "claude", account: "claude-a", isolation: "none", model: "m2"}),
 ]);
 "#;
-    let r = run(&c, json!({"script": src})).await;
+    std::fs::create_dir_all(env.paths.workflows_dir()).unwrap();
+    std::fs::write(env.paths.workflows_dir().join("parallel.js"), src).unwrap();
+    let r = run(&c, json!({"name": "parallel"})).await;
     assert_eq!(r.state.as_deref(), Some("succeeded"), "{r:?}");
     assert_eq!(r.result, Some(json!(["done", "done"])));
     h.shutdown().await;
