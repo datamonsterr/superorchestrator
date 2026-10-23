@@ -371,10 +371,19 @@ fn classify_agy(text: &str) -> ErrorKind {
 }
 
 /// The start of the response agy returns when the Gemini safety filter blocks a turn.
-const GEMINI_REFUSAL: &str = "This request was blocked by Gemini's filters";
+const GEMINI_REFUSAL: &str = "this request was blocked by gemini";
+
+/// Lowercased, curly apostrophes straightened, whitespace collapsed.
+fn normalise(s: &str) -> String {
+    s.replace('\u{2019}', "'")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
 
 fn is_gemini_refusal(response: &str) -> bool {
-    response.trim_start().starts_with(GEMINI_REFUSAL)
+    normalise(response).starts_with(GEMINI_REFUSAL)
 }
 
 /// Clonable control handle for a running agy process. Dropping the last clone
@@ -645,8 +654,9 @@ impl AgyParser {
             r["status"] == "SUCCESS" && result_text.as_deref().is_some_and(is_gemini_refusal);
         let is_error = refused || r["status"] != "SUCCESS";
         let error_text = is_error.then(|| {
-            r["error"]
-                .as_str()
+            // A refusal is reported with its own text, whatever `error` holds.
+            let error = if refused { None } else { r["error"].as_str() };
+            error
                 .filter(|e| !e.is_empty())
                 .map(String::from)
                 .or_else(|| result_text.clone().filter(|t| !t.is_empty()))
@@ -780,6 +790,22 @@ mod tests {
                 ..
             })
         ));
+        for variant in [
+            "This request was blocked by Gemini\u{2019}s filters. Try again.",
+            "this request was blocked by gemini's filters",
+            "  This request  was blocked\nby Gemini's filters.",
+        ] {
+            let line = serde_json::json!({"event": "result",
+                "result": {"status": "SUCCESS", "response": variant}});
+            let mut p = AgyParser::standalone(false);
+            assert!(
+                matches!(
+                    p.parse_line(&line.to_string()).last(),
+                    Some(HarnessEvent::TurnFinished { is_error: true, error_kind: Some(ErrorKind::Refused), error_text: Some(t), .. }) if t == variant
+                ),
+                "{variant}"
+            );
+        }
         // A normal answer that merely quotes the phrase is still a success.
         let quoting = serde_json::json!({"event": "result", "result": {"status": "SUCCESS",
             "response": "The error \"This request was blocked by Gemini's filters\" means ..."}});

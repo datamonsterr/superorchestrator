@@ -584,8 +584,7 @@ async fn a_startup_exit_with_an_auth_error_flags_the_account_and_fails_over() {
     h.shutdown().await;
 }
 
-/// A Gemini safety-filter refusal ends the run `failed`/`refused`: no success for the choice,
-/// no cooldown on the account, no failover (hand-made script from issue #13).
+/// A Gemini safety-filter refusal ends the run `failed`/`refused`: no cooldown on the account, no failover (hand-made script from issue #13).
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_gemini_refusal_fails_the_run_as_refused_without_flagging_the_account() {
