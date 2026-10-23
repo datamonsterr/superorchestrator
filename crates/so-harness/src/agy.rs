@@ -402,6 +402,19 @@ impl AgyControl {
             return Err(DriverError::Closed);
         }
         let leader = self.proc.pid.ok_or(DriverError::Closed)?;
+        #[cfg(target_os = "linux")]
+        let identity = if self.bwrapped {
+            Some(
+                first_child_identity(Path::new("/proc"), leader).ok_or_else(|| {
+                    DriverError::Other("agy process under bwrap not found".into())
+                })?,
+            )
+        } else {
+            None
+        };
+        #[cfg(target_os = "linux")]
+        let target = identity.map_or(leader, |child| child.pid);
+        #[cfg(not(target_os = "linux"))]
         let target = if self.bwrapped {
             first_child(leader)
                 .ok_or_else(|| DriverError::Other("agy process under bwrap not found".into()))?
@@ -412,6 +425,16 @@ impl AgyControl {
             .ok()
             .and_then(rustix::process::Pid::from_raw)
             .ok_or_else(|| DriverError::Other("invalid agy pid".into()))?;
+        // The scan and signal are separate syscalls. Re-read both parent and start time
+        // at the last possible moment so an observed PID reuse fails closed.
+        #[cfg(target_os = "linux")]
+        if identity.is_some_and(|child| !child.is_current(Path::new("/proc"))) {
+            return Err(DriverError::Closed);
+        }
+        #[cfg(not(target_os = "linux"))]
+        if self.bwrapped && first_child(leader) != Some(target) {
+            return Err(DriverError::Closed);
+        }
         rustix::process::kill_process(pid, rustix::process::Signal::INT).map_err(|e| {
             if e == rustix::io::Errno::SRCH {
                 DriverError::Closed
@@ -436,24 +459,50 @@ impl AgyControl {
     }
 }
 
-/// Lowest-pid direct child of `parent`, found by scanning `/proc`.
 #[cfg(target_os = "linux")]
-fn first_child(parent: u32) -> Option<u32> {
-    std::fs::read_dir("/proc")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChildIdentity {
+    pid: u32,
+    parent: u32,
+    start_time: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl ChildIdentity {
+    fn read(root: &Path, pid: u32) -> Option<Self> {
+        let stat = std::fs::read_to_string(root.join(pid.to_string()).join("stat")).ok()?;
+        let (head, rest) = stat.rsplit_once(") ")?;
+        if head.split_once(' ')?.0.parse::<u32>().ok()? != pid {
+            return None;
+        }
+        let fields: Vec<_> = rest.split_whitespace().collect();
+        Some(Self {
+            pid,
+            parent: fields.get(1)?.parse().ok()?,
+            start_time: fields.get(19)?.parse().ok()?,
+        })
+    }
+
+    fn is_current(self, root: &Path) -> bool {
+        Self::read(root, self.pid) == Some(self)
+    }
+}
+
+/// Lowest-pid direct child, retaining the kernel start time for a later identity check.
+#[cfg(target_os = "linux")]
+fn first_child_identity(root: &Path, parent: u32) -> Option<ChildIdentity> {
+    std::fs::read_dir(root)
         .ok()?
         .flatten()
         .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
-        .filter(|pid| {
-            std::fs::read_to_string(format!("/proc/{pid}/stat"))
-                .ok()
-                .and_then(|s| {
-                    // `pid (comm) state ppid ...`; comm may contain spaces.
-                    let rest = s.rsplit_once(") ")?.1;
-                    rest.split(' ').nth(1)?.parse::<u32>().ok()
-                })
-                == Some(parent)
-        })
-        .min()
+        .filter_map(|pid| ChildIdentity::read(root, pid))
+        .filter(|child| child.parent == parent)
+        .min_by_key(|child| child.pid)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn first_child(parent: u32) -> Option<u32> {
+    first_child_identity(Path::new("/proc"), parent).map(|child| child.pid)
 }
 
 /// Lowest-pid direct child of `parent` on platforms without `/proc`.
@@ -836,6 +885,47 @@ mod tests {
         for (t, k) in cases {
             assert_eq!(d.classify_error(t), k, "{t}");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn child_identity_rejects_reuse_reparenting_and_missing_stat() {
+        let root = tempfile::tempdir().unwrap();
+        let proc_dir = root.path().join("42");
+        std::fs::create_dir(&proc_dir).unwrap();
+        let stat = |parent: u32, start: u64| {
+            format!(
+                "42 (agy ) tricky name) S {parent} {} {start} 0\n",
+                "0 ".repeat(17)
+            )
+        };
+        std::fs::write(proc_dir.join("stat"), stat(7, 1234)).unwrap();
+        let child = ChildIdentity::read(root.path(), 42).unwrap();
+        assert_eq!(
+            child,
+            ChildIdentity {
+                pid: 42,
+                parent: 7,
+                start_time: 1234
+            }
+        );
+        assert!(child.is_current(root.path()));
+        assert_eq!(first_child_identity(root.path(), 7), Some(child));
+        std::fs::write(proc_dir.join("stat"), stat(8, 1234)).unwrap();
+        assert!(
+            !child.is_current(root.path()),
+            "reparented process must not be signalled"
+        );
+        assert_eq!(first_child_identity(root.path(), 7), None);
+        std::fs::write(proc_dir.join("stat"), stat(7, 5678)).unwrap();
+        assert!(
+            !child.is_current(root.path()),
+            "reused pid must not be signalled"
+        );
+        std::fs::write(proc_dir.join("stat"), "malformed").unwrap();
+        assert!(!child.is_current(root.path()));
+        std::fs::remove_file(proc_dir.join("stat")).unwrap();
+        assert!(!child.is_current(root.path()));
     }
 
     fn assert_finds_child(find: fn(u32) -> Option<u32>) {
