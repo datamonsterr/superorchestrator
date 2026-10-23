@@ -3208,6 +3208,7 @@ dependencies = [
  "serde",
  "serde_json",
  "so-accounts",
+ "so-agents",
  "so-core",
  "so-harness",
  "tempfile",

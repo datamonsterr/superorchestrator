@@ -6,9 +6,7 @@ use std::process::Command;
 use anyhow::{Context, Result, bail};
 use dialoguer::Confirm;
 use serde_json::json;
-use so_agents::{
-    AgentDef, AgentError, HarnessPref, discover, gaps, resolve_for_spawn, validate_agent_name,
-};
+use so_agents::{AgentDef, AgentError, HarnessPref, discover, gaps, resolve, validate_agent_name};
 use so_core::Harness;
 
 use crate::cli::{AgentCmd, AgentCreate};
@@ -31,7 +29,7 @@ fn cwd() -> Result<PathBuf> {
 }
 
 fn find(ctx: &Ctx, name: &str) -> Result<AgentDef> {
-    match resolve_for_spawn(&cwd()?, &ctx.paths, name) {
+    match resolve(&cwd()?, &ctx.paths, name) {
         Err(AgentError::NotFound(n)) => {
             Err(CliError::not_found(format!("no agent named `{n}`")).into())
         }
@@ -97,6 +95,7 @@ fn list(ctx: &Ctx) -> Result<()> {
                 "harness": a.harness.as_str(),
                 "description": a.description,
                 "path": a.file,
+                "shadowed": a.shadowed,
             })
         })
         .collect();
@@ -116,10 +115,19 @@ fn list(ctx: &Ctx) -> Result<()> {
                     a.source.as_str().into(),
                     a.harness.as_str().into(),
                     a.description.clone(),
+                    a.shadowed
+                        .iter()
+                        .map(|p| format!("shadows {}", p.display()))
+                        .collect::<Vec<_>>()
+                        .join("; "),
                 ]
             })
             .collect();
-        write_table(w, &["NAME", "SOURCE", "HARNESS", "DESCRIPTION"], &rows)
+        write_table(
+            w,
+            &["NAME", "SOURCE", "HARNESS", "DESCRIPTION", "SHADOWING"],
+            &rows,
+        )
     })
 }
 
@@ -147,6 +155,9 @@ fn show(ctx: &Ctx, name: &str) -> Result<()> {
             a.source.as_str(),
             a.file.display()
         )?;
+        for hidden in &a.shadowed {
+            writeln!(w, "shadows:     {}", hidden.display())?;
+        }
         writeln!(w, "description: {}", a.description)?;
         writeln!(w, "harness:     {}", a.harness.as_str())?;
         let opt = |o: &Option<String>| o.clone().unwrap_or_else(|| "-".into());

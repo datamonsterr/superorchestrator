@@ -299,6 +299,11 @@ impl RunManager {
         )
         .map_err(|e| rpc(INVALID_PARAMS, e.to_string()))?;
 
+        if let Some(a) = &agent {
+            // The account selects the actual harness and can override the agent's preference.
+            so_agents::materialise::validate_for_spawn(a, &self.inner.paths, Some(account.harness))
+                .map_err(agent_error)?;
+        }
         let want = p
             .isolation
             .or_else(|| agent.as_ref().and_then(|a| a.isolation))
@@ -309,6 +314,7 @@ impl RunManager {
             .await?;
         // What the agent file asks for and the chosen harness cannot do.
         if let Some(a) = &agent {
+            warnings.extend(a.shadow_warnings());
             warnings.extend(
                 so_agents::gaps(a, account.harness)
                     .into_iter()
