@@ -131,7 +131,8 @@ fn check_decider(c: &mut Checks, cfg: Option<&Config>) {
 }
 
 /// Secret-bearing variables that harnesses commonly need but the child-environment
-/// allowlist drops unless they are named in `pass_env`.
+/// allowlist (`so_core::child_env`) drops unless they are named in `pass_env`. Keep this
+/// list to names that allowlist does not inherit.
 const COMMON_PASS_ENV: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
@@ -469,10 +470,12 @@ mod tests {
         let mut c = Checks::default();
         check_pass_env(&mut c, Some(&cfg), &accounts, &set);
         let d = detail(&c).expect("warning");
-        assert!(d.contains("OPENAI_API_KEY"), "{d}");
-        assert!(!d.contains("GH_TOKEN,") && !d.contains(": GH_TOKEN"), "{d}");
-        assert!(!d.contains("SSH_AUTH_SOCK"), "{d}");
-        assert!(!d.contains("HOME"), "{d}");
+        let names = d
+            .split("runs: ")
+            .nth(1)
+            .and_then(|r| r.split(". ").next())
+            .unwrap();
+        assert_eq!(names, "OPENAI_API_KEY", "{d}");
     }
 
     #[test]

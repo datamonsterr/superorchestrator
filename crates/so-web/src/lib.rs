@@ -90,7 +90,7 @@ pub fn router(state: Arc<SupervisorState>, mut opts: WebOptions) -> Result<Route
 
 fn prepare(state: &SupervisorState, opts: &mut WebOptions) -> Result<(), WebError> {
     if opts.token.as_deref().is_none_or(str::is_empty) {
-        let path = state.paths.config_dir.join("ui-token");
+        let path = token::token_path(&state.paths.config_dir);
         opts.token = Some(
             token::load_or_create(&state.paths.config_dir)
                 .map_err(|source| WebError::TokenFile { path, source })?,
@@ -172,7 +172,7 @@ pub async fn start(
     mut opts: WebOptions,
 ) -> Result<WebServer, WebError> {
     let st = state.clone();
-    let token_path = state.paths.config_dir.join("ui-token");
+    let token_path = token::token_path(&state.paths.config_dir);
     opts = tokio::task::spawn_blocking(move || {
         prepare(&st, &mut opts)?;
         Ok::<_, WebError>(opts)

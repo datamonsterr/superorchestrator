@@ -9,27 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-Fixes for the GitHub security advisories below. Several of them change behaviour; see "Changed (breaking)".
+Fixes for the GitHub security advisories below. Several change behaviour; see "Changed (breaking)".
 
-- Child environment (GHSA-rfwj): processes the supervisor launches (harness runs, usage and model probes, `doctor` version checks) start with an empty environment plus an allowlist. Interactive CLI commands keep your environment.
-- Web UI (GHSA-4j5v, GHSA-gm3j): a token is required on every bind, loopback included. Without `--token` or `ui.token`, a 256-bit token is generated into a 0600 `ui-token` file. `superorchestrator ui` opens a single-use login URL valid for 60 seconds, never the persistent token. `ui_start` is limited to the sessionless operator (inspect) connection. A rejected `ui-token` file (not 0600, a symlink, malformed) now fails with the path, the reason and `remove <path> to regenerate it`.
-- Project agents (GHSA-8hc9): an agent file found in a project directory is refused when it sets `hooks`, `mcpServers`, `isolation: none` or `extra_args`. Claude `extra_args` parsing is stricter for user agents too: no `--flag=value`, and `--max-turns` takes an integer.
-- Subagents (GHSA-8hc9, GHSA-jxj2): subagent callers lose `cmd:` checks, inline workflow `script`, and saved workflows from project directories (only the user config directory is searched). Their spawn `cwd` is confined to the calling run's worktree. A workflow step `cwd` must exist inside the workflow base, at depth 0 as well, after symlink resolution.
-- Run identity (GHSA-vw56): every run gets a per-run RPC token, checked in `hello`; only its hash is stored (store migration V9). Connections are bound to their session and run, and subtree authorization limits what a run can see or change. A request for another session's run is answered as not found.
-- Accounts (GHSA-jxj2): the account name `superorchestrator` is reserved, and a wrapper refuses to run if its target is the running executable. Overlapping credential homes are refused by `account add` and `account import`.
-- Input validation (GHSA-jxj2): `model`, `effort` and stored resume ids are validated before launch.
-- Redaction (GHSA-jxj2): log redaction also covers `AIza...` and `hf_...` tokens.
-- Release CI (GHSA-jxj2): workflow actions are pinned by commit SHA and installers are checksum-verified.
-- Other hardening from the jxj2 review.
+- GHSA-58xv-wg3h-fcwq: project agents refuse `hooks`, command `mcpServers`, `isolation: none` and `extra_args`. Project memory is quoted as untrusted. Agents that shadow another are shown in `agent list`, `agent show` and run warnings.
+- GHSA-8hc9-wp33-mmx9: subagents may supply only `ci` and `pr_threads` checks (no `cmd:`), cannot pass inline `run_workflow` scripts, and run saved workflows only from the user config directory.
+- GHSA-4j5v-hrm3-743p: the web UI requires a token on every bind, loopback included. Without `--token` or `ui.token`, a 256-bit token is generated into a 0600 `ui-token` file. `superorchestrator ui` opens a single-use login code valid for 60 seconds, never the persistent token. `ui_start` is operator-only. A rejected `ui-token` file (not 0600, a symlink, malformed) fails with the path, the reason and `remove <path> to regenerate it`.
+- GHSA-gm3j-35r4-pq58: the sign-in command is shell-quoted. The UI rate limiter evicts the oldest record and counts wrong cookies. The CSP `style-src` drops `unsafe-inline` in favour of nonces and hashes (`style-src-attr` is kept).
+- GHSA-vw56-37xq-jrf9: run and workflow RPCs check session and subtree authorization. Every run gets a per-run RPC identity token, checked at `hello` (unreleased store migration V9; workflows record an owner). Denial across sessions is indistinguishable from not found.
+- GHSA-rfwj-83wf-qr2g: processes the supervisor launches start with an allowlisted environment plus explicit `pass_env`. Interactive CLI commands keep your environment.
+- GHSA-hwgc-pj2p-f8mc: the account name `superorchestrator` is reserved, and a wrapper refuses to overwrite the running executable.
+- GHSA-fh9p-x854-c6x7: `model`, `effort` and resume ids are validated before launch. Claude agent `extra_args` use a flag allowlist and stricter parsing (no `--flag=value`, integer `--max-turns`).
+- GHSA-8463-8h47-qw76: log redaction covers Google `AIza` keys and Hugging Face `hf_` tokens.
+- GHSA-jxj2-pfqh-ww3v: the agy child PID is rechecked before SIGINT. agy config symlinks are confined. Codex unfinished deltas are capped. Stale codex websocket tokens are cleaned at startup. Overlapping account homes are refused by `account add` and `account import`. Existing config and accounts directories are tightened to 0700. `--gemini_dir` argv visibility is documented. Subagent spawn `cwd` is confined to the calling run's worktree, and a workflow step `cwd` must exist inside the workflow base (depth 0 too). Saved workflow symlinks are skipped. `install` and `uninstall` match the skill marker on a whole line. Release CI actions are pinned by SHA with checksum-verified installers. Dynamic `import()` in workflow scripts is blocked (test).
 
 ### Changed (breaking)
 
-- Supervisor-launched children no longer inherit provider API keys, `ANTHROPIC_BASE_URL`, `GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK` or CA variables such as `NODE_EXTRA_CA_CERTS`. Opt in by name with `pass_env` on an account or `accounts.pass_env` in `config.toml`, then restart the supervisor. `doctor` warns when common names are set but not passed.
-- Old bookmarks of `http://127.0.0.1:7878` now show the token prompt. Use `superorchestrator ui`.
-- Project agents using `hooks`, `mcpServers`, `isolation: none` or `extra_args` are refused. Subagents that relied on `cmd:` checks, inline workflow scripts or project-directory workflows must move that to the orchestrator or the user config directory.
-- `model` and `effort` accept only `[A-Za-z0-9:/_.@\-\[\]]`; `~`, `+` and `#` are rejected. A stored resume id that is not a UUID makes the resume fail.
-- Upgrading from a build before the run token: legacy runs are issued a token when launched or resumed, and legacy workflows have a NULL owner. In-flight pre-upgrade runs lose their MCP connection across a supervisor restart.
-- agy shared config roots (ADR-0005): a root writable by your primary group is accepted; world-writable or foreign-owned roots are refused. A top-level config symlink that resolves outside the account and the root is skipped with a warning instead of aborting the launch.
+- GHSA-rfwj-83wf-qr2g: supervisor-launched children no longer inherit provider API keys, `ANTHROPIC_BASE_URL`, `GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK` or CA variables such as `NODE_EXTRA_CA_CERTS`. Opt in by name with `pass_env` on an account or `accounts.pass_env` in `config.toml`, then restart the supervisor. `doctor` warns when common names are set but not passed.
+- GHSA-4j5v-hrm3-743p: old bookmarks of `http://127.0.0.1:7878` now show the token prompt. Use `superorchestrator ui`.
+- GHSA-58xv-wg3h-fcwq, GHSA-fh9p-x854-c6x7: project agents using `hooks`, `mcpServers`, `isolation: none` or `extra_args` are refused. Claude `extra_args` parsing is stricter for user agents too.
+- GHSA-8hc9-wp33-mmx9, GHSA-jxj2-pfqh-ww3v: subagents that relied on `cmd:` checks, inline workflow scripts or project-directory workflows must move that to the orchestrator or the user config directory. Their `cwd` must stay inside their worktree.
+- GHSA-fh9p-x854-c6x7: `model` and `effort` accept only `[A-Za-z0-9:/_.@\-\[\]]`; `~`, `+` and `#` are rejected. A stored resume id that is not a UUID makes the resume fail.
+- GHSA-vw56-37xq-jrf9: upgrading from a build before the run token (unreleased store migration V9): legacy runs are issued a token when launched or resumed, and legacy workflows have a NULL owner. In-flight pre-upgrade runs lose their MCP connection across a supervisor restart.
+- GHSA-jxj2-pfqh-ww3v: agy shared config roots (ADR-0005): a root writable by your primary group is accepted; world-writable or foreign-owned roots are refused. A top-level config symlink that resolves outside the account and the root is skipped with a warning instead of aborting the launch.
 
 ## [0.1.0] - 2026-10-23
 

@@ -80,6 +80,10 @@ The credential home holds the login and the harness state. It lives under `$HOME
 | claude | `~/.<name>` | `CLAUDE_CONFIG_DIR` |
 | agy | `~/.<name>` holding `.gemini/` | `--gemini_dir` (see [ADR-0003](../adr/0003-agy-accounts-isolate-gemini-dir.md) and [ADR-0005](../adr/0005-agy-runs-use-per-run-gemini-dir.md)) |
 
+### agy shared config root
+
+An account's `.gemini/config` may be a symlink to a shared directory (for example an agent-farm profile). The launch accepts it only when the directory is owned by you and is not world-writable. Group write is accepted when the directory's group is your primary group (user-private-group systems with umask 002); a directory writable by any other group is refused. A top-level entry in that directory that is a symlink resolving outside the account and the config root, or a dangling one, is skipped with a warning in the supervisor log instead of aborting the launch.
+
 ## Wrappers
 
 `account add` and `account import` write a wrapper at `~/.local/bin/<name>` (change the directory with `accounts.wrapper_dir`):
@@ -147,7 +151,5 @@ For Claude on macOS, and for the default `~/.claude`, credentials may live in th
 `cap` limits how many runs one account has at once. The global cap is `limits.global_cap` (default 16). A spawn over a cap waits in a queue. agy accounts have two pools, `gemini` and `claude`, metered separately.
 
 ## macOS
-
-agy shared config root: an account's `.gemini/config` may be a symlink to a shared directory (for example an agent-farm profile). The launch accepts it only when the directory is owned by you and is not world-writable. Group write is accepted when the directory's group is your primary group (user-private-group systems with umask 002); a directory writable by any other group is refused. A top-level entry in that directory that is a symlink resolving outside the account and the config root, or a dangling one, is skipped with a warning in the supervisor log instead of aborting the launch.
 
 agy multi-account is Linux only until it is checked on a Mac. On macOS one agy account may be enabled, and it uses the real `~/.gemini`. `doctor` reports this.

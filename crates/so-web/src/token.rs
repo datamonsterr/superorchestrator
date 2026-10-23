@@ -54,8 +54,13 @@ fn read_private(path: &Path) -> io::Result<String> {
     Ok(token)
 }
 
+/// Where the generated UI token lives.
+pub(crate) fn token_path(config_dir: &Path) -> std::path::PathBuf {
+    config_dir.join("ui-token")
+}
+
 pub(crate) fn load_or_create(config_dir: &Path) -> io::Result<String> {
-    let path = config_dir.join("ui-token");
+    let path = token_path(config_dir);
     match read_private(&path) {
         Ok(token) => return Ok(token),
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
