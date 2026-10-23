@@ -8,6 +8,7 @@ pub mod eval;
 pub mod heuristic;
 mod http;
 pub mod jev;
+pub mod levels;
 pub mod route;
 pub mod select;
 
