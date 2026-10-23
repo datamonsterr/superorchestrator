@@ -11,6 +11,14 @@ use so_core::{Isolation, RunState};
 use so_store::RunPatch;
 use so_supervisor::{ClientError, SupervisorClient};
 
+/// The supervisor stores the canonical run cwd (`/tmp` is `/private/tmp` on macOS).
+fn canon(p: &std::path::Path) -> String {
+    std::fs::canonicalize(p)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn assert_rejected(error: ClientError, message: &str) {
     match error {
         ClientError::Rpc(e) => {
@@ -43,7 +51,10 @@ async fn ghsa_subagent_checks_allow_only_ci_and_pr_threads() {
     for check in ["ci", "pr_threads"] {
         p.checks = vec![check.into()];
         let r = spawn(&c, p.clone()).await;
-        assert_eq!(view(&c, &r.run_id).await.cwd.as_deref(), env.repo.to_str());
+        assert_eq!(
+            view(&c, &r.run_id).await.cwd.as_deref(),
+            Some(canon(&env.repo).as_str())
+        );
     }
     h.shutdown().await;
 }
@@ -64,7 +75,7 @@ async fn ghsa_orchestrator_keeps_shell_checks_and_unconfined_cwd() {
     wait_state(&c, &r.run_id, RunState::PendingReview).await;
     assert_eq!(
         view(&c, &r.run_id).await.cwd.as_deref(),
-        outside.path().to_str()
+        Some(canon(outside.path()).as_str())
     );
     h.shutdown().await;
 }
@@ -117,7 +128,10 @@ async fn ghsa_subagent_cwd_is_confined_to_its_worktree() {
         } else {
             base.clone()
         };
-        assert_eq!(view(&c, &r.run_id).await.cwd.as_deref(), expected.to_str());
+        assert_eq!(
+            view(&c, &r.run_id).await.cwd.as_deref(),
+            Some(canon(&expected).as_str())
+        );
     }
     h.shutdown().await;
 }
@@ -162,7 +176,7 @@ async fn ghsa_subagent_workflow_rejects_script_but_runs_saved_steps_in_run_cwd()
         .unwrap()
         .unwrap();
     assert_eq!(run.depth, 2);
-    assert_eq!(run.cwd.as_deref(), base.to_str());
+    assert_eq!(run.cwd.as_deref(), Some(canon(&base).as_str()));
     h.shutdown().await;
 }
 
