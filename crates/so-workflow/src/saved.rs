@@ -72,6 +72,7 @@ fn scan(dir: &Path, source: SavedSource) -> Vec<SavedWorkflow> {
     rd.filter_map(Result::ok)
         .filter_map(|e| {
             let path = e.path();
+            // Links must not make scripts outside the workflows directory discoverable.
             if path.extension()? != "js" || !fs::symlink_metadata(&path).ok()?.is_file() {
                 return None;
             }
