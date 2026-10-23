@@ -187,6 +187,8 @@ mod tests {
                 rationale: rationale.into(),
                 confidence: None,
                 probabilities: Default::default(),
+                complexity: None,
+                level: None,
                 usage: Default::default(),
                 alternatives: vec![],
                 config_fingerprint: "f".into(),

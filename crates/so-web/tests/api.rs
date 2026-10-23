@@ -148,6 +148,8 @@ async fn fx_cfg(token: Option<&str>, config: Config) -> Fx {
         rationale: "because".into(),
         confidence: None,
         probabilities: Default::default(),
+        complexity: None,
+        level: None,
         usage: Default::default(),
         alternatives: vec![],
         config_fingerprint: "f".into(),
