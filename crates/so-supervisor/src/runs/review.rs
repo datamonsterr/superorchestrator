@@ -927,6 +927,44 @@ mod tests {
         let _ = std::fs::remove_file(&marker);
     }
 
+    #[test]
+    fn a_stat_line_state_is_read_after_the_last_paren() {
+        // comm may contain spaces and parens; the state follows the last ')'.
+        assert_eq!(stat_state("42 (sleep) Z 1 42 42 0"), Some('Z'));
+        assert_eq!(stat_state("42 (a (b) c) S 1 42 42 0"), Some('S'));
+        assert_eq!(stat_state("42 (x) Z"), Some('Z'));
+        assert_eq!(stat_state("garbage"), None);
+    }
+
+    /// The state letter of a `/proc/<pid>/stat` line, read after the last `)` because
+    /// the parenthesised comm may itself contain spaces or parens.
+    fn stat_state(stat: &str) -> Option<char> {
+        let after_comm = &stat[stat.rfind(')')? + 1..];
+        after_comm.trim_start().chars().next()
+    }
+
+    /// A killed child stays a zombie until its parent reaps it. Without an init process
+    /// (as in a container) nobody does, and `kill(pid, 0)` still succeeds on a zombie, so
+    /// on Linux a zombie counts as gone.
+    fn grandchild_gone(pid: u32) -> bool {
+        if is_zombie(pid) {
+            return true;
+        }
+        let p = rustix::process::Pid::from_raw(pid as i32).unwrap();
+        rustix::process::test_kill_process(p).is_err()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn is_zombie(pid: u32) -> bool {
+        std::fs::read_to_string(format!("/proc/{pid}/stat"))
+            .is_ok_and(|stat| stat_state(&stat) == Some('Z'))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn is_zombie(_pid: u32) -> bool {
+        false
+    }
+
     #[tokio::test]
     async fn a_timeout_kills_the_whole_process_group() {
         let dir = std::env::temp_dir();
@@ -941,15 +979,13 @@ mod tests {
             .parse()
             .unwrap();
         // The grandchild must go too; poll until it does.
-        let p = rustix::process::Pid::from_raw(pid as i32).unwrap();
-        let gone = || rustix::process::test_kill_process(p).is_err();
         for _ in 0..200 {
-            if gone() {
+            if grandchild_gone(pid) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
-        assert!(gone(), "the grandchild survived the timeout");
+        assert!(grandchild_gone(pid), "the grandchild survived the timeout");
         let _ = std::fs::remove_file(&pidfile);
     }
 
