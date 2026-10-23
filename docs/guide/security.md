@@ -6,6 +6,7 @@ Superorchestrator runs coding agents with full permissions on your machine. This
 
 - Credentials are never printed, logged, copied into prompts, served by the UI or committed.
 - The sign-in check and the usage probes only test that an auth file exists. They never read its contents.
+- Antigravity launches and usage probes select their credential home with `--gemini_dir=<home>`. This puts the path in process arguments, where local process inspection (including `/proc/<pid>/cmdline` on Linux) may reveal it. This is a known trade-off of the harness interface: the argument contains a directory path, not credentials. Newly created credential homes use mode 0700; keep imported homes private too. Directory permissions protect their contents but do not hide the path in argv.
 - Credential homes are linked, not copied. `account remove` keeps the home unless you pass `--purge`, and a purge refuses homes outside `$HOME`, harness default homes, and anything that holds the config dir.
 - The supervisor log redacts text that matches known key patterns. Treat the log as sensitive anyway.
 - The Jev key and the Discord webhook URL come from the environment or a dotenv file. They are not stored in `config.toml`, and the UI never shows them. The one secret in `config.toml` is `ui.token`, if you set it. The file is mode 0600.
