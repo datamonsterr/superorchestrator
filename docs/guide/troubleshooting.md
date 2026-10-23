@@ -11,6 +11,7 @@ Start with `superorchestrator doctor`. It prints one line per check. A check is 
 | `config dir` | The directory is missing. Run `superorchestrator init`. |
 | `config.toml` | It does not load. Read the error, then `superorchestrator config edit`. A missing file is a warning, and defaults apply. |
 | `choices` | Codex choices from an older `init` are still off. Set `enabled = true` on them. |
+| `pass_env` | Common secret variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `SSH_AUTH_SOCK`, `GH_TOKEN` and so on) are set in the supervisor's environment but no `pass_env` lists them, so harness runs do not see them. Names only are printed. Add the ones a harness needs; see the entry below. |
 | `state.db` | `not created yet` is normal before first use. A failure means the database does not open. |
 | `supervisor` | `not running` is normal, because it starts on demand. `stale socket` means the socket file is left over from a crash. Remove the file, or run `superorchestrator daemon`. |
 | `ui port` | The UI port is free, or held by the supervisor. A warning means another process has it. Change `ui.port`. |
@@ -20,6 +21,8 @@ Start with `superorchestrator doctor`. It prints one line per check. A check is 
 `SUPERORCHESTRATOR_DOCTOR_TIMEOUT_MS` raises the 5 second `--version` timeout on a slow machine.
 
 ## Common problems
+
+**A harness run fails to authenticate, cannot reach git over SSH, or fails TLS after an upgrade.** Supervisor-launched processes start with an allowlisted environment, so API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`), `ANTHROPIC_BASE_URL`, `GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK` and CA variables such as `NODE_EXTRA_CA_CERTS` are no longer inherited. `doctor` lists the ones it sees in the supervisor's environment that are not passed. Opt in by name, in `accounts.pass_env` in `config.toml` (every account) or `pass_env` in one account's file, then restart the supervisor. See [accounts](accounts.md#inherited-environment).
 
 **Claude Code does not list the tools.** Run `superorchestrator install` (or install the plugin, not both), then restart Claude Code. `claude mcp list` should show `superorchestrator`.
 

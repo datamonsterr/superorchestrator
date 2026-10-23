@@ -84,6 +84,9 @@ pub fn run_checks(paths: &Paths, host: &HostEnv) -> DoctorReport {
     check_binaries(&mut c, host, &accounts);
     let cfg = check_config(&mut c, paths);
     check_decider(&mut c, cfg.as_ref());
+    check_pass_env(&mut c, cfg.as_ref(), &accounts, &|n| {
+        std::env::var_os(n).is_some()
+    });
     check_db(&mut c, paths);
     let supervisor_up = check_socket(&mut c);
     check_ui_port(&mut c, cfg.as_ref(), supervisor_up);
@@ -122,6 +125,54 @@ fn check_decider(c: &mut Checks, cfg: Option<&Config>) {
             format!(
                 "no OpenRouter key ({} or router.jev.key_file): routing uses the heuristic only; {detail}",
                 jev.key_env
+            ),
+        );
+    }
+}
+
+/// Secret-bearing variables that harnesses commonly need but the child-environment
+/// allowlist drops unless they are named in `pass_env`.
+const COMMON_PASS_ENV: &[&str] = &[
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "GEMINI_API_KEY",
+    "GOOGLE_API_KEY",
+    "NODE_EXTRA_CA_CERTS",
+    "SSH_AUTH_SOCK",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+];
+
+/// Warns about common secret variables set in the supervisor's environment that no
+/// `pass_env` lists, so harness runs will not see them. Prints names only, never values.
+fn check_pass_env(
+    c: &mut Checks,
+    cfg: Option<&Config>,
+    accounts: &[AccountFile],
+    is_set: &dyn Fn(&str) -> bool,
+) {
+    let listed = |name: &str| {
+        cfg.is_some_and(|cfg| cfg.accounts.pass_env.iter().any(|n| n == name))
+            || accounts
+                .iter()
+                .any(|a| a.pass_env.iter().any(|n| n == name))
+    };
+    let missing: Vec<&str> = COMMON_PASS_ENV
+        .iter()
+        .copied()
+        .filter(|n| is_set(n) && !listed(n))
+        .collect();
+    if !missing.is_empty() {
+        c.warn(
+            "pass_env",
+            format!(
+                "set in the supervisor environment but not passed to harness runs: {}. \
+                 Harness processes start with an allowlisted environment; if a run needs \
+                 one, add its name to `accounts.pass_env` in config.toml or to an account's \
+                 `pass_env` (see docs/guide/troubleshooting.md)",
+                missing.join(", ")
             ),
         );
     }
@@ -389,5 +440,48 @@ fn check_accounts(c: &mut Checks, host: &HostEnv, accounts: &[AccountFile]) {
         } else {
             c.ok("agy accounts", "macOS single-account rule holds");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn account(pass_env: &[&str]) -> AccountFile {
+        let mut a =
+            AccountFile::new("codex-acc2", Harness::Codex, "~/.codex-acc2", "codex").unwrap();
+        a.pass_env = pass_env.iter().map(|n| n.to_string()).collect();
+        a
+    }
+
+    fn detail(c: &Checks) -> Option<&str> {
+        c.0.iter()
+            .find(|x| x.name == "pass_env" && x.status == Status::Warn)
+            .map(|x| x.detail.as_str())
+    }
+
+    #[test]
+    fn warns_for_unlisted_secret_names_without_values() {
+        let set = |n: &str| matches!(n, "OPENAI_API_KEY" | "GH_TOKEN" | "SSH_AUTH_SOCK" | "HOME");
+        let mut cfg = Config::default();
+        cfg.accounts.pass_env = vec!["GH_TOKEN".into()];
+        let accounts = [account(&["SSH_AUTH_SOCK"])];
+        let mut c = Checks::default();
+        check_pass_env(&mut c, Some(&cfg), &accounts, &set);
+        let d = detail(&c).expect("warning");
+        assert!(d.contains("OPENAI_API_KEY"), "{d}");
+        assert!(!d.contains("GH_TOKEN,") && !d.contains(": GH_TOKEN"), "{d}");
+        assert!(!d.contains("SSH_AUTH_SOCK"), "{d}");
+        assert!(!d.contains("HOME"), "{d}");
+    }
+
+    #[test]
+    fn silent_when_everything_set_is_listed_or_nothing_is_set() {
+        let mut c = Checks::default();
+        check_pass_env(&mut c, None, &[], &|_| false);
+        assert!(c.0.is_empty());
+        let accounts = [account(&["GITHUB_TOKEN"])];
+        check_pass_env(&mut c, None, &accounts, &|n| n == "GITHUB_TOKEN");
+        assert!(c.0.is_empty());
     }
 }
