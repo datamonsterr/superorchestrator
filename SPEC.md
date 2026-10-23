@@ -445,7 +445,7 @@ System prompt body…
 
 ## 11. Workflows
 
-`run_workflow(name|script, args)` runs a JavaScript workflow in embedded QuickJS. Inline `script` requires an orchestrator (depth 0, no calling run); subagents may invoke saved workflows by `name`. All step cwd options must canonicalise inside the workflow base, including when started at depth 0. A subagent-started workflow uses the calling run's worktree/cwd as its base. The API matches Claude Code workflow scripts:
+`run_workflow(name|script, args)` runs a JavaScript workflow in embedded QuickJS. Inline `script` requires an orchestrator (depth 0, no calling run); subagents may invoke saved workflows by `name` only from the user config directory. Project/run workflow directories are never searched for subagents. All step cwd options must canonicalise inside the workflow base, including when started at depth 0. A subagent-started workflow uses the calling run's worktree/cwd as its base. The API matches Claude Code workflow scripts:
 - `agent(prompt, opts)`: opts are the spawn options from 7.2, so any harness can be used.
 - `parallel([...])`: defaults to `isolation: worktree`. A failed agent gives `null`.
 - `pipeline([...])`

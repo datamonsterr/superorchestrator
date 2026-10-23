@@ -163,7 +163,7 @@ const fn spec(
 }
 
 /// What a workflow script can call, from `so_workflow::GLOBALS` and `prelude.js`.
-const RUN_WORKFLOW_DESCRIPTION: &str = "Run a JS workflow by saved name or inline script. Inline script requires depth 0; subagents use saved name. Step cwd stays inside workflow base. Streams progress and returns the script result; wait=false returns id for workflow_status.\n\
+const RUN_WORKFLOW_DESCRIPTION: &str = "Run JS workflows by name or script. Inline script requires depth 0; subagents: saved workflows from user config dir only. Step cwd stays inside workflow base. Streams progress and returns script result; wait=false returns id for workflow_status.\n\
 Top-level await and return; no import; Date.now, Math.random disabled.\n\
 agent(prompt, {harness, account, model, effort, cwd, isolation, schema, name, maxTurns, timeout, stallMs, agent}) -> result; throws on failure.\n\
 parallel([fn(ag) | promise]) -> results in order, null for failures; ag defaults to isolation worktree.\n\

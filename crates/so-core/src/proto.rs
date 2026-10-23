@@ -654,6 +654,7 @@ fn yes() -> bool {
 #[serde(deny_unknown_fields)]
 pub struct RunWorkflowParams {
     /// A saved workflow (`<config>/workflows/<name>.js` or `.superorchestrator/workflows`).
+    /// Subagent callers may use only workflows from the user config directory.
     #[serde(default)]
     pub name: Option<String>,
     /// Inline JavaScript instead of a saved one. Only depth-0 callers may supply this.

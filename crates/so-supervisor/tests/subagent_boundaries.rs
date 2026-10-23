@@ -131,7 +131,8 @@ async fn ghsa_subagent_workflow_rejects_script_but_runs_saved_steps_in_run_cwd()
     let env = Env::new();
     env.account("claude-a", 4, &ok_script(&[]));
     let base = env.repo.join("worktree");
-    let scripts = base.join(".superorchestrator/workflows");
+    std::fs::create_dir_all(&base).unwrap();
+    let scripts = env.paths.workflows_dir();
     std::fs::create_dir_all(&scripts).unwrap();
     std::fs::write(scripts.join("saved.js"), "return await agent('do the task', {harness:'claude', account:'claude-a', isolation:'none'});").unwrap();
     let h = env.start().await;
@@ -168,5 +169,61 @@ async fn ghsa_subagent_workflow_rejects_script_but_runs_saved_steps_in_run_cwd()
         .unwrap();
     assert_eq!(run.depth, 2);
     assert_eq!(run.cwd.as_deref(), base.to_str());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn ghsa_subagent_saved_workflows_ignore_project_scripts_and_shadowing() {
+    let env = Env::new();
+    let base = env.repo.join("worktree");
+    let project = base.join(".superorchestrator/workflows");
+    let config = env.paths.workflows_dir();
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(project.join("evil.js"), "return 'evil';").unwrap();
+    std::fs::write(project.join("trusted.js"), "return 'shadow';").unwrap();
+    std::fs::write(config.join("trusted.js"), "return 'config';").unwrap();
+    let h = env.start().await;
+    let parent = insert_session_and_run_in(&env.store(), 1, RunState::Running, &env.repo);
+    env.store()
+        .patch_run(
+            &parent.id,
+            &RunPatch {
+                worktree_path: Some(Some(base.to_string_lossy().into_owned())),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
+    c.hello("subagent", "/", Some(parent.id), None)
+        .await
+        .unwrap();
+    let e = c
+        .call::<_, Value>(METHOD_RUN_WORKFLOW, json!({"name":"evil"}))
+        .await
+        .unwrap_err();
+    assert_eq!(rpc_code(e), so_core::proto::NOT_FOUND);
+    assert!(env.store().list_workflow_runs(10).unwrap().is_empty());
+    let r: RunWorkflowResult = c
+        .call(METHOD_RUN_WORKFLOW, json!({"name":"trusted"}))
+        .await
+        .unwrap();
+    assert_eq!(r.state.as_deref(), Some("succeeded"), "{r:?}");
+    assert_eq!(r.result, Some(json!("config")));
+
+    // Depth-0 callers retain project workflows and project-over-config precedence.
+    let orchestrator = SupervisorClient::connect(h.socket_path()).await.unwrap();
+    orchestrator
+        .hello("orchestrator", base.to_str().unwrap(), None, None)
+        .await
+        .unwrap();
+    for (name, result) in [("evil", "evil"), ("trusted", "shadow")] {
+        let r: RunWorkflowResult = orchestrator
+            .call(METHOD_RUN_WORKFLOW, json!({"name":name}))
+            .await
+            .unwrap();
+        assert_eq!(r.state.as_deref(), Some("succeeded"), "{r:?}");
+        assert_eq!(r.result, Some(json!(result)));
+    }
     h.shutdown().await;
 }

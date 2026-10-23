@@ -115,7 +115,7 @@ impl RunManager {
         if ctx.run_id.is_some() && p.script.is_some() {
             return Err(rpc(
                 INVALID_PARAMS,
-                "inline script requires a depth-0 caller; subagents must use a saved workflow by name",
+                "inline script requires a depth-0 caller; subagents must use a saved workflow by name from the user config dir",
             ));
         }
         let sid = session_id.clone();
@@ -124,7 +124,8 @@ impl RunManager {
             .await?
             .ok_or_else(|| rpc(NOT_FOUND, format!("session not found: {session_id}")))?;
         let cwd = self.caller_cwd(ctx, session.cwd, None).await?;
-        let (name, source) = self.resolve_workflow(&cwd, &p).await?;
+        let project_cwd = ctx.run_id.is_none().then_some(cwd.as_path());
+        let (name, source) = self.resolve_workflow(project_cwd, &p).await?;
         let started = self
             .start_workflow(
                 ctx.detached(),
@@ -185,7 +186,7 @@ impl RunManager {
             name: Some(name.to_string()),
             ..RunWorkflowParams::default()
         };
-        let (name, source) = self.resolve_workflow(&cwd, &p).await?;
+        let (name, source) = self.resolve_workflow(Some(&cwd), &p).await?;
         let session = SessionRow {
             id: new_id(),
             kind: SessionKind::Orchestrator,
@@ -231,23 +232,34 @@ impl RunManager {
 
     /// The script of a saved workflow, or of an inline one under a name derived from it (so
     /// two different inline scripts never share cached steps).
-    async fn resolve_workflow(&self, cwd: &Path, p: &RunWorkflowParams) -> R<(String, String)> {
+    /// `project_cwd: None` restricts lookup to the user config directory for subagents.
+    async fn resolve_workflow(
+        &self,
+        project_cwd: Option<&Path>,
+        p: &RunWorkflowParams,
+    ) -> R<(String, String)> {
         match (&p.name, &p.script) {
             (Some(name), None) => {
                 let (dir, cwd, name) = (
                     self.inner.paths.workflows_dir(),
-                    cwd.to_path_buf(),
+                    project_cwd.map(Path::to_path_buf),
                     name.clone(),
                 );
-                self.blocking(move || SavedWorkflows::new(dir, cwd).load(&name))
-                    .await?
-                    .map(|(w, src)| (w.name, src))
-                    .map_err(|e| match e {
-                        WorkflowError::NotFound(n) => {
-                            rpc(NOT_FOUND, format!("no saved workflow named `{n}`"))
-                        }
-                        other => rpc(UNAVAILABLE, other.to_string()),
-                    })
+                self.blocking(move || {
+                    let saved = match cwd {
+                        Some(cwd) => SavedWorkflows::new(dir, cwd),
+                        None => SavedWorkflows::config_only(dir),
+                    };
+                    saved.load(&name)
+                })
+                .await?
+                .map(|(w, src)| (w.name, src))
+                .map_err(|e| match e {
+                    WorkflowError::NotFound(n) => {
+                        rpc(NOT_FOUND, format!("no saved workflow named `{n}`"))
+                    }
+                    other => rpc(UNAVAILABLE, other.to_string()),
+                })
             }
             (None, Some(script)) if !script.trim().is_empty() => {
                 let digest = Sha256::digest(script.as_bytes());
