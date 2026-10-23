@@ -15,3 +15,8 @@ it('handles an empty map', () => {
   render(<ProbabilityBars probabilities={{}} />)
   expect(screen.getByText('No probabilities')).toBeInTheDocument()
 })
+
+it('keeps the key order when sort is false', () => {
+  render(<ProbabilityBars probabilities={{ '0 a': 0.1, '1 b': 0.9 }} sort={false} />)
+  expect(screen.getAllByRole('listitem').map((li) => li.textContent)).toEqual(['0 a10%', '1 b90%'])
+})

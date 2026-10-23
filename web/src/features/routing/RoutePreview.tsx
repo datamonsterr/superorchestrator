@@ -36,7 +36,7 @@ export function RouteResultCard({ result }: { result: RouteResult }) {
           {result.effort && <span>effort {result.effort}</span>}
           <span>routing cost {formatMoney(result.usage.cost)}</span>
         </div>
-        <ProbabilityBars probabilities={anchorProbabilities(result.probabilities)} ariaLabel="Complexity probabilities" />
+        <ProbabilityBars probabilities={anchorProbabilities(result.probabilities)} ariaLabel="Complexity probabilities" sort={false} />
         <p className="text-sm">
           <span className="font-medium">Rationale: </span>
           {result.rationale}

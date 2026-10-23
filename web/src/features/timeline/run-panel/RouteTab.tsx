@@ -12,6 +12,7 @@ export function RouteTab({ runId }: { runId: string }) {
   if (route.isPending) return <Skeleton className="h-40" />
   if (route.isError) return <ErrorAlert error={route.error} title="No route decision" onRetry={() => void route.refetch()} />
   const r = route.data
+  const cx = complexityText(r)
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -21,14 +22,14 @@ export function RouteTab({ runId }: { runId: string }) {
           {r.harness} · {r.account} · {r.model}
           {r.effort ? ` · ${r.effort}` : ''}
         </span>
-        {complexityText(r) && <span>{complexityText(r)}</span>}
+        {cx && <span>{cx}</span>}
         {r.confidence != null && <span>Confidence {formatPercent(r.confidence * 100)}</span>}
       </div>
       <section aria-labelledby="prob-h">
         <h3 id="prob-h" className="mb-2 text-sm font-medium">
-          Complexity probabilities
+          Probabilities by anchor
         </h3>
-        <ProbabilityBars probabilities={anchorProbabilities(r.probabilities)} ariaLabel="Complexity probabilities" />
+        <ProbabilityBars probabilities={anchorProbabilities(r.probabilities)} ariaLabel="Complexity probabilities" sort={false} />
       </section>
       <section aria-labelledby="why-h">
         <h3 id="why-h" className="mb-1 text-sm font-medium">

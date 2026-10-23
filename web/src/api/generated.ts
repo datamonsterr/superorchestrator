@@ -390,7 +390,7 @@ export interface RejectBody {
 export interface RouteAlternative {
   account?: string | null;
   choice_id: string;
-  /** Source-dependent, so scores are not comparable across results: for `jev` it is the decider's probability for the choice, for `heuristic` and `pinned` the heuristic score. */
+  /** Not set today: alternatives are listed in routing order (the rest of the level, then other eligible choices), not scored. */
   score?: number | null;
 }
 

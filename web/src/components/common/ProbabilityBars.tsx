@@ -7,11 +7,14 @@ interface Props {
   className?: string
   /** Accessible name of the list. */
   ariaLabel?: string
+  /** Sort descending by probability (default). Pass false to keep the key order, e.g. anchors 0..4. */
+  sort?: boolean
 }
 
-/** Bars sorted by probability, descending. The percent is always printed. */
-export function ProbabilityBars({ probabilities, selected, className, ariaLabel = 'Choice probabilities' }: Props) {
-  const rows = Object.entries(probabilities).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+/** Bars sorted by probability, descending unless `sort` is false. The percent is always printed. */
+export function ProbabilityBars({ probabilities, selected, className, ariaLabel = 'Probabilities', sort = true }: Props) {
+  const entries = Object.entries(probabilities)
+  const rows = sort ? entries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])) : entries
   if (rows.length === 0) return <p className="text-sm text-muted-foreground">No probabilities</p>
   return (
     <ul className={cn('flex flex-col gap-1.5', className)} aria-label={ariaLabel}>
