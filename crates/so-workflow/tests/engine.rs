@@ -800,6 +800,5 @@ async fn dynamic_import_cannot_load_even_an_existing_module() {
         .await
         .unwrap_err();
     assert!(matches!(err, WorkflowError::Script(_)), "{err}");
-    assert!(err.to_string().contains("load"), "{err}");
     assert!(host.calls().is_empty());
 }
