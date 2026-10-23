@@ -37,7 +37,7 @@ pub enum AccountsError {
     InvalidName(String),
     #[error("refusing to write wrapper {path}: it is the running executable")]
     WrapperIsSelf { path: PathBuf },
-    #[error("credential home {path} has an overlapping home with account `{existing}`")]
+    #[error("credential home {path} overlaps the home of account `{existing}`")]
     OverlappingHome { path: PathBuf, existing: String },
     #[error("refusing to purge {path}: {reason}")]
     UnsafePurge { path: PathBuf, reason: String },

@@ -255,12 +255,18 @@ fn overlapping_home(
     home: &Path,
     ignored: &[PathBuf],
 ) -> Result<Option<String>> {
+    let chost = canon(&host.home).map_err(|e| AccountsError::io(&host.home, e))?;
     for other in AccountFile::list(paths)? {
         if other.name == name {
             continue;
         }
         let oh = host.expand(&other.home)?;
         let oc = canon(&oh).map_err(|e| AccountsError::io(&oh, e))?;
+        // A legacy account on $HOME must not reserve every credential subdirectory.
+        // Equality still conflicts, and a new $HOME home cannot contain another account.
+        if oc == chost && home != oc {
+            continue;
+        }
         if !ignored.contains(&oc) && related(home, &oc) {
             return Ok(Some(other.name));
         }
@@ -499,6 +505,46 @@ mod tests {
     }
 
     #[test]
+    fn a_home_directory_account_allows_subhomes_but_not_a_second_home_account() {
+        for importing in [false, true] {
+            let f = fx();
+            // Store an alias to exercise canonical comparison of the existing home.
+            std::os::unix::fs::symlink(f.d.path(), f.d.path().join("home-link")).unwrap();
+            AccountFile::new("existing", Harness::Agy, "~/home-link", "agy")
+                .unwrap()
+                .save(&f.paths)
+                .unwrap();
+            if importing {
+                std::fs::create_dir_all(f.d.path().join("new")).unwrap();
+                import(&f.paths, &f.cfg, &f.host, "new", Harness::Codex, "~/new").unwrap();
+            } else {
+                add(
+                    &f.paths,
+                    &f.cfg,
+                    &f.host,
+                    Harness::Codex,
+                    "new",
+                    Some("~/new"),
+                )
+                .unwrap();
+            }
+            let err = add(
+                &f.paths,
+                &f.cfg,
+                &f.host,
+                Harness::Codex,
+                "duplicate",
+                Some("~"),
+            )
+            .unwrap_err();
+            assert!(matches!(err, AccountsError::OverlappingHome { .. }));
+            let err =
+                import(&f.paths, &f.cfg, &f.host, "duplicate", Harness::Codex, "~").unwrap_err();
+            assert!(matches!(err, AccountsError::OverlappingHome { .. }));
+        }
+    }
+
+    #[test]
     fn account_creation_tightens_existing_config_directories() {
         use std::os::unix::fs::PermissionsExt;
         for importing in [false, true] {
@@ -568,7 +614,11 @@ mod tests {
                     )
                 };
                 let err = result.expect_err(candidate);
-                assert!(err.to_string().contains("overlapping home"), "{err}");
+                assert!(
+                    err.to_string()
+                        .contains("overlaps the home of account `existing`"),
+                    "{err}"
+                );
                 assert!(!f.paths.account_file("new").exists());
                 assert!(!f.d.path().join(".local/bin/new").exists());
                 if !importing {
@@ -682,7 +732,15 @@ mod tests {
     #[test]
     fn macos_refuses_a_second_enabled_agy_account() {
         let f = mac_fx();
-        add(&f.paths, &f.cfg, &f.host, Harness::Agy, "agy-acc1", None).unwrap();
+        add(
+            &f.paths,
+            &f.cfg,
+            &f.host,
+            Harness::Agy,
+            "agy-acc1",
+            Some("~"),
+        )
+        .unwrap();
         // add
         let e = add(&f.paths, &f.cfg, &f.host, Harness::Agy, "agy-acc2", None).unwrap_err();
         assert!(matches!(e, AccountsError::AgySecondAccount { .. }), "{e}");

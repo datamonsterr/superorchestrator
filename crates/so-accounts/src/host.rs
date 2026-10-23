@@ -59,6 +59,9 @@ pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
 
 /// Canonical form of `p`, resolving existing ancestors even for a missing home.
 /// Normalize missing components too, so `..` cannot bypass an overlap check.
+/// A dangling symlink cannot be canonicalized: its unresolved components stay
+/// lexical until the target exists. This does not establish alias equivalence
+/// for dangling links and is not a guard against concurrent filesystem changes.
 pub(crate) fn canon(p: &Path) -> std::io::Result<PathBuf> {
     match p.canonicalize() {
         Ok(c) => Ok(c),
@@ -90,6 +93,32 @@ pub(crate) fn canon(p: &Path) -> std::io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parent_component_after_symlink_uses_the_target_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real/inner");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = dir.path().join("alias");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(
+            super::canon(&link.join("../missing")).unwrap(),
+            dir.path().canonicalize().unwrap().join("real/missing")
+        );
+    }
+
+    #[test]
+    fn existing_ancestor_is_resolved_with_a_missing_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("real");
+        std::fs::create_dir_all(&target).unwrap();
+        let link = dir.path().join("alias");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(
+            super::canon(&link.join("missing/tail")).unwrap(),
+            target.canonicalize().unwrap().join("missing/tail")
+        );
+    }
+
     #[test]
     fn missing_relative_home_is_resolved_against_cwd() {
         let dir = tempfile::tempdir().unwrap();
