@@ -9,9 +9,9 @@ use crate::paths::Paths;
 use crate::types::Harness;
 
 /// Names an account must not take: they would shadow a real binary.
-const RESERVED: [&str; 4] = ["codex", "agy", "opencode", "claude"];
+const RESERVED: [&str; 5] = ["codex", "agy", "opencode", "claude", "superorchestrator"];
 
-/// Checks `^[a-z][a-z0-9-]{1,31}$` and that the name is not a harness binary.
+/// Checks `^[a-z][a-z0-9-]{1,31}$` and that the name is not reserved.
 pub fn validate_account_name(name: &str) -> Result<()> {
     let b = name.as_bytes();
     let shape_ok = (2..=32).contains(&b.len())
@@ -200,9 +200,17 @@ mod tests {
         ] {
             assert!(validate_account_name(bad).is_err(), "{bad}");
         }
-        for reserved in ["codex", "agy", "opencode", "claude"] {
+        for reserved in ["codex", "agy", "opencode", "claude", "superorchestrator"] {
             assert!(validate_account_name(reserved).is_err(), "{reserved}");
         }
+    }
+
+    #[test]
+    fn superorchestrator_name_is_reserved() {
+        assert!(validate_account_name("superorchestrator").is_err());
+        assert!(AccountFile::new("superorchestrator", Harness::Codex, "h", "codex").is_err());
+        // Longer names that merely contain it are still fine.
+        assert!(validate_account_name("superorchestrator-acc1").is_ok());
     }
 
     #[test]

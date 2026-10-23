@@ -35,6 +35,8 @@ pub enum AccountsError {
     ShadowsCommand { name: String, path: PathBuf },
     #[error("invalid account name `{0}`")]
     InvalidName(String),
+    #[error("refusing to write wrapper {path}: it is the running executable")]
+    WrapperIsSelf { path: PathBuf },
     #[error("refusing to purge {path}: {reason}")]
     UnsafePurge { path: PathBuf, reason: String },
 }

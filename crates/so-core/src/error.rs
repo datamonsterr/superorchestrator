@@ -20,7 +20,7 @@ pub enum CoreError {
     #[error("cannot serialise toml: {0}")]
     TomlSer(#[from] toml::ser::Error),
     #[error(
-        "invalid account name `{0}`: must match ^[a-z][a-z0-9-]{{1,31}}$ and not be a harness name"
+        "invalid account name `{0}`: must match ^[a-z][a-z0-9-]{{1,31}}$ and not be a reserved name"
     )]
     InvalidAccountName(String),
     #[error("unknown config key `{0}`")]
