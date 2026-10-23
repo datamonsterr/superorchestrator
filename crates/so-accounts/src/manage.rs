@@ -1,7 +1,7 @@
 //! High-level account operations used by the CLI (SPEC 5.4).
 
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use so_core::{AccountFile, Config, Harness, Paths, Platform};
@@ -18,12 +18,13 @@ fn wrapper_dir(cfg: &Config, host: &HostEnv) -> Result<PathBuf> {
     host.expand(&cfg.accounts.wrapper_dir)
 }
 
-/// Creates `dir` (and parents) with mode 0700.
+/// Creates `dir` (and parents) with mode 0700 and tightens an existing `dir`.
 fn create_private_dir(dir: &Path) -> Result<()> {
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)
+        .and_then(|()| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
         .map_err(|e| AccountsError::io(dir, e))
 }
 
@@ -33,6 +34,7 @@ fn create_account_file(paths: &Paths, account: &AccountFile) -> Result<()> {
     account.validate()?;
     let text = toml::to_string_pretty(account).map_err(so_core::CoreError::from)?;
     let dir = paths.accounts_dir();
+    create_private_dir(&paths.config_dir)?;
     create_private_dir(&dir)?;
     let target = paths.account_file(&account.name);
     let mut n = 0u32;
@@ -471,6 +473,40 @@ mod tests {
         let mut f = fx();
         f.host = host(f.d.path(), Platform::MacOs);
         f
+    }
+
+    #[test]
+    fn account_creation_tightens_existing_config_directories() {
+        use std::os::unix::fs::PermissionsExt;
+        for importing in [false, true] {
+            let f = fx();
+            std::fs::create_dir_all(f.paths.accounts_dir()).unwrap();
+            for dir in [&f.paths.config_dir, &f.paths.accounts_dir()] {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            if importing {
+                std::fs::create_dir_all(f.d.path().join("credentials")).unwrap();
+                import(
+                    &f.paths,
+                    &f.cfg,
+                    &f.host,
+                    "new",
+                    Harness::Codex,
+                    "~/credentials",
+                )
+                .unwrap();
+            } else {
+                add(&f.paths, &f.cfg, &f.host, Harness::Codex, "new", None).unwrap();
+            }
+            for dir in [&f.paths.config_dir, &f.paths.accounts_dir()] {
+                assert_eq!(
+                    std::fs::metadata(dir).unwrap().permissions().mode() & 0o777,
+                    0o700,
+                    "{}",
+                    dir.display()
+                );
+            }
+        }
     }
 
     #[test]
