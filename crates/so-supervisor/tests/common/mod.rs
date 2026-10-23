@@ -431,6 +431,7 @@ pub fn sibling_bin(name: &str) -> PathBuf {
 
 /// Gives a manually inserted fixture the identity a real enqueue would create.
 pub fn seed_run_identity(store: &Store, paths: &Paths, run: &str) {
+    // Hash independently of production code to check the persisted SHA-256 contract.
     use sha2::{Digest, Sha256};
     let dir = paths.run_dir(run);
     std::fs::create_dir_all(&dir).unwrap();
@@ -448,6 +449,7 @@ pub async fn hello_run(
     paths: &Paths,
     run: &str,
 ) -> so_core::proto::HelloResult {
+    // Hash independently of production code to check the persisted SHA-256 contract.
     use sha2::{Digest, Sha256};
     let token =
         std::fs::read_to_string(paths.run_dir(run).join("rpc-token")).unwrap_or_else(|_| {

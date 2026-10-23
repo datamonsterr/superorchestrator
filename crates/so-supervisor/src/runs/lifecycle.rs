@@ -169,7 +169,9 @@ impl RunManager {
         self.renew_run_token(run_id).await
     }
 
-    /// The old process is gone: replace its identity before launching a resumed process.
+    /// Replaces a run's identity before launching a resumed process.
+    ///
+    /// Only call when no live process holds the old token: rotation invalidates it.
     pub(super) async fn renew_run_token(&self, run_id: &str) -> R<()> {
         let dir = self.inner.paths.run_dir(run_id);
         let hash = self
@@ -180,21 +182,28 @@ impl RunManager {
                 let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
                 create_private_dir(&dir)
                     .map_err(|_| "could not create private run directory".to_string())?;
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(dir.join("rpc-token.tmp"))
-                    .map_err(|_| "could not create run identity file".to_string())?;
-                file.set_permissions(std::fs::Permissions::from_mode(0o600))
-                    .map_err(|_| "could not protect run identity file".to_string())?;
-                file.write_all(token.as_bytes())
-                    .and_then(|()| file.sync_all())
-                    .map_err(|_| "could not write run identity file".to_string())?;
-                drop(file);
-                std::fs::rename(dir.join("rpc-token.tmp"), dir.join("rpc-token"))
-                    .map_err(|_| "could not replace run identity file".to_string())?;
+                let temporary = dir.join("rpc-token.tmp");
+                let written = (|| {
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .mode(0o600)
+                        .open(&temporary)
+                        .map_err(|_| "could not create run identity file".to_string())?;
+                    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                        .map_err(|_| "could not protect run identity file".to_string())?;
+                    file.write_all(token.as_bytes())
+                        .and_then(|()| file.sync_all())
+                        .map_err(|_| "could not write run identity file".to_string())?;
+                    drop(file);
+                    std::fs::rename(&temporary, dir.join("rpc-token"))
+                        .map_err(|_| "could not replace run identity file".to_string())
+                })();
+                if written.is_err() {
+                    let _ = std::fs::remove_file(&temporary);
+                }
+                written?;
                 Ok(run_token_hash(&token).to_vec())
             })
             .await?
@@ -473,6 +482,8 @@ impl RunManager {
         if resume_prompt.is_some() {
             self.renew_run_token(&row.id).await.map_err(|e| e.message)?;
         }
+        // Legacy queued and failover-pending runs may predate token issuance.
+        self.issue_run_token(&row.id).await.map_err(|e| e.message)?;
         let spec = self
             .build_spec(row, &account, cwd, prompt, fork_from, fork)
             .await?;
@@ -1167,9 +1178,22 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn token_rename_failure_removes_the_temporary_secret() {
+        use super::super::testutil::manager;
+        let (m, _dir) = manager();
+        let id = "failed-issuance";
+        let dir = m.inner.paths.run_dir(id);
+        // A directory at the destination makes rename fail after writing the token.
+        std::fs::create_dir_all(dir.join("rpc-token")).unwrap();
+        let error = m.issue_run_token(id).await.unwrap_err();
+        assert_eq!(error.message, "could not replace run identity file");
+        assert!(!dir.join("rpc-token.tmp").exists());
+        assert!(m.store().get_run_token_hash(id).unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn interrupted_token_issuance_recovers_and_retry_reuses_identity() {
         use super::super::testutil::manager;
-        use sha2::{Digest, Sha256};
         let (m, _dir) = manager();
         let id = "interrupted-issuance";
         let dir = m.inner.paths.run_dir(id);
@@ -1186,7 +1210,7 @@ mod tests {
         assert!(token.len() == 64 && token != "orphaned-token");
         assert!(
             m.store().get_run_token_hash(id).unwrap().as_deref()
-                == Some(Sha256::digest(token.as_bytes()).as_slice())
+                == Some(run_token_hash(&token).as_slice())
         );
         assert_eq!(
             std::fs::metadata(dir.join("rpc-token"))

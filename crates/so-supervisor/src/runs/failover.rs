@@ -477,6 +477,9 @@ impl RunManager {
         let cwd = self.resume_cwd(&row).await.map_err(LaunchFail::other)?;
         let mut prompt = self.turn_prompt(&row).await;
         prompt.push_str(FAILOVER_NOTE);
+        self.issue_run_token(&row.id)
+            .await
+            .map_err(|e| LaunchFail::other(e.message))?;
         let spec = self
             .build_spec(&row, &next.account, cwd, prompt, None, false)
             .await

@@ -537,7 +537,15 @@ async fn fresh_runs_every_step_again() {
 async fn steps_over_the_parents_child_limit_wait_for_one_to_finish() {
     let mut env = env();
     env.config.limits.max_children = 1;
-    env.account("claude-a", 4, &ok_script(&[json!({"sleep_ms": 300})]));
+    let release = env.dir.path().join("release-children");
+    env.account(
+        "claude-a",
+        4,
+        &ok_script(&[json!({"shell": format!(
+            "i=0; while [ ! -e '{}' ] && [ \"$i\" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done; test -e '{}'",
+            release.display(), release.display()
+        )})]),
+    );
     let h = env.start().await;
     let parent = insert_session_and_run(&env.store(), 1, RunState::Running);
     let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
@@ -548,8 +556,46 @@ return await parallel([
   (a) => a("do the task", {harness: "claude", account: "claude-a", isolation: "none", model: "m2"}),
 ]);
 "#;
-    let r = run(&c, json!({"script": src})).await;
-    assert_eq!(r.state.as_deref(), Some("succeeded"), "{r:?}");
-    assert_eq!(r.result, Some(json!(["done", "done"])));
+    let r = run(&c, json!({"script": src, "wait": false})).await;
+    // Enqueue issues an identity before the child-cap check inserts the run row.
+    // Hold the first child until we can capture the rejected child's token.
+    env.wait_stdin_lines("claude-a", 1).await;
+    let (pending_id, token, hash) = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            for entry in std::fs::read_dir(env.paths.runs_dir()).unwrap() {
+                let entry = entry.unwrap();
+                let id = entry.file_name().into_string().unwrap();
+                if let Some(hash) = env.store().get_run_token_hash(&id).unwrap()
+                    && env.store().get_run(&id).unwrap().is_none()
+                {
+                    let token = std::fs::read_to_string(entry.path().join("rpc-token")).unwrap();
+                    return (id, token, hash);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("a workflow child waiting at the cap with an issued identity");
+    // Once one child is running, the other cannot be inserted until it finishes.
+    assert!(env.store().get_run(&pending_id).unwrap().is_none());
+    std::fs::write(release, "go").unwrap();
+    let s = wait_workflow(&c, &r.id, "succeeded").await;
+    assert_eq!(s.result, Some(json!(["done", "done"])));
+    assert!(
+        s.steps
+            .iter()
+            .any(|step| step.run_id.as_deref() == Some(pending_id.as_str()))
+    );
+    assert!(
+        std::fs::read_to_string(env.paths.run_dir(&pending_id).join("rpc-token")).unwrap() == token
+    );
+    assert!(env.store().get_run_token_hash(&pending_id).unwrap() == Some(hash));
+    let child = SupervisorClient::connect(h.socket_path()).await.unwrap();
+    let hello: so_core::proto::HelloResult = child
+        .call("hello", json!({"client": "subagent-test", "cwd": "/", "run_id": pending_id, "run_token": token}))
+        .await
+        .unwrap();
+    assert_eq!(hello.run_id.as_deref(), Some(pending_id.as_str()));
     h.shutdown().await;
 }

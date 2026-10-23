@@ -114,6 +114,7 @@ async fn hello(c: &SupervisorClient) -> HelloResult {
 }
 
 async fn hello_run(c: &SupervisorClient, store: &Store, run: &str, inspect: bool) -> HelloResult {
+    // Hash independently of production code to check the persisted SHA-256 contract.
     use sha2::{Digest, Sha256};
     let token = "test-only-identity-token";
     store
@@ -1295,6 +1296,7 @@ async fn depth_zero_session_client_can_access_all_its_runs() {
 
 #[tokio::test]
 async fn hello_wrong_token_refused_then_correct_token_accepted() {
+    // Hash independently of production code to check the persisted SHA-256 contract.
     use sha2::{Digest, Sha256};
     let env = Env::new();
     let h = env.start().await;
@@ -1333,6 +1335,7 @@ async fn hello_wrong_token_refused_then_correct_token_accepted() {
 
 #[tokio::test]
 async fn hello_token_for_another_run_and_legacy_claims_refused_even_with_inspect() {
+    // Hash independently of production code to check the persisted SHA-256 contract.
     use sha2::{Digest, Sha256};
     let env = Env::new();
     let h = env.start().await;

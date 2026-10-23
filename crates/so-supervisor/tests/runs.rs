@@ -82,6 +82,7 @@ async fn spawn_wait_get_succeeds_and_removes_untouched_worktree() {
         0o600
     );
     assert!(mcp.contains("SUPERORCHESTRATOR_RUN_TOKEN") && mcp.contains(&token));
+    // Hash independently of production code to check the persisted SHA-256 contract.
     use sha2::{Digest, Sha256};
     assert!(
         env.store()
@@ -581,7 +582,50 @@ async fn reconcile_resumes_a_run_with_a_native_session() {
     h.shutdown().await;
 }
 
+async fn legacy_queued_launch(failover: bool) {
+    let env = Env::new();
+    env.account("claude-acc1", 2, &ok_script(&[]));
+    let store = env.store();
+    let mut row = insert_session_and_run(&store, 1, RunState::Queued);
+    row.id = new_id();
+    row.account = Some("claude-acc1".into());
+    row.cwd = Some(env.repo.to_string_lossy().into_owned());
+    row.prompt = Some(PROMPT.into());
+    store.insert_run(&row).unwrap();
+    if failover {
+        store
+            .set_failover_pending(
+                &row.id,
+                &json!({
+                    "from": "claude-old", "from_harness": "claude",
+                    "reason": "quota", "error_kind": "quota", "decision": {}
+                })
+                .to_string(),
+            )
+            .unwrap();
+    }
+    assert!(store.get_run_token_hash(&row.id).unwrap().is_none());
+    assert!(!env.paths.run_dir(&row.id).join("rpc-token").exists());
+    let h = env.start().await;
+    let c = env.inspect_client(&h).await;
+    wait_state(&c, &row.id, RunState::Succeeded).await;
+    assert_eq!(env.launches("claude-acc1").len(), 1);
+    assert_valid_run_token(&env, &h, &row.id).await;
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_legacy_queued_run_first_launch_issues_a_valid_identity() {
+    legacy_queued_launch(false).await;
+}
+
+#[tokio::test]
+async fn a_legacy_failover_pending_run_launch_issues_a_valid_identity() {
+    legacy_queued_launch(true).await;
+}
+
 async fn assert_valid_run_token(env: &Env, h: &so_supervisor::SupervisorHandle, id: &str) {
+    // Hash independently of production code to check the persisted SHA-256 contract.
     use sha2::{Digest, Sha256};
     let token = std::fs::read_to_string(env.paths.run_dir(id).join("rpc-token")).unwrap();
     assert!(
@@ -589,7 +633,8 @@ async fn assert_valid_run_token(env: &Env, h: &so_supervisor::SupervisorHandle, 
             == Some(Sha256::digest(token.as_bytes()).as_slice())
     );
     let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
-    hello_run(&c, &env.store(), &env.paths, id).await;
+    let hello = hello_run(&c, &env.store(), &env.paths, id).await;
+    assert_eq!(hello.run_id.as_deref(), Some(id));
 }
 
 #[tokio::test]
