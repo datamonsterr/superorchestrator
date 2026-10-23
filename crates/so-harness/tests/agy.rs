@@ -64,8 +64,7 @@ impl Rig {
         let rig = Self {
             dir: tempfile::tempdir().unwrap(),
         };
-        // An account like the agent-farm profiles: `config` is a symlink,
-        // there is no `projects`, and the config holds a socket and a subdir.
+        // Operator-managed accounts share a symlinked config root; no `projects`.
         let g = rig.account_gemini();
         for d in ["antigravity-cli", "plugins", "skills"] {
             std::fs::create_dir_all(g.join(d)).unwrap();
@@ -396,7 +395,7 @@ async fn per_run_gemini_dir_contents_modes_and_mcp_merge() {
     );
     // The account's own config is untouched.
     let original =
-        std::fs::read_to_string(rig.dir.path().join("real-config/mcp_config.json")).unwrap();
+        std::fs::read_to_string(rig.account_gemini().join("config/mcp_config.json")).unwrap();
     assert!(!original.contains("superorchestrator"));
 }
 
@@ -588,4 +587,69 @@ async fn invalid_effort_fails_before_spawn() {
             .contains("effort `bogus` is not valid for agy (low|medium|high|xhigh|max)"),
         "{err}"
     );
+}
+
+#[test]
+fn prepare_refuses_config_file_symlinks_outside_the_account() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    std::fs::remove_dir_all(account.join("config")).unwrap();
+    std::fs::create_dir(account.join("config")).unwrap();
+    let outside = rig.dir.path().join("secret");
+    std::fs::write(&outside, "private secret").unwrap();
+    std::os::unix::fs::symlink(&outside, account.join("config/settings.json")).unwrap();
+    let error =
+        so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(!rig.run_dir().join("gemini/config/settings.json").exists());
+}
+
+#[test]
+fn prepare_refuses_writable_symlinked_config_root() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    std::fs::remove_dir_all(account.join("config")).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("settings.json"), "private secret").unwrap();
+    std::fs::set_permissions(outside.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::os::unix::fs::symlink(outside.path(), account.join("config")).unwrap();
+    let error =
+        so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(!rig.run_dir().join("gemini/config/settings.json").exists());
+}
+
+#[test]
+fn prepare_allows_owned_private_symlinked_config_root() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    let source = tempfile::tempdir().unwrap();
+    std::fs::write(source.path().join("settings.json"), "trusted settings").unwrap();
+    std::fs::remove_dir_all(account.join("config")).unwrap();
+    std::os::unix::fs::symlink(source.path(), account.join("config")).unwrap();
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config/settings.json")).unwrap(),
+        "trusted settings"
+    );
+}
+
+#[test]
+fn prepare_checks_entry_symlinks_against_the_shared_canonical_root() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    let config = account.join("config").canonicalize().unwrap();
+    std::os::unix::fs::symlink(config.join("settings.json"), config.join("linked.json")).unwrap();
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert_eq!(
+        std::fs::read(dir.join("config/linked.json")).unwrap(),
+        std::fs::read(config.join("settings.json")).unwrap()
+    );
+    let outside = rig.dir.path().join("secret");
+    std::fs::write(&outside, "private secret").unwrap();
+    std::os::unix::fs::symlink(outside, config.join("escape.json")).unwrap();
+    let error =
+        so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(!dir.join("config/escape.json").exists());
 }

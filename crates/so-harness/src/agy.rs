@@ -13,6 +13,7 @@
 //! block. `max_turns` has no agy equivalent and is ignored.
 
 use std::collections::{HashMap, HashSet};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -123,6 +124,10 @@ fn account_gemini_dir(spec: &LaunchSpec) -> Result<PathBuf, DriverError> {
         .ok_or_else(|| DriverError::Other("agy launch has no --gemini_dir".into()))
 }
 
+fn trusted_config_root(metadata: &std::fs::Metadata, uid: u32) -> bool {
+    metadata.is_dir() && metadata.uid() == uid && metadata.mode() & 0o022 == 0
+}
+
 /// Builds `<run_dir>/gemini` (ADR-0005): symlinks to the account's shared
 /// state, a real `config/` copied from the account (files only), and a
 /// `config/mcp_config.json` holding the account's servers plus ours.
@@ -151,15 +156,40 @@ pub fn prepare_gemini_dir(spec: &LaunchSpec, account: &Path) -> std::io::Result<
 
     let config = dir.join("config");
     create_private_dir(&config)?;
-    // `read_dir` and `metadata` follow symlinks, so an account whose `config`
-    // is a link into `~/.gemini/config` is copied, not shared.
-    if let Ok(entries) = std::fs::read_dir(account.join("config")) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if std::fs::metadata(&path).is_ok_and(|m| m.is_file()) {
-                write_private(&config.join(entry.file_name()), &std::fs::read(&path)?)?;
+    let account = account.canonicalize()?;
+    let source_config = account.join("config");
+    let denied = || {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "agy config root must be a directory owned by the current uid without group/world write access; entries must stay inside the config root or account directory",
+        )
+    };
+    match std::fs::symlink_metadata(&source_config) {
+        Ok(_) => {
+            // Operator-managed accounts share a config-root symlink (ADR-0005).
+            // Trust its canonical directory only when its owner and permissions are safe.
+            let source_config = source_config.canonicalize()?;
+            let metadata = std::fs::metadata(&source_config)?;
+            if !trusted_config_root(&metadata, rustix::process::getuid().as_raw()) {
+                return Err(denied());
+            }
+            for entry in std::fs::read_dir(&source_config)? {
+                let entry = entry?;
+                let path = entry.path();
+                let metadata = std::fs::symlink_metadata(&path)?;
+                if metadata.is_file() || metadata.is_symlink() {
+                    let source = path.canonicalize()?;
+                    if !source.starts_with(&account) && !source.starts_with(&source_config) {
+                        return Err(denied());
+                    }
+                    if std::fs::metadata(&source)?.is_file() {
+                        write_private(&config.join(entry.file_name()), &std::fs::read(source)?)?;
+                    }
+                }
             }
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
     }
 
     // An unreadable or invalid account file is replaced rather than blocking
@@ -926,6 +956,23 @@ mod tests {
         assert!(!child.is_current(root.path()));
         std::fs::remove_file(proc_dir.join("stat")).unwrap();
         assert!(!child.is_current(root.path()));
+    }
+
+    #[test]
+    fn shared_config_root_checks_owner_and_write_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let uid = rustix::process::getuid().as_raw();
+        let metadata = std::fs::metadata(root.path()).unwrap();
+        assert!(trusted_config_root(&metadata, uid));
+        assert!(!trusted_config_root(&metadata, uid.wrapping_add(1)));
+        for mode in [0o775, 0o757] {
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(!trusted_config_root(
+                &std::fs::metadata(root.path()).unwrap(),
+                uid
+            ));
+        }
     }
 
     fn assert_finds_child(find: fn(u32) -> Option<u32>) {
