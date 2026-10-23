@@ -42,3 +42,30 @@ fn missing_dirs_are_empty() {
     let saved = SavedWorkflows::new("/nonexistent/a", "/nonexistent/b");
     assert!(saved.list().is_empty());
 }
+
+#[test]
+fn discovery_skips_symlinks_in_both_directories() {
+    let cfg = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let external = tempfile::tempdir().unwrap();
+    let target = external.path().join("external.js");
+    fs::write(&target, "return 'external';").unwrap();
+    let proj = cwd.path().join(".superorchestrator/workflows");
+    fs::create_dir_all(&proj).unwrap();
+    for dir in [cfg.path(), proj.as_path()] {
+        std::os::unix::fs::symlink(&target, dir.join("linked.js")).unwrap();
+        std::os::unix::fs::symlink(external.path().join("missing"), dir.join("broken.js")).unwrap();
+        fs::write(dir.join("regular.js"), "return 1;").unwrap();
+    }
+    // A project link must not hide a regular config workflow.
+    fs::write(cfg.path().join("fallback.js"), "return 'config';").unwrap();
+    std::os::unix::fs::symlink(&target, proj.join("fallback.js")).unwrap();
+    let saved = SavedWorkflows::new(cfg.path(), cwd.path());
+    let names: Vec<_> = saved.list().into_iter().map(|w| w.name).collect();
+    assert_eq!(names, ["fallback", "regular"]);
+    assert!(matches!(
+        saved.load("linked"),
+        Err(WorkflowError::NotFound(_))
+    ));
+    assert_eq!(saved.load("fallback").unwrap().1, "return 'config';");
+}
