@@ -898,24 +898,37 @@ async fn invalid_or_exposed_generated_token_files_fail_closed() {
     };
     std::fs::write(&token_file, "not-a-valid-generated-token").unwrap();
     std::fs::set_permissions(&token_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let err = so_web::start(f.handle.state().clone(), opts.clone())
+        .await
+        .err()
+        .expect("malformed token must fail")
+        .to_string();
+    assert!(err.contains("64 hex characters"), "{err}");
     assert!(
-        so_web::start(f.handle.state().clone(), opts.clone())
-            .await
-            .is_err()
+        err.contains(&format!("remove {} to regenerate it", token_file.display())),
+        "{err}"
     );
     std::fs::write(&token_file, "a".repeat(64)).unwrap();
     std::fs::set_permissions(&token_file, std::fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(
-        so_web::start(f.handle.state().clone(), opts.clone())
-            .await
-            .is_err()
-    );
+    let err = so_web::start(f.handle.state().clone(), opts.clone())
+        .await
+        .err()
+        .expect("0644 token must fail")
+        .to_string();
+    assert!(err.contains("0600"), "{err}");
+    assert!(err.contains("to regenerate it"), "{err}");
     std::fs::remove_file(&token_file).unwrap();
     let target = f.path("outside-token");
     std::fs::write(&target, "b".repeat(64)).unwrap();
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
     symlink(&target, &token_file).unwrap();
-    assert!(so_web::start(f.handle.state().clone(), opts).await.is_err());
+    let err = so_web::start(f.handle.state().clone(), opts)
+        .await
+        .err()
+        .expect("symlinked token must fail")
+        .to_string();
+    assert!(err.contains("symlink"), "{err}");
+    assert!(err.contains("to regenerate it"), "{err}");
 }
 
 #[tokio::test]

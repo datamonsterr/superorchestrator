@@ -50,8 +50,15 @@ pub enum WebError {
     TokenRequired(String),
     #[error("could not generate a UI login code: {0}")]
     LoginCode(#[source] std::io::Error),
-    #[error("could not load or create the private UI token: {0}")]
-    TokenFile(#[source] std::io::Error),
+    #[error(
+        "could not load the UI token file {}: {source}; remove {} to regenerate it",
+        path.display(), path.display()
+    )]
+    TokenFile {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("{0}")]
     BadAddress(String),
     #[error("could not listen on {addr}: {source}")]
@@ -83,8 +90,11 @@ pub fn router(state: Arc<SupervisorState>, mut opts: WebOptions) -> Result<Route
 
 fn prepare(state: &SupervisorState, opts: &mut WebOptions) -> Result<(), WebError> {
     if opts.token.as_deref().is_none_or(str::is_empty) {
-        opts.token =
-            Some(token::load_or_create(&state.paths.config_dir).map_err(WebError::TokenFile)?);
+        let path = state.paths.config_dir.join("ui-token");
+        opts.token = Some(
+            token::load_or_create(&state.paths.config_dir)
+                .map_err(|source| WebError::TokenFile { path, source })?,
+        );
     }
     validate(opts)
 }
@@ -162,12 +172,16 @@ pub async fn start(
     mut opts: WebOptions,
 ) -> Result<WebServer, WebError> {
     let st = state.clone();
+    let token_path = state.paths.config_dir.join("ui-token");
     opts = tokio::task::spawn_blocking(move || {
         prepare(&st, &mut opts)?;
         Ok::<_, WebError>(opts)
     })
     .await
-    .map_err(|e| WebError::TokenFile(std::io::Error::other(e)))??;
+    .map_err(|e| WebError::TokenFile {
+        path: token_path,
+        source: std::io::Error::other(e),
+    })??;
     let ip = opts
         .bind_ip()
         .map_err(|e| WebError::BadAddress(format!("{e:?}")))?;

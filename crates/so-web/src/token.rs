@@ -20,7 +20,17 @@ fn read_private(path: &Path) -> io::Result<String> {
         path,
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
         Mode::empty(),
-    )?;
+    )
+    .map_err(|e| {
+        if e == rustix::io::Errno::LOOP {
+            io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "ui-token is a symlink; it must be an owner-only regular file (0600)",
+            )
+        } else {
+            e.into()
+        }
+    })?;
     let file = File::from(fd);
     let metadata = file.metadata()?;
     if !metadata.is_file()
@@ -30,7 +40,7 @@ fn read_private(path: &Path) -> io::Result<String> {
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            "ui-token must be an owner-only regular file (0600), owned by the current user",
+            "ui-token must be an owner-only regular file (0600) with one link, owned by the current user",
         ));
     }
     let mut token = String::new();
@@ -38,7 +48,7 @@ fn read_private(path: &Path) -> io::Result<String> {
     if token.len() != 64 || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "ui-token must contain exactly 64 hex characters; remove the invalid file to regenerate it",
+            "ui-token must contain exactly 64 hex characters",
         ));
     }
     Ok(token)
