@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- A daemon left running after a reinstall is now reported (#12). Build identity: the build id (executable size and mtime) is
+  shown by `status` next to the daemon's and the CLI's version, and is sent in the `hello`
+  and `status` results (additive optional fields). The daemon notices its executable was
+  replaced or removed on disk and reports `stale: true` with a reason in `status` and
+  `list_harnesses`. `status` prints a warning with the fix (restart the daemon) when the
+  builds differ or the daemon is stale, and the MCP server adds the same warning to its
+  instructions at connect. Nothing restarts the daemon automatically.
 - `ErrorKind::Config` (`"config"`): a harness that does not have the run's model
   ("Model not found") is classified as a config error. A routed run fails over to a different
   choice without putting the account in cooldown; a run pinned to a model fails at once (#7).

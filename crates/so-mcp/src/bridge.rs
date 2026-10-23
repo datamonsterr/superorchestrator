@@ -54,6 +54,8 @@ struct Inner {
     client: SupervisorClient,
     tasks: TaskManager,
     subagent: bool,
+    /// Set once by [`McpBridge::set_daemon_notice`] when the daemon runs another build.
+    notice: std::sync::OnceLock<String>,
     events: broadcast::Sender<Arc<Notification>>,
     fan_out: tokio::task::JoinHandle<()>,
 }
@@ -91,9 +93,23 @@ impl McpBridge {
                 client,
                 tasks: TaskManager::new(),
                 subagent,
+                notice: std::sync::OnceLock::new(),
                 events,
                 fan_out,
             }),
+        }
+    }
+
+    /// Tells the orchestrator, in the server instructions it reads at connect, that the
+    /// daemon is not this build. Only the first notice is kept.
+    pub fn set_daemon_notice(&self, notice: String) {
+        let _ = self.inner.notice.set(notice);
+    }
+
+    fn instructions(&self) -> String {
+        match self.inner.notice.get() {
+            Some(n) => format!("{INSTRUCTIONS} WARNING: {n}"),
+            None => INSTRUCTIONS.to_string(),
         }
     }
 
@@ -487,7 +503,7 @@ impl ServerHandler for McpBridge {
             "superorchestrator",
             env!("CARGO_PKG_VERSION"),
         ))
-        .with_instructions(INSTRUCTIONS)
+        .with_instructions(self.instructions())
     }
 
     async fn list_tools(

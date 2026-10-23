@@ -171,6 +171,12 @@ pub struct HelloResult {
     #[serde(default)]
     pub run_id: Option<String>,
     pub depth: u32,
+    /// Build id of the daemon's executable (see `buildinfo`); absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
+    /// Set when the daemon's executable was replaced on disk after it started.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -180,6 +186,14 @@ pub struct StatusResult {
     pub uptime_s: u64,
     pub sessions: u32,
     pub active_runs: u32,
+    /// Build id of the daemon's executable; absent from older daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
+    /// The daemon's executable was replaced on disk after it started: it runs old code.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -621,6 +635,12 @@ pub struct HarnessesView {
     pub accounts: Vec<AccountView>,
     #[serde(default)]
     pub choices: Vec<Choice>,
+    /// Set when the daemon's executable was replaced after it started; `stale_reason` says
+    /// what to do.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stale: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

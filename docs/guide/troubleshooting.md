@@ -31,6 +31,8 @@ Start with `superorchestrator doctor`. It prints one line per check. A check is 
 
 **A run failed with a quota or auth error.** The account is flagged until its reset. Failover moves the work to another account when one exists. Clear a flag with `superorchestrator account flag <name> --clear`.
 
+**I installed a fix but behaviour is unchanged.** The daemon keeps running the binary it started with, so reinstalling does not reach it. `superorchestrator status` shows the daemon's version and build id next to the CLI's, and prints a warning when they differ or the daemon's executable was replaced on disk. The MCP server warns in its instructions the same way, and `list_harnesses` carries `stale: true` with a reason. Restart the daemon: wait for active runs to finish, `kill` the pid `status` shows, and run any command (it starts the new binary on demand). Stopping the daemon ends its active runs. Nothing restarts it for you.
+
 **The wrapper command is not found.** Put `~/.local/bin` (or your `accounts.wrapper_dir`) on `PATH`.
 
 **The skill is out of date.** Superorchestrator regenerates `use-superorchestrator-mcp` when accounts, choices or agents change, but only if it is installed and the file still has the `superorchestrator:managed` marker. It also writes `superorchestrator-cli` if that is missing. Run `superorchestrator install` to write them. A skill file you edited by hand without the marker is left alone.

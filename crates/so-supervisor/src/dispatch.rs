@@ -271,12 +271,7 @@ async fn hello(
     if p.inspect && p.run_id.is_none() {
         // Inspection only: no session row, so a `status` or `runs show` leaves no trace.
         ctx.greeted = true;
-        return serde_json::to_value(HelloResult {
-            session_id: String::new(),
-            run_id: None,
-            depth: 0,
-        })
-        .map_err(internal);
+        return serde_json::to_value(hello_result(state, String::new(), None, 0)).map_err(internal);
     }
     let result = if let Some(run_id) = p.run_id {
         let id = run_id.clone();
@@ -284,11 +279,12 @@ async fn hello(
             .db(move |s| s.get_run(&id))
             .await?
             .ok_or_else(|| RpcError::new(NOT_FOUND, format!("run not found: {run_id}")))?;
-        HelloResult {
-            session_id: run.session_id,
-            run_id: Some(run.id),
-            depth: u32::try_from(run.depth).unwrap_or(0),
-        }
+        hello_result(
+            state,
+            run.session_id,
+            Some(run.id),
+            u32::try_from(run.depth).unwrap_or(0),
+        )
     } else {
         let row = SessionRow {
             id: so_core::new_id(),
@@ -303,17 +299,28 @@ async fn hello(
         };
         let id = row.id.clone();
         state.db(move |s| s.insert_session(&row)).await?;
-        HelloResult {
-            session_id: id,
-            run_id: None,
-            depth: 0,
-        }
+        hello_result(state, id, None, 0)
     };
     ctx.greeted = true;
     ctx.session_id = Some(result.session_id.clone());
     ctx.run_id = result.run_id.clone();
     ctx.depth = u8::try_from(result.depth).unwrap_or(u8::MAX);
     serde_json::to_value(result).map_err(internal)
+}
+
+fn hello_result(
+    state: &SupervisorState,
+    session_id: String,
+    run_id: Option<String>,
+    depth: u32,
+) -> HelloResult {
+    HelloResult {
+        session_id,
+        run_id,
+        depth,
+        build_id: Some(so_core::buildinfo::build_id().to_string()),
+        stale: state.stale().is_some(),
+    }
 }
 
 /// The `status` result: pid, version, uptime and counts.
@@ -325,7 +332,11 @@ pub async fn status_result(state: &Arc<SupervisorState>) -> Result<StatusResult,
             Ok((s.count_active_sessions()?, s.count_active_runs()?))
         })
         .await?;
+    let stale_reason = state.stale();
     Ok(StatusResult {
+        build_id: Some(so_core::buildinfo::build_id().to_string()),
+        stale: stale_reason.is_some(),
+        stale_reason,
         pid: std::process::id(),
         version: env!("CARGO_PKG_VERSION").to_string(),
         uptime_s: state.started.elapsed().as_secs(),
