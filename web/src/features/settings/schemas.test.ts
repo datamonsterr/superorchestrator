@@ -52,6 +52,14 @@ describe('settings schemas', () => {
     expect(diffToPatch(a, b)).toEqual({ router: { jev: { key_file: '/x' } } })
   })
 
+  it('leaves router.levels out of the form and out of every patch', () => {
+    expect(fx.config.config.router?.levels).toHaveLength(2)
+    expect(JSON.stringify(base)).not.toContain('levels')
+    const next = structuredClone(base)
+    next.router.policy.min_confidence = 0.7
+    expect(diffToPatch(base, next)).toEqual({ router: { policy: { min_confidence: 0.7 } } })
+  })
+
   it('lists every field path from the schema', () => {
     expect(FIELD_PATHS).toContain('router.jev.key_file')
     expect(FIELD_PATHS).toContain('limits.global_cap')

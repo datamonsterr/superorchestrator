@@ -1,4 +1,5 @@
 import { ProbabilityBars } from '@/components/common/ProbabilityBars'
+import { anchorProbabilities, complexityText } from '@/lib/complexity'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -20,13 +21,14 @@ export function RouteTab({ runId }: { runId: string }) {
           {r.harness} · {r.account} · {r.model}
           {r.effort ? ` · ${r.effort}` : ''}
         </span>
+        {complexityText(r) && <span>{complexityText(r)}</span>}
         {r.confidence != null && <span>Confidence {formatPercent(r.confidence * 100)}</span>}
       </div>
       <section aria-labelledby="prob-h">
         <h3 id="prob-h" className="mb-2 text-sm font-medium">
-          Probabilities
+          Complexity probabilities
         </h3>
-        <ProbabilityBars probabilities={r.probabilities} selected={r.choice_id} />
+        <ProbabilityBars probabilities={anchorProbabilities(r.probabilities)} ariaLabel="Complexity probabilities" />
       </section>
       <section aria-labelledby="why-h">
         <h3 id="why-h" className="mb-1 text-sm font-medium">

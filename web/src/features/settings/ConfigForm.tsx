@@ -102,8 +102,8 @@ export function ConfigForm({ view, hidden = false }: { view: ConfigView; hidden?
       </TabsContent>
       <TabsContent value="routing">
         <FieldGroup className="max-w-xl">
-          {text('router.policy.min_confidence', 'Minimum confidence', 'Below this the router falls back to the heuristic (0 to 1).', { number: true })}
-          {text('router.policy.min_margin', 'Minimum margin', 'The lead the top choice needs over the runner-up (0 to 1).', { number: true })}
+          {text('router.policy.min_confidence', 'Minimum confidence', 'Below this the decider\'s complexity score is ignored and the heuristic estimates it (0 to 1).', { number: true })}
+          {text('router.policy.min_margin', 'Minimum margin', 'Deprecated: routing no longer uses it. Kept so older configs still load (0 to 1).', { number: true })}
           <KeySource label="OpenRouter key" source={view.openrouter_key} />
           {text('router.jev.key_env', 'Key environment variable', 'The variable the key is read from. Pasting a key here is not supported.', { mono: true })}
           {text('router.jev.key_file', 'Key file', 'Optional dotenv file holding the key. Clearing it here does not remove the saved path.', { mono: true })}

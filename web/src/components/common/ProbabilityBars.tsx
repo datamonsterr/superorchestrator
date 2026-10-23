@@ -5,14 +5,16 @@ interface Props {
   /** Choice id to highlight. */
   selected?: string
   className?: string
+  /** Accessible name of the list. */
+  ariaLabel?: string
 }
 
 /** Bars sorted by probability, descending. The percent is always printed. */
-export function ProbabilityBars({ probabilities, selected, className }: Props) {
+export function ProbabilityBars({ probabilities, selected, className, ariaLabel = 'Choice probabilities' }: Props) {
   const rows = Object.entries(probabilities).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
   if (rows.length === 0) return <p className="text-sm text-muted-foreground">No probabilities</p>
   return (
-    <ul className={cn('flex flex-col gap-1.5', className)} aria-label="Choice probabilities">
+    <ul className={cn('flex flex-col gap-1.5', className)} aria-label={ariaLabel}>
       {rows.map(([id, p]) => {
         const pct = Math.max(0, Math.min(1, p)) * 100
         const isSel = id === selected

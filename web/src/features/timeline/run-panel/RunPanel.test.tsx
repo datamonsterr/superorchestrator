@@ -45,14 +45,14 @@ describe('RunPanel', () => {
     expect(screen.getByRole('tab', { name: 'Result' })).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('Route tab: bars sorted by probability, selected highlighted, rationale and alternatives', async () => {
+  it('Route tab: complexity, level, bars sorted by probability, rationale and alternatives', async () => {
     panel('run-1')
     await userEvent.click(await tab('Route'))
-    const bars = await screen.findByRole('list', { name: 'Choice probabilities' })
+    const bars = await screen.findByRole('list', { name: 'Complexity probabilities' })
     const rows = within(bars).getAllByRole('listitem')
     const pcts = rows.map((r) => Number(within(r).getByText(/%$/).textContent!.replace('%', '')))
     expect([...pcts].sort((a, b) => b - a)).toEqual(pcts)
-    expect(rows.filter((r) => r.hasAttribute('data-selected'))).toHaveLength(1)
+    expect(screen.getByText('complexity 82.5 · level high')).toBeInTheDocument()
     expect(screen.getByText('Rationale')).toBeInTheDocument()
     expect(screen.getByText('Alternatives')).toBeInTheDocument()
   })
