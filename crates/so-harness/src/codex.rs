@@ -154,7 +154,7 @@ impl Driver for CodexDriver {
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
         check_launch_values(
-            Some(Harness::Codex),
+            Harness::Codex,
             spec.model.as_deref(),
             spec.effort.as_deref(),
             spec.resume.as_deref(),

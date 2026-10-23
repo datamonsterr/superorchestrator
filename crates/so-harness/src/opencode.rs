@@ -1046,7 +1046,7 @@ impl Driver for OpencodeDriver {
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
         crate::driver::check_launch_values(
-            Some(Harness::Opencode),
+            Harness::Opencode,
             spec.model.as_deref(),
             spec.effort.as_deref(),
             spec.resume.as_deref(),

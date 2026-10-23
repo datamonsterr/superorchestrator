@@ -112,7 +112,7 @@ impl Driver for ClaudeDriver {
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
         check_launch_values(
-            Some(Harness::Claude),
+            Harness::Claude,
             spec.model.as_deref(),
             spec.effort.as_deref(),
             spec.resume.as_deref(),

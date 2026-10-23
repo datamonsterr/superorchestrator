@@ -54,26 +54,33 @@ pub fn check_effort(harness: Harness, effort: Option<&str>) -> Result<(), Driver
     }
 }
 
-/// Validates untrusted launch selectors before any process or launch files are created.
-pub fn check_launch_values(
-    harness: Option<Harness>,
-    model: Option<&str>,
-    effort: Option<&str>,
-    resume: Option<&str>,
-) -> Result<(), DriverError> {
+/// Validates model/effort selectors: nonempty, no leading '-', ASCII alphanumerics
+/// or `:/_.@-[]` (including Claude's `sonnet[1m]` model suffix).
+pub fn check_selector(model: Option<&str>, effort: Option<&str>) -> Result<(), DriverError> {
     for (name, value) in [("model", model), ("effort", effort)] {
         if let Some(value) = value
             && (value.is_empty()
                 || value.starts_with('-')
                 || !value
                     .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b":/_.@-".contains(&b)))
+                    .all(|b| b.is_ascii_alphanumeric() || b":/_.@-[]".contains(&b)))
         {
             return Err(DriverError::Other(format!(
-                "invalid {name}: expected a nonempty value without a leading '-' using only A-Za-z0-9:/_.@-"
+                "invalid {name}: expected a nonempty value without a leading '-' using only A-Za-z0-9:/_.@-[]"
             )));
         }
     }
+    Ok(())
+}
+
+/// Validates resolved launch values before any process or launch files are created.
+pub fn check_launch_values(
+    harness: Harness,
+    model: Option<&str>,
+    effort: Option<&str>,
+    resume: Option<&str>,
+) -> Result<(), DriverError> {
+    check_selector(model, effort)?;
     if let Some(id) = resume {
         let safe = !id.is_empty()
             && !id.starts_with('-')
@@ -81,19 +88,15 @@ pub fn check_launch_values(
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b));
         let (valid, expected) = match harness {
-            Some(Harness::Agy | Harness::Claude | Harness::Codex) => (
+            Harness::Agy | Harness::Claude | Harness::Codex => (
                 safe && id.len() == 36 && uuid::Uuid::parse_str(id).is_ok(),
                 "a hyphenated UUID",
             ),
-            Some(Harness::Opencode) => (
+            Harness::Opencode => (
                 safe && id
                     .strip_prefix("ses_")
                     .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric())),
                 "ses_ followed by ASCII letters and digits",
-            ),
-            None => (
-                safe,
-                "a nonempty id without a leading '-' using only A-Za-z0-9_.:-",
             ),
         };
         if !valid {
@@ -102,9 +105,7 @@ pub fn check_launch_values(
             )));
         }
     }
-    if let Some(harness) = harness {
-        check_effort(harness, effort)?;
-    }
+    check_effort(harness, effort)?;
     Ok(())
 }
 
@@ -664,23 +665,19 @@ mod tests {
             "a;b",
             "é",
         ] {
-            assert!(
-                check_launch_values(None, Some(bad), None, None).is_err(),
-                "model {bad:?}"
-            );
-            assert!(
-                check_launch_values(None, None, Some(bad), None).is_err(),
-                "effort {bad:?}"
-            );
+            assert!(check_selector(Some(bad), None).is_err(), "model {bad:?}");
+            assert!(check_selector(None, Some(bad)).is_err(), "effort {bad:?}");
         }
         for good in [
             "provider/model:v1",
             "gpt-6.1-sol",
+            "sonnet[1m]",
+            "claude-sonnet-5-5[1m]",
             "org/model@latest",
             "a_b.c-2",
             "low",
         ] {
-            check_launch_values(None, Some(good), Some(good), None).unwrap();
+            check_selector(Some(good), Some(good)).unwrap();
         }
     }
 
@@ -688,16 +685,16 @@ mod tests {
     fn resume_ids_follow_native_formats() {
         let uuid = "01a162ee-5ba3-7400-be98-4eb69d75fead";
         for h in [Harness::Agy, Harness::Claude, Harness::Codex] {
-            check_launch_values(Some(h), None, None, Some(uuid)).unwrap();
+            check_launch_values(h, None, None, Some(uuid)).unwrap();
             for bad in ["", "--help", "abc", "../x", "a/b", "a b", "a\nb", "ses_abc"] {
                 assert!(
-                    check_launch_values(Some(h), None, None, Some(bad)).is_err(),
+                    check_launch_values(h, None, None, Some(bad)).is_err(),
                     "{h} {bad:?}"
                 );
             }
         }
         check_launch_values(
-            Some(Harness::Opencode),
+            Harness::Opencode,
             None,
             None,
             Some("ses_e9d0e831fffejyPMluk5gnwrFx"),
@@ -705,14 +702,10 @@ mod tests {
         .unwrap();
         for bad in ["", "--help", "ses_", "ses_a/b", "ses_a?x", "ses_a b", uuid] {
             assert!(
-                check_launch_values(Some(Harness::Opencode), None, None, Some(bad)).is_err(),
+                check_launch_values(Harness::Opencode, None, None, Some(bad)).is_err(),
                 "{bad:?}"
             );
         }
-        for bad in ["", "-id", "a/b", "a@b", "a b"] {
-            assert!(check_launch_values(None, None, None, Some(bad)).is_err());
-        }
-        check_launch_values(None, None, None, Some("session_1.a:b-c")).unwrap();
     }
 
     #[test]

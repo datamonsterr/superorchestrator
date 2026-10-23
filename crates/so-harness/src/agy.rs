@@ -254,7 +254,7 @@ impl Driver for AgyDriver {
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
         check_launch_values(
-            Some(Harness::Agy),
+            Harness::Agy,
             spec.model.as_deref(),
             spec.effort.as_deref(),
             spec.resume.as_deref(),
