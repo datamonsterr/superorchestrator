@@ -138,6 +138,10 @@ impl Env {
         git(&repo, &["commit", "-q", "-m", "init"]);
         let mut config = Config::default();
         config.notifications.desktop = false;
+        // The supervisor strips its children's environment. Under `cargo llvm-cov` the
+        // instrumented fake harness would then write `default_*.profraw` into its cwd
+        // (the run worktree) and dirty it, so pass the profile path through.
+        config.accounts.pass_env = vec!["LLVM_PROFILE_FILE".into()];
         Env {
             paths: Paths::from_dir(cfg),
             sock: dir.path().join("run/s.sock"),
