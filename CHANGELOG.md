@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`opencode/muse-spark-1.3-contributor-free`) is gone from opencode and runs on it failed
   with "Model not found". Existing `config.toml` files keep the old id: edit the choice, and
   `models refresh` now reports it (#7).
+- agy live messages need `"queuedMessages": "send-immediately"` in the account's `.gemini/antigravity-cli/settings.json`. The default `Queue` loses a `send_message` to a running agy run (#6).
 
 ### Added
 

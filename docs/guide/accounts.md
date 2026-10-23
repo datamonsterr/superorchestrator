@@ -81,6 +81,18 @@ Claude accounts are kept for the orchestrator. `setup` adds none by default (`--
 
 The web UI shows the same steps on the Accounts page.
 
+### agy: queued messages
+
+`send_message` to a running agy run needs agy's `Queued Messages` setting set to send immediately. The default, `Queue`, holds a message until the current turn ends, and the supervisor stops the run when that turn finishes, so the message is lost. Set it once per account in `~/.<name>/.gemini/antigravity-cli/settings.json`. Supervised runs link `antigravity-cli/` from the account home, so the account setting applies to them:
+
+```json
+{
+  "queuedMessages": "send-immediately"
+}
+```
+
+The same setting is in agy's `/config` screen. See "Live message to an agy run is ignored" in [troubleshooting](troubleshooting.md).
+
 ## Sign-in check
 
 The check only tests that the harness's auth file exists:
