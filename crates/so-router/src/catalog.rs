@@ -718,6 +718,7 @@ pub async fn refresh(
 fn missing_choice_models(listed: &[Collected], choices: &[Choice]) -> Vec<ChoiceRef> {
     choices
         .iter()
+        .filter(|c| c.enabled)
         .filter(|c| listed.iter().any(|m| m.harness == c.harness))
         .filter(|c| {
             !listed

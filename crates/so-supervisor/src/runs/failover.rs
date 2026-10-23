@@ -133,9 +133,15 @@ impl RunManager {
         else {
             return false;
         };
-        let routed = pins
-            .and_then(|j| serde_json::from_str::<RoutePins>(&j).ok())
-            .is_some_and(|p| p.account.is_none());
+        let pins = pins.and_then(|j| serde_json::from_str::<RoutePins>(&j).ok());
+        // A bad model the caller pinned (or a harness pin with no choice behind it) is the
+        // same on every account: fail now with the real error.
+        if kind == ErrorKind::Config
+            && (pins.as_ref().is_none_or(|p| p.model.is_some()) || self.run_is_pinned(run_id).await)
+        {
+            return false;
+        }
+        let routed = pins.is_some_and(|p| p.account.is_none());
         let moves = attempts
             .iter()
             .filter(|a| a.outcome.as_deref() == Some("failover"))
@@ -153,6 +159,15 @@ impl RunManager {
                 limit: limit.clone(),
             })
             .is_ok()
+    }
+
+    /// The run was routed to a pin, not to one of the configured choices.
+    async fn run_is_pinned(&self, run_id: &str) -> bool {
+        let id = run_id.to_string();
+        matches!(
+            self.db(move |s| s.get_run(&id)).await,
+            Ok(Some(r)) if r.choice_id.as_deref().is_some_and(|c| c.starts_with("pinned-"))
+        )
     }
 
     async fn failover(&self, req: FailoverRequest) {
@@ -176,7 +191,7 @@ impl RunManager {
                         }
                         // The bound is reached (or the run cannot move): the account that
                         // failed here was not flagged by a move, so flag it now.
-                        if failover_kind(fail.kind) && fail.kind != ErrorKind::Config {
+                        if fail.kind.flags_account() {
                             self.flag_account(&run_id, &fail.message, Some(&limit))
                                 .await;
                         }
@@ -279,7 +294,7 @@ impl RunManager {
         // The account that hit the limit is marked whatever happens next, and its process
         // goes away before another one starts for the same run.
         // A bad model is the choice's fault, not the account's: no cooldown for it.
-        if req.kind != ErrorKind::Config {
+        if req.kind.flags_account() {
             self.flag_account(&id, &req.reason, Some(&req.limit)).await;
         }
         let pins: RoutePins = route

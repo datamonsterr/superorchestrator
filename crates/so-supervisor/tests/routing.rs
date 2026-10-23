@@ -1130,3 +1130,94 @@ async fn agy_thinking_variant_model_with_an_effort_is_refused_before_launch() {
     assert!(!argv.iter().any(|a| a == "--effort"), "{argv:?}");
     h.shutdown().await;
 }
+
+fn model_missing_script() -> String {
+    script(&[
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"stdout": init_msg()}),
+        json!({"stdout": result_msg(json!({"is_error": true, "result": "Model not found: claude-sonnet-5-5. Did you mean: x?"}))}),
+    ])
+}
+
+fn two_choices_env() -> Env {
+    let mut env = routed_env();
+    env.config.choices = vec![
+        choice("claude-mid", "claude-sonnet-5-5"),
+        choice("claude-other", "claude-haiku-5-5"),
+    ];
+    env
+}
+
+/// The choice of each route decision of a run, in order.
+fn decided_choices(v: &RunView) -> Vec<String> {
+    events(v, "route_decision")
+        .iter()
+        .map(|e| {
+            serde_json::from_value::<RouteResult>(e.data.clone())
+                .unwrap()
+                .choice_id
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_config_error_fails_over_to_another_choice_and_spares_the_account() {
+    let env = two_choices_env();
+    env.account("claude-a", 2, &model_missing_script());
+    env.account("claude-b", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let v = view(&c, &r.run_id).await;
+    let f = events(&v, "failover");
+    assert_eq!(f.len(), 1, "{:?}", types(&v));
+    assert_eq!(f[0].data["error_kind"], "config");
+    let choices = decided_choices(&v);
+    assert_eq!(choices.len(), 2, "{choices:?}");
+    assert_ne!(
+        choices[0], choices[1],
+        "the failed choice must not be retried"
+    );
+    // The account did nothing wrong: no cooldown.
+    let store = env.store();
+    assert!(store.get_flag("claude-a", "default").unwrap().is_none());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_quota_error_still_prefers_the_same_choice() {
+    let env = two_choices_env();
+    env.account("claude-a", 2, &quota_script());
+    env.account("claude-b", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let choices = decided_choices(&view(&c, &r.run_id).await);
+    assert_eq!(choices.len(), 2, "{choices:?}");
+    assert_eq!(choices[0], choices[1]);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_config_error_on_a_pinned_model_fails_at_once() {
+    let env = two_choices_env();
+    env.account("claude-a", 2, &model_missing_script());
+    env.account("claude-b", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let mut p = auto_params(&env);
+    p.harness = Some("claude".into());
+    p.model = Some("claude-opus-9".into());
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Failed, "{r:?}");
+    let v = view(&c, &r.run_id).await;
+    assert!(events(&v, "failover").is_empty(), "{:?}", types(&v));
+    assert_eq!(v.error_kind, Some(ErrorKind::Config));
+    assert_eq!(env.launches("claude-b").len(), 0);
+    h.shutdown().await;
+}

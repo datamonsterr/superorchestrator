@@ -392,17 +392,6 @@ fn num_at(v: &Value, path: &[&str]) -> u64 {
         .map_or(0, |n| n.max(0.0) as u64)
 }
 
-/// opencode rejects an id it does not list with `Model not found: <id>. Did you mean: ...`.
-/// That is the run's configuration, not the account, so it is checked before the shared
-/// patterns (the "Did you mean" list can carry words those match).
-fn classify_text(text: &str) -> ErrorKind {
-    if text.to_lowercase().contains("model not found") {
-        ErrorKind::Config
-    } else {
-        classify_common(text)
-    }
-}
-
 /// Kind and text of a `session.error` / message `error` object.
 fn classify_api_error(error: &Value) -> (ErrorKind, String) {
     let name = error.get("name").and_then(Value::as_str).unwrap_or("Error");
@@ -417,7 +406,7 @@ fn classify_api_error(error: &Value) -> (ErrorKind, String) {
         (_, Some(402)) => ErrorKind::Quota,
         (_, Some(429)) => ErrorKind::RateLimit,
         (_, Some(401 | 403)) | ("ProviderAuthError", _) => ErrorKind::Auth,
-        _ => classify_text(&text),
+        _ => classify_common(&text),
     };
     (kind, text)
 }
@@ -1281,7 +1270,7 @@ impl Driver for OpencodeDriver {
     }
 
     fn classify_error(&self, text: &str) -> ErrorKind {
-        classify_text(text)
+        classify_common(text)
     }
 }
 

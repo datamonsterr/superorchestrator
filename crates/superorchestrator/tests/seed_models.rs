@@ -5,6 +5,7 @@ const SEED_CHOICES: &str = include_str!("../src/seed/choices.toml");
 /// `opencode models` output, recorded in the harness crate's fixtures.
 const OPENCODE_MODELS: &str = include_str!("../../so-harness/tests/fixtures/opencode/models.txt");
 
+// Checks against the recorded `opencode models` snapshot, not the live list.
 #[test]
 fn seeded_opencode_choices_use_listed_models() {
     let listed: Vec<&str> = OPENCODE_MODELS.lines().map(str::trim).collect();

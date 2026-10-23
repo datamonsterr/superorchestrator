@@ -335,6 +335,14 @@ pub enum ErrorKind {
     Other,
 }
 
+impl ErrorKind {
+    /// The failure is the account's (a limit or a login), so the account is flagged.
+    /// A `Config` failure is the run's own model, and the account is fine.
+    pub fn flags_account(self) -> bool {
+        matches!(self, Self::Quota | Self::RateLimit | Self::Auth)
+    }
+}
+
 str_enum!(ErrorKind, |s| CoreError::UnknownValue { kind: "error kind", value: s }, {
     Quota => "quota",
     RateLimit => "rate_limit",

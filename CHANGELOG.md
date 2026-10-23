@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The seeded choice `opencode-muse-long` uses `opencode/muse-spark-1.3`; the old model id
+  (`opencode/muse-spark-1.3-contributor-free`) is gone from opencode and runs on it failed
+  with "Model not found". Existing `config.toml` files keep the old id: edit the choice, and
+  `models refresh` now reports it (#7).
+
+### Added
+
+- `ErrorKind::Config` (`"config"`): a harness that does not have the run's model
+  ("Model not found") is classified as a config error. A routed run fails over to a different
+  choice without putting the account in cooldown; a run pinned to a model fails at once (#7).
+- `models refresh` reports `missing_choice_models`: enabled choices whose model a harness did not
+  list (#7).
+
+### Fixed
+
+- `send_message` to a run that failed with a config error is refused instead of resuming a run
+  that cannot succeed (#7).
+
 ## [0.1.0] - 2026-10-23
 
 First release.
