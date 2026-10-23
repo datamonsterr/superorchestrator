@@ -17,6 +17,8 @@ use crate::http::read_capped;
 
 pub const MAX_RESPONSE: usize = 1_000_000;
 const SUM_TOLERANCE: f64 = 0.02;
+/// Largest gap between the reported score and the probability-weighted mean of the anchors.
+const SCORE_TOLERANCE: f64 = 0.25;
 
 /// Environment lookup, a plain function so tests never touch the process environment.
 pub type EnvFn = fn(&str) -> Option<String>;
@@ -161,6 +163,13 @@ pub fn validate(data: &Value) -> Result<Validated, String> {
     }
     if (probabilities.values().sum::<f64>() - 1.0).abs() > SUM_TOLERANCE {
         return bad("probabilities do not sum to 1");
+    }
+    let expected_score: f64 = probabilities
+        .iter()
+        .filter_map(|(k, p)| k.parse::<f64>().ok().map(|i| i * p))
+        .sum();
+    if (score - expected_score).abs() > SCORE_TOLERANCE {
+        return bad("score disagrees with probabilities");
     }
     Ok(Validated {
         score,
@@ -525,6 +534,16 @@ mod tests {
     }
 
     #[test]
+    fn rejects_a_score_that_disagrees_with_the_probabilities() {
+        // Mean of probs() is 2.2.
+        assert!(validate(&body(json!(2.4), json!(0.9), probs())).is_ok());
+        assert!(validate(&body(json!(2.0), json!(0.9), probs())).is_ok());
+        let e = validate(&body(json!(2.6), json!(0.9), probs())).unwrap_err();
+        assert!(e.contains("disagrees"), "{e}");
+        assert!(validate(&body(json!(1.9), json!(0.9), probs())).is_err());
+    }
+
+    #[test]
     fn complexity_mapping_is_linear_and_rounded_to_one_decimal() {
         assert_eq!(complexity_of(0.0, 5), 0.0);
         assert_eq!(complexity_of(1.0, 5), 25.0);
@@ -623,8 +642,13 @@ mod tests {
 
     #[test]
     fn score_bounds_are_inclusive() {
-        assert!(validate(&body(json!(0), json!(0.9), probs())).is_ok());
-        assert!(validate(&body(json!(4), json!(0.9), probs())).is_ok());
+        let at = |i: &str| {
+            let mut m = json!({"0": 0.0, "1": 0.0, "2": 0.0, "3": 0.0, "4": 0.0});
+            m[i] = json!(1.0);
+            m
+        };
+        assert!(validate(&body(json!(0), json!(0.9), at("0"))).is_ok());
+        assert!(validate(&body(json!(4), json!(0.9), at("4"))).is_ok());
     }
 
     #[test]

@@ -12,3 +12,8 @@ export function anchorProbabilities(p: RouteResult['probabilities']): Record<str
 export function complexityText(r: Pick<RouteResult, 'complexity' | 'level'>): string {
   return [r.complexity != null ? `complexity ${r.complexity.toFixed(1)}` : '', r.level ? `level ${r.level}` : ''].filter(Boolean).join(' · ')
 }
+
+/** True when the probabilities are keyed by complexity anchor ("0".."4"); false for legacy per-choice route events. */
+export function isAnchorKeyed(p: RouteResult['probabilities']): boolean {
+  return Object.keys(p).some((k) => /^\d+$/.test(k))
+}

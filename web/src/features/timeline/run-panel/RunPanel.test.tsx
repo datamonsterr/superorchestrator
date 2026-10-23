@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { toast } from 'sonner'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { paginate } from '@/api/msw/handlers'
-import { runs } from '@/api/msw/fixtures'
+import { routeResult, runs } from '@/api/msw/fixtures'
 import { qk } from '@/api/keys'
 import type { RunViewPublic } from '@/api/types'
 import { renderWithProviders } from '@/test/render'
@@ -43,6 +43,19 @@ describe('RunPanel', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Result' }))
     expect(await screen.findByText('No result yet.')).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: 'Result' })).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('Route tab: a legacy event keyed by choice keeps sorted choice bars', async () => {
+    server.use(
+      http.get(`${B}/runs/:id/route`, () =>
+        HttpResponse.json({ ...routeResult, complexity: undefined, level: undefined, probabilities: { 'agy-pro': 0.2, 'codex-high': 0.8 } }),
+      ),
+    )
+    panel('run-1')
+    await userEvent.click(await tab('Route'))
+    const bars = await screen.findByRole('list', { name: 'Choice probabilities' })
+    expect(within(bars).getAllByRole('listitem').map((li) => li.textContent?.split(/\d/)[0])).toEqual(['codex-high', 'agy-pro'])
+    expect(screen.getByText('Choice probabilities', { selector: 'h3' })).toBeInTheDocument()
   })
 
   it('Route tab: complexity, level, bars in anchor order, rationale and alternatives', async () => {

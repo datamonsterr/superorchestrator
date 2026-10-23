@@ -12,7 +12,7 @@ import { HarnessBadge } from '@/components/common/HarnessBadge'
 import { ProbabilityBars } from '@/components/common/ProbabilityBars'
 import { useAccounts, useRoutePreview } from '@/api/queries'
 import { formatMoney } from '@/lib/format'
-import { anchorProbabilities } from '@/lib/complexity'
+import { anchorProbabilities, isAnchorKeyed } from '@/lib/complexity'
 import type { RouteResult } from '@/api/types'
 import { ANY, HARNESSES, paramsFrom, previewSchema, type PreviewValues } from './schemas'
 
@@ -36,7 +36,11 @@ export function RouteResultCard({ result }: { result: RouteResult }) {
           {result.effort && <span>effort {result.effort}</span>}
           <span>routing cost {formatMoney(result.usage.cost)}</span>
         </div>
-        <ProbabilityBars probabilities={anchorProbabilities(result.probabilities)} ariaLabel="Complexity probabilities" sort={false} />
+        {isAnchorKeyed(result.probabilities) ? (
+          <ProbabilityBars probabilities={anchorProbabilities(result.probabilities)} ariaLabel="Complexity probabilities" sort={false} />
+        ) : (
+          <ProbabilityBars probabilities={result.probabilities} selected={result.choice_id} ariaLabel="Choice probabilities" />
+        )}
         <p className="text-sm">
           <span className="font-medium">Rationale: </span>
           {result.rationale}

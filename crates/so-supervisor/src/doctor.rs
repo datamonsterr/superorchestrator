@@ -84,6 +84,7 @@ pub fn run_checks(paths: &Paths, host: &HostEnv) -> DoctorReport {
     check_binaries(&mut c, host, &accounts);
     let cfg = check_config(&mut c, paths);
     check_decider(&mut c, cfg.as_ref());
+    check_instruction(&mut c, cfg.as_ref());
     check_levels(
         &mut c,
         cfg.as_ref(),
@@ -132,6 +133,20 @@ fn check_decider(c: &mut Checks, cfg: Option<&Config>) {
                 "no OpenRouter key ({} or router.jev.key_file): routing uses the heuristic only; {detail}",
                 jev.key_env
             ),
+        );
+    }
+}
+
+/// A custom `router.instruction` that still reads like the old "choose a choice" question.
+fn check_instruction(c: &mut Checks, cfg: Option<&Config>) {
+    let Some(cfg) = cfg else { return };
+    let text = cfg.router.instruction.to_lowercase();
+    if cfg.router.instruction != so_core::config::DEFAULT_ROUTER_INSTRUCTION
+        && (text.contains("eligible choice") || text.contains("choose"))
+    {
+        c.warn(
+            "router instruction",
+            "router.instruction looks written for the old choice question; the decider now rates complexity — reset it or rewrite it",
         );
     }
 }
@@ -543,6 +558,21 @@ mod tests {
             .and_then(|r| r.split(". ").next())
             .unwrap();
         assert_eq!(names, "OPENAI_API_KEY", "{d}");
+    }
+
+    #[test]
+    fn instruction_written_for_the_old_question_warns() {
+        let mut cfg = Config::default();
+        let run = |cfg: &Config| {
+            let mut c = Checks::default();
+            check_instruction(&mut c, Some(cfg));
+            c.0.len()
+        };
+        assert_eq!(run(&cfg), 0);
+        cfg.router.instruction = "Choose the best eligible choice for the task.".into();
+        assert_eq!(run(&cfg), 1);
+        cfg.router.instruction = "Rate how hard the task is.".into();
+        assert_eq!(run(&cfg), 0);
     }
 
     fn levels_detail(cfg: &Config) -> (Status, String) {

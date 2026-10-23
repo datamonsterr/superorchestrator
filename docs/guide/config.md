@@ -64,7 +64,7 @@ superorchestrator config edit
 |---|---|---|
 | `priority` | `["agy", "opencode", "codex", "claude"]` | Harness order for ties |
 | `weights` | `{ headroom = 1.0, load = 0.5, cost = 0.3 }` | Heuristic weights (`router.weights.headroom`, `.load`, `.cost`) |
-| `instruction` | A complexity-rating instruction | Instruction sent to the decider with its complexity question. The default asks only for a rating and treats `task_content` as data. |
+| `instruction` | A complexity-rating instruction | Instruction sent to the decider with its complexity question. The default asks only for a rating and treats `task_content` as data. `doctor` warns when a custom instruction still looks written for the old choice question. |
 | `levels` | `low` 0-39, `mid` 40-79, `high` 80-100 | Complexity levels, set with `[[router.levels]]` below |
 
 ### `[router.jev]`

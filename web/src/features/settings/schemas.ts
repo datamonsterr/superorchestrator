@@ -50,7 +50,7 @@ export function valuesFromConfig(view: ConfigView): SettingsValues {
     notifications: { desktop: c.notifications?.desktop ?? false, discord_webhook_env: c.notifications?.discord_webhook_env ?? '' },
     worktrees: { dir: c.worktrees?.dir ?? '', branch_prefix: c.worktrees?.branch_prefix ?? '' },
     router: {
-      policy: { min_confidence: c.router?.policy?.min_confidence ?? 0.5, min_margin: c.router?.policy?.min_margin ?? 0.1 },
+      policy: { min_confidence: c.router?.policy?.min_confidence ?? 0.45, min_margin: c.router?.policy?.min_margin ?? 0.15 },
       jev: { key_env: c.router?.jev?.key_env ?? 'OPENROUTER_API_KEY', key_file: c.router?.jev?.key_file ?? '' },
     },
     ui: { bind: c.ui?.bind ?? '127.0.0.1', port: c.ui?.port ?? 7878, enabled: c.ui?.enabled ?? false },
