@@ -521,7 +521,7 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
 
 ## 14. Web UI
 
-`superorchestrator ui` serves at `127.0.0.1:7878` (`ui.bind`, `ui.port`). Binding to anything other than loopback requires `--token`. The browser then asks for the token once and stores it in an HttpOnly cookie. Credential homes and auth files are never served.
+`superorchestrator ui` serves at `127.0.0.1:7878` (`ui.bind`, `ui.port`). Every bind requires token authentication, including loopback. Without `--token` or `ui.token`, the supervisor generates a 256-bit OS-random token and reuses it from an owner-only `ui-token` file in the config directory. The CLI obtains a fresh, single-use 60-second login code over the private supervisor socket. Its URL carries that code in a fragment, which the browser removes before exchanging it for the existing HttpOnly cookie; the long-lived token never enters the URL. Credential homes and auth files are never served.
 
 **Pages:**
 - **Dashboard.**
@@ -726,7 +726,7 @@ The supervisor sends notifications for the events listed in `notifications.on`, 
 - **Credentials.** Never printed, logged, copied into prompts, served by the UI, or committed. Probes and sign-in checks test only that auth files exist. The supervisor log redacts tokens matching known key patterns.
 - **Socket and UI.**
   - The socket is created with mode `0600` in a user-only directory.
-  - The UI binds to loopback by default. A non-loopback bind requires a token.
+  - The UI binds to loopback by default. Every bind requires a token; an owner-only persisted token is generated when none is configured.
   - Codex app-server websockets bind to `127.0.0.1` with a per-run token.
   - `opencode serve` uses a per-run password.
 - **RPC sessions and run ownership.** Session-bearing connections may read or control only runs and workflows in their own session. Cross-session denial returns the same not-found code and message as a missing run or workflow, without revealing its existence. Workflows record their initiating run; a run caller can inspect or cancel only workflows owned by its subtree, and cannot act on orchestrator or legacy workflows without a recorded run owner. A run caller may read, wait on, join, review or cancel only itself and descendants; `fork_agent` retains its direct-parent restriction. It may message itself, descendants, its parent and other ancestors. Siblings are refused. `read_messages` reads only the caller's inbox; `ask_parent` and `report_progress` address the caller's parent. Depth-0 orchestrator connections retain access to their session's runs.

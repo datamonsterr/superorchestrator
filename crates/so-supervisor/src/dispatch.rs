@@ -242,6 +242,12 @@ pub(crate) async fn handle_other(
     // `hello` never gets here: the connection loop runs it through `handle_hello`.
     let r = if !ctx.greeted {
         Err(RpcError::new(INVALID_REQUEST, "hello required"))
+    } else if req.method == METHOD_UI_START && (ctx.session_id.is_some() || ctx.run_id.is_some()) {
+        // Login-code minting is reserved for sessionless, runless operator connections.
+        Err(RpcError::new(
+            INVALID_REQUEST,
+            "ui_start requires a sessionless, runless inspect/operator connection",
+        ))
     } else if ctx.session_id.is_none() && !INSPECT_METHODS.contains(&req.method.as_str()) {
         Err(RpcError::new(
             INVALID_REQUEST,

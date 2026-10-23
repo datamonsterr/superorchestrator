@@ -11,7 +11,8 @@
 //!
 //! # Security
 //!
-//! Loopback by default. A non-loopback bind needs a token ([`WebError::TokenRequired`]).
+//! Loopback by default. Every bind requires a token; startup generates and persists one
+//! when no explicit token is configured.
 //! Over plain HTTP the token and cookie travel in the clear; put TLS in front of a
 //! non-loopback bind. Every request is checked for an allowed `Host`; `/api` requests also
 //! for a same-origin `Origin`. Config changes made over the API are written to
@@ -26,6 +27,7 @@ pub mod page;
 pub mod security;
 pub mod state;
 pub mod stream;
+mod token;
 pub mod tsgen;
 pub mod types;
 
@@ -46,6 +48,10 @@ pub use state::{AppState, WebOptions};
 pub enum WebError {
     #[error("binding the UI to {0} requires a token (--token or ui.token)")]
     TokenRequired(String),
+    #[error("could not generate a UI login code: {0}")]
+    LoginCode(#[source] std::io::Error),
+    #[error("could not load or create the private UI token: {0}")]
+    TokenFile(#[source] std::io::Error),
     #[error("{0}")]
     BadAddress(String),
     #[error("could not listen on {addr}: {source}")]
@@ -63,14 +69,24 @@ fn make_app(state: Arc<SupervisorState>, opts: WebOptions) -> AppState {
         hub,
         opts: Arc::new(opts),
         limiter: Arc::default(),
+        login_codes: Arc::default(),
         stop: Arc::new(tokio::sync::watch::channel(false).0),
         refresh_lock: Arc::default(),
     }
 }
 
 /// Builds the router for `state` with a running [`stream::Hub`] pump.
-pub fn router(state: Arc<SupervisorState>, opts: WebOptions) -> Router {
-    build(make_app(state, opts))
+pub fn router(state: Arc<SupervisorState>, mut opts: WebOptions) -> Result<Router, WebError> {
+    prepare(&state, &mut opts)?;
+    Ok(build(make_app(state, opts)))
+}
+
+fn prepare(state: &SupervisorState, opts: &mut WebOptions) -> Result<(), WebError> {
+    if opts.token.as_deref().is_none_or(str::is_empty) {
+        opts.token =
+            Some(token::load_or_create(&state.paths.config_dir).map_err(WebError::TokenFile)?);
+    }
+    validate(opts)
 }
 
 fn build(app: AppState) -> Router {
@@ -83,7 +99,7 @@ fn build(app: AppState) -> Router {
 fn validate(opts: &WebOptions) -> Result<(), WebError> {
     opts.bind_ip()
         .map_err(|e| WebError::BadAddress(format!("{e:?}")))?;
-    if !opts.is_loopback() && opts.token.as_deref().is_none_or(str::is_empty) {
+    if opts.token.as_deref().is_none_or(str::is_empty) {
         return Err(WebError::TokenRequired(opts.bind.clone()));
     }
     Ok(())
@@ -92,6 +108,7 @@ fn validate(opts: &WebOptions) -> Result<(), WebError> {
 /// A running web server.
 pub struct WebServer {
     addr: SocketAddr,
+    login_codes: Arc<security::LoginCodes>,
     task: Option<JoinHandle<()>>,
     stop: Arc<tokio::sync::watch::Sender<bool>>,
 }
@@ -111,7 +128,7 @@ impl WebServer {
         self.addr
     }
 
-    /// `http://host:port` as a browser should open it.
+    /// Base URL without any credentials.
     pub fn url(&self) -> String {
         let host = if self.addr.ip().is_unspecified() {
             "localhost".to_string()
@@ -121,6 +138,13 @@ impl WebServer {
             self.addr.ip().to_string()
         };
         format!("http://{host}:{}", self.addr.port())
+    }
+
+    /// Mint a fresh single-use, 60-second browser login URL. Only hand it out over
+    /// the private supervisor socket; the long-lived token never enters the URL.
+    pub fn login_url(&self) -> Result<String, WebError> {
+        let code = self.login_codes.mint().map_err(WebError::LoginCode)?;
+        Ok(format!("{}/token#token={code}", self.url()))
     }
 
     /// Stops accepting, ends open streams and waits for the server task.
@@ -137,7 +161,13 @@ pub async fn start(
     state: Arc<SupervisorState>,
     mut opts: WebOptions,
 ) -> Result<WebServer, WebError> {
-    validate(&opts)?;
+    let st = state.clone();
+    opts = tokio::task::spawn_blocking(move || {
+        prepare(&st, &mut opts)?;
+        Ok::<_, WebError>(opts)
+    })
+    .await
+    .map_err(|e| WebError::TokenFile(std::io::Error::other(e)))??;
     let ip = opts
         .bind_ip()
         .map_err(|e| WebError::BadAddress(format!("{e:?}")))?;
@@ -155,6 +185,7 @@ pub async fn start(
     opts.port = addr.port();
     let app = make_app(state, opts);
     let stop = app.stop.clone();
+    let login_codes = app.login_codes.clone();
     let mut stopped = stop.subscribe();
     let app = build(app);
     let task = tokio::spawn(async move {
@@ -173,6 +204,7 @@ pub async fn start(
     tracing::info!(%addr, "web UI listening");
     Ok(WebServer {
         addr,
+        login_codes,
         task: Some(task),
         stop,
     })
@@ -190,8 +222,8 @@ pub async fn serve(
     Ok(())
 }
 
-/// Hooks the web UI into a supervisor: registers the `ui_start` RPC (idempotent: a second
-/// call reports the running URL) and starts the server right away when `[ui] enabled`.
+/// Hooks the web UI into a supervisor: registers `ui_start` (reuses the running UI,
+/// minting a fresh single-use login URL for each call) and starts the server right away when `[ui] enabled`.
 /// Call it from the daemon's setup, after `default_handlers`.
 pub fn install(state: &Arc<SupervisorState>) {
     type Slot = Arc<tokio::sync::Mutex<Option<WebServer>>>;
@@ -206,7 +238,9 @@ pub fn install(state: &Arc<SupervisorState>) {
             let mut guard = slot.lock().await;
             if let Some(running) = guard.as_ref() {
                 return serde_json::to_value(UiStartResult {
-                    url: running.url(),
+                    url: running.login_url().map_err(|e| {
+                        RpcError::new(so_core::proto::INTERNAL_ERROR, e.to_string())
+                    })?,
                     already_running: true,
                 })
                 .map_err(|e| RpcError::new(so_core::proto::INTERNAL_ERROR, e.to_string()));
@@ -229,7 +263,9 @@ pub fn install(state: &Arc<SupervisorState>) {
                 RpcError::new(code, e.to_string())
             })?;
             let result = UiStartResult {
-                url: server.url(),
+                url: server
+                    .login_url()
+                    .map_err(|e| RpcError::new(so_core::proto::INTERNAL_ERROR, e.to_string()))?,
                 already_running: false,
             };
             *guard = Some(server);

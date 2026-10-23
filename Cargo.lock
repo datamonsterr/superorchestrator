@@ -3321,6 +3321,7 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "rust-embed",
+ "rustix",
  "schemars",
  "serde",
  "serde_json",

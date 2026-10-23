@@ -26,7 +26,10 @@ pub const MAX_FAILURES: usize = 5;
 pub const WINDOW: Duration = Duration::from_secs(60);
 const MAX_TRACKED_IPS: usize = 1024;
 
-pub const CSP: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+// Sonner 2.0.8 appends an empty style element, then injects one fixed stylesheet.
+// Only those two content hashes are allowed and checked by web tests;
+// runtime chart/Radix styles receive a fresh nonce for each HTML response.
+pub const CSP: &str = "default-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; style-src-elem 'self' 'sha256-StEaX+se6YS7pqjzrzMIA0KaX9zF/8zAhvQXZAe5epY=' 'sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU='; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 
 const TOKEN_PATHS: [&str; 2] = ["/api/v1/token", "/api/v1/auth"];
 
@@ -34,6 +37,55 @@ const TOKEN_PATHS: [&str; 2] = ["/api/v1/token", "/api/v1/auth"];
 /// (tests).
 #[derive(Debug, Clone, Copy)]
 pub struct ClientIp(pub IpAddr);
+
+/// CLI login codes live for one minute and never authorize API bearer requests.
+const LOGIN_CODE_TTL: Duration = Duration::from_secs(60);
+const MAX_LOGIN_CODES: usize = 64;
+
+struct LoginCode {
+    secret: String,
+    expires: tokio::time::Instant,
+}
+
+/// Small, per-UI store of short-lived, single-use browser login codes.
+#[derive(Default)]
+pub struct LoginCodes {
+    pending: Mutex<VecDeque<LoginCode>>,
+}
+
+impl LoginCodes {
+    pub(crate) fn mint(&self) -> std::io::Result<String> {
+        let secret = crate::token::random_token()?;
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let now = tokio::time::Instant::now();
+        pending.retain(|code| code.expires > now);
+        // Mint bursts may evict unused codes before their TTL; this is intentional
+        // to keep the store bounded.
+        while pending.len() >= MAX_LOGIN_CODES {
+            pending.pop_front();
+        }
+        pending.push_back(LoginCode {
+            secret: secret.clone(),
+            expires: now + LOGIN_CODE_TTL,
+        });
+        Ok(secret)
+    }
+
+    pub(crate) fn consume(&self, secret: &str) -> bool {
+        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let now = tokio::time::Instant::now();
+        pending.retain(|code| code.expires > now);
+        // Compare every retained code in constant time; remove the match under the
+        // same lock so simultaneous exchanges cannot both consume it.
+        let mut matched = None;
+        for (index, code) in pending.iter().enumerate() {
+            if ct_eq(secret, &code.secret) {
+                matched = Some(index);
+            }
+        }
+        matched.is_some_and(|index| pending.remove(index).is_some())
+    }
+}
 
 /// Failed-login counter per IP.
 #[derive(Default)]
@@ -66,8 +118,14 @@ impl RateLimiter {
         if map.len() >= MAX_TRACKED_IPS && !map.contains_key(&ip) {
             let now = Instant::now();
             map.retain(|_, q| q.back().is_some_and(|t| now.duration_since(*t) < WINDOW));
-            if map.len() >= MAX_TRACKED_IPS {
-                map.clear();
+            if map.len() >= MAX_TRACKED_IPS
+                && let Some(oldest) = map
+                    .iter()
+                    .filter_map(|(ip, q)| q.back().map(|t| (*ip, *t)))
+                    .min_by_key(|(_, at)| *at)
+                    .map(|(ip, _)| ip)
+            {
+                map.remove(&oldest);
             }
         }
         map.entry(ip).or_default().push_back(Instant::now());
@@ -238,17 +296,22 @@ pub async fn guard(State(st): State<AppState>, mut req: Request, next: Next) -> 
         }
         if is_api {
             check_api_request(&req, &host, &st.opts)?;
-            if let Some(token) = &st.opts.token
-                && !TOKEN_PATHS.contains(&path.as_str())
-            {
+            if !TOKEN_PATHS.contains(&path.as_str()) {
+                let token = st
+                    .opts
+                    .token
+                    .as_deref()
+                    .filter(|t| !t.is_empty())
+                    .ok_or_else(ApiError::unauthorized)?;
                 // Valid credentials always pass; the limiter only gates guessing.
                 if !authorized(req.headers(), token) {
-                    st.limiter.check(ip).map_err(ApiError::rate_limited)?;
                     let h = req.headers();
-                    if h.contains_key(header::AUTHORIZATION) {
+                    let has_cookie = cookie(h, COOKIE_NAME).is_some();
+                    if h.contains_key(header::AUTHORIZATION) || has_cookie {
+                        st.limiter.check(ip).map_err(ApiError::rate_limited)?;
                         st.limiter.record_failure(ip);
-                    } else if cookie(h, COOKIE_NAME).is_some() {
-                        // A stale cookie (the token changed) is not a guess: drop it.
+                    }
+                    if has_cookie {
                         return Err(ApiError::unauthorized_clearing_cookie());
                     }
                     return Err(ApiError::unauthorized());
@@ -273,7 +336,7 @@ pub async fn guard(State(st): State<AppState>, mut req: Request, next: Next) -> 
     );
     if is_api {
         h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    } else {
+    } else if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
         h.insert(
             header::CONTENT_SECURITY_POLICY,
             HeaderValue::from_static(CSP),
@@ -282,18 +345,22 @@ pub async fn guard(State(st): State<AppState>, mut req: Request, next: Next) -> 
     res
 }
 
-/// `POST /api/v1/token` (and its alias `/auth`): trades the token for the session cookie.
+/// `POST /api/v1/token` (and `/auth`): exchanges a token or single-use CLI code for the
+/// same session cookie derived from the long-lived token.
 pub async fn post_token(
     State(st): State<AppState>,
     Extension(ClientIp(ip)): Extension<ClientIp>,
     headers: HeaderMap,
     ApiJson(body): ApiJson<TokenRequest>,
 ) -> ApiResult<Response> {
-    let Some(token) = &st.opts.token else {
-        return Ok(StatusCode::NO_CONTENT.into_response());
-    };
+    let token = st
+        .opts
+        .token
+        .as_deref()
+        .filter(|t| !t.is_empty())
+        .ok_or_else(ApiError::unauthorized)?;
     st.limiter.check(ip).map_err(ApiError::rate_limited)?;
-    if !ct_eq(&body.token, token) {
+    if !ct_eq(&body.token, token) && !st.login_codes.consume(&body.token) {
         st.limiter.record_failure(ip);
         return Err(ApiError::unauthorized());
     }
@@ -376,6 +443,48 @@ mod tests {
         }
         assert!(l.check(a).is_err());
         assert!(l.check(b).is_ok());
+    }
+
+    #[test]
+    fn rate_limiter_evicts_only_the_oldest_ip_at_capacity() {
+        let limiter = RateLimiter::default();
+        let now = Instant::now();
+        let oldest = IpAddr::from([10, 0, 0, 0]);
+        {
+            let mut map = limiter.failures.lock().unwrap();
+            for n in 0..MAX_TRACKED_IPS {
+                let ip = IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + n as u32));
+                let at = now - Duration::from_secs(if n == 0 { 2 } else { 1 });
+                map.insert(ip, VecDeque::from(vec![at; MAX_FAILURES]));
+            }
+        }
+        let new = IpAddr::from([192, 0, 2, 1]);
+        limiter.record_failure(new);
+        assert!(limiter.check(oldest).is_ok());
+        for n in 1..MAX_TRACKED_IPS {
+            let ip = IpAddr::V4(std::net::Ipv4Addr::from(0x0a00_0000 + n as u32));
+            assert!(limiter.check(ip).is_err(), "active failures lost for {ip}");
+        }
+        assert_eq!(limiter.failures.lock().unwrap().len(), MAX_TRACKED_IPS);
+    }
+
+    #[test]
+    fn concurrent_code_redemptions_accept_exactly_once() {
+        let codes = std::sync::Arc::new(LoginCodes::default());
+        let code = codes.mint().unwrap();
+        let accepted = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..8)
+                .map(|_| {
+                    let (codes, code) = (codes.clone(), code.clone());
+                    scope.spawn(move || usize::from(codes.consume(&code)))
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .sum::<usize>()
+        });
+        assert_eq!(accepted, 1);
     }
 
     #[test]

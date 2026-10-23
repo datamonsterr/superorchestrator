@@ -8,7 +8,11 @@ The web UI runs inside the supervisor. It shows what superorchestrator is doing 
 superorchestrator ui
 ```
 
-This starts the supervisor if needed, prints the URL (default `http://127.0.0.1:7878`) and opens your browser. Options: `--bind ADDR`, `--port N`, `--token T` and `--no-open`. If the UI already runs, the options are ignored.
+This starts the supervisor if needed, prints a sign-in URL (default `http://127.0.0.1:7878/token#token=…`) and opens your browser. The fragment carries a random, single-use login code, never the long-lived token. The supervisor mints a fresh code for every `ui` call over its private socket. Codes expire after 60 seconds and are exchanged through the existing token-to-cookie endpoint. The browser removes the fragment from its current history entry before posting the fragment value unchanged. Options: `--bind ADDR`, `--port N`, `--token T` and `--no-open`. If the UI already runs, the options are ignored and a fresh login code is returned for that same UI.
+
+The browser's global history may still record the original fragment. A history entry or copied URL cannot authenticate again after its code has been redeemed; copying the URL is safe after first use. An unused code expires after 60 seconds. Treat an unused, unexpired URL as a sign-in credential. Run `superorchestrator ui` again for a fresh code if needed.
+
+`--no-open` prints the URL without starting `xdg-open` or `open`, avoiding URL exposure in opener argv entirely. When an opener runs, its argv contains only the short-lived code, never the persistent token. On shared machines, keep explicit tokens in the private config file.
 
 ## Pages
 
@@ -23,19 +27,23 @@ This starts the supervisor if needed, prints the URL (default `http://127.0.0.1:
 
 ## Hosting and the token
 
-The UI binds to loopback by default. Anything that can reach the port can drive your accounts, so treat a wider bind with care.
+The UI binds to loopback by default. Every bind requires a token, including loopback: other users on the same machine can reach loopback TCP. Requests without a valid session cookie or bearer token receive 401.
 
-To bind to another address, set a token. A non-loopback bind without a token is refused.
+If neither `--token` nor `ui.token` is set (or the configured value is empty), startup generates a 256-bit token from the OS CSPRNG and saves it as `ui-token` in the config directory, with mode 0600. Restarts reuse that token, and subsequent `superorchestrator ui` calls return fresh single-use sign-in URLs for the running supervisor. Missing files are created atomically; malformed files, symlinks, files owned by another user, and files with broader permissions stop startup. To recover, stop the UI and remove the invalid or exposed file; the next start generates a new token and invalidates old cookies.
+
+To bind to another address, you may supply your own token:
 
 ```sh
 superorchestrator ui --bind 0.0.0.0 --token "$(openssl rand -hex 24)"
 ```
 
-The browser asks for the token once, then keeps a session cookie (`so_token`, HttpOnly, 7 days). Scripts can send `Authorization: Bearer <token>`. Failed logins are rate limited.
+Opening the CLI URL exchanges its single-use code through `POST /api/v1/token` (the UI uses its `/api/v1/auth` alias), then keeps a session cookie (`so_token`, HttpOnly, SameSite=Strict, 7 days). Opening the base URL manually shows the token prompt when no valid cookie is present. Scripts can read the generated token from the private file and send `Authorization: Bearer <token>`. Wrong tokens, used or expired login codes, bearer credentials and cookies count toward the per-IP limit of five failures per minute; a sixth attempt receives 429. Invalid cookies are also cleared. Valid API cookies and bearer credentials remain accepted while guesses are limited.
 
-To keep the token, set `ui.token` in `config.toml`. It is stored in plain text in that file (mode 0600). The API cannot change it. Even on loopback, a set token is enforced. For access from other machines, prefer an SSH tunnel or a reverse proxy with TLS. If a trusted proxy terminates TLS, the cookie is marked `Secure` only when that proxy sends `X-Forwarded-Proto: https`.
+`--token` takes precedence over `ui.token`, and either overrides the generated file. To persist an explicit token, set `ui.token` in `config.toml` (mode 0600). The API cannot read or change the token, including the generated file. Changing the effective token invalidates existing cookies. For access from other machines, prefer an SSH tunnel or a reverse proxy with TLS. If a trusted proxy terminates TLS, the cookie is marked `Secure` only when that proxy sends `X-Forwarded-Proto: https`.
 
-The UI checks the `Host` and `Origin` headers against DNS rebinding and cross-site requests. Credential homes and auth files are never served.
+The supervisor keeps at most 64 pending login codes, removes expired codes, and evicts the oldest pending code when full. Redemption compares code values in constant time and consumes a successful match atomically. Login codes do not work as API bearer credentials.
+
+The UI checks the `Host` and `Origin` headers against DNS rebinding and cross-site requests. Its CSP uses `style-src 'self'` and permits inline style attributes for dynamic bars, timeline positions and library layout. Inline style elements require a fresh document nonce (charts and Radix) or Sonner's exact stylesheet and empty-element hashes. Credential homes and auth files are never served.
 
 ## Run it as a service
 
