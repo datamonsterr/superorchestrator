@@ -185,7 +185,7 @@ fn pinned_candidates<'a>(
         && let (Some(harness), Some(model)) = (pins.harness, pins.model.clone())
     {
         let synthetic = Choice {
-            id: format!("pinned-{harness}-{model}"),
+            id: so_core::pinned_choice_id(harness, Some(&model)),
             harness,
             model,
             effort: pins.effort.clone(),

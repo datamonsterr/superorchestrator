@@ -383,6 +383,9 @@ pub struct RefreshReport {
     pub unknown_choice_models: Vec<ChoiceRef>,
     /// Catalog models no choice uses.
     pub unused_models: Vec<ModelRef>,
+    /// Choices whose model a harness did not list in this refresh. Only harnesses that
+    /// listed at least one model are checked, so a failed or skipped source reports nothing.
+    pub missing_choice_models: Vec<ChoiceRef>,
 }
 
 pub struct RefreshEnv<'a> {
@@ -668,6 +671,7 @@ pub async fn refresh(
         free_set.extend(g.free);
     }
 
+    let missing_choice_models = missing_choice_models(&collected, choices);
     let mut added = Vec::new();
     for c in collected {
         let free = c.free || (c.harness == Harness::Opencode && free_set.contains(&c.id));
@@ -709,8 +713,28 @@ pub async fn refresh(
         added,
         unknown_choice_models: unknown_choice_models(&catalog, choices),
         unused_models: unused_models(&catalog, choices),
+        missing_choice_models,
     };
     (catalog, report)
+}
+
+/// Choices whose model is absent from the list its harness just returned.
+fn missing_choice_models(listed: &[Collected], choices: &[Choice]) -> Vec<ChoiceRef> {
+    choices
+        .iter()
+        .filter(|c| c.enabled)
+        .filter(|c| listed.iter().any(|m| m.harness == c.harness))
+        .filter(|c| {
+            !listed
+                .iter()
+                .any(|m| m.harness == c.harness && m.id == c.model)
+        })
+        .map(|c| ChoiceRef {
+            choice: c.id.clone(),
+            harness: c.harness,
+            model: c.model.clone(),
+        })
+        .collect()
 }
 
 /// Choices whose `(harness, model)` is not in the catalog.

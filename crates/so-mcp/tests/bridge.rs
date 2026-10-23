@@ -43,6 +43,10 @@ fn fixed_view() -> HarnessesView {
 }
 
 async fn fixture(subagent: bool) -> Fixture {
+    fixture_with(subagent, None).await
+}
+
+async fn fixture_with(subagent: bool, notice: Option<&str>) -> Fixture {
     let dir = tempfile::Builder::new()
         .prefix("somcp-")
         .tempdir_in("/tmp")
@@ -128,6 +132,9 @@ async fn fixture(subagent: bool) -> Fixture {
     .unwrap();
     let (st, ct) = tokio::io::duplex(65536);
     let bridge = McpBridge::new(sc, subagent);
+    if let Some(n) = notice {
+        bridge.set_daemon_notice(n.to_string());
+    }
     tokio::spawn(async move {
         let svc = bridge.serve(st).await.unwrap();
         let _ = svc.waiting().await;
@@ -144,6 +151,42 @@ async fn fixture(subagent: bool) -> Fixture {
 
 fn text(r: &CallToolResult) -> String {
     serde_json::to_string(&r.content).unwrap()
+}
+
+#[tokio::test]
+async fn daemon_build_mismatch_is_in_the_instructions() {
+    use so_core::proto::HelloResult;
+    let hello = |build: Option<&str>, stale| HelloResult {
+        session_id: "s".into(),
+        run_id: None,
+        depth: 0,
+        build_id: build.map(String::from),
+        stale,
+    };
+    let me = so_core::buildinfo::build_id();
+    assert_eq!(so_mcp::daemon_notice(&hello(Some(me), false)), None);
+    let notice = so_mcp::daemon_notice(&hello(Some("other"), false)).unwrap();
+    assert!(notice.contains("other") && notice.contains("Restart the daemon"));
+    assert!(so_mcp::daemon_notice(&hello(None, false)).is_some());
+    assert!(so_mcp::daemon_notice(&hello(Some(me), true)).is_some());
+
+    let f = fixture_with(false, Some(&notice)).await;
+    let text = f.client.peer_info().unwrap().instructions.clone().unwrap();
+    assert!(text.contains("list_harnesses"));
+    assert!(text.starts_with("WARNING: "), "{text}");
+    assert!(text.contains("Restart the daemon"), "{text}");
+    f.sup.shutdown().await;
+
+    let clean = fixture(false).await;
+    let text = clean
+        .client
+        .peer_info()
+        .unwrap()
+        .instructions
+        .clone()
+        .unwrap();
+    assert!(!text.contains("WARNING"));
+    clean.sup.shutdown().await;
 }
 
 #[tokio::test]

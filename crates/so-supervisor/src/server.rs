@@ -67,6 +67,8 @@ pub struct SupervisorOptions {
     /// How often dead interactive wrapper sessions are ended (they hold account caps).
     /// Cap checks end them too, so this only keeps the stored state fresh.
     pub reap_interval: Duration,
+    /// The executable to watch for replacement; default the running one.
+    pub exe_watch: Option<so_core::buildinfo::ExeWatch>,
 }
 
 impl SupervisorOptions {
@@ -84,7 +86,13 @@ impl SupervisorOptions {
             host: None,
             mcp_exe: None,
             reap_interval: REAP_INTERVAL,
+            exe_watch: None,
         }
+    }
+
+    pub fn with_exe_watch(mut self, w: so_core::buildinfo::ExeWatch) -> Self {
+        self.exe_watch = Some(w);
+        self
     }
 
     pub fn with_reap_interval(mut self, d: Duration) -> Self {
@@ -143,6 +151,8 @@ pub struct SupervisorState {
     pub http: reqwest::Client,
     max_inflight: usize,
     pub(crate) started: Instant,
+    /// The daemon's own executable as it was at start; see [`SupervisorState::stale`].
+    exe: Option<so_core::buildinfo::ExeWatch>,
     clients: AtomicUsize,
     /// Bumped on every connect so a short-lived client resets the idle clock.
     epoch: AtomicU64,
@@ -154,6 +164,17 @@ pub struct SupervisorState {
 }
 
 impl SupervisorState {
+    /// Whether this daemon's executable was replaced or removed after it started.
+    pub fn is_stale(&self) -> bool {
+        self.exe.as_ref().is_some_and(|w| w.is_stale())
+    }
+
+    /// Why this daemon runs old code, `None` when it is current (or could not tell).
+    pub fn stale_reason(&self) -> Option<String> {
+        let why = self.exe.as_ref()?.stale()?;
+        Some(format!("{why}; this daemon still runs the old build"))
+    }
+
     pub fn set_probe(&self, probe: Arc<dyn ActivityProbe>) {
         *self.probe.write().unwrap_or_else(|e| e.into_inner()) = Some(probe);
     }
@@ -264,6 +285,7 @@ impl Supervisor {
             host,
             mcp_exe,
             reap_interval,
+            exe_watch,
         } = opts;
 
         let lock = acquire_lock(&paths.config_dir, lock_wait).await?;
@@ -296,6 +318,7 @@ impl Supervisor {
                 .unwrap_or_default(),
             max_inflight,
             started: Instant::now(),
+            exe: exe_watch.or_else(so_core::buildinfo::ExeWatch::capture),
             clients: AtomicUsize::new(0),
             epoch: AtomicU64::new(0),
             probe: RwLock::new(None),

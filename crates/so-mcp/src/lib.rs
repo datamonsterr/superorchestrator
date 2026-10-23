@@ -41,6 +41,17 @@ pub struct McpOptions {
     pub spawn_exe: PathBuf,
 }
 
+/// The warning for a daemon that runs another build than this process (or whose executable
+/// was replaced), from the `hello` it answered.
+pub fn daemon_notice(hello: &so_core::proto::HelloResult) -> Option<String> {
+    so_core::buildinfo::mismatch(
+        so_core::buildinfo::build_id(),
+        hello.build_id.as_deref(),
+        hello.stale,
+        None,
+    )
+}
+
 /// Connects to the supervisor (starting it if needed), then serves MCP over stdio until
 /// stdin closes.
 pub async fn serve_stdio(opts: McpOptions) -> anyhow::Result<()> {
@@ -64,6 +75,10 @@ pub async fn serve_stdio(opts: McpOptions) -> anyhow::Result<()> {
     .context("connecting to the supervisor")?;
     let subagent = hello.run_id.is_some() || opts.run_id.is_some();
     let bridge = McpBridge::new(client, subagent);
+    if let Some(notice) = daemon_notice(&hello) {
+        tracing::warn!("{notice}");
+        bridge.set_daemon_notice(notice);
+    }
     let service = bridge
         .clone()
         .serve(rmcp::transport::stdio())

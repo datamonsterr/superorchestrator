@@ -32,6 +32,44 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 - GHSA-vw56-37xq-jrf9: upgrading from a build before the run token (unreleased store migration V9): legacy runs are issued a token when launched or resumed, and legacy workflows have a NULL owner. In-flight pre-upgrade runs lose their MCP connection across a supervisor restart.
 - GHSA-jxj2-pfqh-ww3v: agy shared config roots (ADR-0005): a root writable by your primary group is accepted; world-writable or foreign-owned roots are refused. A top-level config symlink that resolves outside the account and the root is skipped with a warning instead of aborting the launch.
 
+### Changed
+
+- The seeded choice `opencode-muse-long` uses `opencode/muse-spark-1.3`; the old model id
+  (`opencode/muse-spark-1.3-contributor-free`) is gone from opencode and runs on it failed
+  with "Model not found". Existing `config.toml` files keep the old id: edit the choice, and
+  `models refresh` now reports it (#7).
+- The agy thinking-variant models `claude-sonnet-4-6` and `claude-opus-4-6-thinking` take no
+  `--effort`. `spawn_agent` refuses an explicit `effort` for them with `INVALID_PARAMS` before
+  it creates a worktree, the router skips choices that pair them with an effort, and `doctor`
+  reports those choices. See `docs/guide/routing.md` (#11).
+
+### Added
+
+- A daemon left running after a reinstall is now reported (#12). Build identity: the build id (executable size and mtime) is
+  shown by `status` next to the daemon's and the CLI's version, and is sent in the `hello`
+  and `status` results (additive optional fields). The daemon notices its executable was
+  replaced or removed on disk and reports `stale: true` with a reason in `status` and
+  `list_harnesses`. `status` prints a warning with the fix (restart the daemon) when the
+  builds differ or the daemon is stale, and the MCP server adds the same warning to its
+  instructions at connect. Nothing restarts the daemon automatically.
+- `ErrorKind::Config` (`"config"`): a harness that does not have the run's model
+  ("Model not found") is classified as a config error. A routed run fails over to a different
+  choice without putting the account in cooldown; a run pinned to a model fails at once (#7).
+- `ErrorKind::Refused` (`"refused"`): an agy turn blocked by the Gemini safety filter ("This
+  request was blocked by Gemini's filters") finishes the run as `failed` instead of
+  `succeeded`. The account is not flagged and the run does not fail over. Only the English
+  phrase is detected, from the result parser (#13).
+- `models refresh` reports `missing_choice_models`: enabled choices whose model a harness did not
+  list (#7).
+
+### Fixed
+
+- `send_message` to a run that failed with a config error is refused instead of resuming a run
+  that cannot succeed (#7).
+- agy live messages need `"queuedMessages": "send-immediately"` in the account's
+  `.gemini/antigravity-cli/settings.json`. The default `Queue` loses a `send_message` to a
+  running agy run (#6).
+
 ## [0.1.0] - 2026-10-23
 
 First release.

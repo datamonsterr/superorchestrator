@@ -86,6 +86,15 @@ async fn refresh_cmd(ctx: &Ctx) -> Result<()> {
                 writeln!(w, "  {}  {} / {}", c.choice, c.harness, c.model)?;
             }
         }
+        if !report.missing_choice_models.is_empty() {
+            writeln!(
+                w,
+                "choices whose model the harness does not list (runs on them will fail):"
+            )?;
+            for c in &report.missing_choice_models {
+                writeln!(w, "  {}  {} / {}", c.choice, c.harness, c.model)?;
+            }
+        }
         writeln!(
             w,
             "{} catalog model(s) are used by no choice",

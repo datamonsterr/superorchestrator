@@ -447,6 +447,28 @@ async fn quota_error_result_is_classified() {
     h.control.shutdown(Duration::from_secs(5)).await.unwrap();
 }
 
+/// Hand-made from the text in issue #13, not recorded: agy ends a filtered turn with a
+/// `SUCCESS` result whose response is the refusal.
+const REFUSAL: &str = include_str!("fixtures/agy/refusal-gemini-filter.jsonl");
+
+#[tokio::test]
+async fn gemini_filter_refusal_is_a_refused_failure() {
+    let rig = Rig::new();
+    let mut steps = vec![json!({"expect_stdin_contains": PROMPT})];
+    for l in REFUSAL.lines() {
+        steps.push(json!({"stdout": serde_json::from_str::<Value>(l).unwrap()}));
+    }
+    let mut h = driver().launch(rig.spec(&script(&steps))).await.unwrap();
+    let events = until(&mut h, is_turn).await;
+    assert!(
+        matches!(events.last(), Some(HarnessEvent::TurnFinished {
+            is_error: true, error_kind: Some(ErrorKind::Refused), error_text: Some(t), ..
+        }) if t.starts_with("This request was blocked by Gemini's filters")),
+        "{events:?}"
+    );
+    h.control.shutdown(Duration::from_secs(5)).await.unwrap();
+}
+
 #[tokio::test]
 async fn shutdown_kills_the_process_group_without_bwrap() {
     let rig = Rig::new();

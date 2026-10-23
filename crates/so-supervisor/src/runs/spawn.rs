@@ -15,7 +15,7 @@ use so_harness::AnyDriver;
 use so_store::{InsertRun, RunRow};
 
 use super::instructions::MAX_DEPTH;
-use super::routing::{RoutePins, RoutePlan};
+use super::routing::{ChoiceFilter, RoutePins, RoutePlan};
 use super::worktree;
 use super::{R, RunManager, RunRt, lock, rpc};
 use crate::dispatch::{ConnCtx, internal};
@@ -264,7 +264,7 @@ impl RunManager {
                         .is_some_and(|a| !a.tools.is_empty() || !a.disallowed_tools.is_empty()),
                 };
                 let routed = self
-                    .route_run(&prompt, &pins, &[], None, true, None)
+                    .route_run(&prompt, &pins, &[], ChoiceFilter::default(), true, None)
                     .await?;
                 let mut found = None;
                 let mut last = rpc(UNAVAILABLE, "no usable account");
@@ -293,6 +293,12 @@ impl RunManager {
             }
         };
 
+        if let (Some(m), Some(e)) = (model.as_deref(), effort.as_deref())
+            && let Some(problem) = account.harness.model_effort_problem(m, e)
+        {
+            return Err(rpc(INVALID_PARAMS, problem));
+        }
+
         so_harness::driver::check_launch_values(
             account.harness,
             model.as_deref(),
@@ -306,6 +312,7 @@ impl RunManager {
             so_agents::materialise::validate_for_spawn(a, &self.inner.paths, Some(account.harness))
                 .map_err(agent_error)?;
         }
+
         let want = p
             .isolation
             .or_else(|| agent.as_ref().and_then(|a| a.isolation))

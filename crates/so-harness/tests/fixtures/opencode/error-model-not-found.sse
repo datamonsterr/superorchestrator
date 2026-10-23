@@ -1,0 +1,9 @@
+: Trimmed from a real run (issue #7): `opencode/muse-spark-1.3-contributor-free` is no longer listed. session.error, name UnknownError, no statusCode.
+
+data: {"id": "evt_1", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "busy"}}}
+
+data: {"id": "evt_2", "type": "session.error", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "error": {"name": "UnknownError", "data": {"message": "Model not found: opencode/muse-spark-1.3-contributor-free. Did you mean: muse-spark-1.3, beam-free, deepseek-v4.1-flash-free?"}}}}
+
+data: {"id": "evt_3", "type": "session.status", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6", "status": {"type": "idle"}}}
+
+data: {"id": "evt_4", "type": "session.idle", "properties": {"sessionID": "ses_e9d0c9735ffeANTApp10GZgEp6"}}
