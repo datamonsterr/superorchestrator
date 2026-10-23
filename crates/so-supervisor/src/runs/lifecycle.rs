@@ -110,10 +110,7 @@ impl Outcome {
             error_kind: Some(kind),
             result_json: None,
             reason: Some(reason.to_string()),
-            flag_account: matches!(
-                kind,
-                ErrorKind::Quota | ErrorKind::RateLimit | ErrorKind::Auth
-            ),
+            flag_account: kind.flags_account(),
             limit: None,
             control,
         }

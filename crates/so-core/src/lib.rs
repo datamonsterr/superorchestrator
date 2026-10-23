@@ -2,6 +2,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod account;
+pub mod buildinfo;
 pub mod config;
 pub mod duration;
 pub mod error;

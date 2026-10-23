@@ -370,6 +370,22 @@ fn classify_agy(text: &str) -> ErrorKind {
     }
 }
 
+/// The start of the response agy returns when the Gemini safety filter blocks a turn.
+const GEMINI_REFUSAL: &str = "this request was blocked by gemini";
+
+/// Lowercased, curly apostrophes straightened, whitespace collapsed.
+fn normalise(s: &str) -> String {
+    s.replace('\u{2019}', "'")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+fn is_gemini_refusal(response: &str) -> bool {
+    normalise(response).starts_with(GEMINI_REFUSAL)
+}
+
 /// Clonable control handle for a running agy process. Dropping the last clone
 /// kills the process group.
 #[derive(Debug, Clone)]
@@ -630,17 +646,27 @@ impl AgyParser {
             });
         }
 
-        let is_error = r["status"] != "SUCCESS";
         let result_text = r["response"].as_str().map(String::from);
+        // agy ends a turn blocked by the Gemini safety filter as a `SUCCESS` result whose
+        // response is the refusal (issue #13). No structured signal is known, so match
+        // the known phrase at the start of the response.
+        let refused =
+            r["status"] == "SUCCESS" && result_text.as_deref().is_some_and(is_gemini_refusal);
+        let is_error = refused || r["status"] != "SUCCESS";
         let error_text = is_error.then(|| {
-            r["error"]
-                .as_str()
+            // A refusal is reported with its own text, whatever `error` holds.
+            let error = if refused { None } else { r["error"].as_str() };
+            error
                 .filter(|e| !e.is_empty())
                 .map(String::from)
                 .or_else(|| result_text.clone().filter(|t| !t.is_empty()))
                 .unwrap_or_else(|| "agy reported an error".into())
         });
-        let error_kind = error_text.as_deref().map(classify_agy);
+        let error_kind = if refused {
+            Some(ErrorKind::Refused)
+        } else {
+            error_text.as_deref().map(classify_agy)
+        };
         let structured = (self.expect_structured && !is_error)
             .then(|| {
                 result_text
@@ -749,6 +775,48 @@ mod tests {
         assert!(
             matches!(&events[6], TurnFinished { is_error: false, error_kind: None, result_text: Some(t), .. } if t == "done\n")
         );
+    }
+
+    #[test]
+    fn refusal_text_is_a_failure_only_when_it_opens_the_response() {
+        let refusal = include_str!("../tests/fixtures/agy/refusal-gemini-filter.jsonl");
+        let mut p = AgyParser::standalone(false);
+        let events: Vec<_> = refusal.lines().flat_map(|l| p.parse_line(l)).collect();
+        assert!(matches!(
+            events.last(),
+            Some(HarnessEvent::TurnFinished {
+                is_error: true,
+                error_kind: Some(ErrorKind::Refused),
+                ..
+            })
+        ));
+        for variant in [
+            "This request was blocked by Gemini\u{2019}s filters. Try again.",
+            "this request was blocked by gemini's filters",
+            "  This request  was blocked\nby Gemini's filters.",
+        ] {
+            let line = serde_json::json!({"event": "result",
+                "result": {"status": "SUCCESS", "response": variant}});
+            let mut p = AgyParser::standalone(false);
+            assert!(
+                matches!(
+                    p.parse_line(&line.to_string()).last(),
+                    Some(HarnessEvent::TurnFinished { is_error: true, error_kind: Some(ErrorKind::Refused), error_text: Some(t), .. }) if t == variant
+                ),
+                "{variant}"
+            );
+        }
+        // A normal answer that merely quotes the phrase is still a success.
+        let quoting = serde_json::json!({"event": "result", "result": {"status": "SUCCESS",
+            "response": "The error \"This request was blocked by Gemini's filters\" means ..."}});
+        let mut p = AgyParser::standalone(false);
+        assert!(matches!(
+            p.parse_line(&quoting.to_string()).last(),
+            Some(HarnessEvent::TurnFinished {
+                is_error: false,
+                ..
+            })
+        ));
     }
 
     #[test]

@@ -584,6 +584,40 @@ async fn a_startup_exit_with_an_auth_error_flags_the_account_and_fails_over() {
     h.shutdown().await;
 }
 
+/// A Gemini safety-filter refusal ends the run `failed`/`refused`: no cooldown on the account, no failover (hand-made script from issue #13).
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn a_gemini_refusal_fails_the_run_as_refused_without_flagging_the_account() {
+    let env = agy_env();
+    env.agy_account(
+        "agy-acc2",
+        2,
+        &script(&[
+            json!({"expect_stdin_contains": PROMPT}),
+            json!({"stdout": {"event": "init", "conversation_id": "c1", "init": {}}}),
+            json!({"stdout": {"event": "result", "result": {
+                "conversation_id": "c1", "status": "SUCCESS",
+                "response": "This request was blocked by Gemini's filters. They can occasionally trigger by mistake on safe coding, security, or biology-related queries. Please try rephrasing your prompt.",
+                "usage": {}}}}),
+        ]),
+    );
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Failed, "{r:?}");
+    assert_eq!(r.error_kind, Some(ErrorKind::Refused));
+    let v = view(&c, &r.run_id).await;
+    assert!(events(&v, "failover").is_empty(), "{:?}", types(&v));
+    assert!(
+        env.store()
+            .get_flag("agy-acc2", "gemini")
+            .unwrap()
+            .is_none()
+    );
+    h.shutdown().await;
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn a_startup_exit_that_fails_everywhere_ends_with_the_classified_kind() {
@@ -884,7 +918,7 @@ async fn auto_spawn_with_an_unreachable_decider_errors_and_inserts_no_run() {
         .call::<_, Value>(so_core::proto::METHOD_SPAWN_AGENT, auto_params(&env))
         .await
         .unwrap_err();
-    let so_supervisor::client::ClientError::Rpc(e) = err else {
+    let so_supervisor::ClientError::Rpc(e) = err else {
         panic!("expected an rpc error, got {err:?}");
     };
     assert_eq!(e.code, so_core::proto::DECIDER_UNREACHABLE);
@@ -1091,5 +1125,251 @@ async fn a_queued_reroute_during_a_decider_outage_degrades_to_the_heuristic() {
             .await
             .unwrap();
     }
+    h.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn agy_thinking_variant_model_with_an_effort_is_refused_before_launch() {
+    let env = agy_env();
+    env.agy_account("agy-acc2", 2, &agy_ok_script());
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let mut p = auto_params(&env);
+    p.harness = Some("agy".into());
+    p.model = Some("claude-sonnet-4-6".into());
+    p.effort = Some("high".into());
+    let err = c
+        .call::<_, Value>(so_core::proto::METHOD_SPAWN_AGENT, p)
+        .await
+        .unwrap_err();
+    match err {
+        so_supervisor::ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::INVALID_PARAMS);
+            assert!(r.message.contains("claude-sonnet-4-6"), "{}", r.message);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(env.launches("agy-acc2").is_empty());
+
+    // The thinking hint passes and launches without --effort.
+    let mut p = auto_params(&env);
+    p.harness = Some("agy".into());
+    p.model = Some("claude-sonnet-4-6".into());
+    p.effort = Some("thinking".into());
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let argv = env.launches("agy-acc2").pop().unwrap();
+    assert!(!argv.iter().any(|a| a == "--effort"), "{argv:?}");
+    h.shutdown().await;
+}
+
+const OC_SESSION: &str =
+    include_str!("../../so-harness/tests/fixtures/opencode/session-create.response.json");
+const OC_MODEL_NOT_FOUND: &str =
+    include_str!("../../so-harness/tests/fixtures/opencode/error-model-not-found.sse");
+
+/// An `opencode serve` that takes the prompt and then reports the recorded "Model not
+/// found" `session.error` on its event stream, as opencode does for a model it lacks.
+fn model_missing_opencode(env: &Env, name: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let session_id = serde_json::from_str::<Value>(OC_SESSION).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let fixture_id = "ses_e9d0c9735ffeANTApp10GZgEp6";
+    let events: Vec<String> = OC_MODEL_NOT_FOUND
+        .lines()
+        .filter(|l| l.starts_with("data:"))
+        .map(|l| l.replace(fixture_id, &session_id))
+        .collect();
+    let path = env.dir.path().join(format!("{name}-opencode.py"));
+    let body = format!(
+        r#"#!/usr/bin/python3
+import http.server, json, sys, threading, time
+with open({log:?}, "a") as f:
+    f.write(json.dumps({{"argv": sys.argv[1:]}}) + "\n")
+SESSION = {session:?}
+EVENTS = json.loads({events:?})
+prompted = threading.Event()
+class H(http.server.BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+    def log_message(self, *a): pass
+    def _send(self, code, body=b"", ctype="application/json"):
+        self.send_response(code)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+    def do_GET(self):
+        if self.path.startswith("/event"):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            self.wfile.write(b'data: {{"type":"server.connected","properties":{{}}}}\n\n')
+            self.wfile.flush()
+            prompted.wait()
+            for e in EVENTS:
+                self.wfile.write(e.encode() + b"\n\n")
+                self.wfile.flush()
+            time.sleep(60)
+        elif self.path.startswith("/session/status"):
+            self._send(200, b"{{}}")
+        else:
+            self._send(200, b'{{"healthy":true}}')
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(n)
+        if self.path == "/session":
+            self._send(200, SESSION.encode())
+        else:
+            prompted.set()
+            self._send(204)
+    do_PUT = do_PATCH = do_DELETE = do_POST
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), H)
+srv.daemon_threads = True
+print("opencode server listening on http://127.0.0.1:%d" % srv.server_address[1], flush=True)
+srv.serve_forever()
+"#,
+        log = env.launch_log(name).display().to_string(),
+        session = OC_SESSION,
+        events = serde_json::to_string(&events).unwrap(),
+    );
+    std::fs::write(&path, body).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+fn oc_choice(id: &str, model: &str) -> Choice {
+    Choice {
+        harness: Harness::Opencode,
+        ..choice(id, model)
+    }
+}
+
+fn opencode_env(choices: Vec<Choice>) -> Env {
+    let mut env = Env::new();
+    env.config.choices = choices;
+    env.config.router.jev.key_env = "SO_ROUTING_TEST_NO_SUCH_KEY".into();
+    for n in ["oc-a", "oc-b"] {
+        let bin = model_missing_opencode(&env, n);
+        env.account_with_binary(n, "opencode", 2, &bin);
+    }
+    env
+}
+
+fn two_choices_env() -> Env {
+    let mut env = routed_env();
+    env.config.choices = vec![
+        choice("claude-mid", "claude-sonnet-5-5"),
+        choice("claude-other", "claude-haiku-5-5"),
+    ];
+    env
+}
+
+/// The choice of each route decision of a run, in order.
+fn decided_choices(v: &RunView) -> Vec<String> {
+    events(v, "route_decision")
+        .iter()
+        .map(|e| {
+            serde_json::from_value::<RouteResult>(e.data.clone())
+                .unwrap()
+                .choice_id
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_config_error_fails_over_to_another_choice_and_spares_the_account() {
+    if !std::path::Path::new("/usr/bin/python3").exists() {
+        return;
+    }
+    let env = opencode_env(vec![
+        oc_choice("oc-one", "opencode/one"),
+        oc_choice("oc-two", "opencode/two"),
+    ]);
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Failed, "{r:?}");
+    assert_eq!(r.error_kind, Some(ErrorKind::Config));
+    let v = view(&c, &r.run_id).await;
+    let f = events(&v, "failover");
+    assert!(!f.is_empty(), "{:?}", types(&v));
+    assert_eq!(f[0].data["error_kind"], "config");
+    let choices = decided_choices(&v);
+    assert!(choices.len() >= 2, "{choices:?}");
+    assert_ne!(
+        choices[0], choices[1],
+        "the failed choice must not be retried"
+    );
+    // The accounts did nothing wrong: no cooldown on either.
+    let store = env.store();
+    for n in ["oc-a", "oc-b"] {
+        assert!(store.get_flag(n, "default").unwrap().is_none(), "{n}");
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_quota_error_still_prefers_the_same_choice() {
+    let env = two_choices_env();
+    env.account("claude-a", 2, &quota_script());
+    env.account("claude-b", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let choices = decided_choices(&view(&c, &r.run_id).await);
+    assert_eq!(choices.len(), 2, "{choices:?}");
+    assert_eq!(choices[0], choices[1]);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_config_error_on_a_pinned_model_fails_at_once() {
+    if !std::path::Path::new("/usr/bin/python3").exists() {
+        return;
+    }
+    let env = opencode_env(vec![oc_choice("oc-one", "opencode/one")]);
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let mut p = auto_params(&env);
+    p.harness = Some("opencode".into());
+    p.model = Some("opencode/gone".into());
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Failed, "{r:?}");
+    assert_eq!(r.error_kind, Some(ErrorKind::Config));
+    let v = view(&c, &r.run_id).await;
+    assert!(events(&v, "failover").is_empty(), "{:?}", types(&v));
+    assert_eq!(env.launches("oc-a").len() + env.launches("oc-b").len(), 1);
+    for n in ["oc-a", "oc-b"] {
+        assert!(env.store().get_flag(n, "default").unwrap().is_none(), "{n}");
+    }
+    h.shutdown().await;
+}
+
+/// A harness pin with no model and no matching choice runs on a synthetic `pinned-` choice.
+#[tokio::test]
+async fn a_config_error_on_a_harness_only_pin_fails_at_once() {
+    if !std::path::Path::new("/usr/bin/python3").exists() {
+        return;
+    }
+    let env = opencode_env(Vec::new());
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let mut p = auto_params(&env);
+    p.harness = Some("opencode".into());
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Failed, "{r:?}");
+    assert_eq!(r.error_kind, Some(ErrorKind::Config));
+    let v = view(&c, &r.run_id).await;
+    assert!(events(&v, "failover").is_empty(), "{:?}", types(&v));
+    assert_eq!(env.launches("oc-a").len() + env.launches("oc-b").len(), 1);
     h.shutdown().await;
 }

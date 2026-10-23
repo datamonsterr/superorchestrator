@@ -149,6 +149,14 @@ async fn refresh_merges_reports_and_caches_models_dev() {
     // Reported against choices, which are never edited.
     assert_eq!(rep.unknown_choice_models.len(), 1);
     assert_eq!(rep.unknown_choice_models[0].choice, "typo");
+    // The fake agy lists only gemini-9-flash: both agy choices are absent from that list,
+    // while the (unlisted) codex and opencode harnesses have no choice here to report.
+    let missing: Vec<_> = rep
+        .missing_choice_models
+        .iter()
+        .map(|c| c.choice.as_str())
+        .collect();
+    assert_eq!(missing, ["known", "typo"]);
     assert!(rep.unused_models.iter().any(|m| m.model == "gpt-new"));
     assert!(
         !rep.unused_models

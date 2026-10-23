@@ -1009,3 +1009,62 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
     assert!(full["accounts"][0].get("flags").is_some());
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn replaced_executable_marks_status_hello_and_list_harnesses_stale() {
+    use so_core::buildinfo::ExeWatch;
+    let env = Env::new();
+    let bin = env.dir.path().join("fake-daemon");
+    std::fs::write(&bin, b"original daemon").unwrap();
+    let watch = ExeWatch::of_path(&bin).unwrap();
+    let opts = env
+        .opts(Duration::from_secs(600))
+        .with_exe_watch(watch)
+        .with_host(so_accounts::HostEnv {
+            home: env.dir.path().join("fakehome"),
+            path_var: None,
+            platform: so_core::Platform::Linux,
+        })
+        .with_setup(so_supervisor::default_handlers);
+    let h = Supervisor::start(opts).await.unwrap();
+
+    let c = connect(&h).await;
+    let hello_ok = hello(&c).await;
+    assert!(!hello_ok.stale);
+    assert!(hello_ok.build_id.is_some());
+    let st: StatusResult = c.call("status", json!({})).await.unwrap();
+    assert!(!st.stale);
+    assert_eq!(st.stale_reason, None);
+    assert!(st.build_id.is_some());
+
+    // `install` replaces the file by rename.
+    let new = env.dir.path().join("new-bin");
+    std::fs::write(&new, b"a newer build").unwrap();
+    std::fs::rename(&new, &bin).unwrap();
+
+    let st: StatusResult = c.call("status", json!({})).await.unwrap();
+    assert!(st.stale);
+    assert!(st.stale_reason.unwrap().contains("replaced on disk"));
+    let full: Value = c.call("list_harnesses", json!({})).await.unwrap();
+    assert_eq!(full["stale"], true);
+    assert!(
+        full["stale_reason"]
+            .as_str()
+            .unwrap()
+            .contains("Restart the daemon")
+    );
+    let brief: Value = c
+        .call("list_harnesses", json!({"brief": true}))
+        .await
+        .unwrap();
+    assert_eq!(brief["stale"], true);
+    assert!(
+        brief["stale_reason"]
+            .as_str()
+            .unwrap()
+            .contains("replaced on disk")
+    );
+    let c2 = connect(&h).await;
+    assert!(hello(&c2).await.stale);
+    h.shutdown().await;
+}

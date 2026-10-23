@@ -184,7 +184,7 @@ export interface DoctorReport {
 }
 
 /** Classification of a failed run's error. */
-export type ErrorKind = "quota" | "rate_limit" | "auth" | "other";
+export type ErrorKind = "quota" | "rate_limit" | "auth" | "other" | "config" | "refused";
 
 /** One appended fact in the timeline. */
 export interface Event {
@@ -219,6 +219,9 @@ export type Harness = "codex" | "agy" | "opencode" | "claude";
 export interface HarnessesView {
   accounts?: AccountView[];
   choices?: Choice[];
+  /** Set when the daemon's executable was replaced after it started; `stale_reason` says what to do. */
+  stale?: boolean;
+  stale_reason?: string | null;
 }
 
 /** Headroom of one (account, pool) (SPEC 6.2). */
@@ -559,8 +562,13 @@ export type Status = "ok" | "warn" | "fail";
 
 export interface StatusResult {
   active_runs: number;
+  /** Build id of the daemon's executable; absent from older daemons. */
+  build_id?: string | null;
   pid: number;
   sessions: number;
+  /** The daemon's executable was replaced on disk after it started: it runs old code. */
+  stale?: boolean;
+  stale_reason?: string | null;
   uptime_s: number;
   version: string;
 }

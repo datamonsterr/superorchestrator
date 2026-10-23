@@ -78,7 +78,7 @@ Native session id: `ses_...`. Join: `opencode attach <url> --session <id>` (flag
 
 Models: `opencode models` (`opencode/models.txt`) lists `provider/model`. Free ones end in `-free` (`opencode/glm-5.3-flash-free`, `opencode/deepseek-v4.1-flash-free`, ...). In this session `glm-5.3-flash-free` completed correctly but took about 75 s; `deepseek-v4.1-flash-free` produced no output for 90 s and had to be aborted, so free models can stall; give them a stall timeout. Usage fields come from `message.updated` tokens and cost (ledger/event source only; no quota endpoint).
 
-Errors: `opencode-go/claude-haiku-5-5` -> `session.error` name `APIError`, `statusCode:402`, message `Upstream request failed: Insufficient account funds`, `isRetryable:false` (`opencode/error-402.sse`): classify as quota. Bogus model: `opencode run` exits 1 with `UnknownError "Unexpected server error. Check server logs for details."` (no useful text; `opencode/errors.txt`). Treat `APIError` with status 402/429 as quota/rate_limit, 401/403 as auth.
+Errors: `opencode-go/claude-haiku-5-5` -> `session.error` name `APIError`, `statusCode:402`, message `Upstream request failed: Insufficient account funds`, `isRetryable:false` (`opencode/error-402.sse`): classify as quota. Bogus model: `opencode run` exits 1 with `UnknownError "Unexpected server error. Check server logs for details."` (no useful text; `opencode/errors.txt`); a model id that is merely unlisted gives `UnknownError "Model not found: <id>. Did you mean: ..."` (`opencode/error-model-not-found.sse`), classified `config`. Treat `APIError` with status 402/429 as quota/rate_limit, 401/403 as auth.
 
 ## agy
 
@@ -102,12 +102,12 @@ Errors (`agy/errors.txt`): exhausted quota -> stderr `error: Individual quota re
 
 ## classify_error cheat sheet
 
-| Harness | quota | rate_limit | auth | other |
-|---|---|---|---|---|
-| codex | `codexErrorInfo` `usageLimitExceeded`, `sessionBudgetExceeded`; `rateLimitReachedType` set | `rateLimitExceeded`, `serverOverloaded` | `unauthorized` | the rest |
-| claude | `rate_limit_event` status not `allowed` (text patterns unverified) | same | text "Please run /login" (unverified) | `unrecognized_model` |
-| opencode | `session.error` `APIError` 402 ("Insufficient account funds") | `APIError` 429 (unverified) | 401/403 (unverified) | `UnknownError` |
-| agy | text `Individual quota reached` / `RESOURCE_EXHAUSTED` | `RESOURCE_EXHAUSTED` with `retryable:true` and no "quota" (unverified) | `Eligibility check failed` | `invalid model selection` |
+| Harness | quota | rate_limit | auth | config | refused | other |
+|---|---|---|---|---|---|---|
+| codex | `codexErrorInfo` `usageLimitExceeded`, `sessionBudgetExceeded`; `rateLimitReachedType` set | `rateLimitExceeded`, `serverOverloaded` | `unauthorized` | | | the rest |
+| claude | `rate_limit_event` status not `allowed` (text patterns unverified) | same | text "Please run /login" (unverified) | | | `unrecognized_model` |
+| opencode | `session.error` `APIError` 402 ("Insufficient account funds") | `APIError` 429 (unverified) | 401/403 (unverified) | `Model not found: <id>` | | other `UnknownError` |
+| agy | text `Individual quota reached` / `RESOURCE_EXHAUSTED` | `RESOURCE_EXHAUSTED` with `retryable:true` and no "quota" (unverified) | `Eligibility check failed` | | from the agy result parser, not `classify_error(text)`: response starting `This request was blocked by Gemini's filters` (English phrase only; a `SUCCESS` result; hand-made `agy/refusal-gemini-filter.jsonl`, not recorded) | `invalid model selection` |
 
 ## Consequences
 

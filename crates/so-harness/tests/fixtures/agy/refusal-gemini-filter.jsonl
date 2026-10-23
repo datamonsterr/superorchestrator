@@ -1,0 +1,2 @@
+{"event":"init","conversation_id":"c1","init":{}}
+{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"This request was blocked by Gemini's filters. They can occasionally trigger by mistake on safe coding, security, or biology-related queries. Please try rephrasing your prompt.","usage":{}}}
