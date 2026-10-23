@@ -3,7 +3,8 @@
 //! Everything that ends a run goes through [`RunManager::finish`], so cleanup happens
 //! exactly once and a waiter never sees a run as done before it is wrapped up.
 
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -19,6 +20,7 @@ use super::instructions::{MAX_DEPTH, child_instructions};
 use super::pump::PumpCtx;
 use super::worktree;
 use super::{LiveRun, R, RunManager, SHUTDOWN_DEADLINE, lock};
+use crate::run_identity::run_token_hash;
 
 enum Step {
     Won(Box<RunRow>),
@@ -157,12 +159,73 @@ impl RunManager {
             .is_some_and(|rt| rt.cancel_requested)
     }
 
-    fn mcp_spec(&self, run_id: &str) -> McpServerSpec {
-        McpServerSpec {
+    pub(super) async fn issue_run_token(&self, run_id: &str) -> R<()> {
+        // A workflow retries the same run id after hitting its parent's child cap.
+        // Reuse its already issued identity rather than replacing a live MCP secret.
+        let id = run_id.to_string();
+        if self.db(move |s| s.get_run_token_hash(&id)).await?.is_some() {
+            return Ok(());
+        }
+        self.renew_run_token(run_id).await
+    }
+
+    /// Replaces a run's identity before launching a resumed process.
+    ///
+    /// Only call when no live process holds the old token: rotation invalidates it.
+    pub(super) async fn renew_run_token(&self, run_id: &str) -> R<()> {
+        let dir = self.inner.paths.run_dir(run_id);
+        let hash = self
+            .blocking(move || -> Result<Vec<u8>, String> {
+                let mut bytes = [0u8; 32];
+                getrandom::fill(&mut bytes)
+                    .map_err(|_| "could not generate run identity token".to_string())?;
+                let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+                create_private_dir(&dir)
+                    .map_err(|_| "could not create private run directory".to_string())?;
+                let temporary = dir.join("rpc-token.tmp");
+                let written = (|| {
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .mode(0o600)
+                        .open(&temporary)
+                        .map_err(|_| "could not create run identity file".to_string())?;
+                    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                        .map_err(|_| "could not protect run identity file".to_string())?;
+                    file.write_all(token.as_bytes())
+                        .and_then(|()| file.sync_all())
+                        .map_err(|_| "could not write run identity file".to_string())?;
+                    drop(file);
+                    std::fs::rename(&temporary, dir.join("rpc-token"))
+                        .map_err(|_| "could not replace run identity file".to_string())
+                })();
+                if written.is_err() {
+                    let _ = std::fs::remove_file(&temporary);
+                }
+                written?;
+                Ok(run_token_hash(&token).to_vec())
+            })
+            .await?
+            .map_err(crate::dispatch::internal)?;
+        // Keep rpc-token and its hash with the run for resume, rotating on resume.
+        let id = run_id.to_string();
+        self.db(move |s| s.set_run_token_hash(&id, &hash)).await
+    }
+
+    async fn mcp_spec(&self, run_id: &str) -> Result<McpServerSpec, String> {
+        let token_file = self.inner.paths.run_dir(run_id).join("rpc-token");
+        let token = self
+            .blocking(move || std::fs::read_to_string(token_file))
+            .await
+            .map_err(|_| "could not read run identity file".to_string())?
+            .map_err(|_| "could not read run identity file".to_string())?;
+        Ok(McpServerSpec {
             command: self.inner.mcp_exe.clone(),
             args: vec!["mcp".to_string()],
             env: vec![
                 ("SUPERORCHESTRATOR_RUN_ID".into(), run_id.to_string()),
+                ("SUPERORCHESTRATOR_RUN_TOKEN".into(), token),
                 (
                     "SUPERORCHESTRATOR_SOCKET".into(),
                     self.inner.socket_path.to_string_lossy().into_owned(),
@@ -172,7 +235,7 @@ impl RunManager {
                     self.inner.paths.config_dir.to_string_lossy().into_owned(),
                 ),
             ],
-        }
+        })
     }
 
     /// Builds the launch spec for a run and creates its private run directory.
@@ -211,7 +274,7 @@ impl RunManager {
                 row.parent_run_id.as_deref(),
                 output_schema.as_ref(),
             ),
-            mcp: self.mcp_spec(&row.id),
+            mcp: self.mcp_spec(&row.id).await?,
             output_schema,
             max_turns: row.max_turns,
             resume,
@@ -416,6 +479,11 @@ impl RunManager {
         }
         prompt.push_str(&early);
         let fork = fork_from.is_some() && resume_prompt.is_none();
+        if resume_prompt.is_some() {
+            self.renew_run_token(&row.id).await.map_err(|e| e.message)?;
+        }
+        // Legacy queued and failover-pending runs may predate token issuance.
+        self.issue_run_token(&row.id).await.map_err(|e| e.message)?;
         let spec = self
             .build_spec(row, &account, cwd, prompt, fork_from, fork)
             .await?;
@@ -1108,6 +1176,54 @@ fn collect_subtree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn token_rename_failure_removes_the_temporary_secret() {
+        use super::super::testutil::manager;
+        let (m, _dir) = manager();
+        let id = "failed-issuance";
+        let dir = m.inner.paths.run_dir(id);
+        // A directory at the destination makes rename fail after writing the token.
+        std::fs::create_dir_all(dir.join("rpc-token")).unwrap();
+        let error = m.issue_run_token(id).await.unwrap_err();
+        assert_eq!(error.message, "could not replace run identity file");
+        assert!(!dir.join("rpc-token.tmp").exists());
+        assert!(m.store().get_run_token_hash(id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn interrupted_token_issuance_recovers_and_retry_reuses_identity() {
+        use super::super::testutil::manager;
+        let (m, _dir) = manager();
+        let id = "interrupted-issuance";
+        let dir = m.inner.paths.run_dir(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("rpc-token"), "orphaned-token").unwrap();
+        std::fs::write(dir.join("rpc-token.tmp"), "interrupted-temp-token").unwrap();
+        std::fs::set_permissions(
+            dir.join("rpc-token.tmp"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        m.issue_run_token(id).await.unwrap();
+        let token = std::fs::read_to_string(dir.join("rpc-token")).unwrap();
+        assert!(token.len() == 64 && token != "orphaned-token");
+        assert!(
+            m.store().get_run_token_hash(id).unwrap().as_deref()
+                == Some(run_token_hash(&token).as_slice())
+        );
+        assert_eq!(
+            std::fs::metadata(dir.join("rpc-token"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert!(!dir.join("rpc-token.tmp").exists());
+        m.issue_run_token(id).await.unwrap();
+        assert!(std::fs::read_to_string(dir.join("rpc-token")).unwrap() == token);
+    }
 
     #[test]
     fn excerpt_is_bounded() {

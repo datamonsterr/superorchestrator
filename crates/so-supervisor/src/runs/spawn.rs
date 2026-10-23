@@ -409,6 +409,7 @@ impl RunManager {
         route: Option<RoutePlan>,
     ) -> R<()> {
         let id = row.id.clone();
+        self.issue_run_token(&id).await?;
         let (pins, decision) = match route {
             Some(r) => (
                 Some(serde_json::to_string(&r.pins).map_err(internal)?),

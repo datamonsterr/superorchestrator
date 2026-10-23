@@ -46,31 +46,34 @@ pub(super) fn register(state: &Arc<SupervisorState>) {
         async move { wait_agent(&m, ctx, params(p)?).await }
     });
     let m = runs.clone();
-    state.router.register(METHOD_GET_RUN, move |_ctx, p| {
+    state.router.register(METHOD_GET_RUN, move |ctx, p| {
         let m = m.clone();
         async move {
             let r: GetRunParams = params(p)?;
             let row = m.resolve_run(&r.run).await?;
+            m.authorize_run_or_inspect(&ctx, &row).await?;
             json(m.run_view_with(row, r.diff).await?)
         }
     });
     let m = runs.clone();
-    state.router.register(METHOD_CANCEL_AGENT, move |_ctx, p| {
+    state.router.register(METHOD_CANCEL_AGENT, move |ctx, p| {
         let m = m.clone();
         async move {
             let r: RunRef = params(p)?;
             let row = m.resolve_run(&r.run).await?;
+            m.authorize_run_or_inspect(&ctx, &row).await?;
             m.cancel(&row.id).await?;
             let row = m.resolve_run(&row.id).await?;
             json(m.run_view(row).await?)
         }
     });
     let m = runs.clone();
-    state.router.register(METHOD_JOIN_RUN, move |_ctx, p| {
+    state.router.register(METHOD_JOIN_RUN, move |ctx, p| {
         let m = m.clone();
         async move {
             let r: RunRef = params(p)?;
             let row = m.resolve_run(&r.run).await?;
+            m.authorize_run_or_inspect(&ctx, &row).await?;
             json(m.join_run(row).await?)
         }
     });
@@ -122,20 +125,22 @@ pub(super) fn register(state: &Arc<SupervisorState>) {
     let m = runs.clone();
     state
         .router
-        .register(METHOD_CANCEL_WORKFLOW, move |_ctx, p| {
+        .register(METHOD_CANCEL_WORKFLOW, move |ctx, p| {
             let m = m.clone();
             async move {
                 let r: WorkflowStatusParams = params(p)?;
+                m.authorize_workflow_or_inspect(&ctx, &r.id).await?;
                 json(m.cancel_workflow(&r.id).await?)
             }
         });
     let m = runs;
     state
         .router
-        .register(METHOD_WORKFLOW_STATUS, move |_ctx, p| {
+        .register(METHOD_WORKFLOW_STATUS, move |ctx, p| {
             let m = m.clone();
             async move {
                 let r: WorkflowStatusParams = params(p)?;
+                m.authorize_workflow_or_inspect(&ctx, &r.id).await?;
                 json(m.workflow_status(&r.id).await?)
             }
         });
@@ -179,6 +184,7 @@ async fn wait_agent(m: &RunManager, ctx: ConnCtx, p: WaitParams) -> Result<Value
     let mut sessions: Vec<String> = Vec::new();
     for r in &p.runs {
         let row = m.resolve_run(r).await?;
+        m.authorize_run_or_inspect(&ctx, &row).await?;
         if !sessions.contains(&row.session_id) {
             sessions.push(row.session_id.clone());
         }

@@ -3272,6 +3272,7 @@ name = "so-supervisor"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "getrandom 0.4.3",
  "jsonschema",
  "reqwest",
  "rustix",
@@ -3288,6 +3289,7 @@ dependencies = [
  "so-store",
  "so-usage",
  "so-workflow",
+ "subtle",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",

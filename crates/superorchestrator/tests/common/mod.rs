@@ -17,6 +17,7 @@ pub fn scrub(c: &mut Command) {
         "XDG_RUNTIME_DIR",
         "CLAUDE_CONFIG_DIR",
         "SUPERORCHESTRATOR_RUN_ID",
+        "SUPERORCHESTRATOR_RUN_TOKEN",
         "SUPERORCHESTRATOR_MODELS_DEV_URL",
     ] {
         c.env_remove(k);

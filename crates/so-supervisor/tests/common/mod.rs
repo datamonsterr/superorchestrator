@@ -307,6 +307,14 @@ impl Env {
         c
     }
 
+    pub async fn inspect_client(&self, h: &SupervisorHandle) -> SupervisorClient {
+        let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
+        c.hello_inspect("test-operator", self.repo.to_str().unwrap(), None)
+            .await
+            .unwrap();
+        c
+    }
+
     pub fn spawn_params(&self, account: &str) -> SpawnParams {
         SpawnParams {
             prompt: Some(PROMPT.into()),
@@ -423,4 +431,46 @@ pub fn sibling_bin(name: &str) -> PathBuf {
     let exe = std::env::current_exe().unwrap();
     let debug = exe.parent().unwrap().parent().unwrap();
     debug.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// Gives a manually inserted fixture the identity a real enqueue would create.
+pub fn seed_run_identity(store: &Store, paths: &Paths, run: &str) {
+    // Hash independently of production code to check the persisted SHA-256 contract.
+    use sha2::{Digest, Sha256};
+    let dir = paths.run_dir(run);
+    std::fs::create_dir_all(&dir).unwrap();
+    let token = "test-only-run-token";
+    std::fs::write(dir.join("rpc-token"), token).unwrap();
+    store
+        .set_run_token_hash(run, &Sha256::digest(token.as_bytes()))
+        .unwrap();
+}
+
+/// Authenticates a test run, using its real spawn token where available.
+pub async fn hello_run(
+    c: &SupervisorClient,
+    store: &Store,
+    paths: &Paths,
+    run: &str,
+) -> so_core::proto::HelloResult {
+    // Hash independently of production code to check the persisted SHA-256 contract.
+    use sha2::{Digest, Sha256};
+    let token =
+        std::fs::read_to_string(paths.run_dir(run).join("rpc-token")).unwrap_or_else(|_| {
+            assert!(
+                store.get_run_token_hash(run).unwrap().is_none(),
+                "spawn token file must exist"
+            );
+            let token = "test-only-run-token".to_string();
+            store
+                .set_run_token_hash(run, &Sha256::digest(token.as_bytes()))
+                .unwrap();
+            token
+        });
+    c.call(
+        "hello",
+        json!({"client": "subagent-test", "cwd": "/", "run_id": run, "run_token": token}),
+    )
+    .await
+    .unwrap()
 }

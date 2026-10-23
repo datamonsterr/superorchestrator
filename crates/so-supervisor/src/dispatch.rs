@@ -16,8 +16,10 @@ use so_core::proto::{
     Response, RpcError, StatusResult,
 };
 use so_store::SessionRow;
+use subtle::ConstantTimeEq;
 use tokio::sync::{mpsc, watch};
 
+use crate::run_identity::run_token_hash;
 use crate::server::SupervisorState;
 
 pub type HandlerFuture = Pin<Box<dyn Future<Output = Result<Value, RpcError>> + Send>>;
@@ -92,6 +94,11 @@ impl ConnCtx {
             via_ui: false,
             _keep: None,
         }
+    }
+
+    /// A greeted local operator connection that opened no session and claimed no run.
+    pub(crate) fn is_inspect(&self) -> bool {
+        self.greeted && self.session_id.is_none() && self.run_id.is_none()
     }
 
     /// A context for a person acting through the web UI: it belongs to `session_id` and
@@ -284,6 +291,19 @@ async fn hello(
             .db(move |s| s.get_run(&id))
             .await?
             .ok_or_else(|| RpcError::new(NOT_FOUND, format!("run not found: {run_id}")))?;
+        let id = run.id.clone();
+        let expected = state.db(move |s| s.get_run_token_hash(&id)).await?;
+        let valid = p
+            .run_token
+            .as_deref()
+            .zip(expected.as_deref())
+            .is_some_and(|(token, hash)| {
+                let actual = run_token_hash(token);
+                bool::from(actual.as_slice().ct_eq(hash))
+            });
+        if !valid {
+            return Err(RpcError::new(INVALID_REQUEST, "invalid run identity token"));
+        }
         HelloResult {
             session_id: run.session_id,
             run_id: Some(run.id),
