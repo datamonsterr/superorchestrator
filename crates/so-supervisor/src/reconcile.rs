@@ -61,3 +61,64 @@ pub(crate) fn reconcile(store: &Store, hook: Option<&dyn ReconcileHook>) -> crat
     }
     Ok(failed)
 }
+
+/// Remove Codex capability files left by crashes, including directories with no DB row.
+/// Run after reconciliation: adopted/resuming runs are still active and keep their token.
+/// Keep transcripts and other run evidence; never traverse a symlinked run directory.
+pub(crate) fn cleanup_stale_run_tokens(store: &Store, paths: &so_core::Paths) -> usize {
+    // Snapshot all active IDs once. Never delete tokens if the DB cannot establish
+    // which runs are active; cleanup must not prevent the supervisor from starting.
+    let limit = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
+    let active: std::collections::HashSet<String> = match store.list_active_runs(limit) {
+        Ok(runs) => runs.into_iter().map(|run| run.id).collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "skipping stale token cleanup: active runs unavailable");
+            return 0;
+        }
+    };
+    let entries = match std::fs::read_dir(paths.runs_dir()) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return 0,
+        Err(e) => {
+            tracing::warn!(error = %e, "could not read run directories for stale token cleanup");
+            return 0;
+        }
+    };
+    let mut removed = 0;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(e) => {
+                tracing::warn!(error = %e, "could not read run directory entry during token cleanup");
+                continue;
+            }
+        };
+        match entry.file_type() {
+            Ok(kind) if kind.is_dir() => {}
+            Ok(_) => continue,
+            Err(e) => {
+                tracing::warn!(path = %entry.path().display(), error = %e, "could not inspect run directory during token cleanup");
+                continue;
+            }
+        }
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|id| active.contains(id))
+        {
+            continue;
+        }
+        let token = entry.path().join("ws-token");
+        match std::fs::remove_file(&token) {
+            Ok(()) => removed += 1,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(path = %token.display(), error = %e, "could not remove stale run capability file")
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!(removed, "removed stale run capability files on startup");
+    }
+    removed
+}

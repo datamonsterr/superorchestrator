@@ -86,7 +86,7 @@ pub fn ok_script(extra_before: &[Value]) -> String {
 pub fn result_msg(extra: Value) -> Value {
     let mut base = json!({
         "type": "result", "subtype": "success", "is_error": false, "result": "done",
-        "session_id": "s", "total_cost_usd": 0.01,
+        "session_id": "11111111-2222-7333-8444-555555555555", "total_cost_usd": 0.01,
         "usage": {"input_tokens": 3, "output_tokens": 4},
     });
     base.as_object_mut()
@@ -96,7 +96,7 @@ pub fn result_msg(extra: Value) -> Value {
 }
 
 pub fn init_msg() -> Value {
-    json!({"type": "system", "subtype": "init", "session_id": "s"})
+    json!({"type": "system", "subtype": "init", "session_id": "11111111-2222-7333-8444-555555555555"})
 }
 
 pub struct Env {

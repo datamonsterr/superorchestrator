@@ -558,7 +558,7 @@ async fn reconcile_resumes_a_run_with_a_native_session() {
             json!({"stdout": result_msg(json!({}))}),
         ]),
     );
-    let row = orphan(&env, Some("native-1"));
+    let row = orphan(&env, Some("11111111-2222-7333-8444-555555555555"));
     let h = env.start().await;
     let c = env.client(&h).await;
     wait_state(&c, &row.id, RunState::Succeeded).await;
@@ -713,5 +713,30 @@ async fn slow_launch_fails_the_run() {
             .contains("did not start"),
         "{finished:?}"
     );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn spawn_rejects_unsafe_selectors_before_creating_a_run() {
+    let env = Env::new();
+    env.account("claude-acc1", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    for bad in ["", "--help", "a b", "a\nb", "x=y", "é"] {
+        for model in [true, false] {
+            let mut p = env.spawn_params("claude-acc1");
+            if model {
+                p.model = Some(bad.into());
+            } else {
+                p.effort = Some(bad.into());
+            }
+            let e = c
+                .call::<_, SpawnResult>(METHOD_SPAWN_AGENT, p)
+                .await
+                .unwrap_err();
+            assert_eq!(rpc_code(e), so_core::proto::INVALID_PARAMS);
+        }
+    }
+    assert!(env.store().list_active_runs(100).unwrap().is_empty());
     h.shutdown().await;
 }

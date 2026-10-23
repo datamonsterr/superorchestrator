@@ -54,6 +54,61 @@ pub fn check_effort(harness: Harness, effort: Option<&str>) -> Result<(), Driver
     }
 }
 
+/// Validates model/effort selectors: nonempty, no leading '-', ASCII alphanumerics
+/// or `:/_.@-[]` (including Claude's `sonnet[1m]` model suffix).
+pub fn check_selector(model: Option<&str>, effort: Option<&str>) -> Result<(), DriverError> {
+    for (name, value) in [("model", model), ("effort", effort)] {
+        if let Some(value) = value
+            && (value.is_empty()
+                || value.starts_with('-')
+                || !value
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b":/_.@-[]".contains(&b)))
+        {
+            return Err(DriverError::Other(format!(
+                "invalid {name}: expected a nonempty value without a leading '-' using only A-Za-z0-9:/_.@-[]"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validates resolved launch values before any process or launch files are created.
+pub fn check_launch_values(
+    harness: Harness,
+    model: Option<&str>,
+    effort: Option<&str>,
+    resume: Option<&str>,
+) -> Result<(), DriverError> {
+    check_selector(model, effort)?;
+    if let Some(id) = resume {
+        let safe = !id.is_empty()
+            && !id.starts_with('-')
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_.:-".contains(&b));
+        let (valid, expected) = match harness {
+            Harness::Agy | Harness::Claude | Harness::Codex => (
+                safe && id.len() == 36 && uuid::Uuid::parse_str(id).is_ok(),
+                "a hyphenated UUID",
+            ),
+            Harness::Opencode => (
+                safe && id
+                    .strip_prefix("ses_")
+                    .is_some_and(|s| !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric())),
+                "ses_ followed by ASCII letters and digits",
+            ),
+        };
+        if !valid {
+            return Err(DriverError::Other(format!(
+                "invalid resume id: expected {expected}"
+            )));
+        }
+    }
+    check_effort(harness, effort)?;
+    Ok(())
+}
+
 /// How the harness reaches the superorchestrator MCP server. The `env` goes
 /// into the harness's MCP config, never into argv or the harness process env.
 #[derive(Clone, Default, PartialEq, Eq)]
@@ -544,6 +599,114 @@ pub fn classify_common(text: &str) -> ErrorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn invalid_launch_values_fail_before_preparation_for_every_driver() {
+        let dir = tempfile::tempdir().unwrap();
+        for h in [
+            Harness::Agy,
+            Harness::Claude,
+            Harness::Codex,
+            Harness::Opencode,
+        ] {
+            for field in ["model", "effort", "resume"] {
+                let mut spec = LaunchSpec {
+                    run_id: "r".into(),
+                    run_dir: dir.path().join(format!("{h}-{field}")),
+                    cwd: dir.path().into(),
+                    account: AccountFile::new("test-acc", h, "/unused", "test").unwrap(),
+                    launch: Launch {
+                        program: "/bin/true".into(),
+                        vars: vec![],
+                        argv_prefix: vec![],
+                        extra_args: vec![],
+                    },
+                    model: None,
+                    effort: None,
+                    resume: None,
+                    prompt: "x".into(),
+                    system_addendum: String::new(),
+                    mcp: McpServerSpec::default(),
+                    output_schema: None,
+                    max_turns: None,
+                    fork: false,
+                    agent: AgentLaunch::default(),
+                };
+                match field {
+                    "model" => spec.model = Some("--help".into()),
+                    "effort" => spec.effort = Some("--help".into()),
+                    _ => spec.resume = Some("--help".into()),
+                }
+                let run_dir = spec.run_dir.clone();
+                let error = AnyDriver::for_harness(h, DriverConfig::default())
+                    .unwrap()
+                    .launch(spec)
+                    .await
+                    .unwrap_err();
+                assert!(error.to_string().contains(field), "{h}: {error}");
+                assert!(
+                    !run_dir.exists(),
+                    "{h}: created launch files before rejecting {field}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn launch_selectors_reject_each_unsafe_rule() {
+        for bad in [
+            "",
+            "-model",
+            "--help",
+            "has space",
+            "a\nb",
+            "a\0b",
+            "a=b",
+            "a;b",
+            "é",
+        ] {
+            assert!(check_selector(Some(bad), None).is_err(), "model {bad:?}");
+            assert!(check_selector(None, Some(bad)).is_err(), "effort {bad:?}");
+        }
+        for good in [
+            "provider/model:v1",
+            "gpt-6.1-sol",
+            "sonnet[1m]",
+            "claude-sonnet-5-5[1m]",
+            "org/model@latest",
+            "a_b.c-2",
+            "low",
+        ] {
+            check_selector(Some(good), Some(good)).unwrap();
+        }
+    }
+
+    #[test]
+    fn resume_ids_follow_native_formats() {
+        let uuid = "01a162ee-5ba3-7400-be98-4eb69d75fead";
+        for h in [Harness::Agy, Harness::Claude, Harness::Codex] {
+            check_launch_values(h, None, None, Some(uuid)).unwrap();
+            for bad in ["", "--help", "abc", "../x", "a/b", "a b", "a\nb", "ses_abc"] {
+                assert!(
+                    check_launch_values(h, None, None, Some(bad)).is_err(),
+                    "{h} {bad:?}"
+                );
+            }
+        }
+        check_launch_values(
+            Harness::Opencode,
+            None,
+            None,
+            Some("ses_e9d0e831fffejyPMluk5gnwrFx"),
+        )
+        .unwrap();
+        for bad in ["", "--help", "ses_", "ses_a/b", "ses_a?x", "ses_a b", uuid] {
+            assert!(
+                check_launch_values(Harness::Opencode, None, None, Some(bad)).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
 
     #[test]
     fn common_classification() {

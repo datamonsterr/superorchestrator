@@ -135,6 +135,8 @@ impl RunManager {
     }
 
     async fn validate(&self, ctx: &ConnCtx, p: &SpawnParams) -> R<Validated> {
+        so_harness::driver::check_selector(p.model.as_deref(), p.effort.as_deref())
+            .map_err(|e| rpc(INVALID_PARAMS, e.to_string()))?;
         let session_id = ctx
             .session_id
             .clone()
@@ -288,6 +290,14 @@ impl RunManager {
                 )
             }
         };
+
+        so_harness::driver::check_launch_values(
+            account.harness,
+            model.as_deref(),
+            effort.as_deref(),
+            None,
+        )
+        .map_err(|e| rpc(INVALID_PARAMS, e.to_string()))?;
 
         let want = p
             .isolation

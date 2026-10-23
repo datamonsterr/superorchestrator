@@ -1009,3 +1009,101 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
     assert!(full["accounts"][0].get("flags").is_some());
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn startup_removes_inactive_and_unknown_run_tokens_but_preserves_active_runs() {
+    let env = Env::new();
+    let store = env.store();
+    let session = session_row();
+    store.insert_session(&session).unwrap();
+    let mut rows = Vec::new();
+    for state in [
+        RunState::Succeeded,
+        RunState::Failed,
+        RunState::Cancelled,
+        RunState::Running,
+        RunState::Queued,
+        RunState::PendingReview,
+    ] {
+        let row = run_row(&session.id, state, 0);
+        store.insert_run(&row).unwrap();
+        rows.push(row);
+    }
+    let unknown = new_id();
+    for id in rows.iter().map(|r| &r.id).chain(std::iter::once(&unknown)) {
+        let dir = env.paths.run_dir(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ws-token"), "stale capability").unwrap();
+        std::fs::write(dir.join("transcript.jsonl"), "keep evidence").unwrap();
+    }
+    // Never traverse a run-dir symlink while doing cleanup.
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("ws-token"), "outside").unwrap();
+    std::os::unix::fs::symlink(outside.path(), env.paths.run_dir("linked-run")).unwrap();
+    let h = Supervisor::start(env.opts(Duration::from_secs(600)).with_setup(|st| {
+        struct Keep;
+        impl so_supervisor::ReconcileHook for Keep {
+            fn reconcile(&self, _: &Store, _: &RunRow) -> bool {
+                true
+            }
+        }
+        st.set_reconcile_hook(Arc::new(Keep));
+    }))
+    .await
+    .unwrap();
+    for row in rows {
+        let dir = env.paths.run_dir(&row.id);
+        assert_eq!(
+            dir.join("ws-token").exists(),
+            row.state.is_active(),
+            "{}",
+            row.state.as_str()
+        );
+        assert!(dir.join("transcript.jsonl").exists());
+    }
+    assert!(!env.paths.run_dir(&unknown).join("ws-token").exists());
+    assert!(outside.path().join("ws-token").exists());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn startup_removes_token_after_failing_an_orphaned_run() {
+    let env = Env::new();
+    let store = env.store();
+    let session = session_row();
+    store.insert_session(&session).unwrap();
+    let row = run_row(&session.id, RunState::Running, 0);
+    store.insert_run(&row).unwrap();
+    let dir = env.paths.run_dir(&row.id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ws-token"), "stale capability").unwrap();
+    let h = env.start().await;
+    assert_eq!(
+        store.get_run(&row.id).unwrap().unwrap().state,
+        RunState::Failed
+    );
+    assert!(!dir.join("ws-token").exists());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn review_startup_continues_after_a_token_cleanup_error() {
+    let env = Env::new();
+    let bad = env.paths.run_dir("bad");
+    std::fs::create_dir_all(bad.join("ws-token")).unwrap();
+    let good = env.paths.run_dir("good");
+    std::fs::create_dir_all(&good).unwrap();
+    std::fs::write(good.join("ws-token"), "stale").unwrap();
+    let h = env.start().await;
+    assert!(!good.join("ws-token").exists());
+    assert!(bad.join("ws-token").is_dir());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn review_startup_continues_when_runs_directory_cannot_be_read() {
+    let env = Env::new();
+    std::fs::write(env.paths.runs_dir(), "not a directory").unwrap();
+    let h = env.start().await;
+    h.shutdown().await;
+}

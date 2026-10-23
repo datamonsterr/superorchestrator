@@ -13,6 +13,7 @@
 //! block. `max_turns` has no agy equivalent and is ignored.
 
 use std::collections::{HashMap, HashSet};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,7 +25,7 @@ use tokio::sync::watch;
 
 use crate::driver::{
     Driver, DriverConfig, DriverError, HarnessEvent, JoinCommand, JoinInfo, LaunchSpec, RunControl,
-    RunHandle, ShutdownOutcome, check_effort, classify_common,
+    RunHandle, ShutdownOutcome, check_launch_values, classify_common,
 };
 use crate::process::{
     LineParser, ProcessHandle, create_private_dir, exited, spawn_supervised, write_private,
@@ -123,6 +124,10 @@ fn account_gemini_dir(spec: &LaunchSpec) -> Result<PathBuf, DriverError> {
         .ok_or_else(|| DriverError::Other("agy launch has no --gemini_dir".into()))
 }
 
+fn trusted_config_root(metadata: &std::fs::Metadata, uid: u32) -> bool {
+    metadata.is_dir() && metadata.uid() == uid && metadata.mode() & 0o022 == 0
+}
+
 /// Builds `<run_dir>/gemini` (ADR-0005): symlinks to the account's shared
 /// state, a real `config/` copied from the account (files only), and a
 /// `config/mcp_config.json` holding the account's servers plus ours.
@@ -151,15 +156,53 @@ pub fn prepare_gemini_dir(spec: &LaunchSpec, account: &Path) -> std::io::Result<
 
     let config = dir.join("config");
     create_private_dir(&config)?;
-    // `read_dir` and `metadata` follow symlinks, so an account whose `config`
-    // is a link into `~/.gemini/config` is copied, not shared.
-    if let Ok(entries) = std::fs::read_dir(account.join("config")) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if std::fs::metadata(&path).is_ok_and(|m| m.is_file()) {
-                write_private(&config.join(entry.file_name()), &std::fs::read(&path)?)?;
+    let account = account.canonicalize()?;
+    let source_config = account.join("config");
+    let denied = || {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "agy shared config root must be a directory owned by the current uid without group/world write access; entries must stay inside the config root or account directory",
+        )
+    };
+    match std::fs::symlink_metadata(&source_config) {
+        Ok(root_metadata) => {
+            // Preserve local account-directory permissions. Operator-managed shared
+            // roots (ADR-0005) need the additional ownership and mode checks.
+            let source_config = source_config.canonicalize()?;
+            let metadata = std::fs::metadata(&source_config)?;
+            let shared = root_metadata.is_symlink() || !source_config.starts_with(&account);
+            if !metadata.is_dir()
+                || (shared && !trusted_config_root(&metadata, rustix::process::getuid().as_raw()))
+            {
+                return Err(denied());
+            }
+            for entry in std::fs::read_dir(&source_config)? {
+                let entry = entry?;
+                let path = entry.path();
+                let metadata = std::fs::symlink_metadata(&path)?;
+                if metadata.is_file() || metadata.is_symlink() {
+                    let source = match path.canonicalize() {
+                        Ok(source) => source,
+                        Err(e)
+                            if metadata.is_symlink()
+                                && e.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            tracing::warn!(path = %path.display(), "skipping dangling agy config symlink");
+                            continue;
+                        }
+                        Err(e) => return Err(e),
+                    };
+                    if !source.starts_with(&account) && !source.starts_with(&source_config) {
+                        return Err(denied());
+                    }
+                    if std::fs::metadata(&source)?.is_file() {
+                        write_private(&config.join(entry.file_name()), &std::fs::read(source)?)?;
+                    }
+                }
             }
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
     }
 
     // An unreadable or invalid account file is replaced rather than blocking
@@ -223,7 +266,12 @@ impl Driver for AgyDriver {
     }
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
-        check_effort(Harness::Agy, spec.effort.as_deref())?;
+        check_launch_values(
+            Harness::Agy,
+            spec.model.as_deref(),
+            spec.effort.as_deref(),
+            spec.resume.as_deref(),
+        )?;
         if spec.fork {
             return Err(DriverError::Other("agy cannot fork a session".into()));
         }
@@ -397,6 +445,19 @@ impl AgyControl {
             return Err(DriverError::Closed);
         }
         let leader = self.proc.pid.ok_or(DriverError::Closed)?;
+        #[cfg(target_os = "linux")]
+        let identity = if self.bwrapped {
+            Some(
+                first_child_identity(Path::new("/proc"), leader).ok_or_else(|| {
+                    DriverError::Other("agy process under bwrap not found".into())
+                })?,
+            )
+        } else {
+            None
+        };
+        #[cfg(target_os = "linux")]
+        let target = identity.map_or(leader, |child| child.pid);
+        #[cfg(not(target_os = "linux"))]
         let target = if self.bwrapped {
             first_child(leader)
                 .ok_or_else(|| DriverError::Other("agy process under bwrap not found".into()))?
@@ -407,6 +468,16 @@ impl AgyControl {
             .ok()
             .and_then(rustix::process::Pid::from_raw)
             .ok_or_else(|| DriverError::Other("invalid agy pid".into()))?;
+        // The scan and signal are separate syscalls. Re-read both parent and start time
+        // at the last possible moment so an observed PID reuse fails closed.
+        #[cfg(target_os = "linux")]
+        if identity.is_some_and(|child| !child.is_current(Path::new("/proc"))) {
+            return Err(DriverError::Closed);
+        }
+        #[cfg(not(target_os = "linux"))]
+        if self.bwrapped && first_child(leader) != Some(target) {
+            return Err(DriverError::Closed);
+        }
         rustix::process::kill_process(pid, rustix::process::Signal::INT).map_err(|e| {
             if e == rustix::io::Errno::SRCH {
                 DriverError::Closed
@@ -431,24 +502,50 @@ impl AgyControl {
     }
 }
 
-/// Lowest-pid direct child of `parent`, found by scanning `/proc`.
 #[cfg(target_os = "linux")]
-fn first_child(parent: u32) -> Option<u32> {
-    std::fs::read_dir("/proc")
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChildIdentity {
+    pid: u32,
+    parent: u32,
+    start_time: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl ChildIdentity {
+    fn read(root: &Path, pid: u32) -> Option<Self> {
+        let stat = std::fs::read_to_string(root.join(pid.to_string()).join("stat")).ok()?;
+        let (head, rest) = stat.rsplit_once(") ")?;
+        if head.split_once(' ')?.0.parse::<u32>().ok()? != pid {
+            return None;
+        }
+        let fields: Vec<_> = rest.split_whitespace().collect();
+        Some(Self {
+            pid,
+            parent: fields.get(1)?.parse().ok()?,
+            start_time: fields.get(19)?.parse().ok()?,
+        })
+    }
+
+    fn is_current(self, root: &Path) -> bool {
+        Self::read(root, self.pid) == Some(self)
+    }
+}
+
+/// Lowest-pid direct child, retaining the kernel start time for a later identity check.
+#[cfg(target_os = "linux")]
+fn first_child_identity(root: &Path, parent: u32) -> Option<ChildIdentity> {
+    std::fs::read_dir(root)
         .ok()?
         .flatten()
         .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
-        .filter(|pid| {
-            std::fs::read_to_string(format!("/proc/{pid}/stat"))
-                .ok()
-                .and_then(|s| {
-                    // `pid (comm) state ppid ...`; comm may contain spaces.
-                    let rest = s.rsplit_once(") ")?.1;
-                    rest.split(' ').nth(1)?.parse::<u32>().ok()
-                })
-                == Some(parent)
-        })
-        .min()
+        .filter_map(|pid| ChildIdentity::read(root, pid))
+        .filter(|child| child.parent == parent)
+        .min_by_key(|child| child.pid)
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn first_child(parent: u32) -> Option<u32> {
+    first_child_identity(Path::new("/proc"), parent).map(|child| child.pid)
 }
 
 /// Lowest-pid direct child of `parent` on platforms without `/proc`.
@@ -830,6 +927,64 @@ mod tests {
         ];
         for (t, k) in cases {
             assert_eq!(d.classify_error(t), k, "{t}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn child_identity_rejects_reuse_reparenting_and_missing_stat() {
+        let root = tempfile::tempdir().unwrap();
+        let proc_dir = root.path().join("42");
+        std::fs::create_dir(&proc_dir).unwrap();
+        let stat = |parent: u32, start: u64| {
+            format!(
+                "42 (agy ) tricky name) S {parent} {} {start} 0\n",
+                "0 ".repeat(17)
+            )
+        };
+        std::fs::write(proc_dir.join("stat"), stat(7, 1234)).unwrap();
+        let child = ChildIdentity::read(root.path(), 42).unwrap();
+        assert_eq!(
+            child,
+            ChildIdentity {
+                pid: 42,
+                parent: 7,
+                start_time: 1234
+            }
+        );
+        assert!(child.is_current(root.path()));
+        assert_eq!(first_child_identity(root.path(), 7), Some(child));
+        std::fs::write(proc_dir.join("stat"), stat(8, 1234)).unwrap();
+        assert!(
+            !child.is_current(root.path()),
+            "reparented process must not be signalled"
+        );
+        assert_eq!(first_child_identity(root.path(), 7), None);
+        std::fs::write(proc_dir.join("stat"), stat(7, 5678)).unwrap();
+        assert!(
+            !child.is_current(root.path()),
+            "reused pid must not be signalled"
+        );
+        std::fs::write(proc_dir.join("stat"), "malformed").unwrap();
+        assert!(!child.is_current(root.path()));
+        std::fs::remove_file(proc_dir.join("stat")).unwrap();
+        assert!(!child.is_current(root.path()));
+    }
+
+    #[test]
+    fn shared_config_root_checks_owner_and_write_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let uid = rustix::process::getuid().as_raw();
+        let metadata = std::fs::metadata(root.path()).unwrap();
+        assert!(trusted_config_root(&metadata, uid));
+        assert!(!trusted_config_root(&metadata, uid.wrapping_add(1)));
+        for mode in [0o775, 0o757] {
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+            assert!(!trusted_config_root(
+                &std::fs::metadata(root.path()).unwrap(),
+                uid
+            ));
         }
     }
 

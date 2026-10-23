@@ -311,7 +311,9 @@ impl Supervisor {
             let st = state.clone();
             let failed = tokio::task::spawn_blocking(move || {
                 let hook = st.hook.read().unwrap_or_else(|e| e.into_inner()).clone();
-                reconcile::reconcile(&st.store, hook.as_deref())
+                let failed = reconcile::reconcile(&st.store, hook.as_deref())?;
+                reconcile::cleanup_stale_run_tokens(&st.store, &st.paths);
+                Ok::<_, SupervisorError>(failed)
             })
             .await
             .map_err(|e| std::io::Error::other(e.to_string()))??;

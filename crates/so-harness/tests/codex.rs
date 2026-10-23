@@ -419,10 +419,10 @@ async fn usage_limit_error_finishes_the_turn_as_quota() {
 async fn structured_output_and_resume() {
     let rig = Rig::new();
     let mut spec = rig.spec(&[]);
-    spec.resume = Some("thr-old".into());
+    spec.resume = Some("01a162ee-5ba3-7400-be98-4eb69d75fead".into());
     spec.output_schema = Some(json!({"type": "object"}));
-    let mut resume = json!({"expect": "thread/resume", "respond": {"thread": {"id": "thr-old"}}});
-    resume["check"] = json!({"/params/threadId": "thr-old"});
+    let mut resume = json!({"expect": "thread/resume", "respond": {"thread": {"id": "01a162ee-5ba3-7400-be98-4eb69d75fead"}}});
+    resume["check"] = json!({"/params/threadId": "01a162ee-5ba3-7400-be98-4eb69d75fead"});
     let mut t1 = turn_start("turn-1");
     t1["check"] = json!({"/params/outputSchema/type": "object"});
     let steps = [
@@ -436,7 +436,10 @@ async fn structured_output_and_resume() {
     ];
     std::fs::write(rig.dir.path().join("script.jsonl"), script(&steps)).unwrap();
     let mut h = driver().launch(spec).await.unwrap();
-    assert_eq!(h.native_session_id.as_deref(), Some("thr-old"));
+    assert_eq!(
+        h.native_session_id.as_deref(),
+        Some("01a162ee-5ba3-7400-be98-4eb69d75fead")
+    );
     let events = until(&mut h, is_turn).await;
     assert!(matches!(
         events.last(),
