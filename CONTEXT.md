@@ -54,8 +54,8 @@ _Avoid_: Shim, alias, launcher
 
 **Pass-through environment**:
 The extra inherited environment variable names explicitly allowed by an account's
-`pass_env` and the global `accounts.pass_env`, in addition to the baseline harness
-allowlist. Values come from the launching process and are not saved in account config.
+`pass_env` and the global `accounts.pass_env`, in addition to the baseline
+allowlist of supervisor-launched processes. Values come from the supervisor's environment and are not saved in account config. Interactive CLI commands keep the operator's environment.
 
 ### Routing and usage
 

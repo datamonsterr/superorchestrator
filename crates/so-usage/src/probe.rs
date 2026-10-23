@@ -453,12 +453,7 @@ impl UsageService {
         let program = resolve_binary(&account.binary, self.host.path_var.as_deref())?;
         let home = self.host.expand(&account.home)?;
         let req = ProbeRequest {
-            pass_env: account
-                .pass_env
-                .iter()
-                .chain(&self.config.accounts.pass_env)
-                .cloned()
-                .collect(),
+            pass_env: account.effective_pass_env(&self.config.accounts.pass_env),
             program,
             args: vec![
                 format!("--gemini_dir={}", home.join(".gemini").display()),
@@ -884,6 +879,7 @@ mod tests {
     fn probe_environment_isolation() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
+                "--ignored",
                 "--exact",
                 "probe::tests::probe_environment_child",
                 "--nocapture",
@@ -898,11 +894,11 @@ mod tests {
         assert!(status.success());
     }
 
+    /// Helper run only by `probe_environment_isolation` in a fresh process (`--ignored
+    /// --exact`), so no test mutates this process's environment.
     #[tokio::test]
+    #[ignore = "helper: run by probe_environment_isolation"]
     async fn probe_environment_child() {
-        if std::env::var_os("SO_ENV_TEST_CHILD").is_none() {
-            return;
-        }
         let req = ProbeRequest {
             pass_env: vec!["SO_ACCOUNT_VAR".into(), "SO_DRIVER_VAR".into(), "MISSING_OPT_IN".into()],
             program: "/bin/sh".into(),

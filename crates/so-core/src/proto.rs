@@ -481,8 +481,6 @@ pub struct RunView {
 /// `env`; `Debug` prints names only.
 #[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct JoinResult {
-    #[serde(default)]
-    pub pass_env: Vec<String>,
     pub argv: Vec<String>,
     #[serde(default)]
     pub env: Vec<(String, String)>,

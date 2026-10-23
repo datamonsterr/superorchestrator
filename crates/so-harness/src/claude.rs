@@ -122,7 +122,6 @@ impl Driver for ClaudeDriver {
         cmd.args(&spec.launch.argv_prefix)
             .args(&spec.launch.extra_args)
             .args(build_args(&spec, &session_id))
-            .envs(so_core::child_env::pass_vars(&spec.launch.pass_env))
             .envs(spec.launch.vars.iter().map(|(k, v)| (k, v)))
             .current_dir(&spec.cwd);
         let acks = Acks::default();
@@ -131,6 +130,7 @@ impl Driver for ClaudeDriver {
             &spec.run_dir,
             self.config.shutdown_grace,
             ClaudeParser::new(acks.clone()),
+            &spec.launch.pass_env,
         )?;
         let control = ClaudeControl {
             proc: Arc::new(sup.handle),

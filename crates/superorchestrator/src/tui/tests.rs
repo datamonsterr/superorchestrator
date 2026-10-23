@@ -839,7 +839,6 @@ fn hints_and_launches_come_through() {
     assert!(a.modal.is_none());
 
     let l = Launch {
-        pass_env: vec![],
         title: "t".into(),
         note: None,
         program: "codex".into(),

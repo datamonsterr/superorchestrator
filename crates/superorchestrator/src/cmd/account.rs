@@ -319,9 +319,6 @@ pub fn run_login(ctx: &Ctx, account: &AccountFile, host: &HostEnv) -> Result<boo
     }
     let (program, args) = plan.argv.split_first().context("empty login command")?;
     let mut cmd = Command::new(program);
-    let mut pass_env = plan.pass_env.clone();
-    pass_env.extend(ctx.config()?.accounts.pass_env);
-    so_core::child_env::isolate(&mut cmd, &pass_env);
     cmd.args(args).envs(plan.env.iter().map(|(k, v)| (k, v)));
     if ctx.json {
         // Keep stdout for the JSON result; the harness talks on stderr.

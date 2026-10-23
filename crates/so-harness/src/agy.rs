@@ -249,7 +249,6 @@ impl Driver for AgyDriver {
                     .filter(|a| !a.starts_with(GEMINI_DIR_FLAG)),
             )
             .args(build_args(&spec))
-            .envs(so_core::child_env::pass_vars(&spec.launch.pass_env))
             .envs(spec.launch.vars.iter().map(|(k, v)| (k, v)))
             .current_dir(&spec.cwd);
 
@@ -259,6 +258,7 @@ impl Driver for AgyDriver {
             &spec.run_dir,
             self.config.shutdown_grace,
             AgyParser::new(spec.output_schema.is_some(), spec.resume.is_some(), id_tx),
+            &spec.launch.pass_env,
         )?;
         let control = AgyControl {
             proc: Arc::new(sup.handle),

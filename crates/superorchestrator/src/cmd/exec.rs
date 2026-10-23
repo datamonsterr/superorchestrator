@@ -21,15 +21,12 @@ pub fn run(ctx: &Ctx, account: &str, args: &[String]) -> Result<std::convert::In
     }
     let acc = AccountFile::load(&file).with_context(|| format!("account `{account}`"))?;
     let host = ctx.host()?;
-    let launch = build_launch(&acc, &host)
-        .with_context(|| format!("cannot launch account `{account}`"))?
-        .with_default_pass_env(&ctx.config()?.accounts.pass_env);
+    let launch =
+        build_launch(&acc, &host).with_context(|| format!("cannot launch account `{account}`"))?;
 
     record_session(&ctx.paths.state_db(), account);
 
-    let mut command = Command::new(&launch.program);
-    launch.isolate_env(&mut command);
-    let err = command
+    let err = Command::new(&launch.program)
         .args(&launch.argv_prefix)
         .args(&launch.extra_args)
         .args(args)

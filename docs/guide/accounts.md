@@ -22,41 +22,52 @@ A name matches `^[a-z][a-z0-9-]{1,31}$`. The name is also the wrapper command, s
 
 ## Inherited environment
 
-Harness processes start with an empty environment and inherit only `PATH`, `HOME`,
+Processes the supervisor launches (run harnesses, usage and model probes, `doctor`
+version checks) start with an empty environment and inherit only `PATH`, `HOME`,
 `USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `COLORTERM`, `TZ`, `TMPDIR`,
 `XDG_*`, proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, in any
-case), `SSL_CERT_FILE` and `SSL_CERT_DIR`. `DBUS_SESSION_BUS_ADDRESS` is also inherited
-so agy can access the user's keyring (ADR-0003).
+case), `SSL_CERT_FILE` and `SSL_CERT_DIR`. The `XDG_*` prefix means the harness also
+sees `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and the other XDG directory variables.
+`DBUS_SESSION_BUS_ADDRESS` is inherited so agy can reach the user's keyring
+(ADR-0003); this exposes your session bus to every harness.
 
-API keys, cloud credentials, `GITHUB_TOKEN`, `SSH_AUTH_SOCK`, `DISPLAY`,
-`WAYLAND_DISPLAY` and harness account selectors from the supervisor environment
-are excluded by default. If a harness or its tools need one, opt in by exact name:
+Interactive CLI commands (`account login`, `exec`, `runs join`, the terminal UI and
+`install`) run in your own terminal and keep your environment unchanged.
+
+API keys and cloud credentials are not inherited. In particular `OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GH_TOKEN`, `GITHUB_TOKEN` and
+`SSH_AUTH_SOCK` must be opted in, as must `DISPLAY` and `WAYLAND_DISPLAY`. Corporate
+CA variables (`NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`) also need
+`pass_env`; only `SSL_CERT_FILE` and `SSL_CERT_DIR` are in the baseline. Opt in by
+exact name:
 
 ```toml
 # accounts/codex-acc2.toml
-pass_env = ["GITHUB_TOKEN", "SSH_AUTH_SOCK"]
+pass_env = ["GH_TOKEN", "SSH_AUTH_SOCK"]
 ```
 
 `accounts.pass_env` in `config.toml` supplies additional names for every account:
 
 ```toml
 [accounts]
-pass_env = ["SSL_CERT_CUSTOM_PATH"]
+pass_env = ["NODE_EXTRA_CA_CERTS"]
 ```
 
-The two lists are combined; both default to empty. Names are literal (no `*`
-expansion), and unset names are skipped. Values are read from the launching process
-when it starts the harness; supervised runs and probes use the supervisor's
-inherited environment, so restart it after changing that environment. Only names
-are saved in configuration. Account credential-home variables and driver-set
-variables override inherited values, even when explicitly passed through.
+The two lists are combined and deduplicated; both default to empty. Names are
+literal (no `*` expansion), and names that are not set are skipped silently. Values
+are read from the supervisor's environment when it starts the process, so restart
+the supervisor after changing that environment. Only names are saved in
+configuration. Account credential-home variables and driver-set variables override
+inherited values, even when explicitly passed through.
 
-This policy also covers usage and model probes, sign-in commands, wrappers and
-interactive joins. Diagnostic `--version` launches receive the baseline environment. Claude installation
-helpers also preserve `CLAUDE_CONFIG_DIR`, because it selects the user configuration
-that installation reads and updates. User-authored review `cmd:` checks keep the user's
-command environment. Passing a variable through makes it available to the harness
-and potentially its tool subprocesses; this policy does not restrict file access.
+Warning: do not pass loader-hook variables such as `LD_PRELOAD`, `LD_LIBRARY_PATH` or
+`NODE_OPTIONS`. They change how the harness binary and its tools execute code.
+Passing a variable makes it available to the harness and its tool subprocesses; this
+policy does not restrict file access.
+
+Supervisor spawns that are not harnesses are intentionally not isolated: review
+`cmd:` and `gh` checks, git worktree commands, notifications and process inspection
+keep the supervisor's environment.
 
 ## Credential homes
 

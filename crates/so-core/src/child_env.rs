@@ -1,4 +1,5 @@
-//! Environment boundary for harness processes (GHSA-rfwj-83wf-qr2g).
+//! Environment boundary for processes the supervisor daemon spawns (GHSA-rfwj-83wf-qr2g).
+//! Interactive CLI commands keep the operator's own environment.
 
 use std::ffi::{OsStr, OsString};
 use std::process::Command;
@@ -14,8 +15,9 @@ fn allowed(name: &OsStr) -> bool {
     ) || name.starts_with("LC_") || name.starts_with("XDG_")
         || ["HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY"]
             .iter().any(|proxy| name.eq_ignore_ascii_case(proxy))
-        // agy needs the real user's keyring (ADR-0003); on Linux its session
-        // bus address selects the Secret Service that holds that login.
+        // Needed for the agy keyring (ADR-0003): on Linux the session bus
+        // address selects the Secret Service that holds the login. This also
+        // exposes the operator's session bus to every harness.
         || name == "DBUS_SESSION_BUS_ADDRESS"
 }
 
@@ -24,10 +26,16 @@ pub fn valid_name(name: &str) -> bool {
     !name.is_empty() && !name.contains(['\0', '='])
 }
 
-/// Resolves explicitly opted-in inherited variables without converting their values
-/// to UTF-8. Apply these before explicit driver/account settings.
-pub fn pass_vars(pass_env: &[String]) -> impl Iterator<Item = (OsString, OsString)> + '_ {
-    std::env::vars_os().filter(move |(key, _)| pass_env.iter().any(|name| key == OsStr::new(name)))
+/// Joins inherited-name lists in order, dropping duplicates, so account and global
+/// `pass_env` entries form one effective list.
+pub fn merge_pass_env<'a>(lists: impl IntoIterator<Item = &'a [String]>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in lists.into_iter().flatten() {
+        if !out.contains(name) {
+            out.push(name.clone());
+        }
+    }
+    out
 }
 
 /// Starts from an empty environment, inherits only baseline and explicitly named
@@ -97,12 +105,11 @@ mod tests {
     }
 
     #[test]
-    fn explicit_values_and_removals_win() {
+    fn explicit_values_win_and_merge_dedups() {
         let mut command = Command::new("unused");
         command
             .env("HOME", "/account")
-            .env("SO_DRIVER_VAR", "driver")
-            .env_remove("PATH");
+            .env("SO_DRIVER_VAR", "driver");
         isolate(&mut command, &[]);
         let vars: std::collections::HashMap<_, _> = command.get_envs().collect();
         assert_eq!(vars[OsStr::new("HOME")], Some(OsStr::new("/account")));
@@ -110,7 +117,23 @@ mod tests {
             vars[OsStr::new("SO_DRIVER_VAR")],
             Some(OsStr::new("driver"))
         );
-        // After env_clear(), an explicitly removed key may disappear entirely.
-        assert!(vars.get(OsStr::new("PATH")).is_none_or(|v| v.is_none()));
+        let a = vec!["A".to_string(), "B".to_string()];
+        let b = vec!["B".to_string(), "C".to_string()];
+        assert_eq!(
+            merge_pass_env([a.as_slice(), b.as_slice()]),
+            ["A", "B", "C"]
+        );
+    }
+
+    #[test]
+    fn explicit_removal_survives_allowlist_reinstatement() {
+        // PATH is on the allowlist, so isolate() re-adds it; the removal must be replayed after.
+        let mut command = Command::new("/usr/bin/env");
+        command.env_remove("PATH");
+        isolate(&mut command, &[]);
+        let out = command.output().unwrap();
+        assert!(out.status.success());
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(!text.lines().any(|l| l.starts_with("PATH=")), "{text}");
     }
 }

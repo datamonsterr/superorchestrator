@@ -1075,7 +1075,6 @@ impl Driver for OpencodeDriver {
                 cmd.args(&spec.launch.argv_prefix)
                     .args(&spec.launch.extra_args)
                     .args(["serve", "--hostname", "127.0.0.1", "--port", "0"])
-                    .envs(so_core::child_env::pass_vars(&spec.launch.pass_env))
                     .envs(spec.launch.vars.iter().map(|(k, v)| (k, v)))
                     .env("OPENCODE_CONFIG", &config_path)
                     .env("OPENCODE_SERVER_USERNAME", USERNAME)
@@ -1089,6 +1088,7 @@ impl Driver for OpencodeDriver {
                     &spec.run_dir,
                     self.config.shutdown_grace,
                     ListenParser { url: Some(url_tx) },
+                    &spec.launch.pass_env,
                 )?;
                 let out = Out::new(tx, sup.transcript.clone());
                 let mut exit = sup.handle.exit.clone();

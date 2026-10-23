@@ -9,7 +9,12 @@ use so_harness::{ClaudeDriver, Driver, DriverConfig, LaunchSpec, McpServerSpec};
 #[test]
 fn supervised_environment_isolation() {
     let status = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "supervised_environment_child", "--nocapture"])
+        .args([
+            "--ignored",
+            "--exact",
+            "supervised_environment_child",
+            "--nocapture",
+        ])
         .env("SO_ENV_TEST_CHILD", "1")
         .env("SO_TEST_SECRET", "must-not-inherit")
         .env("LC_SO_TEST", "allowlisted")
@@ -22,11 +27,11 @@ fn supervised_environment_isolation() {
     assert!(status.success());
 }
 
+/// Helper run only by `supervised_environment_isolation` in a fresh process
+/// (`--ignored --exact`), so no test mutates this process's environment.
 #[tokio::test]
+#[ignore = "helper: run by supervised_environment_isolation"]
 async fn supervised_environment_child() {
-    if std::env::var_os("SO_ENV_TEST_CHILD").is_none() {
-        return;
-    }
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("script.jsonl");
     let log = dir.path().join("env.jsonl");

@@ -138,6 +138,11 @@ impl AccountFile {
         Ok(())
     }
 
+    /// The account's `pass_env` plus the global `accounts.pass_env`, deduplicated.
+    pub fn effective_pass_env(&self, global: &[String]) -> Vec<String> {
+        crate::child_env::merge_pass_env([self.pass_env.as_slice(), global])
+    }
+
     /// Loads one account file. The `name` must equal the file stem.
     pub fn load(path: &Path) -> Result<Self> {
         let text = std::fs::read_to_string(path).map_err(|e| CoreError::io(path, e))?;

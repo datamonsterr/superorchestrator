@@ -22,13 +22,8 @@ pub struct Launch {
 impl Launch {
     /// Adds global inherited names to the account's own pass-through list.
     pub fn with_default_pass_env(mut self, defaults: &[String]) -> Self {
-        self.pass_env.extend_from_slice(defaults);
+        self.pass_env = so_core::child_env::merge_pass_env([self.pass_env.as_slice(), defaults]);
         self
-    }
-
-    /// Applies inheritance before explicit account and driver environment values.
-    pub fn isolate_env(&self, command: &mut std::process::Command) {
-        so_core::child_env::isolate(command, &self.pass_env);
     }
 }
 

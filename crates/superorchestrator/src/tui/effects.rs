@@ -259,12 +259,6 @@ fn perform(
                 send(
                     tx,
                     Update::Launch(Launch {
-                        pass_env: plan
-                            .pass_env
-                            .iter()
-                            .chain(&ctx.config()?.accounts.pass_env)
-                            .cloned()
-                            .collect(),
                         title: format!("Sign in to {name}"),
                         note,
                         program: program.clone(),
@@ -367,7 +361,6 @@ fn perform(
             send(
                 tx,
                 Update::Launch(Launch {
-                    pass_env: j.pass_env.clone(),
                     title: format!("Joining run {}", short(&run)),
                     note: None,
                     program: program.clone(),

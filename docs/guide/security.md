@@ -12,11 +12,19 @@ Superorchestrator runs coding agents with full permissions on your machine. This
 
 ## Harness environment
 
-Harness launches use an inherited-variable allowlist, followed by explicit account
-and driver variables. Supervisor API keys and cloud credentials are excluded unless
-named in `pass_env`. See [accounts](accounts.md#inherited-environment) for the list
-and opt-in configuration. This limits accidental environment disclosure; harnesses
-still run with the user's file access and permissions.
+Processes the supervisor launches (harness runs, usage and model probes, `doctor`
+version checks) use an inherited-variable allowlist, followed by explicit account and
+driver variables. Supervisor API keys and cloud credentials (`OPENAI_API_KEY`,
+`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, `GH_TOKEN`, `SSH_AUTH_SOCK`, and so on) are
+excluded unless named in `pass_env`. Interactive CLI commands keep your own
+environment. The supervisor's other spawns (review `cmd:` and `gh` checks, git
+worktrees, notifications, process inspection) are intentionally not isolated. See
+[accounts](accounts.md#inherited-environment) for the allowlist, corporate CA
+variables, loader-hook warning (`LD_PRELOAD`, `NODE_OPTIONS`) and opt-in
+configuration. The baseline includes `XDG_*` and `DBUS_SESSION_BUS_ADDRESS`, so every
+harness sees your config/data home variables and session bus. This limits accidental
+environment disclosure; harnesses still run with the user's file access and
+permissions.
 
 OpenCode limitation: its [server authentication documentation](https://opencode.ai/docs/server/#authentication)
 requires `OPENCODE_SERVER_PASSWORD` in the server environment and provides no

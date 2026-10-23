@@ -163,7 +163,6 @@ impl Driver for CodexDriver {
         cmd.args(&spec.launch.argv_prefix)
             .args(&spec.launch.extra_args)
             .args(build_args(&token_file))
-            .envs(so_core::child_env::pass_vars(&spec.launch.pass_env))
             .envs(spec.launch.vars.iter().map(|(k, v)| (k, v)))
             .current_dir(&spec.cwd);
         let (banner_tx, banner_rx) = oneshot::channel();
@@ -174,6 +173,7 @@ impl Driver for CodexDriver {
             self.config.shutdown_grace,
             banner.clone(),
             Some(Box::new(banner)),
+            &spec.launch.pass_env,
         )?;
         let guard = sup.producer_guard();
         let Supervised {
