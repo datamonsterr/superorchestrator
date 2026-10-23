@@ -13,6 +13,12 @@ const PREFIXES: [&str; 8] = [
     "ghr_",
 ];
 const MIN_TOKEN: usize = 8;
+/// Google API keys: `AIza` plus 35 characters.
+const GOOGLE_PREFIX: &str = "AIza";
+const GOOGLE_MIN: usize = 35;
+/// Hugging Face tokens: `hf_` plus at least 30 alphanumeric characters.
+const HF_PREFIX: &str = "hf_";
+const HF_MIN: usize = 30;
 /// Longest JWT segment scanned, so a long run of `eyJ-` cannot make redaction quadratic.
 const MAX_JWT_SEGMENT: usize = 4096;
 
@@ -20,7 +26,8 @@ fn is_token_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '=' | '+' | '/')
 }
 
-/// Replaces `sk-`, `sk-or-`, `ghp_`, `gho_` tokens and `Bearer <x>` values.
+/// Replaces `sk-`, `sk-or-`, `ghp_`, `gho_`, `AIza` and `hf_` tokens and
+/// `Bearer <x>` values.
 pub fn redact(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
@@ -66,8 +73,10 @@ fn match_secret(
     })
 }
 
-/// Slack tokens (`xox[bpars]-...`), AWS access key ids (`AKIA` + 16 characters) and JWTs
-/// (`eyJ....eyJ....signature`). Returns the number of bytes matched.
+/// Slack tokens (`xox[bpars]-...`), AWS access key ids (`AKIA` + 16 characters),
+/// Google API keys (`AIza` + 35 characters), Hugging Face tokens (`hf_` + 30
+/// alphanumerics) and JWTs (`eyJ....eyJ....signature`). Returns the number of
+/// bytes matched.
 fn match_structured(rest: &str, abs: usize, jwt_dead_until: &mut usize) -> Option<usize> {
     let b = rest.as_bytes();
     if rest.starts_with("xox") && b.len() > 4 && b"bpars".contains(&b[3]) && b[4] == b'-' {
@@ -80,6 +89,17 @@ fn match_structured(rest: &str, abs: usize, jwt_dead_until: &mut usize) -> Optio
             .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
             .count();
         return (n >= 16).then_some(4 + n);
+    }
+    if let Some(after) = rest.strip_prefix(GOOGLE_PREFIX) {
+        let n = after
+            .bytes()
+            .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+            .count();
+        return (n >= GOOGLE_MIN).then_some(GOOGLE_PREFIX.len() + n);
+    }
+    if let Some(after) = rest.strip_prefix(HF_PREFIX) {
+        let n = after.bytes().take_while(u8::is_ascii_alphanumeric).count();
+        return (n >= HF_MIN).then_some(HF_PREFIX.len() + n);
     }
     // After a failed attempt every start inside the same token run fails the same way.
     if rest.starts_with("eyJ") && abs >= *jwt_dead_until {
@@ -217,6 +237,30 @@ mod tests {
         let out = redact(&adversarial);
         assert!(start.elapsed() < std::time::Duration::from_secs(2));
         assert_eq!(out.len(), adversarial.len(), "not a JWT, left alone");
+    }
+
+    #[test]
+    fn redacts_google_api_keys_and_hugging_face_tokens() {
+        let google = format!("AIza{}", "Ab1_-".repeat(7));
+        let hf = format!("hf_{}", "aB1".repeat(10));
+        let cases = [
+            (format!("key {google} end"), "key [REDACTED] end"),
+            (format!("k={hf}&next"), "k=[REDACTED]&next"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(redact(&input), want, "{input}");
+        }
+        let short_google = format!("AIza{}", "A".repeat(34));
+        let short_hf = format!("hf_{}", "a".repeat(29));
+        let near_misses = [
+            short_google,
+            short_hf,
+            "AIza".to_string(),
+            "hf_x".to_string(),
+        ];
+        for s in near_misses {
+            assert_eq!(redact(&s), s, "{s}");
+        }
     }
 
     #[test]

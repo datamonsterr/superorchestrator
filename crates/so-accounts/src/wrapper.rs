@@ -64,17 +64,54 @@ fn reserve_backup(bak_dir: &Path, name: &str) -> Result<PathBuf> {
     unreachable!("counter is unbounded")
 }
 
+/// True when writing `<dir>/<account_name>` would overwrite the running executable,
+/// either by name or after resolving symlinks. `current_exe` is injected so tests
+/// can exercise the check with a temporary directory.
+fn wrapper_is_self(path: &Path, account_name: &str, current_exe: Option<&Path>) -> bool {
+    let Some(exe) = current_exe else {
+        return false;
+    };
+    if exe.file_name().and_then(|n| n.to_str()) == Some(account_name) {
+        return true;
+    }
+    match (path.canonicalize(), exe.canonicalize()) {
+        (Ok(target), Ok(exe)) => target == exe,
+        _ => false,
+    }
+}
+
 /// Writes `<dir>/<account_name>` atomically with mode 0755. A file that exists
 /// without the marker is first moved to `<bak_dir>/<name>.<timestamp>`.
-/// Returns the wrapper path.
+/// Returns the wrapper path. Refuses when the target is the running executable.
 pub fn write_wrapper(
     dir: &Path,
     bak_dir: &Path,
     account_name: &str,
     self_exe_name: &str,
 ) -> Result<PathBuf> {
+    let current_exe = std::env::current_exe().ok();
+    write_wrapper_for_exe(
+        dir,
+        bak_dir,
+        account_name,
+        self_exe_name,
+        current_exe.as_deref(),
+    )
+}
+
+/// `write_wrapper` with the current executable injected, for tests.
+fn write_wrapper_for_exe(
+    dir: &Path,
+    bak_dir: &Path,
+    account_name: &str,
+    self_exe_name: &str,
+    current_exe: Option<&Path>,
+) -> Result<PathBuf> {
     check_name(account_name)?;
     let path = dir.join(account_name);
+    if wrapper_is_self(&path, account_name, current_exe) {
+        return Err(AccountsError::WrapperIsSelf { path });
+    }
     std::fs::create_dir_all(dir).map_err(|e| AccountsError::io(dir, e))?;
     if path.symlink_metadata().is_ok() && !is_managed(&path) {
         std::fs::create_dir_all(bak_dir).map_err(|e| AccountsError::io(bak_dir, e))?;
@@ -214,6 +251,55 @@ mod tests {
         let link = d.path().join("link");
         std::os::unix::fs::symlink(&p, &link).unwrap();
         assert!(!is_managed(&link));
+    }
+
+    #[test]
+    fn refuses_when_account_name_matches_running_exe() {
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        let bak = d.path().join("bak");
+        let exe = d.path().join("real-exe");
+        std::fs::write(&exe, "binary").unwrap();
+
+        let err = write_wrapper_for_exe(&bin, &bak, "real-exe", "superorchestrator", Some(&exe))
+            .unwrap_err();
+        assert!(matches!(err, AccountsError::WrapperIsSelf { .. }), "{err}");
+        assert!(!bin.exists(), "wrapper directory must not be created");
+        assert!(!bak.exists());
+    }
+
+    #[test]
+    fn refuses_when_wrapper_path_is_running_exe() {
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        let bak = d.path().join("bak");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("real-exe");
+        std::fs::write(&exe, "binary").unwrap();
+        let link = bin.join("codex-alias");
+        std::os::unix::fs::symlink(&exe, &link).unwrap();
+
+        let err = write_wrapper_for_exe(&bin, &bak, "codex-alias", "superorchestrator", Some(&exe))
+            .unwrap_err();
+        assert!(matches!(err, AccountsError::WrapperIsSelf { .. }), "{err}");
+        assert!(!bak.exists(), "nothing to back up for a refusal");
+        assert_eq!(
+            std::fs::read_link(&link).unwrap(),
+            exe,
+            "symlink must be left alone"
+        );
+        assert!(!is_managed(&link));
+    }
+
+    #[test]
+    fn writes_when_the_running_exe_is_unrelated() {
+        let d = tempfile::tempdir().unwrap();
+        let bin = d.path().join("bin");
+        let bak = d.path().join("bak");
+        let exe = d.path().join("elsewhere").join("superorchestrator");
+        let p = write_wrapper_for_exe(&bin, &bak, "codex-acc2", "superorchestrator", Some(&exe))
+            .unwrap();
+        assert!(is_managed(&p));
     }
 
     #[test]
