@@ -84,6 +84,7 @@ pub fn run_checks(paths: &Paths, host: &HostEnv) -> DoctorReport {
     check_binaries(&mut c, host, &accounts);
     let cfg = check_config(&mut c, paths);
     check_decider(&mut c, cfg.as_ref());
+    check_levels(&mut c, cfg.as_ref(), &so_router::Catalog::load(paths).ok());
     check_pass_env(&mut c, cfg.as_ref(), &accounts, &|n| {
         std::env::var_os(n).is_some()
     });
@@ -101,7 +102,7 @@ pub fn run_checks(paths: &Paths, host: &HostEnv) -> DoctorReport {
     }
 }
 
-/// The routing decider: the models in effect (env > config > default), the fallback and
+/// The routing decider (it scores complexity; code picks the choice): the models in effect (env > config > default), the fallback and
 /// whether a key is present. Environment variables are read from this process, so a
 /// supervisor started with a different environment may differ.
 fn check_decider(c: &mut Checks, cfg: Option<&Config>) {
@@ -127,6 +128,58 @@ fn check_decider(c: &mut Checks, cfg: Option<&Config>) {
                 jev.key_env
             ),
         );
+    }
+}
+
+/// Complexity levels with nothing to route to: every listed choice is disabled (or the list
+/// names none), or no enabled choice has the level's tier. A level that sets both `tier` and
+/// `choices` ignores the tier. Account headroom is not checked: it changes by the minute.
+fn check_levels(c: &mut Checks, cfg: Option<&Config>, catalog: &Option<so_router::Catalog>) {
+    let Some(cfg) = cfg else { return };
+    let mut problems = Vec::new();
+    for l in &cfg.router.levels {
+        if !l.choices.is_empty() {
+            let usable = l
+                .choices
+                .iter()
+                .any(|lc| cfg.choices.iter().any(|ch| ch.id == lc.id && ch.enabled));
+            if !usable {
+                problems.push(format!(
+                    "level {}: every listed choice is disabled, so it falls through to the nearest level",
+                    l.name
+                ));
+            }
+            if l.tier.is_some() {
+                problems.push(format!(
+                    "level {}: `tier` is ignored because `choices` is not empty",
+                    l.name
+                ));
+            }
+        } else if let (Some(tier), Some(catalog)) = (l.tier, catalog) {
+            let want = match tier {
+                so_core::config::LevelTier::High => so_router::Tier::High,
+                so_core::config::LevelTier::Mid => so_router::Tier::Mid,
+                so_core::config::LevelTier::Fast => so_router::Tier::Fast,
+            };
+            let usable = cfg
+                .choices
+                .iter()
+                .any(|ch| ch.enabled && catalog.tier(ch.harness, &ch.model) == want);
+            if !usable {
+                problems.push(format!(
+                    "level {}: no enabled choice has tier {tier:?}, so it falls through to the nearest level",
+                    l.name
+                ));
+            }
+        }
+    }
+    if problems.is_empty() {
+        c.ok(
+            "levels",
+            format!("{} level(s) have a usable choice", cfg.router.levels.len()),
+        );
+    } else {
+        c.warn("levels", problems.join("; "));
     }
 }
 
@@ -476,6 +529,49 @@ mod tests {
             .and_then(|r| r.split(". ").next())
             .unwrap();
         assert_eq!(names, "OPENAI_API_KEY", "{d}");
+    }
+
+    fn levels_detail(cfg: &Config) -> (Status, String) {
+        let mut c = Checks::default();
+        check_levels(&mut c, Some(cfg), &None);
+        let x = c.0.into_iter().find(|x| x.name == "levels").unwrap();
+        (x.status, x.detail)
+    }
+
+    #[test]
+    fn levels_warn_for_disabled_choices_and_ignored_tier() {
+        let mut cfg = Config::default();
+        let id = "x".to_string();
+        cfg.choices.push(so_core::types::Choice {
+            id: id.clone(),
+            harness: Harness::Agy,
+            model: "m".into(),
+            effort: None,
+            roles: Vec::new(),
+            description: String::new(),
+            enabled: false,
+        });
+        let mut l = cfg.router.levels[0].clone();
+        l.choices = vec![so_core::config::LevelChoice {
+            id: id.clone(),
+            priority: None,
+        }];
+        l.tier = Some(so_core::config::LevelTier::Fast);
+        cfg.router.levels = vec![l];
+        let (st, d) = levels_detail(&cfg);
+        assert_eq!(st, Status::Warn);
+        assert!(d.contains("every listed choice is disabled"), "{d}");
+        assert!(d.contains("`tier` is ignored"), "{d}");
+        cfg.choices[0].enabled = true;
+        let (st, d) = levels_detail(&cfg);
+        assert_eq!(st, Status::Warn);
+        assert!(!d.contains("disabled"), "{d}");
+    }
+
+    #[test]
+    fn levels_ok_when_defaults_have_enabled_choices() {
+        let (st, _) = levels_detail(&Config::default());
+        assert_eq!(st, Status::Ok);
     }
 
     #[test]

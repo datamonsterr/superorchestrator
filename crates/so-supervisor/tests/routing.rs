@@ -998,9 +998,10 @@ async fn flaky_decider(ok_hits: usize) -> (String, std::sync::Arc<std::sync::ato
                 let (status, body) = if n < ok_hits {
                     (
                         "200 OK",
-                        json!({"answers": {"route": {"type": "choice", "choice": "claude-x",
+                        json!({"answers": {"complexity": {"type": "score", "score": 2.0,
                             "confidence": 0.95,
-                            "probabilities": {"claude-x": 0.95, "claude-y": 0.05}}}})
+                            "probabilities": {"0": 0.0, "1": 0.0, "2": 0.95, "3": 0.05, "4": 0.0},
+                            "legend": {}}}})
                         .to_string(),
                     )
                 } else {

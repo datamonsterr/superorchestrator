@@ -233,7 +233,7 @@ mod tests {
         assert_eq!(names(&d, 79.9)[0], "mid");
         assert_eq!(names(&d, 80.0)[0], "high");
         assert_eq!(names(&d, 100.0)[0], "high");
-        // Between 20..=20 and 40..=40 a value in the gap is nearest to one bound.
+        // Gap 21..40: 21.0 is nearest to a's end.
         let g = vec![lv("a", 0, 20), lv("b", 40, 60)];
         assert_eq!(names(&g, 20.9)[0], "a");
         assert_eq!(names(&g, 21.0)[0], "a");
