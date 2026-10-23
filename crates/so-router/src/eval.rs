@@ -14,7 +14,7 @@ const BUNDLED_EN: &str = include_str!("../evals/en.jsonl");
 const BUNDLED_VI: &str = include_str!("../evals/vi.jsonl");
 
 /// One labelled case. `context` is accepted for compatibility with agent-dispatcher's files
-/// and ignored: the router builds its own context.
+/// and ignored: the decider sees only the task, the role and the routing instruction.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Case {
     pub id: String,

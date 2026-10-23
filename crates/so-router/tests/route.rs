@@ -946,8 +946,9 @@ async fn a_gap_goes_to_the_nearest_level_and_ties_to_the_higher() {
             level("high", 60, 100, &[("codex-big", None)]),
         ]
     };
-    // 35 is 15 from low and 25 from high; 45 is 25 and 15; 40 is 20 and 20.
-    for (score, want) in [(1.4, "low"), (1.8, "high"), (1.6, "high")] {
+    // 35 is 14 from low (which ends at 21) and 25 from high; 45 is 24 and 15; 40.5 is 19.5
+    // from both.
+    for (score, want) in [(1.4, "low"), (1.8, "high"), (1.62, "high")] {
         let r = pick(score, levels()).await;
         assert_eq!(r.level.as_deref(), Some(want), "{score}");
     }
@@ -1099,4 +1100,125 @@ async fn heuristic_complexity_picks_the_level_when_there_is_no_key() {
         (mid.choice_id.as_str(), mid.level.as_deref()),
         ("agy-fast", Some("easy"))
     );
+}
+
+fn with_small_codex(w: &mut World) {
+    w.config
+        .choices
+        .push(choice("codex-small", Harness::Codex, "gpt-5.3-codex"));
+}
+
+#[tokio::test]
+async fn fractional_and_boundary_complexity_follow_the_half_open_spans() {
+    let levels = || {
+        vec![
+            level("low", 0, 39, &[("agy-fast", None)]),
+            level("mid", 40, 79, &[("codex-small", None)]),
+            level("high", 80, 100, &[("codex-big", None)]),
+        ]
+    };
+    for (score, c, want) in [
+        (1.56, 39.0, "low"),
+        (1.58, 39.5, "low"),
+        (1.6, 40.0, "mid"),
+        (3.196, 79.9, "mid"),
+        (3.2, 80.0, "high"),
+    ] {
+        let mut w = scored(score, levels()).await;
+        with_small_codex(&mut w);
+        let r = route_detailed(&w.inputs(), &params("x"))
+            .await
+            .unwrap()
+            .result;
+        assert_eq!(
+            (r.complexity, r.level.as_deref()),
+            (Some(c), Some(want)),
+            "{score}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_disabled_or_excluded_listed_choice_is_skipped_for_the_next_listed_one() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    with_small_codex(&mut w);
+    w.config.router.levels = vec![level(
+        "any",
+        0,
+        100,
+        &[
+            ("agy-fast", Some(1)),
+            ("codex-small", Some(2)),
+            ("codex-big", Some(3)),
+        ],
+    )];
+    // Everything listed and eligible: the top priority wins.
+    let r = route_detailed(&w.inputs(), &params("x"))
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(r.choice_id, "agy-fast");
+    // Disabled in the config, or excluded by the call: the next priority wins.
+    w.config.choices[0].enabled = false;
+    let r = route_detailed(&w.inputs(), &params("x"))
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(r.choice_id, "codex-small");
+    w.config.choices[0].enabled = true;
+    let mut p = params("x");
+    p.exclude = vec!["agy-fast".into()];
+    let r = route_detailed(&w.inputs(), &p).await.unwrap().result;
+    assert_eq!(r.choice_id, "codex-small");
+    assert!(r.alternatives.iter().all(|a| a.choice_id != "agy-fast"));
+}
+
+#[tokio::test]
+async fn equal_priorities_are_broken_by_headroom_and_the_rationale_says_so() {
+    let mut w = scored(
+        3.6,
+        vec![level(
+            "high",
+            0,
+            100,
+            &[("agy-fast", Some(1)), ("codex-big", Some(1))],
+        )],
+    )
+    .await;
+    w.config.router.levels[0].choices[1].priority = Some(1);
+    let r = route_with_state(&w, &[("agy-a", 10.0), ("codex-a", 90.0)], &[], &params("x")).await;
+    assert_eq!(r.choice_id, "codex-big");
+    assert!(r.rationale.contains("tied on priority"), "{}", r.rationale);
+}
+
+#[tokio::test]
+async fn a_single_eligible_choice_skips_the_decider_even_with_levels() {
+    let (url, fake) = serve(vec![(200, good(), 0)]).await;
+    let mut w = world(&url, true);
+    w.config.router.levels = vec![level("low", 0, 100, &[("agy-fast", None)])];
+    let mut p = params("x");
+    p.exclude = vec!["agy-fast".into()];
+    let r = route_detailed(&w.inputs(), &p).await.unwrap().result;
+    assert_eq!(r.choice_id, "codex-big");
+    assert_eq!(r.source, RouteSource::Heuristic);
+    assert!(
+        r.rationale.contains("the only eligible choice"),
+        "{}",
+        r.rationale
+    );
+    assert_eq!(fake.hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn pinned_calls_report_the_mapped_level_only() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    w.config.router.levels = vec![level("only", 0, 100, &[("agy-fast", None)])];
+    let mut p = params("x");
+    p.harness = Some("codex".into());
+    let r = route_detailed(&w.inputs(), &p).await.unwrap().result;
+    assert_eq!(
+        (r.source, r.choice_id.as_str()),
+        (RouteSource::Pinned, "codex-big")
+    );
+    assert_eq!(r.level.as_deref(), Some("only"));
 }

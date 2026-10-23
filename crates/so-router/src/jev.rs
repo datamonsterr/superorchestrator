@@ -1,4 +1,4 @@
-//! Jev decider client (SPEC 8.3 steps 2-3): OpenRouter `POST /api/alpha/decisions`.
+//! Jev decider client (SPEC 8.3): OpenRouter `POST /api/alpha/decisions`.
 //! The API key is never logged, printed or placed in an error message.
 //!
 //! The decider rates the complexity of the task against fixed anchors (a `score` question).

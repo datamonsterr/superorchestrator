@@ -439,18 +439,29 @@ fn finish(
     fallback_order.extend(missing);
     let top_score = ranked.first().map_or(0.0, |r| r.score);
 
-    let mut sel = levels::select(
-        &ctx.config.router.levels,
-        cands,
-        rated.complexity,
-        &fallback_order,
-    );
-    if rated.source == RouteSource::Pinned {
-        sel.order = fallback_order;
-        sel.why = format!("pinned by the call; best match by heuristic score {top_score:.2}");
-        sel.level = sel.mapped.clone();
-        sel.heuristic_fallback = false;
-    } else if let Some(w) = rated.forced_why {
+    let mut sel = if rated.source == RouteSource::Pinned {
+        let mapped = levels::levels_by_distance(&ctx.config.router.levels, rated.complexity)
+            .first()
+            .map(|&i| ctx.config.router.levels[i].name.clone());
+        levels::Selection {
+            order: fallback_order,
+            level: mapped.clone(),
+            mapped,
+            heuristic_fallback: false,
+            why: format!("pinned by the call; best match by heuristic score {top_score:.2}"),
+        }
+    } else {
+        levels::select(
+            &ctx.config.router.levels,
+            cands,
+            rated.complexity,
+            &fallback_order,
+        )
+    };
+    if let Some(w) = rated
+        .forced_why
+        .filter(|_| rated.source != RouteSource::Pinned)
+    {
         sel.why = w;
     } else if sel.heuristic_fallback {
         sel.why = format!("{} (score {top_score:.2})", sel.why);

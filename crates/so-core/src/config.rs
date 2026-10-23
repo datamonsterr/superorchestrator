@@ -268,15 +268,17 @@ pub struct LevelChoice {
     pub priority: Option<u32>,
 }
 
-/// A named range of complexity (`min` to `max`, inclusive, within 0 to 100) and the choices
-/// allowed for it.
+/// A named range of complexity (`min` to `max`, within 0 to 100) and the choices allowed for
+/// it. Complexity can be fractional, so the integer range reads as the half-open span
+/// `[min, max + 1)`: 39.5 is in `0..=39`. A level with `max = 100` also includes 100.0.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Level {
     pub name: String,
     pub min: u8,
     pub max: u8,
-    /// Used only when `choices` is empty: any eligible choice of this model class.
+    /// Used only when `choices` is empty (any eligible choice of this model class); ignored
+    /// when `choices` is not empty. One of the two is required.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<LevelTier>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -513,7 +515,7 @@ impl Config {
             if l.name.trim().is_empty() {
                 return Err("router.levels: name must not be empty".into());
             }
-            if levels[..i].iter().any(|o| o.name == l.name) {
+            if levels[..i].iter().any(|o| o.name.trim() == l.name.trim()) {
                 return Err(format!("router.levels: duplicate name `{}`", l.name));
             }
             if l.min > l.max || l.max > 100 {
@@ -529,6 +531,20 @@ impl Config {
                 return Err(format!(
                     "router.levels `{}` ({}..{}) overlaps `{}` ({}..{})",
                     l.name, l.min, l.max, o.name, o.min, o.max
+                ));
+            }
+            if l.choices.is_empty() && l.tier.is_none() {
+                return Err(format!(
+                    "router.levels `{}`: needs `choices` or `tier`",
+                    l.name
+                ));
+            }
+            if let Some(j) = (1..l.choices.len())
+                .find(|&j| l.choices[..j].iter().any(|c| c.id == l.choices[j].id))
+            {
+                return Err(format!(
+                    "router.levels `{}`: duplicate choice `{}`",
+                    l.name, l.choices[j].id
                 ));
             }
             if let Some(c) = l
@@ -1298,12 +1314,12 @@ mod tests {
             .to_string()
     }
 
-    const CHOICE: &str = "[[choices]]\nid = \"a\"\nharness = \"codex\"\nmodel = \"m\"\n";
+    const CHOICE: &str = "[[choices]]\nid = \"a\"\nharness = \"codex\"\nmodel = \"m\"\n\n[[choices]]\nid = \"b\"\nharness = \"codex\"\nmodel = \"m\"\n";
 
     #[test]
     fn levels_parse_and_allow_gaps() {
         let text = format!(
-            "{CHOICE}\n[[router.levels]]\nname = \"x\"\nmin = 0\nmax = 10\nchoices = [{{ id = \"a\", priority = 1 }}, {{ id = \"a\" }}]\n\n[[router.levels]]\nname = \"y\"\nmin = 50\nmax = 100\ntier = \"high\"\n"
+            "{CHOICE}\n[[router.levels]]\nname = \"x\"\nmin = 0\nmax = 10\nchoices = [{{ id = \"a\", priority = 1 }}, {{ id = \"b\" }}]\n\n[[router.levels]]\nname = \"y\"\nmin = 50\nmax = 100\ntier = \"high\"\n"
         );
         let c = Config::parse(&text, std::path::Path::new("c.toml")).unwrap();
         assert_eq!(c.router.levels.len(), 2);
@@ -1316,10 +1332,30 @@ mod tests {
     fn invalid_levels_are_rejected() {
         let lv = |body: &str| format!("{CHOICE}\n{body}");
         let one = |name: &str, min: u32, max: u32| {
-            format!("[[router.levels]]\nname = \"{name}\"\nmin = {min}\nmax = {max}\n")
+            format!(
+                "[[router.levels]]\nname = \"{name}\"\nmin = {min}\nmax = {max}\ntier = \"mid\"\n"
+            )
         };
         let cases = [
             ("empty name", lv(&one("", 0, 10)), "name"),
+            ("blank name", lv(&one("  ", 0, 10)), "name"),
+            (
+                "names equal after trim",
+                lv(&format!("{}\n{}", one("x", 0, 10), one("x ", 20, 30))),
+                "duplicate",
+            ),
+            (
+                "no choices or tier",
+                lv("[[router.levels]]\nname = \"x\"\nmin = 0\nmax = 5\n"),
+                "`choices` or `tier`",
+            ),
+            (
+                "duplicate choice",
+                lv(
+                    "[[router.levels]]\nname = \"x\"\nmin = 0\nmax = 5\nchoices = [{ id = \"a\" }, { id = \"a\", priority = 1 }]\n",
+                ),
+                "duplicate choice `a`",
+            ),
             ("min > max", lv(&one("x", 20, 10)), "min <= max"),
             ("max > 100", lv(&one("x", 0, 101)), "max"),
             (

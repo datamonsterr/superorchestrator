@@ -31,15 +31,28 @@ fn tier_of(t: LevelTier) -> Tier {
     }
 }
 
-/// 0 inside the range, else the distance to the nearest bound.
-fn distance(l: &Level, complexity: f64) -> f64 {
-    let (min, max) = (f64::from(l.min), f64::from(l.max));
-    if complexity < min {
-        min - complexity
-    } else if complexity > max {
-        complexity - max
+/// Upper end of a level's span: exclusive `max + 1`, except that `max = 100` includes 100.0.
+fn upper(l: &Level) -> f64 {
+    if l.max >= 100 {
+        100.0
     } else {
+        f64::from(l.max) + 1.0
+    }
+}
+
+fn contains(l: &Level, complexity: f64) -> bool {
+    complexity >= f64::from(l.min)
+        && (complexity < upper(l) || (l.max >= 100 && complexity <= 100.0))
+}
+
+/// 0 inside the span, else the distance to the nearest bound.
+fn distance(l: &Level, complexity: f64) -> f64 {
+    if contains(l, complexity) {
         0.0
+    } else if complexity < f64::from(l.min) {
+        f64::from(l.min) - complexity
+    } else {
+        complexity - upper(l)
     }
 }
 
@@ -113,6 +126,12 @@ fn why_won(level: &Level, ranked: &[usize], cands: &[Candidate<'_>]) -> String {
         return "the only eligible choice of the level".into();
     }
     if let Some(p) = priority_of(level, first) {
+        if priority_of(level, &cands[ranked[1]]) == Some(p) {
+            let (headroom, active) = load(first);
+            return format!(
+                "tied on priority number ({p}); most headroom ({headroom:.0}%), then fewest active runs ({active})"
+            );
+        }
         return format!("lowest priority number ({p}) in the level");
     }
     let (headroom, active) = load(first);
@@ -198,12 +217,26 @@ mod tests {
         let g = vec![lv("a", 0, 20), lv("b", 40, 60), lv("c", 90, 100)];
         assert_eq!(names(&g, 25.0), vec!["a", "b", "c"]);
         assert_eq!(names(&g, 35.0), vec!["b", "a", "c"]);
-        // 30 is 10 from both a and b: the higher level wins.
-        assert_eq!(names(&g, 30.0)[0], "b");
-        assert_eq!(names(&g, 75.0)[0], "c");
+        // 30.5 is 9.5 from both a (ends at 21) and b: the higher level wins.
+        assert_eq!(names(&g, 30.5)[0], "b");
+        assert_eq!(names(&g, 76.0)[0], "c");
         // Declaration order does not matter.
         let r = vec![lv("c", 90, 100), lv("a", 0, 20), lv("b", 40, 60)];
-        assert_eq!(names(&r, 30.0)[0], "b");
+        assert_eq!(names(&r, 30.5)[0], "b");
+    }
+
+    #[test]
+    fn fractional_complexity_reads_integer_ranges_as_half_open() {
+        let d = Config::default().router.levels;
+        assert_eq!(names(&d, 39.5)[0], "low");
+        assert_eq!(names(&d, 40.0)[0], "mid");
+        assert_eq!(names(&d, 79.9)[0], "mid");
+        assert_eq!(names(&d, 80.0)[0], "high");
+        assert_eq!(names(&d, 100.0)[0], "high");
+        // Between 20..=20 and 40..=40 a value in the gap is nearest to one bound.
+        let g = vec![lv("a", 0, 20), lv("b", 40, 60)];
+        assert_eq!(names(&g, 20.9)[0], "a");
+        assert_eq!(names(&g, 21.0)[0], "a");
     }
 
     #[test]
