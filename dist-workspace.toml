@@ -7,11 +7,10 @@ members = ["cargo:."]
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.32.0"
-# .github/workflows/release.yml is hand-edited for the supply-chain hardening in
-# GHSA-jxj2-pfqh-ww3v: every action is pinned to a commit SHA, every installer is
-# downloaded and sha256-verified instead of being piped to a shell, and permissions
-# are least-privilege. dist therefore must not check or regenerate the CI file
-# (`dist generate --check` would otherwise fail).
+# .github/workflows/release.yml is hand-edited for supply-chain hardening (SHA-pinned
+# actions, sha256-verified dist installs via scripts/ci/install-dist.sh, least-privilege
+# permissions), so dist must not check or regenerate the CI file (`dist generate --check`
+# would otherwise fail). See the note in release.yml's header.
 allow-dirty = ["ci"]
 # CI backends to support
 ci = "github"

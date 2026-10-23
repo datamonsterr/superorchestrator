@@ -54,7 +54,7 @@ jobs:
       - name: actionlint
         run: actionlint
       - name: shellcheck
-        run: shellcheck install.sh scripts/*.sh
+        run: shellcheck install.sh scripts/*.sh scripts/ci/*.sh
       - name: release job graph (host must not run unless every gate passed)
         run: |
           python3 -m pip install --quiet pyyaml==6.0.3
