@@ -57,12 +57,45 @@ pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Canonical form of `p`; a missing path stays lexical. Any other failure is
-/// an error so callers can fail closed.
+/// Canonical form of `p`, resolving existing ancestors even for a missing home.
+/// Normalize missing components too, so `..` cannot bypass an overlap check.
 pub(crate) fn canon(p: &Path) -> std::io::Result<PathBuf> {
     match p.canonicalize() {
         Ok(c) => Ok(c),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(p.to_path_buf()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let mut resolved = if p.is_absolute() {
+                PathBuf::new()
+            } else {
+                std::env::current_dir()?
+            };
+            for component in p.components() {
+                match component {
+                    std::path::Component::CurDir => continue,
+                    std::path::Component::ParentDir => {
+                        resolved.pop();
+                    }
+                    _ => resolved.push(component.as_os_str()),
+                }
+                match resolved.canonicalize() {
+                    Ok(c) => resolved = c,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e),
+                }
+            }
+            Ok(resolved)
+        }
         Err(e) => Err(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn missing_relative_home_is_resolved_against_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let relative = std::path::Path::new(dir.path().file_name().unwrap()).join("missing");
+        let cwd = std::env::current_dir().unwrap();
+        assert!(!relative.exists());
+        assert_eq!(super::canon(&relative).unwrap(), cwd.join(relative));
     }
 }

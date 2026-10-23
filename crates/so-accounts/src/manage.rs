@@ -148,6 +148,7 @@ pub fn add(
     ensure_no_shadow(cfg, host, name)?;
     check_single_agy(paths, host, name, harness)?;
     let dir = host.expand(&home_spec)?;
+    ensure_disjoint_home(paths, host, name, &dir)?;
     create_private_dir(&if harness == Harness::Agy {
         dir.join(".gemini")
     } else {
@@ -219,6 +220,7 @@ pub fn import(
     ensure_no_shadow(cfg, host, name)?;
     check_single_agy(paths, host, name, harness)?;
     let dir = host.expand(home)?;
+    ensure_disjoint_home(paths, host, name, &dir)?;
     let must_exist = if harness == Harness::Agy {
         dir.join(".gemini")
     } else {
@@ -240,6 +242,38 @@ fn default_homes(host: &HostEnv) -> Vec<PathBuf> {
 
 fn related(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
+}
+
+/// Shared overlap check; purge alone exempts existing accounts on harness defaults.
+fn overlapping_home(
+    paths: &Paths,
+    host: &HostEnv,
+    name: &str,
+    home: &Path,
+    ignored: &[PathBuf],
+) -> Result<Option<String>> {
+    for other in AccountFile::list(paths)? {
+        if other.name == name {
+            continue;
+        }
+        let oh = host.expand(&other.home)?;
+        let oc = canon(&oh).map_err(|e| AccountsError::io(&oh, e))?;
+        if !ignored.contains(&oc) && related(home, &oc) {
+            return Ok(Some(other.name));
+        }
+    }
+    Ok(None)
+}
+
+fn ensure_disjoint_home(paths: &Paths, host: &HostEnv, name: &str, home: &Path) -> Result<()> {
+    let canonical = canon(home).map_err(|e| AccountsError::io(home, e))?;
+    if let Some(existing) = overlapping_home(paths, host, name, &canonical, &[])? {
+        return Err(AccountsError::OverlappingHome {
+            path: home.to_path_buf(),
+            existing,
+        });
+    }
+    Ok(())
 }
 
 /// Fail-closed purge checks. Returns the canonical home to delete, or `None`
@@ -308,27 +342,13 @@ fn check_purge(
             ));
         }
     }
-    for other in AccountFile::list(paths)? {
-        if other.name == account.name {
-            continue;
-        }
-        let oh = host.expand(&other.home)?;
-        let oc = canon(&oh).map_err(|e| io("another account's home", e))?;
-        // An account on $HOME itself (agy with the real ~/.gemini) or on a
-        // harness default home contains everything; it is not an overlap.
-        let mut shared = vec![chost.clone()];
-        for p in default_homes(host) {
-            shared.push(canon(&p).map_err(|e| io("a harness default home", e))?);
-        }
-        if shared.contains(&oc) {
-            continue;
-        }
-        if related(&chome, &oc) {
-            return Err(refuse(format!(
-                "account `{}` has an overlapping home",
-                other.name
-            )));
-        }
+    // Preserve the purge exception for legacy accounts on shared default homes.
+    let mut shared = vec![chost];
+    for p in default_homes(host) {
+        shared.push(canon(&p).map_err(|e| io("a harness default home", e))?);
+    }
+    if let Some(other) = overlapping_home(paths, host, &account.name, &chome, &shared)? {
+        return Err(refuse(format!("account `{other}` has an overlapping home")));
     }
     Ok(Some(chome))
 }
@@ -454,6 +474,52 @@ mod tests {
     }
 
     #[test]
+    fn add_and_import_refuse_overlapping_homes() {
+        for importing in [false, true] {
+            for candidate in [
+                "~/shared",
+                "~/shared/inner",
+                "~",
+                "~/alias",
+                "~/alias/new",
+                "~/other/../shared/new",
+            ] {
+                let f = fx();
+                std::fs::create_dir_all(f.d.path().join("shared/inner")).unwrap();
+                std::fs::create_dir_all(f.d.path().join("other")).unwrap();
+                std::os::unix::fs::symlink(f.d.path().join("shared"), f.d.path().join("alias"))
+                    .unwrap();
+                AccountFile::new("existing", Harness::Codex, "~/shared", "codex")
+                    .unwrap()
+                    .save(&f.paths)
+                    .unwrap();
+                if importing {
+                    std::fs::create_dir_all(f.host.expand(candidate).unwrap()).unwrap();
+                }
+                let result = if importing {
+                    import(&f.paths, &f.cfg, &f.host, "new", Harness::Codex, candidate)
+                } else {
+                    add(
+                        &f.paths,
+                        &f.cfg,
+                        &f.host,
+                        Harness::Codex,
+                        "new",
+                        Some(candidate),
+                    )
+                };
+                let err = result.expect_err(candidate);
+                assert!(err.to_string().contains("overlapping home"), "{err}");
+                assert!(!f.paths.account_file("new").exists());
+                assert!(!f.d.path().join(".local/bin/new").exists());
+                if !importing {
+                    assert!(!f.d.path().join("shared/new").exists());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn add_numbered_takes_the_lowest_free_numbers() {
         let f = fx();
         add(&f.paths, &f.cfg, &f.host, Harness::Codex, "codex-2", None).unwrap();
@@ -557,15 +623,7 @@ mod tests {
     #[test]
     fn macos_refuses_a_second_enabled_agy_account() {
         let f = mac_fx();
-        add(
-            &f.paths,
-            &f.cfg,
-            &f.host,
-            Harness::Agy,
-            "agy-acc1",
-            Some("~"),
-        )
-        .unwrap();
+        add(&f.paths, &f.cfg, &f.host, Harness::Agy, "agy-acc1", None).unwrap();
         // add
         let e = add(&f.paths, &f.cfg, &f.host, Harness::Agy, "agy-acc2", None).unwrap_err();
         assert!(matches!(e, AccountsError::AgySecondAccount { .. }), "{e}");
@@ -877,15 +935,11 @@ mod tests {
             .unwrap()
             .save(&f.paths)
             .unwrap();
-        add(
-            &f.paths,
-            &f.cfg,
-            &f.host,
-            Harness::Codex,
-            "codex-acc3",
-            None,
-        )
-        .unwrap();
+        AccountFile::new("codex-acc3", Harness::Codex, "~/.codex-acc3", "codex")
+            .unwrap()
+            .save(&f.paths)
+            .unwrap();
+        std::fs::create_dir_all(r.join(".codex-acc3")).unwrap();
         remove(&f.paths, &f.cfg, &f.host, "codex-acc3", true).unwrap();
         assert!(!r.join(".codex-acc3").exists());
         assert!(f.paths.account_file("agy-acc1").exists());
