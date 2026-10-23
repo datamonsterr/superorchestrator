@@ -73,6 +73,11 @@ str_enum!(Harness, CoreError::UnknownHarness, {
 /// `--effort` (ADR-0004), and the router ranks it with the top effort tier.
 pub const EFFORT_THINKING: &str = "thinking";
 
+/// agy models that are the thinking variant themselves: `agy --effort` is refused for them
+/// ("--effort is not supported for model"). Only the `thinking` hint (dropped at launch) or
+/// no effort is valid.
+pub const AGY_NO_EFFORT_MODELS: &[&str] = &["claude-sonnet-4-6", "claude-opus-4-6-thinking"];
+
 impl Harness {
     /// Efforts the harness CLI accepts as a flag or config value, from its help on this
     /// machine (ADR-0004). `None` means the value is provider-specific and not validated
@@ -104,6 +109,23 @@ impl Harness {
         ))
     }
 
+    /// Like [`Harness::effort_problem`], and also refuses a real effort on an agy model that
+    /// takes none (see [`AGY_NO_EFFORT_MODELS`]). The `thinking` hint stays valid there.
+    pub fn model_effort_problem(self, model: &str, effort: &str) -> Option<String> {
+        if let Some(p) = self.effort_problem(effort) {
+            return Some(p);
+        }
+        if self == Harness::Agy
+            && effort != EFFORT_THINKING
+            && AGY_NO_EFFORT_MODELS.contains(&model)
+        {
+            return Some(format!(
+                "effort `{effort}` is not supported for agy model `{model}` (it takes no effort; omit effort or use `{EFFORT_THINKING}`)"
+            ));
+        }
+        None
+    }
+
     /// The effort to pass to the harness CLI: the router hint is dropped.
     pub fn launch_effort(self, effort: Option<&str>) -> Option<&str> {
         effort.filter(|e| *e != EFFORT_THINKING)
@@ -113,7 +135,8 @@ impl Harness {
 impl Choice {
     /// Why this choice cannot launch because of its effort, or `None`.
     pub fn effort_problem(&self) -> Option<String> {
-        self.harness.effort_problem(self.effort.as_deref()?)
+        self.harness
+            .model_effort_problem(&self.model, self.effort.as_deref()?)
     }
 }
 
@@ -428,6 +451,33 @@ pub struct Event {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agy_thinking_variant_models_take_no_effort() {
+        for m in AGY_NO_EFFORT_MODELS {
+            let p = Harness::Agy.model_effort_problem(m, "high").unwrap();
+            assert!(p.contains(m) && p.contains("high"), "{p}");
+            assert!(Harness::Agy.model_effort_problem(m, "thinking").is_none());
+        }
+        assert!(
+            Harness::Agy
+                .model_effort_problem("gemini-3.8-flash-low", "high")
+                .is_none()
+        );
+        // An invalid effort still reports the harness problem.
+        assert!(
+            Harness::Agy
+                .model_effort_problem("claude-sonnet-4-6", "bogus")
+                .unwrap()
+                .contains("not valid for agy")
+        );
+        // Another harness with the same model name is unaffected.
+        assert!(
+            Harness::Claude
+                .model_effort_problem("claude-sonnet-4-6", "high")
+                .is_none()
+        );
+    }
+
     #[test]
     fn effort_validation_per_harness() {
         assert!(Harness::Agy.effort_problem("thinking").is_none());

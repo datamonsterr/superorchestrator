@@ -217,6 +217,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn agy_thinking_variant_model_with_an_effort_override_is_not_eligible() {
+        let mut bad = choice("ag", Harness::Agy, "claude-sonnet-4-6", &["worker"]);
+        bad.effort = Some("high".into());
+        let mut ok = choice("ag2", Harness::Agy, "claude-opus-4-6-thinking", &["worker"]);
+        ok.effort = None;
+        let choices = vec![bad, ok];
+        let cat = Catalog::default_catalog();
+        let snap = Snapshot {
+            accounts: vec![account("a1", Harness::Agy, 2, 0)],
+        };
+        let got = eligible(&choices, &cat, &snap, "worker", &[]);
+        assert_eq!(ids(&got), ["ag2"]);
+        assert_eq!(effort_skips(&choices, "worker", &[]).len(), 1);
+    }
+
+    #[test]
     fn choice_with_an_effort_its_harness_rejects_is_not_eligible() {
         let mut bad = choice("cl", Harness::Claude, "sonnet", &["worker"]);
         bad.effort = Some("thinking".into());

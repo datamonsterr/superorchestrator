@@ -884,7 +884,7 @@ async fn auto_spawn_with_an_unreachable_decider_errors_and_inserts_no_run() {
         .call::<_, Value>(so_core::proto::METHOD_SPAWN_AGENT, auto_params(&env))
         .await
         .unwrap_err();
-    let so_supervisor::client::ClientError::Rpc(e) = err else {
+    let so_supervisor::ClientError::Rpc(e) = err else {
         panic!("expected an rpc error, got {err:?}");
     };
     assert_eq!(e.code, so_core::proto::DECIDER_UNREACHABLE);
@@ -1091,5 +1091,42 @@ async fn a_queued_reroute_during_a_decider_outage_degrades_to_the_heuristic() {
             .await
             .unwrap();
     }
+    h.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn agy_thinking_variant_model_with_an_effort_is_refused_before_launch() {
+    let env = agy_env();
+    env.agy_account("agy-acc2", 2, &agy_ok_script());
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let mut p = auto_params(&env);
+    p.harness = Some("agy".into());
+    p.model = Some("claude-sonnet-4-6".into());
+    p.effort = Some("high".into());
+    let err = c
+        .call::<_, Value>(so_core::proto::METHOD_SPAWN_AGENT, p)
+        .await
+        .unwrap_err();
+    match err {
+        so_supervisor::ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::INVALID_PARAMS);
+            assert!(r.message.contains("claude-sonnet-4-6"), "{}", r.message);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(env.launches("agy-acc2").is_empty());
+
+    // The thinking hint passes and launches without --effort.
+    let mut p = auto_params(&env);
+    p.harness = Some("agy".into());
+    p.model = Some("claude-sonnet-4-6".into());
+    p.effort = Some("thinking".into());
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let argv = env.launches("agy-acc2").pop().unwrap();
+    assert!(!argv.iter().any(|a| a == "--effort"), "{argv:?}");
     h.shutdown().await;
 }

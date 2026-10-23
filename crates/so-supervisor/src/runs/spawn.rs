@@ -267,6 +267,12 @@ impl RunManager {
             }
         };
 
+        if let (Some(m), Some(e)) = (model.as_deref(), effort.as_deref())
+            && let Some(problem) = account.harness.model_effort_problem(m, e)
+        {
+            return Err(rpc(INVALID_PARAMS, problem));
+        }
+
         let want = p
             .isolation
             .or_else(|| agent.as_ref().and_then(|a| a.isolation))
