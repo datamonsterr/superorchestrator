@@ -9,9 +9,9 @@ use crate::paths::Paths;
 use crate::types::Harness;
 
 /// Names an account must not take: they would shadow a real binary.
-const RESERVED: [&str; 4] = ["codex", "agy", "opencode", "claude"];
+const RESERVED: [&str; 5] = ["codex", "agy", "opencode", "claude", "superorchestrator"];
 
-/// Checks `^[a-z][a-z0-9-]{1,31}$` and that the name is not a harness binary.
+/// Checks `^[a-z][a-z0-9-]{1,31}$` and that the name is not reserved.
 pub fn validate_account_name(name: &str) -> Result<()> {
     let b = name.as_bytes();
     let shape_ok = (2..=32).contains(&b.len())
@@ -49,6 +49,8 @@ struct RawAccount {
     enabled: bool,
     #[serde(default)]
     pools: Option<Vec<String>>,
+    #[serde(default)]
+    pass_env: Vec<String>,
 }
 
 impl From<RawAccount> for AccountFile {
@@ -63,6 +65,7 @@ impl From<RawAccount> for AccountFile {
             cap: r.cap,
             enabled: r.enabled,
             pools,
+            pass_env: r.pass_env,
         }
     }
 }
@@ -89,6 +92,8 @@ pub struct AccountFile {
     pub cap: u32,
     pub enabled: bool,
     pub pools: Vec<String>,
+    /// Exact names of additional inherited variables; values are never stored here.
+    pub pass_env: Vec<String>,
 }
 
 impl AccountFile {
@@ -104,6 +109,7 @@ impl AccountFile {
             cap: default_cap(),
             enabled: true,
             pools: default_pools(harness),
+            pass_env: Vec::new(),
         })
     }
 
@@ -120,7 +126,21 @@ impl AccountFile {
         if self.pools.is_empty() {
             return Err(invalid("pools must not be empty"));
         }
+        if self
+            .pass_env
+            .iter()
+            .any(|name| !crate::child_env::valid_name(name))
+        {
+            return Err(invalid(
+                "pass_env must contain non-empty environment names without NUL or =",
+            ));
+        }
         Ok(())
+    }
+
+    /// The account's `pass_env` plus the global `accounts.pass_env`, deduplicated.
+    pub fn effective_pass_env(&self, global: &[String]) -> Vec<String> {
+        crate::child_env::merge_pass_env([self.pass_env.as_slice(), global])
     }
 
     /// Loads one account file. The `name` must equal the file stem.
@@ -200,8 +220,31 @@ mod tests {
         ] {
             assert!(validate_account_name(bad).is_err(), "{bad}");
         }
-        for reserved in ["codex", "agy", "opencode", "claude"] {
+        for reserved in ["codex", "agy", "opencode", "claude", "superorchestrator"] {
             assert!(validate_account_name(reserved).is_err(), "{reserved}");
+        }
+    }
+
+    #[test]
+    fn superorchestrator_name_is_reserved() {
+        assert!(validate_account_name("superorchestrator").is_err());
+        assert!(AccountFile::new("superorchestrator", Harness::Codex, "h", "codex").is_err());
+        // Longer names that merely contain it are still fine.
+        assert!(validate_account_name("superorchestrator-acc1").is_ok());
+    }
+
+    #[test]
+    fn pass_env_round_trips_and_rejects_invalid_names() {
+        let text = "name = \"codex-acc2\"\nharness = \"codex\"\nhome = \"~/.codex-acc2\"\nbinary = \"codex\"\npass_env = [\"GITHUB_TOKEN\"]";
+        let account: AccountFile = toml::from_str(text).unwrap();
+        account.validate().unwrap();
+        let saved = toml::to_string(&account).unwrap();
+        assert!(saved.contains("GITHUB_TOKEN"));
+        for invalid in ["", "BAD=NAME", "BAD\0NAME"] {
+            let mut value: toml::Value = toml::from_str(text).unwrap();
+            value["pass_env"] = toml::Value::Array(vec![invalid.into()]);
+            let invalid: AccountFile = value.try_into().unwrap();
+            assert!(invalid.validate().is_err());
         }
     }
 
@@ -211,6 +254,7 @@ mod tests {
             "name = \"codex-acc2\"\nharness = \"codex\"\nhome = \"~/.codex-acc2\"\nbinary = \"codex\"",
         )
         .unwrap();
+        assert!(a.pass_env.is_empty());
         assert_eq!(a.priority, 0);
         assert_eq!(a.cap, 2);
         assert!(a.enabled);

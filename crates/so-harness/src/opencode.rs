@@ -1057,6 +1057,12 @@ impl Driver for OpencodeDriver {
     }
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
+        crate::driver::check_launch_values(
+            Harness::Opencode,
+            spec.model.as_deref(),
+            spec.effort.as_deref(),
+            spec.resume.as_deref(),
+        )?;
         create_private_dir(&spec.run_dir)?;
         let defaults = PromptDefaults {
             agent: spec.agent.agent_name.clone(),
@@ -1090,6 +1096,9 @@ impl Driver for OpencodeDriver {
                     .envs(spec.launch.vars.iter().map(|(k, v)| (k, v)))
                     .env("OPENCODE_CONFIG", &config_path)
                     .env("OPENCODE_SERVER_USERNAME", USERNAME)
+                    // OpenCode only documents environment-based server auth:
+                    // https://opencode.ai/docs/server/#authentication
+                    // Its own tool subprocesses may inherit this per-run password.
                     .env(PASSWORD_ENV, &password)
                     .current_dir(&spec.cwd);
                 let sup = spawn_supervised(
@@ -1097,6 +1106,7 @@ impl Driver for OpencodeDriver {
                     &spec.run_dir,
                     self.config.shutdown_grace,
                     ListenParser { url: Some(url_tx) },
+                    &spec.launch.pass_env,
                 )?;
                 let out = Out::new(tx, sup.transcript.clone());
                 let mut exit = sup.handle.exit.clone();

@@ -64,8 +64,7 @@ impl Rig {
         let rig = Self {
             dir: tempfile::tempdir().unwrap(),
         };
-        // An account like the agent-farm profiles: `config` is a symlink,
-        // there is no `projects`, and the config holds a socket and a subdir.
+        // Operator-managed accounts share a symlinked config root; no `projects`.
         let g = rig.account_gemini();
         for d in ["antigravity-cli", "plugins", "skills"] {
             std::fs::create_dir_all(g.join(d)).unwrap();
@@ -109,6 +108,7 @@ impl Rig {
             cwd: self.dir.path().to_path_buf(),
             account: AccountFile::new("agy-acc1", Harness::Agy, "~/acct", "agy").unwrap(),
             launch: Launch {
+                pass_env: vec![],
                 program: PathBuf::from(env!("CARGO_BIN_EXE_fake-harness")),
                 vars: vec![
                     (
@@ -396,7 +396,7 @@ async fn per_run_gemini_dir_contents_modes_and_mcp_merge() {
     );
     // The account's own config is untouched.
     let original =
-        std::fs::read_to_string(rig.dir.path().join("real-config/mcp_config.json")).unwrap();
+        std::fs::read_to_string(rig.account_gemini().join("config/mcp_config.json")).unwrap();
     assert!(!original.contains("superorchestrator"));
 }
 
@@ -404,15 +404,18 @@ async fn per_run_gemini_dir_contents_modes_and_mcp_merge() {
 async fn resume_uses_conversation_flag_and_schema() {
     let rig = Rig::new();
     let mut spec = rig.spec(&init_script());
-    spec.resume = Some("conv-123".into());
+    spec.resume = Some("c0f1599d-37b9-4c82-be74-b28e7c59be25".into());
     spec.output_schema = Some(json!({"type": "object"}));
     let mut h = driver().launch(spec).await.unwrap();
-    assert_eq!(h.native_session_id.as_deref(), Some("conv-123"));
+    assert_eq!(
+        h.native_session_id.as_deref(),
+        Some("c0f1599d-37b9-4c82-be74-b28e7c59be25")
+    );
     h.control.shutdown(Duration::from_secs(5)).await.unwrap();
     until(&mut h, is_exit).await;
     let a = argv(&rig);
     let i = a.iter().position(|x| x == "--conversation").unwrap();
-    assert_eq!(a[i + 1], "conv-123");
+    assert_eq!(a[i + 1], "c0f1599d-37b9-4c82-be74-b28e7c59be25");
     let j = a.iter().position(|x| x == "--json-schema").unwrap();
     assert_eq!(a[j + 1], r#"{"type":"object"}"#);
 }
@@ -607,4 +610,121 @@ async fn invalid_effort_fails_before_spawn() {
             .contains("effort `bogus` is not valid for agy (low|medium|high|xhigh|max)"),
         "{err}"
     );
+}
+
+#[test]
+fn prepare_skips_config_file_symlinks_outside_the_account() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    std::fs::remove_dir_all(account.join("config")).unwrap();
+    std::fs::create_dir(account.join("config")).unwrap();
+    let outside = rig.dir.path().join("secret");
+    std::fs::write(&outside, "private secret").unwrap();
+    std::os::unix::fs::symlink(&outside, account.join("config/settings.json")).unwrap();
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert!(!dir.join("config/settings.json").exists());
+    assert!(dir.join("config/mcp_config.json").exists());
+}
+
+#[test]
+fn prepare_refuses_writable_symlinked_config_root() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    std::fs::remove_dir_all(account.join("config")).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("settings.json"), "private secret").unwrap();
+    std::fs::set_permissions(outside.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+    std::os::unix::fs::symlink(outside.path(), account.join("config")).unwrap();
+    let error =
+        so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(!rig.run_dir().join("gemini/config/settings.json").exists());
+}
+
+#[test]
+fn prepare_allows_owned_private_symlinked_config_root() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    let source = tempfile::tempdir().unwrap();
+    std::fs::write(source.path().join("settings.json"), "trusted settings").unwrap();
+    std::fs::remove_dir_all(account.join("config")).unwrap();
+    std::os::unix::fs::symlink(source.path(), account.join("config")).unwrap();
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config/settings.json")).unwrap(),
+        "trusted settings"
+    );
+}
+
+#[test]
+fn prepare_checks_entry_symlinks_against_the_shared_canonical_root() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    let config = account.join("config").canonicalize().unwrap();
+    std::os::unix::fs::symlink(config.join("settings.json"), config.join("linked.json")).unwrap();
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert_eq!(
+        std::fs::read(dir.join("config/linked.json")).unwrap(),
+        std::fs::read(config.join("settings.json")).unwrap()
+    );
+    let outside = rig.dir.path().join("secret");
+    std::fs::write(&outside, "private secret").unwrap();
+    std::os::unix::fs::symlink(outside, config.join("escape.json")).unwrap();
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert!(!dir.join("config/escape.json").exists());
+    assert!(dir.join("config/linked.json").exists());
+}
+
+#[test]
+fn review_real_group_writable_config_inside_account_is_allowed() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    std::fs::remove_file(account.join("config")).unwrap();
+    std::fs::create_dir(account.join("config")).unwrap();
+    std::fs::set_permissions(
+        account.join("config"),
+        std::fs::Permissions::from_mode(0o775),
+    )
+    .unwrap();
+    std::fs::write(account.join("config/settings.json"), "local settings").unwrap();
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config/settings.json")).unwrap(),
+        "local settings"
+    );
+}
+
+#[test]
+fn review_dangling_config_entry_is_skipped() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    std::os::unix::fs::symlink(
+        account.join("missing"),
+        account.join("config/dangling.json"),
+    )
+    .unwrap();
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert!(!dir.join("config/dangling.json").exists());
+    assert!(dir.join("config/settings.json").exists());
+}
+
+#[test]
+fn prepare_allows_group_writable_shared_root_in_own_group_but_not_world_writable() {
+    let rig = Rig::new();
+    let account = rig.account_gemini();
+    let source = tempfile::tempdir().unwrap();
+    std::fs::write(source.path().join("settings.json"), "trusted settings").unwrap();
+    std::fs::remove_dir_all(account.join("config")).unwrap();
+    std::os::unix::fs::symlink(source.path(), account.join("config")).unwrap();
+    // A fresh temp dir belongs to our primary group (user-private group, umask 002).
+    std::fs::set_permissions(source.path(), std::fs::Permissions::from_mode(0o775)).unwrap();
+    let dir = so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(dir.join("config/settings.json")).unwrap(),
+        "trusted settings"
+    );
+    std::fs::set_permissions(source.path(), std::fs::Permissions::from_mode(0o757)).unwrap();
+    let error =
+        so_harness::agy::prepare_gemini_dir(&rig.spec(&init_script()), &account).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
 }

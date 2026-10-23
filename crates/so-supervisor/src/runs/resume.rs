@@ -169,6 +169,7 @@ impl RunManager {
             self.request_drain();
             return Ok(Resumed::Queued);
         }
+        // resume_run refreshes identity now that the previous process has wrapped up.
         if let Err(why) = self.resume_run(row, prompt).await {
             self.fail_run(&row.id, ErrorKind::Other, &why).await;
             return Err(rpc(UNAVAILABLE, why));

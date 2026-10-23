@@ -203,21 +203,44 @@ impl SupervisorClient {
 
     async fn connect_or_spawn_with(
         socket_path: &Path,
-        mut spawn: impl FnMut() -> std::io::Result<()>,
+        spawn: impl FnMut() -> std::io::Result<()>,
         client: &str,
         cwd: &str,
         run_id: Option<String>,
         pid: Option<u32>,
         inspect: bool,
     ) -> Result<(Self, HelloResult), ClientError> {
+        Self::connect_or_spawn_authenticated(
+            socket_path,
+            spawn,
+            HelloParams {
+                client: client.to_string(),
+                cwd: cwd.to_string(),
+                run_id,
+                run_token: None,
+                pid,
+                inspect,
+            },
+        )
+        .await
+    }
+
+    /// Connects and proves a run identity in `hello`, retrying a disconnected hello once.
+    pub async fn connect_or_spawn_authenticated(
+        socket_path: &Path,
+        mut spawn: impl FnMut() -> std::io::Result<()>,
+        params: HelloParams,
+    ) -> Result<(Self, HelloResult), ClientError> {
         let mut attempt = 0;
         loop {
             attempt += 1;
             let c = Self::connect_with(socket_path, &mut spawn).await?;
-            let hello = if inspect {
-                c.hello_inspect(client, cwd, pid).await
+            // An inspect hello that claims a run id must still prove that run's identity.
+            let hello = if params.inspect && params.run_id.is_none() {
+                c.hello_inspect(&params.client, &params.cwd, params.pid)
+                    .await
             } else {
-                c.hello(client, cwd, run_id.clone(), pid).await
+                c.call(METHOD_HELLO, &params).await
             };
             match hello {
                 Ok(r) => return Ok((c, r)),
@@ -324,6 +347,7 @@ impl SupervisorClient {
                 client: client.to_string(),
                 cwd: cwd.to_string(),
                 run_id,
+                run_token: None,
                 pid,
                 inspect: false,
             },
@@ -345,6 +369,7 @@ impl SupervisorClient {
                     client: client.to_string(),
                     cwd: cwd.to_string(),
                     run_id: None,
+                    run_token: None,
                     pid,
                     inspect: true,
                 },

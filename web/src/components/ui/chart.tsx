@@ -1,3 +1,4 @@
+import { styleNonce } from "@/lib/style-nonce"
 import * as React from "react"
 import { cn } from "@/lib/utils"
 import * as RechartsPrimitive from "recharts"
@@ -89,6 +90,7 @@ const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
 
   return (
     <style
+      nonce={styleNonce()}
       dangerouslySetInnerHTML={{
         __html: Object.entries(THEMES)
           .map(

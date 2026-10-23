@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use so_core::proto::{HelloResult, INVALID_REQUEST, METHOD_NOT_FOUND, PARSE_ERROR, StatusResult};
+use so_core::proto::{
+    HelloResult, INVALID_REQUEST, METHOD_NOT_FOUND, METHOD_UI_START, PARSE_ERROR, StatusResult,
+};
 use so_core::{Config, EventType, Harness, Paths, RunState, SessionKind, new_id};
 use so_store::{RunRow, SessionRow, Store};
 use so_supervisor::{
@@ -111,6 +113,16 @@ async fn connect(h: &SupervisorHandle) -> SupervisorClient {
 
 async fn hello(c: &SupervisorClient) -> HelloResult {
     c.hello("test", "/w", None, Some(7)).await.unwrap()
+}
+
+async fn hello_run(c: &SupervisorClient, store: &Store, run: &str, inspect: bool) -> HelloResult {
+    // Hash independently of production code to check the persisted SHA-256 contract.
+    use sha2::{Digest, Sha256};
+    let token = "test-only-identity-token";
+    store
+        .set_run_token_hash(run, &Sha256::digest(token.as_bytes()))
+        .unwrap();
+    c.call("hello", json!({"client": "test", "cwd": "/w", "run_id": run, "run_token": token, "inspect": inspect})).await.unwrap()
 }
 
 fn rpc_code(e: ClientError) -> i64 {
@@ -238,6 +250,99 @@ async fn inspect_hello_opens_no_session_and_refuses_spawns() {
     h.shutdown().await;
 }
 
+fn register_ui_login_probe(h: &SupervisorHandle) -> Arc<AtomicBool> {
+    let called = Arc::new(AtomicBool::new(false));
+    let probe = called.clone();
+    h.state().router.register(METHOD_UI_START, move |_ctx, _params| {
+        let probe = probe.clone();
+        async move {
+            probe.store(true, Ordering::SeqCst);
+            Ok(json!({"url": "http://127.0.0.1:7878/token#token=login-code", "already_running": true}))
+        }
+    });
+    called
+}
+
+fn assert_operator_required(error: ClientError) {
+    match error {
+        ClientError::Rpc(error) => {
+            assert_eq!(error.code, INVALID_REQUEST);
+            assert!(
+                error.message.contains("sessionless")
+                    && error.message.contains("runless")
+                    && error.message.contains("inspect"),
+                "{}",
+                error.message
+            );
+        }
+        other => panic!("expected an operator-only RPC error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ui_start_denies_session_clients_before_the_login_handler_runs() {
+    let env = Env::new();
+    let h = env.start().await;
+    let called = register_ui_login_probe(&h);
+    let client = connect(&h).await;
+    client.hello("so-mcp", "/w", None, None).await.unwrap();
+    assert_operator_required(
+        client
+            .call::<_, Value>(METHOD_UI_START, json!({}))
+            .await
+            .unwrap_err(),
+    );
+    assert!(
+        !called.load(Ordering::SeqCst),
+        "a denied session must never mint a code"
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn ui_start_denies_run_scoped_clients_even_with_an_inspect_hello() {
+    let env = Env::new();
+    let session = session_row();
+    env.store().insert_session(&session).unwrap();
+    let run = run_row(&session.id, RunState::Running, 0);
+    env.store().insert_run(&run).unwrap();
+    let h = env.start().await;
+    let called = register_ui_login_probe(&h);
+    for inspect in [false, true] {
+        let client = connect(&h).await;
+        let attached = hello_run(&client, &env.store(), &run.id, inspect).await;
+        assert_eq!(attached.run_id.as_deref(), Some(run.id.as_str()));
+        assert_operator_required(
+            client
+                .call::<_, Value>(METHOD_UI_START, json!({}))
+                .await
+                .unwrap_err(),
+        );
+        assert!(
+            !called.load(Ordering::SeqCst),
+            "a denied run must never mint a code"
+        );
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn ui_start_allows_sessionless_runless_inspect_clients() {
+    let env = Env::new();
+    let h = env.start().await;
+    let called = register_ui_login_probe(&h);
+    let client = connect(&h).await;
+    client.hello_inspect("cli", "/w", None).await.unwrap();
+    let result: Value = client.call(METHOD_UI_START, json!({})).await.unwrap();
+    assert_eq!(
+        result["url"],
+        "http://127.0.0.1:7878/token#token=login-code"
+    );
+    assert!(called.load(Ordering::SeqCst));
+    assert_eq!(env.store().count_active_sessions().unwrap(), 0);
+    h.shutdown().await;
+}
+
 #[tokio::test]
 async fn inspect_hello_with_a_run_id_still_gets_the_run_session() {
     let env = Env::new();
@@ -248,13 +353,7 @@ async fn inspect_hello_with_a_run_id_still_gets_the_run_session() {
     store.insert_run(&run).unwrap();
     let h = env.start().await;
     let c = connect(&h).await;
-    let r = c
-        .call::<_, HelloResult>(
-            "hello",
-            json!({"client": "x", "cwd": "/w", "run_id": run.id, "inspect": true}),
-        )
-        .await
-        .unwrap();
+    let r = hello_run(&c, &store, &run.id, true).await;
     assert_eq!(r.session_id, s.id);
     h.shutdown().await;
 }
@@ -269,10 +368,7 @@ async fn hello_with_run_id_attaches_to_run_session() {
     store.insert_run(&run).unwrap();
     let h = env.start().await;
     let c = connect(&h).await;
-    let r = c
-        .hello("so-mcp", "/w", Some(run.id.clone()), None)
-        .await
-        .unwrap();
+    let r = hello_run(&c, &store, &run.id, false).await;
     assert_eq!(r.session_id, s.id);
     assert_eq!(r.run_id.as_deref(), Some(run.id.as_str()));
     assert_eq!(r.depth, 2);
@@ -1007,6 +1103,550 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
     // The plain call keeps the full shape for the CLI and the web UI.
     let full: Value = c.call("list_harnesses", json!({})).await.unwrap();
     assert!(full["accounts"][0].get("flags").is_some());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn startup_removes_inactive_and_unknown_run_tokens_but_preserves_active_runs() {
+    let env = Env::new();
+    let store = env.store();
+    let session = session_row();
+    store.insert_session(&session).unwrap();
+    let mut rows = Vec::new();
+    for state in [
+        RunState::Succeeded,
+        RunState::Failed,
+        RunState::Cancelled,
+        RunState::Running,
+        RunState::Queued,
+        RunState::PendingReview,
+    ] {
+        let row = run_row(&session.id, state, 0);
+        store.insert_run(&row).unwrap();
+        rows.push(row);
+    }
+    let unknown = new_id();
+    for id in rows.iter().map(|r| &r.id).chain(std::iter::once(&unknown)) {
+        let dir = env.paths.run_dir(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ws-token"), "stale capability").unwrap();
+        std::fs::write(dir.join("transcript.jsonl"), "keep evidence").unwrap();
+    }
+    // Never traverse a run-dir symlink while doing cleanup.
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("ws-token"), "outside").unwrap();
+    std::os::unix::fs::symlink(outside.path(), env.paths.run_dir("linked-run")).unwrap();
+    let h = Supervisor::start(env.opts(Duration::from_secs(600)).with_setup(|st| {
+        struct Keep;
+        impl so_supervisor::ReconcileHook for Keep {
+            fn reconcile(&self, _: &Store, _: &RunRow) -> bool {
+                true
+            }
+        }
+        st.set_reconcile_hook(Arc::new(Keep));
+    }))
+    .await
+    .unwrap();
+    for row in rows {
+        let dir = env.paths.run_dir(&row.id);
+        assert_eq!(
+            dir.join("ws-token").exists(),
+            row.state.is_active(),
+            "{}",
+            row.state.as_str()
+        );
+        assert!(dir.join("transcript.jsonl").exists());
+    }
+    assert!(!env.paths.run_dir(&unknown).join("ws-token").exists());
+    assert!(outside.path().join("ws-token").exists());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn startup_removes_token_after_failing_an_orphaned_run() {
+    let env = Env::new();
+    let store = env.store();
+    let session = session_row();
+    store.insert_session(&session).unwrap();
+    let row = run_row(&session.id, RunState::Running, 0);
+    store.insert_run(&row).unwrap();
+    let dir = env.paths.run_dir(&row.id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("ws-token"), "stale capability").unwrap();
+    let h = env.start().await;
+    assert_eq!(
+        store.get_run(&row.id).unwrap().unwrap().state,
+        RunState::Failed
+    );
+    assert!(!dir.join("ws-token").exists());
+    h.shutdown().await;
+}
+
+// GHSA-vw56-37xq-jrf9: a session must not act on another session's runs.
+async fn cross_session_run_request(method: &str) {
+    let env = Env::new();
+    let h = Supervisor::start(
+        env.opts(Duration::from_secs(600))
+            .with_setup(so_supervisor::default_handlers),
+    )
+    .await
+    .unwrap();
+    let c = connect(&h).await;
+    hello(&c).await;
+    let store = env.store();
+    let s = session_row();
+    store.insert_session(&s).unwrap();
+    let run = run_row(&s.id, RunState::PendingReview, 1);
+    store.insert_run(&run).unwrap();
+    let p = match method {
+        "wait_agent" => json!({"runs": [run.id], "timeout_ms": 0}),
+        "send_message" => json!({"run": run.id, "text": "forbidden"}),
+        "reject_run" => json!({"run": run.id, "feedback": "forbidden"}),
+        "fork_agent" => json!({"run": run.id, "prompt": "forbidden"}),
+        _ => json!({"run": run.id}),
+    };
+    let e = c.call::<_, Value>(method, p.clone()).await.unwrap_err();
+    let mut missing = p;
+    if method == "wait_agent" {
+        missing["runs"] = json!(["missing-run"]);
+    } else {
+        missing["run"] = json!("missing-run");
+    }
+    let absent = c.call::<_, Value>(method, missing).await.unwrap_err();
+    match (e, absent) {
+        (ClientError::Rpc(denied), ClientError::Rpc(absent)) => {
+            assert_eq!(denied.code, so_core::proto::NOT_FOUND, "{method}");
+            assert_eq!(
+                (denied.code, denied.message),
+                (absent.code, absent.message),
+                "{method}"
+            );
+        }
+        other => panic!("expected RPC errors: {other:?}"),
+    }
+    assert_eq!(
+        store.get_run(&run.id).unwrap().unwrap().state,
+        RunState::PendingReview
+    );
+    h.shutdown().await;
+}
+
+macro_rules! cross_session_test {
+    ($name:ident, $method:literal) => {
+        #[tokio::test]
+        async fn $name() {
+            cross_session_run_request($method).await;
+        }
+    };
+}
+cross_session_test!(cross_session_get_refused, "get_run");
+cross_session_test!(cross_session_cancel_refused, "cancel_agent");
+cross_session_test!(cross_session_join_refused, "join_run");
+cross_session_test!(cross_session_wait_refused, "wait_agent");
+cross_session_test!(cross_session_send_refused, "send_message");
+cross_session_test!(cross_session_accept_refused, "accept_run");
+cross_session_test!(cross_session_reject_refused, "reject_run");
+cross_session_test!(cross_session_fork_refused, "fork_agent");
+
+#[tokio::test]
+async fn hello_missing_run_token_refused() {
+    let env = Env::new();
+    let store = env.store();
+    let s = session_row();
+    store.insert_session(&s).unwrap();
+    let run = run_row(&s.id, RunState::Running, 1);
+    store.insert_run(&run).unwrap();
+    let h = env.start().await;
+    let c = connect(&h).await;
+    let e = c
+        .hello("claimed", "/w", Some(run.id), None)
+        .await
+        .unwrap_err();
+    assert_eq!(rpc_code(e), INVALID_REQUEST);
+    // A refused identity must not greet the connection or let it read any messages.
+    assert_eq!(
+        rpc_code(
+            c.call::<_, Value>("read_messages", json!({}))
+                .await
+                .unwrap_err()
+        ),
+        INVALID_REQUEST
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn review_startup_continues_after_a_token_cleanup_error() {
+    let env = Env::new();
+    let bad = env.paths.run_dir("bad");
+    std::fs::create_dir_all(bad.join("ws-token")).unwrap();
+    let good = env.paths.run_dir("good");
+    std::fs::create_dir_all(&good).unwrap();
+    std::fs::write(good.join("ws-token"), "stale").unwrap();
+    let h = env.start().await;
+    assert!(!good.join("ws-token").exists());
+    assert!(bad.join("ws-token").is_dir());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn cross_session_workflow_requests_refused() {
+    let env = Env::new();
+    let h = Supervisor::start(
+        env.opts(Duration::from_secs(600))
+            .with_setup(so_supervisor::default_handlers),
+    )
+    .await
+    .unwrap();
+    let c = connect(&h).await;
+    hello(&c).await;
+    let row = so_store::WorkflowRunRow {
+        id: new_id(),
+        name: "private".into(),
+        session_id: Some("other-session".into()),
+        state: "running".into(),
+        args_json: "{}".into(),
+        started_at: chrono::Utc::now(),
+        finished_at: None,
+        result_json: None,
+        error: None,
+    };
+    env.store().insert_workflow_run(&row).unwrap();
+    for method in ["workflow_status", "cancel_workflow"] {
+        let e = c
+            .call::<_, Value>(method, json!({"id": row.id}))
+            .await
+            .unwrap_err();
+        let absent = c
+            .call::<_, Value>(method, json!({"id": "missing-workflow"}))
+            .await
+            .unwrap_err();
+        match (e, absent) {
+            (ClientError::Rpc(denied), ClientError::Rpc(absent)) => {
+                assert_eq!(denied.code, so_core::proto::NOT_FOUND, "{method}");
+                assert_eq!(
+                    (denied.code, denied.message),
+                    (absent.code, absent.message),
+                    "{method}"
+                );
+            }
+            other => panic!("expected RPC errors: {other:?}"),
+        }
+    }
+    h.shutdown().await;
+}
+
+async fn sibling_request(method: &str) {
+    let env = Env::new();
+    let store = env.store();
+    let h = Supervisor::start(
+        env.opts(Duration::from_secs(600))
+            .with_setup(so_supervisor::default_handlers),
+    )
+    .await
+    .unwrap();
+
+    let s = session_row();
+    store.insert_session(&s).unwrap();
+    let caller = run_row(&s.id, RunState::Running, 1);
+    let sibling = run_row(&s.id, RunState::Running, 1);
+    store.insert_run(&caller).unwrap();
+    store.insert_run(&sibling).unwrap();
+    let c = connect(&h).await;
+    hello_run(&c, &store, &caller.id, false).await;
+    let p = if method == "send_message" {
+        json!({"run": sibling.id, "text": "forbidden"})
+    } else {
+        json!({"run": sibling.id})
+    };
+    let e = c.call::<_, Value>(method, p).await.unwrap_err();
+    assert!(
+        matches!(e, ClientError::Rpc(ref e) if e.message.contains("subtree")),
+        "{method}: {e:?}"
+    );
+    assert_eq!(
+        store.get_run(&sibling.id).unwrap().unwrap().state,
+        RunState::Running
+    );
+    assert!(
+        store
+            .list_messages_by_run(&sibling.id, 100)
+            .unwrap()
+            .is_empty()
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn review_startup_continues_when_runs_directory_cannot_be_read() {
+    let env = Env::new();
+    std::fs::write(env.paths.runs_dir(), "not a directory").unwrap();
+    let h = env.start().await;
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn sibling_get_refused() {
+    sibling_request("get_run").await;
+}
+#[tokio::test]
+async fn sibling_cancel_refused() {
+    sibling_request("cancel_agent").await;
+}
+#[tokio::test]
+async fn sibling_send_refused() {
+    sibling_request("send_message").await;
+}
+
+#[tokio::test]
+async fn descendants_and_ancestor_messages_allowed_but_ancestor_controls_refused() {
+    let env = Env::new();
+    let store = env.store();
+    let h = Supervisor::start(
+        env.opts(Duration::from_secs(600))
+            .with_setup(so_supervisor::default_handlers),
+    )
+    .await
+    .unwrap();
+
+    let s = session_row();
+    store.insert_session(&s).unwrap();
+    let ancestor = run_row(&s.id, RunState::Running, 1);
+    let mut caller = run_row(&s.id, RunState::Running, 2);
+    caller.parent_run_id = Some(ancestor.id.clone());
+    let mut descendant = run_row(&s.id, RunState::Running, 3);
+    descendant.parent_run_id = Some(caller.id.clone());
+    for r in [&ancestor, &caller, &descendant] {
+        store.insert_run(r).unwrap();
+    }
+    let c = connect(&h).await;
+    hello_run(&c, &store, &caller.id, false).await;
+    for run in [&caller.id, &descendant.id] {
+        c.call::<_, Value>("get_run", json!({"run": run}))
+            .await
+            .unwrap();
+        c.call::<_, Value>("send_message", json!({"run": run, "text": "allowed"}))
+            .await
+            .unwrap();
+    }
+    c.call::<_, Value>(
+        "send_message",
+        json!({"run": ancestor.id, "text": "report to parent"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        store.list_messages_by_run(&ancestor.id, 100).unwrap()[0].body,
+        "report to parent"
+    );
+    for method in ["get_run", "cancel_agent"] {
+        assert!(
+            c.call::<_, Value>(method, json!({"run": ancestor.id}))
+                .await
+                .is_err(),
+            "ancestor {method} must be refused"
+        );
+    }
+    c.call::<_, Value>("cancel_agent", json!({"run": descendant.id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_run(&descendant.id).unwrap().unwrap().state,
+        RunState::Cancelled
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn depth_zero_session_client_can_access_all_its_runs() {
+    let env = Env::new();
+    let h = Supervisor::start(
+        env.opts(Duration::from_secs(600))
+            .with_setup(so_supervisor::default_handlers),
+    )
+    .await
+    .unwrap();
+    let c = connect(&h).await;
+    let session = hello(&c).await;
+    let store = env.store();
+    let parent = run_row(&session.session_id, RunState::Queued, 1);
+    let mut descendant = run_row(&session.session_id, RunState::Queued, 2);
+    descendant.parent_run_id = Some(parent.id.clone());
+    for r in [&parent, &descendant] {
+        store.insert_run(r).unwrap();
+        c.call::<_, Value>("get_run", json!({"run": r.id}))
+            .await
+            .unwrap();
+        c.call::<_, Value>("send_message", json!({"run": r.id, "text": "allowed"}))
+            .await
+            .unwrap();
+        c.call::<_, Value>("cancel_agent", json!({"run": r.id}))
+            .await
+            .unwrap();
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn hello_wrong_token_refused_then_correct_token_accepted() {
+    // Hash independently of production code to check the persisted SHA-256 contract.
+    use sha2::{Digest, Sha256};
+    let env = Env::new();
+    let h = env.start().await;
+    let store = env.store();
+    let s = session_row();
+    store.insert_session(&s).unwrap();
+    let run = run_row(&s.id, RunState::Running, 1);
+    store.insert_run(&run).unwrap();
+    store
+        .set_run_token_hash(&run.id, &Sha256::digest(b"correct-test-token"))
+        .unwrap();
+    let c = connect(&h).await;
+    for token in [
+        None,
+        Some(""),
+        Some("wrong-test-token"),
+        Some("correct-test-token-with-extra-suffix"),
+    ] {
+        let e = c
+            .call::<_, Value>(
+                "hello",
+                json!({"client": "test", "cwd": "/", "run_id": run.id, "run_token": token}),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(e, ClientError::Rpc(ref e) if e.code == INVALID_REQUEST && e.message == "invalid run identity token")
+        );
+    }
+    let r: HelloResult = c.call("hello", json!({"client": "test", "cwd": "/", "run_id": run.id, "run_token": "correct-test-token"})).await.unwrap();
+    assert_eq!(r.session_id, s.id);
+    assert_eq!(r.run_id.as_deref(), Some(run.id.as_str()));
+    assert_eq!(r.depth, 1);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn hello_token_for_another_run_and_legacy_claims_refused_even_with_inspect() {
+    // Hash independently of production code to check the persisted SHA-256 contract.
+    use sha2::{Digest, Sha256};
+    let env = Env::new();
+    let h = env.start().await;
+    let store = env.store();
+    let s = session_row();
+    store.insert_session(&s).unwrap();
+    let first = run_row(&s.id, RunState::Running, 1);
+    let second = run_row(&s.id, RunState::Running, 1);
+    let legacy = run_row(&s.id, RunState::Running, 1);
+    for r in [&first, &second, &legacy] {
+        store.insert_run(r).unwrap();
+    }
+    store
+        .set_run_token_hash(&first.id, &Sha256::digest(b"first-token"))
+        .unwrap();
+    store
+        .set_run_token_hash(&second.id, &Sha256::digest(b"second-token"))
+        .unwrap();
+    for id in [&second.id, &legacy.id] {
+        let c = connect(&h).await;
+        let e = c.call::<_, Value>("hello", json!({"client": "test", "cwd": "/", "run_id": id, "run_token": "first-token", "inspect": true})).await.unwrap_err();
+        assert_eq!(rpc_code(e), INVALID_REQUEST);
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn sibling_and_orchestrator_workflows_are_outside_a_run_subtree() {
+    let env = Env::new();
+    let h = Supervisor::start(
+        env.opts(Duration::from_secs(600))
+            .with_setup(so_supervisor::default_handlers),
+    )
+    .await
+    .unwrap();
+    let orchestrator = connect(&h).await;
+    let session = orchestrator
+        .hello("test", env.dir.path().to_str().unwrap(), None, Some(7))
+        .await
+        .unwrap();
+    let store = env.store();
+    let mut owner = run_row(&session.session_id, RunState::Running, 1);
+    owner.cwd = Some(env.dir.path().to_string_lossy().into_owned());
+    let sibling = run_row(&session.session_id, RunState::Running, 1);
+    store.insert_run(&owner).unwrap();
+    store.insert_run(&sibling).unwrap();
+    let owner_client = connect(&h).await;
+    hello_run(&owner_client, &store, &owner.id, false).await;
+    let sibling_client = connect(&h).await;
+    hello_run(&sibling_client, &store, &sibling.id, false).await;
+    // Subagents may only run saved workflows by name (GHSA-8hc9).
+    std::fs::create_dir_all(env.paths.workflows_dir()).unwrap();
+    std::fs::write(env.paths.workflows_dir().join("owned.js"), "return 1;").unwrap();
+    let owned: Value = owner_client
+        .call("run_workflow", json!({"name": "owned"}))
+        .await
+        .unwrap();
+    let top: Value = orchestrator
+        .call("run_workflow", json!({"script": "return 2;"}))
+        .await
+        .unwrap();
+    owner_client
+        .call::<_, Value>("workflow_status", json!({"id": owned["id"]}))
+        .await
+        .unwrap();
+    orchestrator
+        .call::<_, Value>("workflow_status", json!({"id": owned["id"]}))
+        .await
+        .unwrap();
+    for id in [&owned["id"], &top["id"]] {
+        for method in ["workflow_status", "cancel_workflow"] {
+            let e = sibling_client
+                .call::<_, Value>(method, json!({"id": id}))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(e, ClientError::Rpc(ref e) if e.message.contains("subtree")),
+                "{method}: {e:?}"
+            );
+        }
+    }
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn inspect_operator_keeps_run_read_wait_join_cancel_access() {
+    let env = Env::new();
+    let h = Supervisor::start(
+        env.opts(Duration::from_secs(600))
+            .with_setup(so_supervisor::default_handlers),
+    )
+    .await
+    .unwrap();
+    let store = env.store();
+    let s = session_row();
+    store.insert_session(&s).unwrap();
+    let mut run = run_row(&s.id, RunState::Running, 1);
+    run.account = Some("codex-a".into());
+    run.native_session_id = Some("native-1".into());
+    run.cwd = Some("/w".into());
+    store.insert_run(&run).unwrap();
+    let c = connect(&h).await;
+    c.hello_inspect("cli", "/w", None).await.unwrap();
+    for method in ["get_run", "join_run"] {
+        c.call::<_, Value>(method, json!({"run": run.id}))
+            .await
+            .unwrap();
+    }
+    c.call::<_, Value>("wait_agent", json!({"runs": [run.id], "timeout_ms": 0}))
+        .await
+        .unwrap();
+    c.call::<_, Value>("cancel_agent", json!({"run": run.id}))
+        .await
+        .unwrap();
+    assert_eq!(
+        store.get_run(&run.id).unwrap().unwrap().state,
+        RunState::Cancelled
+    );
     h.shutdown().await;
 }
 

@@ -90,6 +90,29 @@ fn map_attempt(r: &Row<'_>) -> rusqlite::Result<AttemptRow> {
 }
 
 impl Store {
+    /// The SHA-256 hash of a run's RPC token, separate from public run rows/views.
+    pub fn set_run_token_hash(&self, run_id: &str, hash: &[u8]) -> Result<()> {
+        self.conn().execute(
+            "INSERT INTO run_meta (run_id, rpc_token_hash) VALUES (?1, ?2) \
+             ON CONFLICT(run_id) DO UPDATE SET rpc_token_hash = excluded.rpc_token_hash",
+            params![run_id, hash],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_run_token_hash(&self, run_id: &str) -> Result<Option<Vec<u8>>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT rpc_token_hash FROM run_meta WHERE run_id = ?1",
+                [run_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
     pub fn insert_run(&self, r: &RunRow) -> Result<()> {
         insert_run_on(&self.conn(), r)
     }
@@ -258,11 +281,26 @@ impl Store {
         Ok(prompt)
     }
 
-    /// Drops the extras of a run (checks, fork source, resume intent); used when its
-    /// worktree is pruned.
+    /// Drops launch/review extras when a worktree is pruned, preserving the run's identity.
     pub fn delete_run_meta(&self, run_id: &str) -> Result<()> {
-        self.conn()
-            .execute("DELETE FROM run_meta WHERE run_id = ?1", [run_id])?;
+        use rusqlite::OptionalExtension;
+        let mut conn = self.conn();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let hash: Option<Vec<u8>> = tx
+            .query_row(
+                "DELETE FROM run_meta WHERE run_id = ?1 RETURNING rpc_token_hash",
+                [run_id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+        if let Some(hash) = hash {
+            tx.execute(
+                "INSERT INTO run_meta (run_id, rpc_token_hash) VALUES (?1, ?2)",
+                params![run_id, hash],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -1308,6 +1346,18 @@ pub(crate) mod tests {
             .count();
         assert_eq!(wins, 1);
         assert_eq!(a.count_active_runs_total().unwrap(), 1);
+    }
+
+    #[test]
+    fn pruning_launch_metadata_preserves_run_identity() {
+        let (s, sid) = setup();
+        let r = run(&sid, None);
+        s.insert_run(&r).unwrap();
+        s.set_run_token_hash(&r.id, &[7; 32]).unwrap();
+        s.set_run_checks(&r.id, &["ci".into()]).unwrap();
+        s.delete_run_meta(&r.id).unwrap();
+        assert!(s.get_run_checks(&r.id).unwrap().is_empty());
+        assert!(s.get_run_token_hash(&r.id).unwrap().as_deref() == Some(&[7u8; 32][..]));
     }
 
     #[test]

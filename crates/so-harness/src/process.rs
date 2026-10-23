@@ -545,18 +545,25 @@ pub fn spawn_supervised(
     run_dir: &Path,
     grace: Duration,
     parser: impl LineParser,
+    pass_env: &[String],
 ) -> Result<Supervised, DriverError> {
-    spawn_supervised_with(cmd, run_dir, grace, parser, None)
+    spawn_supervised_with(cmd, run_dir, grace, parser, None, pass_env)
 }
 
-/// [`spawn_supervised`] with an optional parser for stderr as well.
+/// [`spawn_supervised`] with an optional parser for stderr as well. `pass_env` names inherited
+/// variables the child may see beyond the baseline allowlist.
 pub fn spawn_supervised_with(
     mut cmd: Command,
     run_dir: &Path,
     grace: Duration,
     parser: impl LineParser,
     stderr_parser: Option<Box<dyn LineParser>>,
+    pass_env: &[String],
 ) -> Result<Supervised, DriverError> {
+    // Every harness the supervisor launches starts from the isolated baseline
+    // plus the account's opted-in names (GHSA-rfwj-83wf-qr2g). Explicit
+    // driver and launch variables already set on `cmd` still win.
+    so_core::child_env::isolate(cmd.as_std_mut(), pass_env);
     let program = cmd.as_std().get_program().to_string_lossy().into_owned();
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())

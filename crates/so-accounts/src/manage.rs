@@ -1,7 +1,7 @@
 //! High-level account operations used by the CLI (SPEC 5.4).
 
 use std::io::Write;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use so_core::{AccountFile, Config, Harness, Paths, Platform};
@@ -18,12 +18,11 @@ fn wrapper_dir(cfg: &Config, host: &HostEnv) -> Result<PathBuf> {
     host.expand(&cfg.accounts.wrapper_dir)
 }
 
-/// Creates `dir` (and parents) with mode 0700.
-fn create_private_dir(dir: &Path) -> Result<()> {
-    std::fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(dir)
+/// Creates and tightens directories owned by superorchestrator, not credential homes.
+/// If `dir` is a symlink (including config_dir), its target is tightened to 0700.
+fn ensure_private_dir(dir: &Path) -> Result<()> {
+    so_core::fsutil::create_private_dirs(dir)
+        .and_then(|()| std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)))
         .map_err(|e| AccountsError::io(dir, e))
 }
 
@@ -33,7 +32,8 @@ fn create_account_file(paths: &Paths, account: &AccountFile) -> Result<()> {
     account.validate()?;
     let text = toml::to_string_pretty(account).map_err(so_core::CoreError::from)?;
     let dir = paths.accounts_dir();
-    create_private_dir(&dir)?;
+    ensure_private_dir(&paths.config_dir)?;
+    ensure_private_dir(&dir)?;
     let target = paths.account_file(&account.name);
     let mut n = 0u32;
     let (tmp, mut f) = loop {
@@ -148,11 +148,15 @@ pub fn add(
     ensure_no_shadow(cfg, host, name)?;
     check_single_agy(paths, host, name, harness)?;
     let dir = host.expand(&home_spec)?;
-    create_private_dir(&if harness == Harness::Agy {
+    ensure_disjoint_home(paths, host, name, &dir)?;
+    let credential_dir = if harness == Harness::Agy {
         dir.join(".gemini")
     } else {
         dir
-    })?;
+    };
+    // Existing user-selected homes retain their permissions, including symlink targets.
+    so_core::fsutil::create_private_dirs(&credential_dir)
+        .map_err(|e| AccountsError::io(&credential_dir, e))?;
     finish(paths, cfg, host, &account)
 }
 
@@ -219,6 +223,7 @@ pub fn import(
     ensure_no_shadow(cfg, host, name)?;
     check_single_agy(paths, host, name, harness)?;
     let dir = host.expand(home)?;
+    ensure_disjoint_home(paths, host, name, &dir)?;
     let must_exist = if harness == Harness::Agy {
         dir.join(".gemini")
     } else {
@@ -240,6 +245,45 @@ fn default_homes(host: &HostEnv) -> Vec<PathBuf> {
 
 fn related(a: &Path, b: &Path) -> bool {
     a.starts_with(b) || b.starts_with(a)
+}
+
+/// Finds overlapping homes, allowing strict descendants of an existing $HOME home.
+/// `ignored` supplies additional purge-only exemptions for legacy default homes.
+fn overlapping_home(
+    paths: &Paths,
+    host: &HostEnv,
+    name: &str,
+    home: &Path,
+    ignored: &[PathBuf],
+) -> Result<Option<String>> {
+    let chost = canon(&host.home).map_err(|e| AccountsError::io(&host.home, e))?;
+    for other in AccountFile::list(paths)? {
+        if other.name == name {
+            continue;
+        }
+        let oh = host.expand(&other.home)?;
+        let oc = canon(&oh).map_err(|e| AccountsError::io(&oh, e))?;
+        // A legacy account on $HOME must not reserve every credential subdirectory.
+        // Equality and ancestors still conflict, including a new $HOME over another account.
+        if oc == chost && home.starts_with(&oc) && home != oc {
+            continue;
+        }
+        if !ignored.contains(&oc) && related(home, &oc) {
+            return Ok(Some(other.name));
+        }
+    }
+    Ok(None)
+}
+
+fn ensure_disjoint_home(paths: &Paths, host: &HostEnv, name: &str, home: &Path) -> Result<()> {
+    let canonical = canon(home).map_err(|e| AccountsError::io(home, e))?;
+    if let Some(existing) = overlapping_home(paths, host, name, &canonical, &[])? {
+        return Err(AccountsError::OverlappingHome {
+            path: home.to_path_buf(),
+            existing,
+        });
+    }
+    Ok(())
 }
 
 /// Fail-closed purge checks. Returns the canonical home to delete, or `None`
@@ -308,27 +352,13 @@ fn check_purge(
             ));
         }
     }
-    for other in AccountFile::list(paths)? {
-        if other.name == account.name {
-            continue;
-        }
-        let oh = host.expand(&other.home)?;
-        let oc = canon(&oh).map_err(|e| io("another account's home", e))?;
-        // An account on $HOME itself (agy with the real ~/.gemini) or on a
-        // harness default home contains everything; it is not an overlap.
-        let mut shared = vec![chost.clone()];
-        for p in default_homes(host) {
-            shared.push(canon(&p).map_err(|e| io("a harness default home", e))?);
-        }
-        if shared.contains(&oc) {
-            continue;
-        }
-        if related(&chome, &oc) {
-            return Err(refuse(format!(
-                "account `{}` has an overlapping home",
-                other.name
-            )));
-        }
+    // Preserve the purge exception for legacy accounts on shared default homes.
+    let mut shared = Vec::new();
+    for p in default_homes(host) {
+        shared.push(canon(&p).map_err(|e| io("a harness default home", e))?);
+    }
+    if let Some(other) = overlapping_home(paths, host, &account.name, &chome, &shared)? {
+        return Err(refuse(format!("it overlaps the home of account `{other}`")));
     }
     Ok(Some(chome))
 }
@@ -451,6 +481,190 @@ mod tests {
         let mut f = fx();
         f.host = host(f.d.path(), Platform::MacOs);
         f
+    }
+
+    #[test]
+    fn a_home_directory_account_refuses_an_ancestor_home() {
+        for importing in [false, true] {
+            let mut f = fx();
+            f.host.home = f.d.path().join("home");
+            std::fs::create_dir_all(&f.host.home).unwrap();
+            AccountFile::new("existing", Harness::Codex, "~", "codex")
+                .unwrap()
+                .save(&f.paths)
+                .unwrap();
+            let ancestor = f.d.path().to_str().unwrap();
+            let result = if importing {
+                import(&f.paths, &f.cfg, &f.host, "new", Harness::Codex, ancestor)
+            } else {
+                add(
+                    &f.paths,
+                    &f.cfg,
+                    &f.host,
+                    Harness::Codex,
+                    "new",
+                    Some(ancestor),
+                )
+            };
+            let err = result.unwrap_err();
+            assert!(
+                matches!(err, AccountsError::OverlappingHome { .. }),
+                "{err}"
+            );
+            assert!(!f.paths.account_file("new").exists());
+        }
+    }
+
+    #[test]
+    fn add_and_import_preserve_existing_credential_home_permissions() {
+        for importing in [false, true] {
+            for home in ["~", "~/credentials", "~/linked"] {
+                let f = fx();
+                let target = if home == "~/linked" {
+                    let target = f.d.path().join("credentials");
+                    std::fs::create_dir_all(&target).unwrap();
+                    std::os::unix::fs::symlink(&target, f.d.path().join("linked")).unwrap();
+                    target
+                } else {
+                    f.host.expand(home).unwrap()
+                };
+                std::fs::create_dir_all(&target).unwrap();
+                std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+                if importing {
+                    import(&f.paths, &f.cfg, &f.host, "new", Harness::Codex, home).unwrap();
+                } else {
+                    add(&f.paths, &f.cfg, &f.host, Harness::Codex, "new", Some(home)).unwrap();
+                }
+                assert_eq!(
+                    std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+                    0o755
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_home_directory_account_allows_subhomes_but_not_a_second_home_account() {
+        for importing in [false, true] {
+            let f = fx();
+            // Store an alias to exercise canonical comparison of the existing home.
+            std::os::unix::fs::symlink(f.d.path(), f.d.path().join("home-link")).unwrap();
+            AccountFile::new("existing", Harness::Agy, "~/home-link", "agy")
+                .unwrap()
+                .save(&f.paths)
+                .unwrap();
+            if importing {
+                std::fs::create_dir_all(f.d.path().join("new")).unwrap();
+                import(&f.paths, &f.cfg, &f.host, "new", Harness::Codex, "~/new").unwrap();
+            } else {
+                add(
+                    &f.paths,
+                    &f.cfg,
+                    &f.host,
+                    Harness::Codex,
+                    "new",
+                    Some("~/new"),
+                )
+                .unwrap();
+            }
+            let err = add(
+                &f.paths,
+                &f.cfg,
+                &f.host,
+                Harness::Codex,
+                "duplicate",
+                Some("~"),
+            )
+            .unwrap_err();
+            assert!(matches!(err, AccountsError::OverlappingHome { .. }));
+            let err =
+                import(&f.paths, &f.cfg, &f.host, "duplicate", Harness::Codex, "~").unwrap_err();
+            assert!(matches!(err, AccountsError::OverlappingHome { .. }));
+        }
+    }
+
+    #[test]
+    fn account_creation_tightens_existing_config_directories() {
+        use std::os::unix::fs::PermissionsExt;
+        for importing in [false, true] {
+            let f = fx();
+            std::fs::create_dir_all(f.paths.accounts_dir()).unwrap();
+            for dir in [&f.paths.config_dir, &f.paths.accounts_dir()] {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            if importing {
+                std::fs::create_dir_all(f.d.path().join("credentials")).unwrap();
+                import(
+                    &f.paths,
+                    &f.cfg,
+                    &f.host,
+                    "new",
+                    Harness::Codex,
+                    "~/credentials",
+                )
+                .unwrap();
+            } else {
+                add(&f.paths, &f.cfg, &f.host, Harness::Codex, "new", None).unwrap();
+            }
+            for dir in [&f.paths.config_dir, &f.paths.accounts_dir()] {
+                assert_eq!(
+                    std::fs::metadata(dir).unwrap().permissions().mode() & 0o777,
+                    0o700,
+                    "{}",
+                    dir.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn add_and_import_refuse_overlapping_homes() {
+        for importing in [false, true] {
+            for candidate in [
+                "~/shared",
+                "~/shared/inner",
+                "~",
+                "~/alias",
+                "~/alias/new",
+                "~/other/../shared/new",
+            ] {
+                let f = fx();
+                std::fs::create_dir_all(f.d.path().join("shared/inner")).unwrap();
+                std::fs::create_dir_all(f.d.path().join("other")).unwrap();
+                std::os::unix::fs::symlink(f.d.path().join("shared"), f.d.path().join("alias"))
+                    .unwrap();
+                AccountFile::new("existing", Harness::Codex, "~/shared", "codex")
+                    .unwrap()
+                    .save(&f.paths)
+                    .unwrap();
+                if importing {
+                    std::fs::create_dir_all(f.host.expand(candidate).unwrap()).unwrap();
+                }
+                let result = if importing {
+                    import(&f.paths, &f.cfg, &f.host, "new", Harness::Codex, candidate)
+                } else {
+                    add(
+                        &f.paths,
+                        &f.cfg,
+                        &f.host,
+                        Harness::Codex,
+                        "new",
+                        Some(candidate),
+                    )
+                };
+                let err = result.expect_err(candidate);
+                assert!(
+                    err.to_string()
+                        .contains("overlaps the home of account `existing`"),
+                    "{err}"
+                );
+                assert!(!f.paths.account_file("new").exists());
+                assert!(!f.d.path().join(".local/bin/new").exists());
+                if !importing {
+                    assert!(!f.d.path().join("shared/new").exists());
+                }
+            }
+        }
     }
 
     #[test]
@@ -877,15 +1091,11 @@ mod tests {
             .unwrap()
             .save(&f.paths)
             .unwrap();
-        add(
-            &f.paths,
-            &f.cfg,
-            &f.host,
-            Harness::Codex,
-            "codex-acc3",
-            None,
-        )
-        .unwrap();
+        AccountFile::new("codex-acc3", Harness::Codex, "~/.codex-acc3", "codex")
+            .unwrap()
+            .save(&f.paths)
+            .unwrap();
+        std::fs::create_dir_all(r.join(".codex-acc3")).unwrap();
         remove(&f.paths, &f.cfg, &f.host, "codex-acc3", true).unwrap();
         assert!(!r.join(".codex-acc3").exists());
         assert!(f.paths.account_file("agy-acc1").exists());

@@ -12,9 +12,19 @@ use crate::host::{HostEnv, same_path};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Launch {
     pub program: PathBuf,
+    /// Extra inherited names, resolved only when the process starts.
+    pub pass_env: Vec<String>,
     pub vars: Vec<(String, String)>,
     pub argv_prefix: Vec<String>,
     pub extra_args: Vec<String>,
+}
+
+impl Launch {
+    /// Adds global inherited names to the account's own pass-through list.
+    pub fn with_default_pass_env(mut self, defaults: &[String]) -> Self {
+        self.pass_env = so_core::child_env::merge_pass_env([self.pass_env.as_slice(), defaults]);
+        self
+    }
 }
 
 /// Resolves `name` on `path_var`; an absolute (or `/`-containing) name must
@@ -88,6 +98,7 @@ pub fn build_launch(account: &AccountFile, host: &HostEnv) -> Result<Launch> {
     let binary = resolve_binary(&account.binary, host.path_var.as_deref())?;
     let mut launch = Launch {
         program: binary,
+        pass_env: account.pass_env.clone(),
         vars: Vec::new(),
         argv_prefix: Vec::new(),
         extra_args: Vec::new(),

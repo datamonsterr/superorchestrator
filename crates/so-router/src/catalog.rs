@@ -392,6 +392,7 @@ pub struct RefreshEnv<'a> {
     pub paths: &'a Paths,
     pub host: &'a HostEnv,
     pub accounts: &'a [AccountFile],
+    pub pass_env: &'a [String],
     pub runner: &'a dyn ProbeRunner,
     pub http: &'a reqwest::Client,
     /// models.dev document URL; `None` uses the public one.
@@ -412,13 +413,16 @@ async fn run_collector(
     stdin_lines: Vec<String>,
     wait_for: ResponseMatcher,
 ) -> std::result::Result<String, String> {
-    let launch = build_launch(account, env.host).map_err(|e| e.to_string())?;
+    let launch = build_launch(account, env.host)
+        .map_err(|e| e.to_string())?
+        .with_default_pass_env(env.pass_env);
     let mut args = launch.argv_prefix.clone();
     args.extend(launch.extra_args.clone());
     args.extend(subcommand.iter().map(|s| s.to_string()));
     let out = env
         .runner
         .run(ProbeRequest {
+            pass_env: launch.pass_env,
             program: launch.program,
             args,
             env: launch.vars,

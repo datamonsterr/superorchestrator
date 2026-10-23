@@ -32,6 +32,8 @@ export interface AccountView {
 }
 
 export interface AccountsCfg {
+  /** Extra inherited environment variable names for every account. */
+  pass_env?: string[];
   wrapper_dir?: string;
 }
 

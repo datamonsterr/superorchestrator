@@ -25,7 +25,7 @@ pub struct SavedWorkflow {
 #[derive(Debug, Clone)]
 pub struct SavedWorkflows {
     config_dir: PathBuf,
-    project_dir: PathBuf,
+    project_dir: Option<PathBuf>,
 }
 
 impl SavedWorkflows {
@@ -33,13 +33,25 @@ impl SavedWorkflows {
     pub fn new(config_workflows_dir: impl Into<PathBuf>, cwd: impl AsRef<Path>) -> Self {
         Self {
             config_dir: config_workflows_dir.into(),
-            project_dir: cwd.as_ref().join(".superorchestrator").join("workflows"),
+            project_dir: Some(cwd.as_ref().join(".superorchestrator").join("workflows")),
+        }
+    }
+
+    /// Finder restricted to the user config directory; never inspects project files.
+    pub fn config_only(config_workflows_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            config_dir: config_workflows_dir.into(),
+            project_dir: None,
         }
     }
 
     /// All saved workflows sorted by name; a project script hides a config one of the same name.
     pub fn list(&self) -> Vec<SavedWorkflow> {
-        let mut out = scan(&self.project_dir, SavedSource::Project);
+        let mut out = self
+            .project_dir
+            .as_ref()
+            .map(|dir| scan(dir, SavedSource::Project))
+            .unwrap_or_default();
         for w in scan(&self.config_dir, SavedSource::Config) {
             if !out.iter().any(|o| o.name == w.name) {
                 out.push(w);
@@ -72,7 +84,8 @@ fn scan(dir: &Path, source: SavedSource) -> Vec<SavedWorkflow> {
     rd.filter_map(Result::ok)
         .filter_map(|e| {
             let path = e.path();
-            if path.extension()? != "js" || !path.is_file() {
+            // Links must not make scripts outside the workflows directory discoverable.
+            if path.extension()? != "js" || !fs::symlink_metadata(&path).ok()?.is_file() {
                 return None;
             }
             let name = path.file_stem()?.to_str()?.to_string();

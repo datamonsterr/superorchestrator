@@ -215,8 +215,10 @@ impl From<AccountsError> for ApiError {
             | AccountsError::BinaryNotFound(_)
             | AccountsError::HomeMissing(_)
             | AccountsError::InvalidName(_)
+            | AccountsError::OverlappingHome { .. }
             | AccountsError::UnsafePurge { .. }
-            | AccountsError::ShadowsCommand { .. } => Self::invalid(e.to_string()),
+            | AccountsError::ShadowsCommand { .. }
+            | AccountsError::WrapperIsSelf { .. } => Self::invalid(e.to_string()),
         }
     }
 }

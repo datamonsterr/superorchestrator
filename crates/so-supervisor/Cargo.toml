@@ -22,6 +22,8 @@ reqwest.workspace = true
 so-agents = { path = "../so-agents" }
 so-workflow = { path = "../so-workflow" }
 sha2 = "0.11"
+subtle = "2"
+getrandom = "0.4"
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -755,6 +755,36 @@ mod tests {
     use chrono::TimeZone;
 
     #[test]
+    fn skill_marker_in_prose_is_never_overwritten_or_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(dir.path().join("config"));
+        let writer = Writer::new(&paths, false);
+        let path = dir.path().join("SKILL.md");
+        let prose = format!("My skill mentions {} in prose.\n", so_agents::skill::MARKER);
+        std::fs::write(&path, &prose).unwrap();
+        for content in [Some("replacement"), None] {
+            assert_eq!(edit_skill(&writer, &path, content).unwrap().action, "skip");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), prose);
+        }
+        assert!(old_skill_step(&writer, &path).is_none());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), prose);
+        assert!(!writer.backup_root().exists());
+
+        let managed = format!("{}\r\nold\r\n", so_agents::skill::MARKER);
+        std::fs::write(&path, managed).unwrap();
+        let replacement = so_agents::skill::render_cli_skill();
+        assert_eq!(
+            edit_skill(&writer, &path, Some(&replacement))
+                .unwrap()
+                .action,
+            "update"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), replacement);
+        assert_eq!(edit_skill(&writer, &path, None).unwrap().action, "remove");
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn block_is_added_replaced_and_removed_in_place() {
         assert_eq!(with_block("").unwrap(), block_text());
         let base = "# Mine\n\n- one\n";

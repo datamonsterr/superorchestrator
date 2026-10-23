@@ -1,11 +1,15 @@
-# Steps that dist inserts into every build job of release.yml, before `cargo build`.
-# They build web/dist so crates/so-web/build.rs embeds the real UI instead of the placeholder.
+# Template for the steps dist would insert into every build job of release.yml before
+# `cargo build`; they build web/dist so crates/so-web/build.rs embeds the real UI.
+#
+# `allow-dirty = ["ci"]` means dist no longer regenerates release.yml, so these steps are
+# mirrored into release.yml by hand and the two files must stay in sync. Keep the action
+# pins identical to release.yml.
 - name: Install pnpm
-  uses: pnpm/action-setup@v6
+  uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
   with:
     package_json_file: web/package.json
 - name: Install Node
-  uses: actions/setup-node@v7
+  uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
   with:
     node-version: 24
     cache: pnpm

@@ -57,6 +57,7 @@ pub async fn refresh_and_save(
         .map_err(io)??;
     let now = Utc::now();
     let env = RefreshEnv {
+        pass_env: &config.accounts.pass_env,
         paths,
         host,
         accounts: &accounts,

@@ -87,11 +87,26 @@ export default async function globalSetup() {
   const port = await freePort()
   const ui = JSON.parse(execFileSync(so, ['--json', 'ui', '--no-open', '--port', String(port)], { env }).toString())
   const status = JSON.parse(execFileSync(so, ['--json', 'status'], { env }).toString())
-  const sessions = await (await fetch(`${ui.url}/api/v1/sessions`)).json()
+  const loginUrl = new URL(ui.url)
+  const code = new URLSearchParams(loginUrl.hash.slice(1)).get('token')
+  if (!code) throw new Error('UI sign-in URL did not carry a login code')
+  const login = await fetch(`${loginUrl.origin}/api/v1/token`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: code }),
+  })
+  if (!login.ok) throw new Error(`Code exchange failed: ${login.status}`)
+  const cookie = login.headers.get('set-cookie')?.split(';')[0]
+  if (!cookie) throw new Error('Code exchange did not set a cookie')
+  const sessionsResponse = await fetch(`${loginUrl.origin}/api/v1/sessions`, { headers: { Cookie: cookie } })
+  if (!sessionsResponse.ok) throw new Error(`Session lookup failed: ${sessionsResponse.status}`)
+  const sessions = await sessionsResponse.json()
 
   const state: State = { tmp, seedPid: seed.pid!, daemonPid: status.supervisor?.pid ?? null }
   fs.writeFileSync(STATE, JSON.stringify(state))
-  process.env.E2E_REAL_URL = ui.url
+  process.env.E2E_REAL_URL = loginUrl.origin
+  process.env.E2E_REAL_CLI = so
+  process.env.E2E_REAL_CONFIG_DIR = dirs.cfg
+  process.env.E2E_REAL_HOME = dirs.home
+  process.env.E2E_REAL_SOCKET = env.SUPERORCHESTRATOR_SOCKET
   const idOf = (client: string) => sessions.items.find((x: { client: string }) => x.client === client).id
   process.env.E2E_REAL_SESSION = idOf('e2e-seed')
   process.env.E2E_REAL_EMPTY_SESSION = idOf('e2e-empty')

@@ -248,7 +248,10 @@ impl RunManager {
         let on = row.harness;
         self.blocking(move || {
             let all = AccountFile::list(&paths).unwrap_or_default();
-            let def = cwd.and_then(|c| so_agents::resolve_for_spawn(&c, &paths, &name).ok());
+            // Eligibility only asks which harnesses can enforce tool controls. A trust
+            // refusal must not look like an unreadable definition and hide those controls;
+            // apply_agent still validates trust before every launch attempt.
+            let def = cwd.and_then(|c| so_agents::resolve(&c, &paths, &name).ok());
             let others = all.into_iter().filter(|a| a.harness != on);
             match def {
                 Some(def) => others
@@ -495,6 +498,9 @@ impl RunManager {
         let cwd = self.resume_cwd(&row).await.map_err(LaunchFail::other)?;
         let mut prompt = self.turn_prompt(&row).await;
         prompt.push_str(FAILOVER_NOTE);
+        self.issue_run_token(&row.id)
+            .await
+            .map_err(|e| LaunchFail::other(e.message))?;
         let spec = self
             .build_spec(&row, &next.account, cwd, prompt, None, false)
             .await
@@ -549,6 +555,41 @@ fn reassign_of(r: &so_core::proto::RouteResult, account: &AccountFile) -> Reassi
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runs::testutil::{insert_run, manager};
+
+    #[tokio::test]
+    async fn eligibility_reads_tool_controls_even_when_the_definition_is_untrusted() {
+        let (m, dir) = manager();
+        for (name, harness) in [
+            ("codex-t", Harness::Codex),
+            ("opencode-t", Harness::Opencode),
+        ] {
+            AccountFile::new(name, harness, "/credential-home", "/nonexistent")
+                .unwrap()
+                .save(&m.inner.paths)
+                .unwrap();
+        }
+        let cwd = dir.path().join("project");
+        let file = cwd.join(".superorchestrator/agents/helper.md");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            file,
+            "---\nname: helper\ndescription: d\ntools: [Read]\nhooks: {}\n---\nbody",
+        )
+        .unwrap();
+        let mut row = insert_run(&m, RunState::Running);
+        row.agent = Some("helper".into());
+        row.cwd = Some(cwd.display().to_string());
+        // Eligibility is a tool-capability query; launch must still refuse this file.
+        assert!(so_agents::resolve_for_spawn(&cwd, &m.inner.paths, "helper").is_err());
+        for tool_controls in [false, true] {
+            assert_eq!(
+                m.tool_ineligible_accounts(&row, tool_controls).await,
+                ["codex-t"],
+                "tool_controls={tool_controls}"
+            );
+        }
+    }
 
     #[test]
     fn config_errors_fail_over_and_other_errors_do_not() {

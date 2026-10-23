@@ -27,6 +27,7 @@ required-features = ["test-support"]
 
 [dependencies]
 so-core = { path = "../so-core" }
+so-agents = { path = "../so-agents" }
 so-accounts = { path = "../so-accounts" }
 chrono.workspace = true
 reqwest.workspace = true

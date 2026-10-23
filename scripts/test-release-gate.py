@@ -6,10 +6,15 @@ Release) runs only when every gate passed.
 The gap this guards: `host` accepts `skipped` as well as `success` from the jobs it needs. If a
 gate fails in a way that makes the build jobs skip, `host` would run with no artifacts.
 
+It also checks that `cargo-dist-version` in dist-workspace.toml matches DIST_VERSION in
+scripts/ci/install-dist.sh.
+
 Needs PyYAML. Usage: scripts/test-release-gate.py [path/to/release.yml]
 """
 import re
 import sys
+import tomllib
+from pathlib import Path
 
 import yaml
 
@@ -70,6 +75,31 @@ def simulate(forced):
 
 gates = [j for j in jobs if j.startswith("custom-")] + ["build-local-artifacts", "build-global-artifacts"]
 failures = []
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def check_dist_version():
+    """dist-workspace.toml and the CI install script must request the same cargo-dist."""
+    with open(ROOT / "dist-workspace.toml", "rb") as f:
+        config_version = tomllib.load(f)["dist"]["cargo-dist-version"]
+    script = (ROOT / "scripts/ci/install-dist.sh").read_text()
+    match = re.search(r'^DIST_VERSION="([^"]+)"$', script, re.MULTILINE)
+    if not match:
+        failures.append("DIST_VERSION missing from scripts/ci/install-dist.sh")
+        print("FAIL DIST_VERSION missing from scripts/ci/install-dist.sh")
+        return
+    script_version = match.group(1)
+    if script_version != config_version:
+        failures.append(
+            "cargo-dist version mismatch: "
+            f"dist-workspace.toml={config_version} install-dist.sh={script_version}"
+        )
+        print(
+            "FAIL cargo-dist version mismatch: "
+            f"dist-workspace.toml={config_version} install-dist.sh={script_version}"
+        )
+    else:
+        print(f"ok   cargo-dist version: {config_version}")
 
 
 def expect(label, forced, host_runs):
@@ -89,6 +119,8 @@ for needed in ("custom-ci", "custom-release-check", "custom-release-smoke"):
     if needed not in jobs:
         failures.append(f"{needed} job missing from {path}")
         print(f"FAIL {needed} job missing")
+
+check_dist_version()
 
 if failures:
     sys.exit(f"release gate test failed: {failures}")
