@@ -330,6 +330,8 @@ pub enum ErrorKind {
     Quota,
     RateLimit,
     Auth,
+    /// The run's own configuration is wrong (an unknown model): no retry on it can succeed.
+    Config,
     Other,
 }
 
@@ -337,6 +339,7 @@ str_enum!(ErrorKind, |s| CoreError::UnknownValue { kind: "error kind", value: s 
     Quota => "quota",
     RateLimit => "rate_limit",
     Auth => "auth",
+    Config => "config",
     Other => "other",
 });
 

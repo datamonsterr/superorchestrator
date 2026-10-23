@@ -98,7 +98,7 @@ pub(super) fn spawn_failover(inner: &Arc<Inner>, mut rx: UnboundedReceiver<Failo
 fn failover_kind(kind: ErrorKind) -> bool {
     matches!(
         kind,
-        ErrorKind::Quota | ErrorKind::RateLimit | ErrorKind::Auth
+        ErrorKind::Quota | ErrorKind::RateLimit | ErrorKind::Auth | ErrorKind::Config
     )
 }
 
@@ -176,7 +176,7 @@ impl RunManager {
                         }
                         // The bound is reached (or the run cannot move): the account that
                         // failed here was not flagged by a move, so flag it now.
-                        if failover_kind(fail.kind) {
+                        if failover_kind(fail.kind) && fail.kind != ErrorKind::Config {
                             self.flag_account(&run_id, &fail.message, Some(&limit))
                                 .await;
                         }
@@ -278,7 +278,10 @@ impl RunManager {
         }
         // The account that hit the limit is marked whatever happens next, and its process
         // goes away before another one starts for the same run.
-        self.flag_account(&id, &req.reason, Some(&req.limit)).await;
+        // A bad model is the choice's fault, not the account's: no cooldown for it.
+        if req.kind != ErrorKind::Config {
+            self.flag_account(&id, &req.reason, Some(&req.limit)).await;
+        }
         let pins: RoutePins = route
             .and_then(|j| serde_json::from_str(&j).ok())
             .ok_or("the run has no route to repeat")?;
@@ -313,6 +316,12 @@ impl RunManager {
             .find(|a| a.ended_at.is_none())
             .map(|a| a.id.clone());
         let mut chosen = None;
+        // A model error is the choice's: move to a different choice instead.
+        let (same_choice, avoid_choice) = if req.kind == ErrorKind::Config {
+            (None, row.choice_id.as_deref())
+        } else {
+            (row.choice_id.as_deref(), None)
+        };
         // Set once the decider is found down: this recovery does not ask it again.
         let outage = std::sync::atomic::AtomicBool::new(false);
         for _ in 0..MAX_ROUTE_TRIES {
@@ -321,7 +330,8 @@ impl RunManager {
                     &prompt,
                     &pins,
                     &tried,
-                    row.choice_id.as_deref(),
+                    same_choice,
+                    avoid_choice,
                     false,
                     Some(&outage),
                 )
@@ -335,7 +345,8 @@ impl RunManager {
                             &prompt,
                             &pins,
                             &tried,
-                            row.choice_id.as_deref(),
+                            same_choice,
+                            avoid_choice,
                             true,
                             Some(&outage),
                         )
@@ -525,5 +536,23 @@ fn reassign_of(r: &so_core::proto::RouteResult, account: &AccountFile) -> Reassi
         choice_id: Some(r.choice_id.clone()),
         model: Some(r.model.clone()).filter(|m| !m.is_empty()),
         effort: r.effort.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_errors_fail_over_and_other_errors_do_not() {
+        for k in [
+            ErrorKind::Quota,
+            ErrorKind::RateLimit,
+            ErrorKind::Auth,
+            ErrorKind::Config,
+        ] {
+            assert!(failover_kind(k), "{k:?}");
+        }
+        assert!(!failover_kind(ErrorKind::Other));
     }
 }

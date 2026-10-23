@@ -80,6 +80,7 @@ impl RunManager {
         pins: &RoutePins,
         exclude_accounts: &[String],
         only_choice: Option<&str>,
+        avoid_choice: Option<&str>,
         queue_over_cap: bool,
         recovery: Option<&AtomicBool>,
     ) -> R<Routed> {
@@ -91,6 +92,7 @@ impl RunManager {
                     pins,
                     exclude_accounts,
                     only_choice,
+                    avoid_choice,
                     queue_over_cap,
                 )
                 .await;
@@ -109,6 +111,7 @@ impl RunManager {
                 pins,
                 exclude_accounts,
                 only_choice,
+                avoid_choice,
                 queue_over_cap,
             )
             .await?;
@@ -132,6 +135,7 @@ impl RunManager {
         pins: &RoutePins,
         exclude_accounts: &[String],
         only_choice: Option<&str>,
+        avoid_choice: Option<&str>,
         queue_over_cap: bool,
     ) -> R<Routed> {
         let role = pins.role.clone().unwrap_or_else(|| "worker".into());
@@ -171,6 +175,8 @@ impl RunManager {
             attempt = Some(route_decide(&env, &params).await);
             params.exclude.clear();
         }
+        // A choice whose model the harness lacks is skipped, whatever else is eligible.
+        params.exclude.extend(avoid_choice.map(str::to_string));
         let mut outcome = match attempt {
             Some(Ok(o)) => Ok(o),
             // An unreachable decider fails the same way on the wider route: do not ask again.
@@ -329,6 +335,7 @@ impl RunManager {
                 &prompt,
                 &pins,
                 &exclude,
+                None,
                 None,
                 false,
                 Some(&AtomicBool::new(false)),

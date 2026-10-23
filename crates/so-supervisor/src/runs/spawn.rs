@@ -238,7 +238,7 @@ impl RunManager {
                         .is_some_and(|a| !a.tools.is_empty() || !a.disallowed_tools.is_empty()),
                 };
                 let routed = self
-                    .route_run(&prompt, &pins, &[], None, true, None)
+                    .route_run(&prompt, &pins, &[], None, None, true, None)
                     .await?;
                 let mut found = None;
                 let mut last = rpc(UNAVAILABLE, "no usable account");

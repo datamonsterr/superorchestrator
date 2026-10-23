@@ -9,6 +9,7 @@ const ERROR_TEXT: Record<string, string> = {
   quota: 'The account ran out of quota.',
   rate_limit: 'The account was rate limited.',
   auth: 'The account is not signed in or its login expired.',
+  config: 'The harness does not have the run\'s model. Pick another choice or model.',
   other: 'The run failed for another reason.',
 }
 

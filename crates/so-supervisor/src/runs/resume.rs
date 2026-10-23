@@ -75,6 +75,14 @@ impl RunManager {
             .await?
             .ok_or_else(|| rpc(so_core::proto::NOT_FOUND, "run not found"))?;
         let row = &fresh;
+        // A run that failed on its own configuration fails the same way again.
+        if row.state == RunState::Failed && row.error_kind == Some(ErrorKind::Config) {
+            return Err(rpc(
+                UNAVAILABLE,
+                "the run failed because its model is not available on the harness; \
+                 resuming it cannot succeed. Spawn a new run with another choice or model",
+            ));
+        }
         if row.native_session_id.is_none() {
             return Err(rpc(UNAVAILABLE, "the run has no native session to resume"));
         }
@@ -273,6 +281,30 @@ mod tests {
         assert_ne!(
             m.store().get_run(&row.id).unwrap().unwrap().state,
             RunState::Succeeded
+        );
+    }
+
+    /// A model/config failure is not resumable: the run stays failed and the caller is told.
+    #[tokio::test]
+    async fn a_run_that_failed_on_its_model_is_not_resumed() {
+        let (m, _dir) = manager();
+        let row = insert_run(&m, RunState::Failed);
+        let patch = so_store::RunPatch {
+            native_session_id: Some(Some("native".into())),
+            error_kind: Some(Some(ErrorKind::Config)),
+            ..so_store::RunPatch::default()
+        };
+        m.store().patch_run(&row.id, &patch).unwrap();
+        let row = m.store().get_run(&row.id).unwrap().unwrap();
+        let err = m
+            .resume_finished(&row, "go", "message", None, "orchestrator")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, UNAVAILABLE);
+        assert!(err.message.contains("cannot succeed"), "{}", err.message);
+        assert_eq!(
+            m.store().get_run(&row.id).unwrap().unwrap().state,
+            RunState::Failed
         );
     }
 }
