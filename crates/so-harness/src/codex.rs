@@ -38,7 +38,7 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 
 use crate::driver::{
     Channel, Driver, DriverConfig, DriverError, HarnessEvent, JoinCommand, JoinInfo, LaunchSpec,
-    RateLimits, RunControl, RunHandle, ShutdownOutcome, check_effort, classify_common,
+    RateLimits, RunControl, RunHandle, ShutdownOutcome, check_launch_values, classify_common,
 };
 use crate::process::{
     EventSink, ExitWatch, LineParser, ProcessHandle, ProducerGuard, Supervised, create_private_dir,
@@ -153,7 +153,12 @@ impl Driver for CodexDriver {
     }
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
-        check_effort(Harness::Codex, spec.effort.as_deref())?;
+        check_launch_values(
+            Some(Harness::Codex),
+            spec.model.as_deref(),
+            spec.effort.as_deref(),
+            spec.resume.as_deref(),
+        )?;
         create_private_dir(&spec.run_dir)?;
         let token = random_token()?;
         let token_file = spec.run_dir.join("ws-token");

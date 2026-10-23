@@ -404,15 +404,18 @@ async fn per_run_gemini_dir_contents_modes_and_mcp_merge() {
 async fn resume_uses_conversation_flag_and_schema() {
     let rig = Rig::new();
     let mut spec = rig.spec(&init_script());
-    spec.resume = Some("conv-123".into());
+    spec.resume = Some("c0f1599d-37b9-4c82-be74-b28e7c59be25".into());
     spec.output_schema = Some(json!({"type": "object"}));
     let mut h = driver().launch(spec).await.unwrap();
-    assert_eq!(h.native_session_id.as_deref(), Some("conv-123"));
+    assert_eq!(
+        h.native_session_id.as_deref(),
+        Some("c0f1599d-37b9-4c82-be74-b28e7c59be25")
+    );
     h.control.shutdown(Duration::from_secs(5)).await.unwrap();
     until(&mut h, is_exit).await;
     let a = argv(&rig);
     let i = a.iter().position(|x| x == "--conversation").unwrap();
-    assert_eq!(a[i + 1], "conv-123");
+    assert_eq!(a[i + 1], "c0f1599d-37b9-4c82-be74-b28e7c59be25");
     let j = a.iter().position(|x| x == "--json-schema").unwrap();
     assert_eq!(a[j + 1], r#"{"type":"object"}"#);
 }

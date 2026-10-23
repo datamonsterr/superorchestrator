@@ -13,7 +13,7 @@ use tokio::sync::oneshot;
 
 use crate::driver::{
     Channel, Driver, DriverConfig, DriverError, HarnessEvent, JoinCommand, JoinInfo, LaunchSpec,
-    RateLimits, RunControl, RunHandle, ShutdownOutcome, check_effort, classify_common,
+    RateLimits, RunControl, RunHandle, ShutdownOutcome, check_launch_values, classify_common,
 };
 use crate::process::{
     LineParser, ProcessHandle, create_private_dir, default_truncated_event, spawn_supervised,
@@ -111,7 +111,12 @@ impl Driver for ClaudeDriver {
     }
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
-        check_effort(Harness::Claude, spec.effort.as_deref())?;
+        check_launch_values(
+            Some(Harness::Claude),
+            spec.model.as_deref(),
+            spec.effort.as_deref(),
+            spec.resume.as_deref(),
+        )?;
         write_run_files(&spec)?;
         let session_id = spec
             .resume

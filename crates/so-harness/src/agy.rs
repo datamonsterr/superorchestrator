@@ -24,7 +24,7 @@ use tokio::sync::watch;
 
 use crate::driver::{
     Driver, DriverConfig, DriverError, HarnessEvent, JoinCommand, JoinInfo, LaunchSpec, RunControl,
-    RunHandle, ShutdownOutcome, check_effort, classify_common,
+    RunHandle, ShutdownOutcome, check_launch_values, classify_common,
 };
 use crate::process::{
     LineParser, ProcessHandle, create_private_dir, exited, spawn_supervised, write_private,
@@ -223,7 +223,12 @@ impl Driver for AgyDriver {
     }
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
-        check_effort(Harness::Agy, spec.effort.as_deref())?;
+        check_launch_values(
+            Some(Harness::Agy),
+            spec.model.as_deref(),
+            spec.effort.as_deref(),
+            spec.resume.as_deref(),
+        )?;
         if spec.fork {
             return Err(DriverError::Other("agy cannot fork a session".into()));
         }
