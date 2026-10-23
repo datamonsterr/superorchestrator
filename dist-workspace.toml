@@ -1,11 +1,18 @@
 [workspace]
 members = ["cargo:."]
 
-# Config for 'dist' (cargo-dist). Regenerate .github/workflows/release.yml with `dist generate`
-# after editing this file. Releases are cut by pushing a `vX.Y.Z` tag (dist matches `**[0-9]+.[0-9]+.[0-9]+*`; release-check requires exactly v + the Cargo version); see docs/release.md.
+# Config for 'dist' (cargo-dist). Releases are cut by pushing a `vX.Y.Z` tag (dist matches
+# `**[0-9]+.[0-9]+.[0-9]+*`; release-check requires exactly v + the Cargo version); see
+# docs/release.md.
 [dist]
 # The preferred dist version to use in CI (Cargo.toml SemVer syntax)
 cargo-dist-version = "0.32.0"
+# .github/workflows/release.yml is hand-edited for the supply-chain hardening in
+# GHSA-jxj2-pfqh-ww3v: every action is pinned to a commit SHA, every installer is
+# downloaded and sha256-verified instead of being piped to a shell, and permissions
+# are least-privilege. dist therefore must not check or regenerate the CI file
+# (`dist generate --check` would otherwise fail).
+allow-dirty = ["ci"]
 # CI backends to support
 ci = "github"
 # Release archives. install.sh (repository root) is the installer; dist's own installers are off.
