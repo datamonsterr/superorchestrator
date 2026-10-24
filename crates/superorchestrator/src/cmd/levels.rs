@@ -67,7 +67,13 @@ fn list(ctx: &Ctx) -> Result<()> {
     let defaults = !Config::file_sets_key(&ctx.paths, LEVELS_KEY)?;
     let view = LevelsView::resolve(&cfg, defaults, false);
     // A level with no listed choices takes the enabled worker choices of its tier.
-    let catalog = Catalog::load(&ctx.paths).ok();
+    let catalog = match Catalog::load(&ctx.paths) {
+        Ok(c) => Some(c),
+        Err(e) => {
+            eprintln!("warning: model catalog unavailable ({e}); tier levels cannot be resolved");
+            None
+        }
+    };
     let tier_choices = |l: &Level| -> Vec<&Choice> {
         let (Some(tier), Some(catalog), true) = (l.tier, catalog.as_ref(), l.choices.is_empty())
         else {
@@ -102,7 +108,11 @@ fn list(ctx: &Ctx) -> Result<()> {
                 })).collect::<Vec<_>>(),
             });
             if v.choices.is_empty() {
-                o["tier_choices"] = tier_choices(l).iter().map(|c| json!(c.id)).collect();
+                o["tier_choices"] = if catalog.is_some() {
+                    tier_choices(l).iter().map(|c| json!(c.id)).collect()
+                } else {
+                    Value::Null
+                };
             }
             o
         })
@@ -149,9 +159,14 @@ fn list(ctx: &Ctx) -> Result<()> {
                 let tier = v.tier.map_or("-", tier_name);
                 let found = tier_choices(l);
                 if found.is_empty() {
+                    let why = if catalog.is_some() {
+                        "no enabled choice"
+                    } else {
+                        "catalog unavailable"
+                    };
                     rows.push(head(
                         "-".into(),
-                        format!("(tier {tier}: no enabled choice)"),
+                        format!("(tier {tier}: {why})"),
                         "-".into(),
                         "-".into(),
                         "-".into(),
@@ -300,7 +315,14 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
     let mut d = Draft::load(ctx)?;
     d.level(name)?;
     d.levels.retain(|l| l.name != name);
-    d.save(ctx, &format!("removed level {name}"))
+    let msg = if d.levels.is_empty() {
+        format!(
+            "removed level {name}\nno levels left; levels are off, use `levels reset` for the defaults"
+        )
+    } else {
+        format!("removed level {name}")
+    };
+    d.save(ctx, &msg)
 }
 
 fn reset(ctx: &Ctx) -> Result<()> {
@@ -358,7 +380,10 @@ fn choice_add(ctx: &Ctx, a: LevelChoiceAdd) -> Result<()> {
             if m.trim().is_empty() {
                 bail!("--model must not be empty");
             }
-            let effort = a.effort.clone().filter(|e| !e.is_empty());
+            if a.effort.as_deref().is_some_and(|e| e.trim().is_empty()) {
+                bail!("--effort must not be empty (omit it for no effort)");
+            }
+            let effort = a.effort.clone();
             if let Some(e) = &effort
                 && let Some(problem) = harness.model_effort_problem(m, e)
             {
@@ -369,8 +394,10 @@ fn choice_add(ctx: &Ctx, a: LevelChoiceAdd) -> Result<()> {
                 parts.extend(effort.as_deref().map(slug));
                 parts.join("-")
             });
-            if id.trim().is_empty() {
-                bail!("--id must not be empty");
+            if id.trim().is_empty() || id.trim_end_matches('-') == harness.as_str() {
+                bail!(
+                    "the choice id `{id}` is empty or only the harness name; pass --id or a --model with letters or digits"
+                );
             }
             if d.cfg.choices.iter().any(|c| c.id == id) {
                 bail!(
@@ -400,15 +427,25 @@ fn choice_add(ctx: &Ctx, a: LevelChoiceAdd) -> Result<()> {
     };
     let created = d.choices.is_some();
     let level = a.level.clone();
+    let was_tier = {
+        let l = d.level(&level)?;
+        l.choices.is_empty().then_some(l.tier).flatten()
+    };
     d.level(&level)?.choices.push(LevelChoice {
         id: id.clone(),
         priority: a.priority,
     });
-    let msg = if created {
+    let mut msg = if created {
         format!("created choice {id} and added it to level {level}")
     } else {
         format!("added choice {id} to level {level}")
     };
+    if let Some(t) = was_tier {
+        msg.push_str(&format!(
+            "\nlevel {level} now uses its listed choices; tier {} no longer applies",
+            tier_name(t)
+        ));
+    }
     d.save(ctx, &msg)
 }
 

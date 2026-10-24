@@ -705,6 +705,17 @@ async fn levels_get_put_delete() {
     let (_, again) = get(&f.app, "/api/v1/levels").await;
     assert_eq!(again["levels"], v["levels"]);
 
+    // An id that names no choice is accepted and shown with known = false.
+    let (s, v) = send_json(
+        &f.app,
+        "PUT",
+        "/api/v1/levels",
+        json!({"levels": [{"name": "g", "min": 0, "max": 100, "choices": [{"id": "nope"}]}]}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["levels"][0]["choices"][0]["known"], false);
+
     // An overlap is a 422 with the message, and nothing changes.
     let bad = json!({"levels": [
         {"name": "x", "min": 0, "max": 50, "tier": "fast"},
@@ -717,7 +728,7 @@ async fn levels_get_put_delete() {
         "{v}"
     );
     let (_, v) = get(&f.app, "/api/v1/levels").await;
-    assert_eq!(v["levels"][0]["name"], "all");
+    assert_eq!(v["levels"][0]["name"], "g");
 
     // An empty list is allowed and keeps the key set.
     let (s, v) = send_json(&f.app, "PUT", "/api/v1/levels", json!({"levels": []})).await;

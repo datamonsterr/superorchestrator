@@ -326,7 +326,7 @@ export interface LevelChoiceView {
 export type LevelTier = "high" | "mid" | "fast";
 
 export interface LevelView {
-  /** Ordered by priority (lowest first, unset last), then as listed. */
+  /** Display order: priority (lowest first, unset last), then as listed. Routing breaks ties by account headroom, then load, not by this order. */
   choices: LevelChoiceView[];
   max: number;
   min: number;

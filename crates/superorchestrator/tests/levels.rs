@@ -434,3 +434,57 @@ fn choice_add_inline_creates_the_choice() {
     fail(&["--harness", "codex"], "--model");
     assert_eq!(file(&e), before);
 }
+
+#[test]
+fn removing_the_last_level_writes_an_empty_list_and_says_so() {
+    let e =
+        env_with("[router]\nlevels = [{ name = \"only\", min = 0, max = 100, tier = \"mid\" }]\n");
+    let out = stdout(
+        &e.cmd()
+            .args(["levels", "remove", "only"])
+            .assert()
+            .success(),
+    );
+    assert!(
+        out.contains("no levels left; levels are off, use `levels reset`"),
+        "{out}"
+    );
+    assert!(cfg(&e).router.levels.is_empty());
+    assert!(file(&e).contains("levels = []"), "{}", file(&e));
+    let v = json_of(&e, &["levels", "list"]);
+    assert_eq!(v["default_levels"], false);
+}
+
+#[test]
+fn choice_add_notes_tier_replaced_and_rejects_bad_inline_values() {
+    let e = env_with(TWO_LEVELS);
+    let out = stdout(
+        &e.cmd()
+            .args(["levels", "choice", "add", "low", "agy-flash"])
+            .assert()
+            .success(),
+    );
+    assert!(
+        out.contains("level low now uses its listed choices; tier fast no longer applies"),
+        "{out}"
+    );
+    let before = file(&e);
+    for (args, needle) in [
+        (
+            vec!["--harness", "codex", "--model", "m", "--effort", ""],
+            "--effort",
+        ),
+        (
+            vec!["--harness", "codex", "--model", "!!"],
+            "only the harness name",
+        ),
+    ] {
+        e.cmd()
+            .args(["levels", "choice", "add", "high"])
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(needle));
+    }
+    assert_eq!(file(&e), before);
+}

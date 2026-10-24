@@ -303,7 +303,8 @@ pub struct LevelView {
     pub min: u8,
     pub max: u8,
     pub tier: Option<LevelTier>,
-    /// Ordered by priority (lowest first, unset last), then as listed.
+    /// Display order: priority (lowest first, unset last), then as listed. Routing breaks ties
+    /// by account headroom, then load, not by this order.
     pub choices: Vec<LevelChoiceView>,
 }
 
@@ -346,7 +347,8 @@ impl LevelsView {
                         }
                     })
                     .collect();
-                // Stable: equal priorities keep their listed order.
+                // Stable: equal priorities keep their listed order (display only; routing breaks
+                // ties by headroom, then load).
                 choices.sort_by_key(|c| c.priority.unwrap_or(u32::MAX));
                 LevelView {
                     name: l.name.clone(),
