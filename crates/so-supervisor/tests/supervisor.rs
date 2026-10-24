@@ -1068,7 +1068,8 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
     };
 
     let oc = account("oc-a");
-    assert_eq!(oc["headroom"], "ok 5h80 wk60");
+    // The account is flagged, so its effective status is exhausted whatever the stored row says.
+    assert_eq!(oc["headroom"], "exhausted 5h80 wk60");
     assert_eq!(oc["load"], "0/2");
     assert_eq!(
         oc["cooldown"],
@@ -1103,6 +1104,99 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
     // The plain call keeps the full shape for the CLI and the web UI.
     let full: Value = c.call("list_harnesses", json!({})).await.unwrap();
     assert!(full["accounts"][0].get("flags").is_some());
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn harnesses_views_show_effective_headroom() {
+    use so_core::proto::HarnessesView;
+    use so_core::{AccountFile, Headroom, HeadroomSource, HeadroomStatus};
+    use so_store::FlagRow;
+
+    let env = Env::new();
+    let home = env.dir.path().join("homes");
+    for name in ["stale", "flagged", "windowed"] {
+        AccountFile::new(
+            name,
+            Harness::Codex,
+            &home.join(name).to_string_lossy(),
+            "codex",
+        )
+        .unwrap()
+        .save(&env.paths)
+        .unwrap();
+    }
+    let store = env.store();
+    let row = |account: &str, pct: Option<f64>, status: HeadroomStatus| Headroom {
+        account: account.into(),
+        pool: "default".into(),
+        five_hour_remaining_pct: pct,
+        five_hour_resets_at: None,
+        weekly_remaining_pct: pct.map(|p| p + 20.0),
+        weekly_resets_at: None,
+        status,
+        source: HeadroomSource::Ledger,
+        observed_at: chrono::DateTime::UNIX_EPOCH,
+    };
+    // What `mark_exhausted` leaves behind: an exhausted row with no window data.
+    store
+        .upsert_headroom(&row("stale", None, HeadroomStatus::Exhausted))
+        .unwrap();
+    store
+        .upsert_headroom(&row("flagged", None, HeadroomStatus::Exhausted))
+        .unwrap();
+    store
+        .set_flag(&FlagRow {
+            account: "flagged".into(),
+            pool: "default".into(),
+            until: chrono::Utc::now() + chrono::Duration::hours(2),
+            reason: "rate limit".into(),
+        })
+        .unwrap();
+    store
+        .upsert_headroom(&row("windowed", Some(40.0), HeadroomStatus::Ok))
+        .unwrap();
+
+    let opts = SupervisorOptions::new(env.paths.clone(), Config::default(), env.sock.clone())
+        .with_idle_exit(Duration::from_secs(600))
+        .with_lock_wait(Duration::ZERO)
+        .with_host(so_accounts::HostEnv {
+            home: env.dir.path().join("fakehome"),
+            path_var: None,
+            platform: so_core::Platform::Linux,
+        })
+        .with_setup(so_supervisor::default_handlers);
+    let h = Supervisor::start(opts).await.unwrap();
+    let c = connect(&h).await;
+    hello(&c).await;
+
+    let v: HarnessesView = c.call("list_harnesses", json!({})).await.unwrap();
+    let status = |name: &str| {
+        let a = v.accounts.iter().find(|a| a.name == name).unwrap();
+        (a.headroom[0].status, a.headroom[0].five_hour_remaining_pct)
+    };
+    assert_eq!(status("stale"), (HeadroomStatus::Unknown, None));
+    assert_eq!(status("flagged"), (HeadroomStatus::Exhausted, None));
+    assert_eq!(status("windowed"), (HeadroomStatus::Ok, Some(40.0)));
+
+    let b: Value = c
+        .call("list_harnesses", json!({"brief": true}))
+        .await
+        .unwrap();
+    let short = |name: &str| {
+        b["accounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap()
+            .get("headroom")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    };
+    assert_eq!(short("stale"), None);
+    assert_eq!(short("flagged").as_deref(), Some("exhausted"));
+    assert_eq!(short("windowed").as_deref(), Some("ok 5h40 wk60"));
     h.shutdown().await;
 }
 
