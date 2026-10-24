@@ -102,7 +102,7 @@ Each level maps a range of complexity (0 to 100, from the decider or from the he
 
 With no `[[router.levels]]` in the file, the defaults are `low` 0-37 (tier `fast`), `mid` 38-62 (tier `mid`) and `high` 63-100 (tier `high`), with no choices. Gaps between levels are allowed. A complexity that falls in a gap goes to the nearest level, and a tie goes to the higher one. An explicit empty list, `router.levels = []`, loads and turns levels off: `level` is null and every eligible choice is ranked by the heuristic scorer. The defaults apply only when the key is absent.
 
-`superorchestrator levels` edits this list for you (see [Routing](routing.md#complexity-levels)), and the web API serves it at `/api/v1/levels`: `GET` returns the levels with each choice resolved and `default_levels` (true when the file has no `router.levels`), `PUT { levels }` replaces the list (a rejected list is a 400 with the message), and `DELETE` removes the key so the defaults apply.
+`superorchestrator levels` edits this list for you (see [Routing](routing.md#complexity-levels)), and the web API serves it at `/api/v1/levels`: `GET` returns the levels with each choice resolved and `default_levels` (true when the file has no `router.levels`), `PUT { levels }` replaces the list (a rejected list is a 422 with the message), and `DELETE` removes the key so the defaults apply.
 
 The file is refused at load when:
 

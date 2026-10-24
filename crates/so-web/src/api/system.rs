@@ -355,14 +355,6 @@ fn levels_view(st: &AppState) -> ApiResult<LevelsView> {
     ))
 }
 
-/// A rejected level list is a 400 carrying the validation message.
-fn levels_error(e: so_core::CoreError) -> ApiError {
-    match e {
-        so_core::CoreError::InvalidValue { .. } => ApiError::bad_request(e.to_string()),
-        other => other.into(),
-    }
-}
-
 pub async fn levels_get(State(st): State<AppState>) -> ApiResult<Json<LevelsView>> {
     let s = st.clone();
     st.blocking(move || Ok(Json(levels_view(&s)?))).await
@@ -377,7 +369,7 @@ pub async fn levels_put(
         let levels = toml::Value::try_from(&b.levels)
             .map_err(ApiError::internal)?
             .to_string();
-        Config::set_in_file(&s.sup.paths, "router.levels", &levels).map_err(levels_error)?;
+        Config::set_in_file(&s.sup.paths, "router.levels", &levels)?;
         Ok(Json(levels_view(&s)?))
     })
     .await
@@ -387,7 +379,7 @@ pub async fn levels_put(
 pub async fn levels_delete(State(st): State<AppState>) -> ApiResult<Json<LevelsView>> {
     let s = st.clone();
     st.blocking(move || {
-        Config::unset_in_file(&s.sup.paths, "router.levels").map_err(levels_error)?;
+        Config::unset_in_file(&s.sup.paths, "router.levels")?;
         Ok(Json(levels_view(&s)?))
     })
     .await

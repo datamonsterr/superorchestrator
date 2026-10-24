@@ -705,13 +705,13 @@ async fn levels_get_put_delete() {
     let (_, again) = get(&f.app, "/api/v1/levels").await;
     assert_eq!(again["levels"], v["levels"]);
 
-    // An overlap is a 400 with the message, and nothing changes.
+    // An overlap is a 422 with the message, and nothing changes.
     let bad = json!({"levels": [
         {"name": "x", "min": 0, "max": 50, "tier": "fast"},
         {"name": "y", "min": 40, "max": 100, "tier": "high"},
     ]});
     let (s, v) = send_json(&f.app, "PUT", "/api/v1/levels", bad).await;
-    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
     assert!(
         v["error"]["message"].to_string().contains("overlaps"),
         "{v}"

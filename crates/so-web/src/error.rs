@@ -123,11 +123,6 @@ impl ApiError {
         Self::rpc(INVALID_PARAMS, message)
     }
 
-    /// A 400 for a request body the server cannot accept as given.
-    pub fn bad_request(message: impl Into<String>) -> Self {
-        Self::rpc(so_core::proto::INVALID_REQUEST, message)
-    }
-
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::rpc(CAP_EXCEEDED, message)
     }

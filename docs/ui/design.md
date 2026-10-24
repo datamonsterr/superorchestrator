@@ -106,7 +106,7 @@ CLI twin column lists only SPEC 15 commands; "UI-only" means no CLI command exis
 | `GET /choices` | | `{ choices: Choice[], routing_instruction: string }` | `config get` |
 | `PUT /choices` | same shape | same | `config edit` |
 | `GET /levels` | | `LevelsView` (`{ levels: { name, min, max, tier?, choices: { id, priority?, harness?, model?, effort?, enabled, known }[] }[], default_levels, restart_required }`) | `levels list` |
-| `PUT /levels` | `{ levels: Level[] }` (validation error: 400) | `LevelsView` | `levels add`, `levels edit`, `levels choice` |
+| `PUT /levels` | `{ levels: Level[] }` (validation error: 422) | `LevelsView` | `levels add`, `levels edit`, `levels choice` |
 | `DELETE /levels` | | `LevelsView` (defaults again) | `levels reset` |
 | `GET /models` | | `ModelCatalog` (`{ refreshed_at, models: { harness, id, efforts[] }[] }`) | `models list` |
 | `POST /models/refresh` | | `ModelCatalog` | `models refresh` |
