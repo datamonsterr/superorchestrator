@@ -2,7 +2,6 @@ import type {
   AccountView,
   AgentDetail,
   AgentView,
-  ChoicesView,
   ConfigView,
   DailyUsage,
   DashboardView,
@@ -11,6 +10,7 @@ import type {
   EventType,
   Headroom,
   ImportCandidate,
+  LevelsView,
   MessageView,
   ModelCatalog,
   RouteRecord,
@@ -79,14 +79,20 @@ export const accounts: AccountView[] = [
   },
 ]
 
-export const choices: ChoicesView = {
-  choices: [
-    { id: 'codex-high', harness: 'codex', model: 'gpt-5', effort: 'high', roles: ['code', 'review'], description: 'Hard coding tasks', enabled: true },
-    { id: 'agy-pro', harness: 'agy', model: 'gemini-pro', roles: ['code'], description: 'Long context', enabled: true },
+export const levels: LevelsView = {
+  levels: [
+    { name: 'trivial', min: 0, max: 12, models: ['agy/gemini-3.8-flash-low/low', 'agy/gemini-3.8-flash-medium/medium'] },
+    { name: 'simple', min: 13, max: 37, models: ['agy/gemini-3.8-flash-medium/medium', 'opencode/opencode/deepseek-v4.1-flash-free'] },
+    { name: 'moderate', min: 38, max: 62, models: ['agy/gemini-3.8-flash-high/high', 'codex/gpt-6.1-sol/medium'] },
+    { name: 'complex', min: 63, max: 87, models: ['agy/claude-sonnet-4-6/thinking', 'opencode/opencode/muse-spark-1.3', 'codex/gpt-6.1-sol/high'] },
+    { name: 'expert', min: 88, max: 100, models: ['opencode/opencode/muse-spark-1.3', 'codex/gpt-6.1-sol/high', 'agy/claude-sonnet-4-6/thinking'] },
   ],
-  routing_instruction: 'Prefer codex-high for refactors; use agy-pro for large-context reading.',
+  routing_instruction: 'Prefer the first model of a level; fall back down the list when it has no headroom.',
   restart_required: false,
 }
+
+/** The distinct refs across levels, in level order (what `GET /harnesses` lists as `choices`). */
+export const choiceRefs = (view: LevelsView): string[] => [...new Set(view.levels.flatMap((l) => l.models))]
 
 export const evt = (id: string, type: EventType, run_id: string | null, min: number, data: unknown = {}, session = 'sess-1'): Event => ({
   id,
@@ -154,10 +160,10 @@ export const messages: MessageView[] = [
 ]
 
 export const routeResult: RouteResult = {
-  choice_id: 'codex-high',
+  choice_id: 'codex/gpt-6.1-sol/high',
   harness: 'codex',
   account: 'codex-acc1',
-  model: 'gpt-5',
+  model: 'gpt-6.1-sol',
   effort: 'high',
   source: 'jev',
   rationale: 'Refactoring benefits from the strongest coding model.',
@@ -166,13 +172,13 @@ export const routeResult: RouteResult = {
   level: 'high',
   probabilities: { '0': 0, '1': 0.03, '2': 0.15, '3': 0.62, '4': 0.2 },
   usage: { input_tokens: 800, output_tokens: 40, cost: 0.0004 },
-  alternatives: [{ choice_id: 'agy-pro', account: 'agy-acc1', score: 0.21 }],
+  alternatives: [{ choice_id: 'agy/claude-sonnet-4-6/thinking', account: 'agy-acc1', score: 0.21 }],
   config_fingerprint: 'fp-1',
 }
 
 export const routeRecords: RouteRecord[] = [
   { ts: at(0), run_id: 'run-1', prompt_excerpt: 'Refactor the API...', result: routeResult },
-  { ts: at(5), run_id: 'run-2', prompt_excerpt: 'Write tests...', result: { ...routeResult, choice_id: 'agy-pro', harness: 'agy', account: 'agy-acc1', model: 'gemini-pro', source: 'heuristic' } },
+  { ts: at(5), run_id: 'run-2', prompt_excerpt: 'Write tests...', result: { ...routeResult, choice_id: 'agy/gemini-3.8-flash-high/high', harness: 'agy', account: 'agy-acc1', model: 'gemini-3.8-flash-high', source: 'heuristic' } },
 ]
 
 export const transcript: TranscriptLine[] = [
@@ -293,7 +299,7 @@ export const config: ConfigView = {
       policy: { min_confidence: 0.5, min_margin: 0.1 },
       levels: [
         { name: 'low', min: 0, max: 39, tier: 'fast' },
-        { name: 'high', min: 40, max: 100, choices: [{ id: 'codex-high', priority: 1 }, { id: 'agy-pro' }] },
+        { name: 'high', min: 40, max: 100, models: ['codex/gpt-6.1-sol/high', 'agy/claude-sonnet-4-6/thinking'] },
       ],
     },
     ui: { bind: '127.0.0.1', port: 7878, enabled: false },

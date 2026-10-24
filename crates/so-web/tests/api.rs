@@ -291,7 +291,14 @@ async fn system_endpoints_have_the_documented_shape() {
 
     let (s, v) = get(&f.app, "/api/v1/harnesses").await;
     assert_eq!(s, StatusCode::OK);
-    assert!(v["accounts"].is_array() && v["choices"].is_array());
+    assert!(v["accounts"].is_array());
+    let choices = v["choices"].as_array().expect("choices is an array");
+    assert!(
+        choices
+            .iter()
+            .all(|c| c.as_str().is_some_and(|r| r.contains('/'))),
+        "choices are model ref strings: {choices:?}"
+    );
 }
 
 #[tokio::test]
@@ -640,23 +647,65 @@ async fn send_json_empty(app: &Router, method: &str, uri: &str) -> (StatusCode, 
 // ------------------------------------------------------------------ config etc.
 
 #[tokio::test]
-async fn choices_config_and_worktrees() {
+async fn levels_config_and_worktrees() {
     let f = fx().await;
-    let (s, v) = get(&f.app, "/api/v1/choices").await;
+    let (s, v) = get(&f.app, "/api/v1/levels").await;
     assert_eq!(s, StatusCode::OK);
     assert!(v["routing_instruction"].is_string());
+    let names: Vec<&str> = v["levels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["low", "mid", "high"], "the default levels: {v}");
+    assert_eq!(v["levels"][0]["tier"], "fast");
+
     let body = json!({
-        "choices": [{"id": "codex-high", "harness": "codex", "model": "gpt", "effort": "high", "roles": ["worker"], "description": "d", "enabled": true}],
+        "levels": [
+            {"name": "easy", "min": 0, "max": 49, "models": ["codex/gpt-6.1-sol/low", "opencode/opencode/muse-spark-1.3"]},
+            {"name": "hard", "min": 50, "max": 100, "tier": "high"},
+        ],
         "routing_instruction": "be cheap",
     });
-    let (s, v) = send_json(&f.app, "PUT", "/api/v1/choices", body.clone()).await;
+    let config_toml = f.path("cfg/config.toml");
+    let (s, v) = send_json(&f.app, "PUT", "/api/v1/levels", body.clone()).await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["choices"][0]["id"], "codex-high");
+    assert_eq!(v["levels"], body["levels"]);
     assert_eq!(v["routing_instruction"], "be cheap");
     assert_eq!(v["restart_required"], true);
-    let dup = json!({"choices": [body["choices"][0].clone(), body["choices"][0].clone()], "routing_instruction": "x"});
-    let (s, _) = send_json(&f.app, "PUT", "/api/v1/choices", dup).await;
-    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    let text = std::fs::read_to_string(&config_toml).unwrap();
+    assert!(
+        text.contains(r#"models = ["codex/gpt-6.1-sol/low", "opencode/opencode/muse-spark-1.3"]"#),
+        "{text}"
+    );
+    let (_, v) = get(&f.app, "/api/v1/levels").await;
+    assert_eq!(v["levels"], body["levels"]);
+
+    let before = std::fs::read_to_string(&config_toml).unwrap();
+    let overlap = json!({
+        "levels": [
+            {"name": "a", "min": 0, "max": 60, "tier": "fast"},
+            {"name": "b", "min": 50, "max": 100, "tier": "high"},
+        ],
+        "routing_instruction": "x",
+    });
+    let (s, v) = send_json(&f.app, "PUT", "/api/v1/levels", overlap).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(
+        v["error"]["data"]["levels"]
+            .as_str()
+            .unwrap()
+            .contains("overlaps"),
+        "{v}"
+    );
+    let bad_ref = json!({
+        "levels": [{"name": "a", "min": 0, "max": 100, "models": ["agy/claude-sonnet-4-6/high"]}],
+        "routing_instruction": "x",
+    });
+    let (s, v) = send_json(&f.app, "PUT", "/api/v1/levels", bad_ref).await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert_eq!(std::fs::read_to_string(&config_toml).unwrap(), before);
 
     let (s, v) = get(&f.app, "/api/v1/config").await;
     assert_eq!(s, StatusCode::OK);
@@ -1803,18 +1852,18 @@ async fn fork_maps_state_and_harness_errors() {
 
 #[tokio::test]
 async fn route_previews_without_recording_anything() {
-    let cfg = Config {
-        choices: vec![so_core::Choice {
-            id: "codex-high".into(),
+    let mut cfg = Config::default();
+    cfg.router.levels = vec![so_core::config::Level {
+        name: "all".into(),
+        min: 0,
+        max: 100,
+        tier: None,
+        models: vec![so_core::Choice {
             harness: Harness::Codex,
             model: "gpt-5.5".into(),
             effort: Some("high".into()),
-            roles: vec!["worker".into()],
-            description: "hard tasks".into(),
-            enabled: true,
         }],
-        ..Config::default()
-    };
+    }];
     let f = fx_cfg(Some(TEST_TOKEN), cfg).await;
     let (s, v) = post(
         &f.app,
@@ -1842,7 +1891,7 @@ async fn route_previews_without_recording_anything() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
-    assert_eq!(v["choice_id"], "codex-high");
+    assert_eq!(v["choice_id"], "codex/gpt-5.5/high");
     assert_eq!(v["account"], "codex-acc1");
     let after = f
         .handle
@@ -1860,12 +1909,20 @@ async fn route_previews_without_recording_anything() {
     let (s, v) = post(
         &f.app,
         "/api/v1/route",
-        Some(json!({"prompt": "x", "role": "no-such-role"})),
+        Some(json!({"prompt": "x", "agent": "no-such-agent"})),
     )
     .await;
-    assert!(
-        s == StatusCode::SERVICE_UNAVAILABLE || s == StatusCode::UNPROCESSABLE_ENTITY,
-        "{s} {v}"
+    assert_eq!(s, StatusCode::OK, "an agent profile name is accepted: {v}");
+    let (s, v) = post(
+        &f.app,
+        "/api/v1/route",
+        Some(json!({"prompt": "x", "model": "agy/claude-sonnet-4-6/high"})),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "a bad model ref is rejected: {v}"
     );
 }
 
@@ -2456,12 +2513,16 @@ async fn mutations_refresh_an_installed_skill_and_only_an_installed_one() {
     assert!(!skill().contains("`reviewer`"));
 
     let body = json!({
-        "choices": [{"id": "codex-high", "harness": "codex", "model": "gpt", "effort": "high", "roles": ["worker"], "description": "d", "enabled": true}],
+        "levels": [{"name": "all", "min": 0, "max": 100, "models": ["codex/gpt/high"]}],
         "routing_instruction": "be cheap",
     });
-    let (s, _) = send_json(&f.app, "PUT", "/api/v1/choices", body).await;
+    let (s, _) = send_json(&f.app, "PUT", "/api/v1/levels", body).await;
     assert_eq!(s, StatusCode::OK);
-    assert!(skill().contains("`codex-high`: codex / gpt (high). d"));
+    assert!(
+        skill().contains("- all (0-100): `codex/gpt/high`"),
+        "{}",
+        skill()
+    );
     // Both files follow.
     assert_eq!(skill(), std::fs::read_to_string(&files[1]).unwrap());
 }

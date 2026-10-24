@@ -106,28 +106,12 @@ export interface Check {
   status: Status;
 }
 
-/** One routable combination of harness, model and effort (SPEC 8.2). */
-export interface Choice {
-  description?: string;
-  effort?: string | null;
-  enabled?: boolean;
-  harness: Harness;
-  id: string;
-  model: string;
-  roles?: string[];
-}
-
-export interface ChoicesView {
-  choices: Choice[];
-  /** The file differs from what the running supervisor loaded. */
-  restart_required: boolean;
-  routing_instruction: string;
-}
+/** Model ref `harness/model[/effort]`, for example `codex/gpt-6.1-sol/high` or `opencode/opencode/deepseek-v4.1-flash-free` */
+export type Choice = string;
 
 /** The whole of `config.toml`. Every section is optional in the file. */
 export interface Config {
   accounts?: AccountsCfg;
-  choices?: Choice[];
   defaults?: Defaults;
   limits?: Limits;
   notifications?: Notifications;
@@ -292,24 +276,27 @@ export interface JoinView {
   env_names: string[];
 }
 
-/** A named range of complexity (`min` to `max`, within 0 to 100) and the choices allowed for it. Complexity can be fractional, so the integer range reads as the half-open span `[min, max + 1)`: 37.5 is in `0..=37`. A level with `max = 100` also includes 100.0. */
+/** A named range of complexity (`min` to `max`, within 0 to 100) and the models allowed for it, in preference order. Complexity can be fractional, so the integer range reads as the half-open span `[min, max + 1)`: 37.5 is in `0..=37`. A level with `max = 100` also includes 100.0. */
 export interface Level {
-  choices?: LevelChoice[];
   max: number;
   min: number;
+  /** Model refs (`harness/model[/effort]`) allowed for this level. List order is the preference order: the first eligible one wins. */
+  models?: Choice[];
   name: string;
-  /** Used only when `choices` is empty (any eligible choice of this model class); ignored when `choices` is not empty. One of the two is required. */
+  /** Used only when `models` is empty (any eligible choice of this model class); ignored when `models` is not empty. One of the two is required. */
   tier?: LevelTier | null;
 }
 
-/** A choice a level allows. Lower `priority` is preferred. */
-export interface LevelChoice {
-  id: string;
-  priority?: number | null;
-}
-
-/** Model class a level falls back to when it lists no choices. Mirrors the catalog's tier, which lives in `so-router`. */
+/** Model class a level falls back to when it lists no models. Mirrors the catalog's tier, which lives in `so-router`. */
 export type LevelTier = "high" | "mid" | "fast";
+
+export interface LevelsView {
+  /** The Levels in config order; each lists its Choices as `harness/model[/effort]` refs. */
+  levels: Level[];
+  /** The file differs from what the running supervisor loaded. */
+  restart_required: boolean;
+  routing_instruction: string;
+}
 
 export interface Limits {
   global_cap?: number;
@@ -396,6 +383,8 @@ export interface RouteAlternative {
 
 export interface RouteParams {
   account?: string | null;
+  /** Agent profile name the work is for; the decider sees it as `agent` (default `worker`). */
+  agent?: string | null;
   effort?: string | null;
   /** Choice ids to drop from the eligible set. */
   exclude?: string[];
@@ -404,7 +393,6 @@ export interface RouteParams {
   harness?: string | null;
   model?: string | null;
   prompt: string;
-  role?: string | null;
 }
 
 /** One row of the Route log. */

@@ -9,78 +9,95 @@ import { ConfirmDialog } from '@/components/common/ConfirmDialog'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { TableSkeleton } from '@/components/common/TableSkeleton'
-import { ScrollTable } from '@/components/common/ScrollTable'
-import { useChoices, usePutChoices } from '@/api/queries'
-import type { Choice } from '@/api/types'
-import { ChoiceDialog } from './ChoiceDialog'
-import { ChoicesTable } from './ChoicesTable'
+import { useLevels, usePutLevels } from '@/api/queries'
+import type { Level } from '@/api/types'
 import { InstructionEditor } from './InstructionEditor'
+import { LevelDialog } from './LevelDialog'
+import { LevelsList } from './LevelsList'
+import { ModelDialog } from './ModelDialog'
 import { ModelsPanel } from './ModelsPanel'
 import { RouteLog } from './RouteLog'
 import { RoutePreview } from './RoutePreview'
 
-const TABS = ['choices', 'instruction', 'preview', 'log'] as const
+const TABS = ['levels', 'instruction', 'preview', 'log'] as const
 type Tab = (typeof TABS)[number]
 
 export function RoutingPage() {
   const [params, setParams] = useSearchParams()
   const raw = params.get('tab')
-  const tab: Tab = TABS.includes(raw as Tab) ? (raw as Tab) : 'choices'
-  const query = useChoices()
-  const put = usePutChoices()
-  const [target, setTarget] = useState<Choice | 'new' | null>(null)
-  const [deleting, setDeleting] = useState<Choice | null>(null)
+  const tab: Tab = TABS.includes(raw as Tab) ? (raw as Tab) : 'levels'
+  const query = useLevels()
+  const put = usePutLevels()
+  const [levelTarget, setLevelTarget] = useState<Level | 'new' | null>(null)
+  const [modelTarget, setModelTarget] = useState<Level | null>(null)
+  const [deleting, setDeleting] = useState<Level | null>(null)
+  // Failure of a move or removal made straight in the list (the dialogs show their own).
+  const [listError, setListError] = useState<unknown>(null)
   const view = query.data
 
-  const save = (choices: Choice[]) => {
-    if (!view) return Promise.reject(new Error('Choices are not loaded yet'))
-    return put.mutateAsync({ choices, routing_instruction: view.routing_instruction })
+  const save = (levels: Level[]) => {
+    if (!view) return Promise.reject(new Error('Levels are not loaded yet'))
+    return put.mutateAsync({ levels, routing_instruction: view.routing_instruction })
+  }
+  const withModels = (level: Level, models: string[]) => (view?.levels ?? []).map((l) => (l.name === level.name ? { ...l, models } : l))
+
+  const saveFromList = (levels: Level[]) => {
+    setListError(null)
+    save(levels).catch(setListError)
+  }
+  const move = (level: Level, index: number, step: -1 | 1) => {
+    const models = [...level.models]
+    ;[models[index], models[index + step]] = [models[index + step], models[index]]
+    saveFromList(withModels(level, models))
   }
 
   return (
     <>
       <PageHeader
-        title="Choices and routing"
-        description="Edit Choices, preview a Route and review the Route log."
+        title="Levels and routing"
+        description="Edit levels, preview a Route and review the Route log."
         actions={
-          tab === 'choices' ? (
-            <Button onClick={() => setTarget('new')} disabled={!view}>
-              <Plus aria-hidden /> Add choice
+          tab === 'levels' ? (
+            <Button onClick={() => setLevelTarget('new')} disabled={!view}>
+              <Plus aria-hidden /> Add level
             </Button>
           ) : undefined
         }
       />
-      <Tabs value={tab} onValueChange={(t) => setParams(t === 'choices' ? {} : { tab: t }, { replace: true })}>
+      <Tabs value={tab} onValueChange={(t) => setParams(t === 'levels' ? {} : { tab: t }, { replace: true })}>
         <TabsList className="mb-4 max-w-full overflow-x-auto">
-          <TabsTrigger value="choices">Choices</TabsTrigger>
+          <TabsTrigger value="levels">Levels</TabsTrigger>
           <TabsTrigger value="instruction">Routing instruction</TabsTrigger>
           <TabsTrigger value="preview">Preview</TabsTrigger>
           <TabsTrigger value="log">Route log</TabsTrigger>
         </TabsList>
 
-        <TabsContent value="choices" className="flex flex-col gap-4">
+        <TabsContent value="levels" className="flex flex-col gap-4">
           {query.isError && !view ? (
-            <ErrorAlert error={query.error} title="Could not load choices" onRetry={() => void query.refetch()} />
+            <ErrorAlert error={query.error} title="Could not load levels" onRetry={() => void query.refetch()} />
           ) : !view ? (
-            <TableSkeleton rows={4} columns={7} />
-          ) : view.choices.length === 0 ? (
+            <TableSkeleton rows={4} columns={3} />
+          ) : view.levels.length === 0 ? (
             <EmptyState
               icon={SlidersHorizontal}
-              title="No choices yet"
-              description="Choices are the harness and model combinations the router may pick."
-              action={<Button onClick={() => setTarget('new')}>Add choice</Button>}
+              title="No levels yet"
+              description="A level maps a range of task complexity to the models the router may pick."
+              action={<Button onClick={() => setLevelTarget('new')}>Add level</Button>}
             />
           ) : (
-            <ScrollTable>
-              <ChoicesTable
-                choices={view.choices}
-                pending={put.isPending}
-                onToggle={(c, enabled) => put.mutate({ choices: view.choices.map((x) => (x.id === c.id ? { ...x, enabled } : x)), routing_instruction: view.routing_instruction })}
-                onEdit={setTarget}
-                onDelete={setDeleting}
-              />
-            </ScrollTable>
+            <LevelsList
+              levels={view.levels}
+              pending={put.isPending}
+              onEdit={setLevelTarget}
+              onDelete={setDeleting}
+              onAddModel={setModelTarget}
+              onMove={move}
+              onRemove={(level, ref) =>
+                saveFromList(withModels(level, level.models.filter((m) => m !== ref)))
+              }
+            />
           )}
+          {listError !== null && <ErrorAlert error={listError} title="Could not save the levels" />}
           <ModelsPanel />
         </TabsContent>
 
@@ -103,23 +120,24 @@ export function RoutingPage() {
         </TabsContent>
       </Tabs>
 
-      <ChoiceDialog target={target} choices={view?.choices ?? []} onClose={() => setTarget(null)} onSave={save} />
+      <LevelDialog target={levelTarget} levels={view?.levels ?? []} onClose={() => setLevelTarget(null)} onSave={save} />
+      <ModelDialog level={modelTarget} onClose={() => setModelTarget(null)} onSave={(level, ref) => save(withModels(level, [...level.models, ref]))} />
       <ConfirmDialog
         open={deleting !== null}
         onOpenChange={(o) => !o && setDeleting(null)}
-        title={`Delete ${deleting?.id ?? 'choice'}?`}
-        description="The router will no longer pick this choice."
-        confirmLabel="Delete choice"
+        title={`Delete level ${deleting?.name ?? ''}?`}
+        description="Tasks in its complexity range will have no level until another one covers them."
+        confirmLabel="Delete level"
         destructive
         pending={put.isPending}
         onConfirm={() => {
           if (!view || !deleting) return
-          const id = deleting.id
+          const name = deleting.name
           put.mutate(
-            { choices: view.choices.filter((c) => c.id !== id), routing_instruction: view.routing_instruction },
+            { levels: view.levels.filter((l) => l.name !== name), routing_instruction: view.routing_instruction },
             {
               onSuccess: () => {
-                toast.success(`Deleted ${id}`)
+                toast.success(`Deleted level ${name}`)
                 setDeleting(null)
               },
             },

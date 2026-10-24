@@ -26,7 +26,7 @@ describe('routes', () => {
     ['/sessions/sess-1', 'Session timeline'],
     ['/sessions/sess-1/runs/run-1', 'Session timeline'],
     ['/accounts', 'Accounts'],
-    ['/choices', 'Choices and routing'],
+    ['/routing', 'Levels and routing'],
     ['/agents', 'Agents'],
     ['/agents/reviewer', 'reviewer'],
     ['/workflows', 'Workflows'],

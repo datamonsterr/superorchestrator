@@ -46,7 +46,7 @@ const ROUTES: [string, string][] = [
   ['/dashboard', 'Dashboard'],
   ['/sessions', 'Sessions'],
   ['/accounts', 'Accounts'],
-  ['/choices', 'Choices'],
+  ['/routing', 'Levels and routing'],
   ['/agents', 'Agents'],
   ['/workflows', 'Workflows'],
   ['/settings', 'Settings'],
@@ -63,6 +63,17 @@ for (const [route, heading] of ROUTES) {
     expect(errors).toEqual([])
   })
 }
+
+test('the routing page shows the seeded levels and their model refs', async ({ page }) => {
+  const errors = watchErrors(page)
+  await page.goto('/routing')
+  for (const name of ['trivial', 'simple', 'moderate', 'complex', 'expert']) {
+    await expect(page.getByRole('region', { name: `Level ${name}` })).toBeVisible()
+  }
+  await expect(page.getByRole('region', { name: 'Level expert' }).getByText('codex/gpt-6.1-sol/high', { exact: true })).toBeVisible()
+  await page.waitForLoadState('networkidle')
+  expect(errors).toEqual([])
+})
 
 test('the session timeline draws lanes with real state colours', async ({ page }) => {
   const errors = watchErrors(page)

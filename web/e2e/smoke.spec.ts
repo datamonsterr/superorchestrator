@@ -38,3 +38,21 @@ test('dark mode toggle', async ({ page }) => {
   await page.getByRole('menuitemradio', { name: 'Light' }).click()
   await expect(page.locator('html')).not.toHaveClass(/dark/)
 })
+
+test('routing page lists levels and adds a model', async ({ page }) => {
+  await page.goto('/routing')
+  await expect(page.getByRole('heading', { level: 1, name: 'Levels and routing' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Level complex' }).getByText('codex/gpt-6.1-sol/high')).toBeVisible()
+
+  const simple = page.getByRole('region', { name: 'Level simple' })
+  await simple.getByRole('button', { name: 'Add model' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Add model to simple' })
+  await dialog.getByRole('combobox', { name: 'Harness' }).click()
+  await page.getByRole('option', { name: 'codex' }).click()
+  await dialog.getByLabel('Model', { exact: true }).fill('gpt-6.1-sol')
+  await dialog.getByLabel('Effort (optional)').fill('low')
+  await expect(dialog.getByText('codex/gpt-6.1-sol/low', { exact: true })).toBeVisible()
+  await dialog.getByRole('button', { name: 'Save model' }).click()
+  await expect(dialog).toBeHidden()
+  await expect(simple.getByText('codex/gpt-6.1-sol/low', { exact: true })).toBeVisible()
+})

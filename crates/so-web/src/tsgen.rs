@@ -24,7 +24,7 @@ fn roots(g: &mut SchemaGenerator) {
     }
     add::<so_core::Event>(g);
     add::<so_core::Headroom>(g);
-    add::<so_core::Choice>(g);
+    add::<so_core::config::Level>(g);
     add::<so_core::proto::HarnessesView>(g);
     add::<so_core::proto::AccountView>(g);
     add::<so_core::proto::RouteResult>(g);
@@ -47,7 +47,7 @@ fn roots(g: &mut SchemaGenerator) {
     add::<WorktreeView>(g);
     add::<PruneRequest>(g);
     add::<PruneResult>(g);
-    add::<ChoicesView>(g);
+    add::<LevelsView>(g);
     add::<ConfigView>(g);
     add::<AddAccountRequest>(g);
     add::<ImportAccountRequest>(g);

@@ -58,7 +58,7 @@ export function RoutePreview() {
   const accounts = useAccounts()
   const form = useForm<PreviewValues>({
     resolver: zodResolver(previewSchema),
-    defaultValues: { prompt: '', role: '', harness: ANY, account: ANY, model: '', effort: '' },
+    defaultValues: { prompt: '', harness: ANY, account: ANY, model: '', effort: '' },
   })
   const { control, register, handleSubmit, formState } = form
 
@@ -70,10 +70,6 @@ export function RoutePreview() {
             <FieldLabel htmlFor="preview-prompt">Prompt</FieldLabel>
             <Textarea id="preview-prompt" rows={5} aria-invalid={!!formState.errors.prompt} {...register('prompt')} />
             <FieldError errors={[formState.errors.prompt]} />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="preview-role">Role (optional)</FieldLabel>
-            <Input id="preview-role" placeholder="worker" autoComplete="off" {...register('role')} />
           </Field>
           <fieldset className="flex flex-col gap-3 rounded-md border p-3">
             <legend className="px-1 text-sm font-medium">Pin</legend>
@@ -125,7 +121,8 @@ export function RoutePreview() {
             <div className="grid grid-cols-2 gap-3">
               <Field>
                 <FieldLabel htmlFor="preview-model">Model</FieldLabel>
-                <Input id="preview-model" autoComplete="off" {...register('model')} />
+                <Input id="preview-model" autoComplete="off" aria-describedby="preview-model-hint" {...register('model')} />
+                <FieldDescription id="preview-model-hint">A model name, or harness/model/effort to pin all three</FieldDescription>
               </Field>
               <Field>
                 <FieldLabel htmlFor="preview-effort">Effort</FieldLabel>
