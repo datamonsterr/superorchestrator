@@ -71,6 +71,22 @@ When you set no levels, the defaults apply: `low` for 0-37 with tier `fast`, `mi
 
 `superorchestrator init` writes five levels into a new `config.toml`: `trivial` 0-12, `simple` 13-37, `moderate` 38-62, `complex` 63-87 and `expert` 88-100, each listing seeded non-Claude choices with priorities. It does this only when it creates the file; an existing config is never changed, so add `[[router.levels]]` yourself (copy them from `seed/levels.toml` in the source) to use them.
 
+You can also manage levels from the command line, without editing the file. These commands change `config.toml` only, so restart the supervisor to apply:
+
+```sh
+superorchestrator levels list [--json]
+superorchestrator levels add <name> --min N --max N --tier high|mid|fast
+superorchestrator levels edit <name> [--name NEW] [--min N] [--max N] [--tier T | --no-tier]
+superorchestrator levels remove <name>
+superorchestrator levels reset                  # remove router.levels; the defaults apply again
+superorchestrator levels choice add <level> <choice-id> [--priority N]
+superorchestrator levels choice add <level> --harness H --model M [--effort E] [--id ID] [--role R]... [--priority N]
+superorchestrator levels choice set <level> <choice-id> --priority N
+superorchestrator levels choice remove <level> <choice-id>
+```
+
+`levels list` shows each level's range and its choices with their priority, harness, model, effort and state (`on`, `off`, or `unknown` for an id that names no choice). With no levels in the file it says `(defaults)` and shows the enabled choices of each tier. When you change levels and the file has none, the current defaults are written first, so your edit is relative to what was in effect. `choice add --harness` also creates the `[[choices]]` entry (id `<harness>-<model>-<effort>` unless you pass `--id`, role `worker` unless you pass `--role`). Every change is validated like a load, so an overlap or a bad effort is refused and nothing is written. The web API has the same operations at `GET`, `PUT` and `DELETE /api/v1/levels`.
+
 A level's choice list is not a pool. A pool is a separately metered slice of an account's usage, so the config key is `choices` and the docs call them the level's choices.
 
 For each task, the router picks like this:
