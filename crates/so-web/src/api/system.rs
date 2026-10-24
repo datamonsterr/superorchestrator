@@ -1,4 +1,4 @@
-//! Status, dashboard, usage, doctor, harnesses, routing log, config, choices and worktrees.
+//! Status, dashboard, usage, doctor, harnesses, routing log, config, levels and worktrees.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -21,7 +21,7 @@ use crate::extract::{ApiJson, ApiQuery, OptionalJson};
 use crate::page::{clamp_limit, decode_cursor, encode_cursor};
 use crate::state::AppState;
 use crate::types::{
-    Caps, ChoicesView, ConfigView, DailyUsage, DashboardView, Page, PruneRequest, PruneResult,
+    Caps, ConfigView, DailyUsage, DashboardView, LevelsView, Page, PruneRequest, PruneResult,
     RouteRecord, RunViewPublic, SecretOrigin, SecretSource, StatusView, WorktreeView,
 };
 
@@ -289,55 +289,52 @@ pub async fn config_patch(
     .await
 }
 
-fn choices_view(st: &AppState) -> ApiResult<ChoicesView> {
+fn levels_view(st: &AppState) -> ApiResult<LevelsView> {
     let disk = Config::load(&st.sup.paths)?;
-    Ok(ChoicesView {
+    Ok(LevelsView {
         restart_required: restart_required(st, &disk),
-        choices: disk.choices,
+        levels: disk.router.levels,
         routing_instruction: disk.router.instruction,
     })
 }
 
-pub async fn choices_get(State(st): State<AppState>) -> ApiResult<Json<ChoicesView>> {
+pub async fn levels_get(State(st): State<AppState>) -> ApiResult<Json<LevelsView>> {
     let s = st.clone();
-    st.blocking(move || Ok(Json(choices_view(&s)?))).await
+    st.blocking(move || Ok(Json(levels_view(&s)?))).await
 }
 
 #[derive(Debug, Deserialize)]
-pub struct ChoicesBody {
-    choices: Vec<so_core::Choice>,
+pub struct LevelsBody {
+    levels: Vec<so_core::config::Level>,
     routing_instruction: String,
 }
 
-pub async fn choices_put(
+/// Replaces the Levels and the routing instruction. Both keys are validated against the whole
+/// file and written with one atomic write, so a rejected body leaves `config.toml` untouched.
+/// A rejected body is a 422 whose message names the offending Level or Choice.
+pub async fn levels_put(
     State(st): State<AppState>,
-    ApiJson(b): ApiJson<ChoicesBody>,
-) -> ApiResult<Json<ChoicesView>> {
-    let mut seen = std::collections::HashSet::new();
-    for c in &b.choices {
-        if c.id.trim().is_empty() || !seen.insert(c.id.clone()) {
-            return Err(ApiError::invalid(format!(
-                "choice id `{}` is empty or duplicated",
-                c.id
-            )));
-        }
-        if c.roles.is_empty() {
-            return Err(ApiError::invalid(format!(
-                "choice `{}` needs at least one role",
-                c.id
-            )));
-        }
+    ApiJson(b): ApiJson<LevelsBody>,
+) -> ApiResult<Json<LevelsView>> {
+    if b.levels.is_empty() {
+        // `[]` would leave nothing routable and does not bring back the default tiers.
+        return Err(ApiError::invalid("needs at least one level"));
     }
     let s = st.clone();
     st.blocking(move || {
-        let choices = toml::Value::try_from(&b.choices)
+        let levels = toml::Value::try_from(&b.levels)
             .map_err(ApiError::internal)?
             .to_string();
         let instruction = toml::Value::String(b.routing_instruction).to_string();
-        Config::set_in_file(&s.sup.paths, "router.instruction", &instruction)?;
-        Config::set_in_file(&s.sup.paths, "choices", &choices)?;
+        Config::set_many_in_file(
+            &s.sup.paths,
+            &[
+                ("router.levels", levels.as_str()),
+                ("router.instruction", instruction.as_str()),
+            ],
+        )?;
         s.refresh_skill();
-        Ok(Json(choices_view(&s)?))
+        Ok(Json(levels_view(&s)?))
     })
     .await
 }

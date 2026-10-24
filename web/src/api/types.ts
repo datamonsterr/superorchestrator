@@ -24,8 +24,8 @@ import type {
   ModelRow,
   AccountView as GenAccountView,
   RunViewPublic as GenRun,
-  Choice as GenChoice,
-  ChoicesView as GenChoices,
+  Level as GenLevel,
+  LevelsView as GenLevels,
   RouteResult as GenRoute,
   DashboardView as GenDashboard,
 } from './generated'
@@ -40,15 +40,16 @@ export type AccountView = Always<GenAccountView, 'headroom'>
 export type UsageTotals = Required<GenUsage>
 export type RunViewPublic = Omit<Always<GenRun, 'recent_events' | 'depth'>, 'usage'> & { usage: UsageTotals }
 export type SessionDetail = Omit<GenSessionDetail, 'runs'> & { runs: RunViewPublic[] }
-export type Choice = Always<GenChoice, 'roles' | 'description' | 'enabled'>
-export type ChoicesView = Omit<GenChoices, 'choices'> & { choices: Choice[] }
+/** A Level with `models` always present: refs (`harness/model[/effort]`) in preference order. */
+export type Level = Omit<GenLevel, 'models'> & { models: string[] }
+export type LevelsView = Omit<GenLevels, 'levels'> & { levels: Level[] }
 export type RouteResult = Omit<Always<GenRoute, 'alternatives' | 'probabilities' | 'config_fingerprint'>, 'usage'> & { usage: Required<RouteUsage> }
 /** Workflow and step states are open strings on the wire (`running`, `waiting`, `stalled`, `cached`, ...). */
 export type WorkflowState = string
-/** Body of `PUT /choices`: the web layer only needs these two fields. */
-export type ChoicesPut = { choices: Choice[]; routing_instruction: string }
+/** Body of `PUT /levels`. */
+export type LevelsPut = { levels: Level[]; routing_instruction: string }
 export type SendMessageParams = SendMessageBody
-export type HarnessesView = { accounts: AccountView[]; choices: Choice[] }
+export type HarnessesView = { accounts: AccountView[]; choices: string[] }
 export type DashboardView = Omit<GenDashboard, 'accounts' | 'live_runs'> & { accounts: AccountView[]; live_runs: RunViewPublic[] }
 export type WorkflowRunDetail = Always<GenWorkflowStatus, 'steps'>
 

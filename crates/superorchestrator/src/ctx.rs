@@ -27,7 +27,7 @@ impl Ctx {
         Config::load(&self.paths).context("could not load config.toml")
     }
 
-    /// Regenerates the installed skill after accounts, choices or agents changed (SPEC 19.1).
+    /// Regenerates the installed skill after accounts, levels or agents changed (SPEC 19.1).
     /// Does nothing when the skill is not installed. A failure is a warning: the change
     /// that called this already succeeded.
     pub fn refresh_skill(&self) {

@@ -11,7 +11,7 @@ export const NAV_ITEMS: NavItem[] = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/sessions', label: 'Sessions', icon: Activity },
   { to: '/accounts', label: 'Accounts', icon: KeyRound },
-  { to: '/choices', label: 'Choices', icon: Route },
+  { to: '/routing', label: 'Levels', icon: Route },
   { to: '/agents', label: 'Agents', icon: Bot },
   { to: '/workflows', label: 'Workflows', icon: GitBranch },
   { to: '/settings', label: 'Settings', icon: Settings },

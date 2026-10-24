@@ -4,19 +4,20 @@ import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Textarea } from '@/components/ui/textarea'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
-import { usePutChoices } from '@/api/queries'
-import type { ChoicesView } from '@/api/types'
+import { usePutLevels } from '@/api/queries'
+import type { LevelsView } from '@/api/types'
 
-/** Edits `routing_instruction`; the choices are sent back unchanged. */
-export function InstructionEditor({ view }: { view: ChoicesView }) {
-  const put = usePutChoices()
+/** Edits `routing_instruction`; the levels are sent back unchanged. */
+export function InstructionEditor({ view }: { view: LevelsView }) {
+  const put = usePutLevels()
   const [draft, setDraft] = useState<string | null>(null)
   const value = draft ?? view.routing_instruction
   const dirty = draft !== null && draft !== view.routing_instruction
 
   async function save() {
     try {
-      await put.mutateAsync({ choices: view.choices, routing_instruction: value })
+      // Last write wins: the levels sent back are the ones this page loaded.
+      await put.mutateAsync({ levels: view.levels, routing_instruction: value })
       setDraft(null)
       toast.success('Routing instruction saved')
     } catch {

@@ -68,10 +68,10 @@ pub fn levels_by_distance(levels: &[Level], complexity: f64) -> Vec<usize> {
     idx
 }
 
-/// Candidates a level allows: its listed ids in order, else the eligible choices of its tier
-/// in config order. Both only among the eligible.
+/// Candidates a level allows: its listed models in list order, else the eligible choices of
+/// its tier in config order. Both only among the eligible.
 fn level_candidates(level: &Level, cands: &[Candidate<'_>]) -> Vec<usize> {
-    if level.choices.is_empty() {
+    if level.models.is_empty() {
         let Some(tier) = level.tier else {
             return Vec::new();
         };
@@ -80,22 +80,14 @@ fn level_candidates(level: &Level, cands: &[Candidate<'_>]) -> Vec<usize> {
             .collect();
     }
     let mut out = Vec::new();
-    for lc in &level.choices {
-        if let Some(i) = cands.iter().position(|c| c.choice.id == lc.id)
+    for m in &level.models {
+        if let Some(i) = cands.iter().position(|c| &c.choice == m)
             && !out.contains(&i)
         {
             out.push(i);
         }
     }
     out
-}
-
-fn priority_of(level: &Level, cand: &Candidate<'_>) -> Option<u32> {
-    level
-        .choices
-        .iter()
-        .find(|c| c.id == cand.choice.id)
-        .and_then(|c| c.priority)
 }
 
 /// Best account's headroom for the pool and its active runs.
@@ -105,36 +97,28 @@ fn load(c: &Candidate<'_>) -> (f64, u32) {
     })
 }
 
-/// Orders a level's candidates: lowest priority number first, then most headroom, then fewest
-/// active runs, then config order (the candidates' own order).
+/// Orders a level's candidates. A level that lists models keeps its list order (position is a
+/// total order). A tier level has no list: most headroom first, then fewest active runs, then
+/// config order (the candidates' own order).
 fn rank(level: &Level, mut idx: Vec<usize>, cands: &[Candidate<'_>]) -> Vec<usize> {
+    if !level.models.is_empty() {
+        return idx;
+    }
     idx.sort_by(|&a, &b| {
-        let key = |i: usize| priority_of(level, &cands[i]).unwrap_or(u32::MAX);
         let ((ha, aa), (hb, ab)) = (load(&cands[a]), load(&cands[b]));
-        key(a)
-            .cmp(&key(b))
-            .then(hb.total_cmp(&ha))
-            .then(aa.cmp(&ab))
-            .then(a.cmp(&b))
+        hb.total_cmp(&ha).then(aa.cmp(&ab)).then(a.cmp(&b))
     });
     idx
 }
 
 fn why_won(level: &Level, ranked: &[usize], cands: &[Candidate<'_>]) -> String {
-    let first = &cands[ranked[0]];
     if ranked.len() == 1 {
         return "the only eligible choice of the level".into();
     }
-    if let Some(p) = priority_of(level, first) {
-        if priority_of(level, &cands[ranked[1]]) == Some(p) {
-            let (headroom, active) = load(first);
-            return format!(
-                "tied on priority number ({p}); most headroom ({headroom:.0}%), then fewest active runs ({active})"
-            );
-        }
-        return format!("lowest priority number ({p}) in the level");
+    if !level.models.is_empty() {
+        return "first in the level".into();
     }
-    let (headroom, active) = load(first);
+    let (headroom, active) = load(&cands[ranked[0]]);
     format!("most headroom ({headroom:.0}%), then fewest active runs ({active})")
 }
 
@@ -191,7 +175,7 @@ mod tests {
             min,
             max,
             tier: None,
-            choices: Vec::new(),
+            models: Vec::new(),
         }
     }
 

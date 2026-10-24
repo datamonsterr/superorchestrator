@@ -12,7 +12,7 @@ Global: `--json`, `-y`/`--yes`, `--config-dir DIR`. `<cmd> --help` lists flags.
 
 - `superorchestrator setup`: first command. Config, detect harnesses, import logins, add accounts, `install`. Re-run safe. Flags: `--yes`, `--codex N --claude N --opencode N --agy N` (accounts per harness; claude default 0), `--no-login`, `--no-install`, `--no-claude-md`. No terminal, no `--yes`: prints plan only.
 - `superorchestrator` or `superorchestrator tui`: terminal UI, tabs Overview/Accounts/Runs/Setup. `j`/`k` move, Enter detail, `a` accept+merge, `r` reject, `o` join, `?` help.
-- `init`: config dir, `config.toml`, choices, model catalog.
+- `init`: config dir, `config.toml`, model catalog.
 - `install [--force] [--dry-run] [--no-claude-md]`: MCP server per harness, both skills, managed block in `~/.claude/CLAUDE.md`. `uninstall [--dry-run]` reverses.
 
 ## Accounts
@@ -29,7 +29,7 @@ Account = one signed-in credential home, one harness (codex, agy, opencode, clau
 
 - `status`: accounts, headroom, supervisor.
 - `doctor`: binaries, config, db, socket, UI port, sign-ins. Run first when broken.
-- `route "<task>" [--role ROLE] [--explain]`: preview pick, runs nothing.
+- `route "<task>" [--model REF] [--agent NAME] [--explain]`: preview pick, runs nothing.
 
 ## Runs
 

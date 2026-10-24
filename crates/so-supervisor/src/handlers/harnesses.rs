@@ -97,9 +97,11 @@ fn headroom_short(rows: &[Headroom]) -> Option<String> {
 
 /// `list_harnesses` for an orchestrator, with `{"brief": true}`: one short row per account
 /// and per choice, plus the free models. Omitted keys mean false or empty; `signed_in` and
-/// `headroom` are left out when unknown. A choice is `eligible` (the key is left out then) when the router
-/// would consider it: it is enabled and an account of its harness can take a run; otherwise
-/// `eligible: false` and `why` say what is missing.
+/// `headroom` are left out when unknown. A choice row is `{id, harness, model, effort?,
+/// levels, free?, eligible?, why?}`: `id` is the model ref and `levels` names the levels that
+/// list it, in config order. A choice is `eligible` (the key is left out then) when the router
+/// would consider it: an account of its harness can take a run; otherwise `eligible: false`
+/// and `why` say what is missing.
 pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
     let view = harnesses_view(state)?;
     let accounts = AccountFile::list(&state.paths).map_err(|e| e.to_string())?;
@@ -147,24 +149,25 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
         .iter()
         .map(|c| {
             let mut row = Map::new();
-            row.insert("id".into(), json!(c.id));
+            row.insert("id".into(), json!(c.id()));
             row.insert("harness".into(), json!(c.harness));
             row.insert("model".into(), json!(c.model));
             if let Some(e) = &c.effort {
                 row.insert("effort".into(), json!(e));
             }
-            if c.roles != ["worker"] {
-                row.insert("roles".into(), json!(c.roles));
-            }
-            if !c.description.is_empty() {
-                row.insert("description".into(), json!(c.description));
-            }
+            let levels: Vec<&str> = state
+                .config
+                .router
+                .levels
+                .iter()
+                .filter(|l| l.models.contains(c))
+                .map(|l| l.name.as_str())
+                .collect();
+            row.insert("levels".into(), json!(levels));
             if catalog.is_free(c.harness, &c.model) {
                 row.insert("free".into(), json!(true));
             }
-            let why = if !c.enabled {
-                Some("disabled")
-            } else if candidate(c, &catalog, &snapshot).is_some() {
+            let why = if candidate(c, &catalog, &snapshot).is_some() {
                 None
             } else {
                 let same: Vec<_> = view
@@ -285,7 +288,7 @@ pub fn harnesses_view(state: &SupervisorState) -> Result<HarnessesView, String> 
     });
     Ok(HarnessesView {
         accounts,
-        choices: state.config.choices.clone(),
+        choices: state.config.choices(),
         stale: stale_reason.is_some(),
         stale_reason,
     })

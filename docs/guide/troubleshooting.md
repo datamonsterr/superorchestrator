@@ -10,7 +10,7 @@ Start with `superorchestrator doctor`. It prints one line per check. A check is 
 | `bwrap` (Linux) | Optional. Without it, agy runs start without `--die-with-parent`. Install `bubblewrap`. |
 | `config dir` | The directory is missing. Run `superorchestrator init`. |
 | `config.toml` | It does not load. Read the error, then `superorchestrator config edit`. A missing file is a warning, and defaults apply. |
-| `choices` | Codex choices from an older `init` are still off. Set `enabled = true` on them. |
+| `levels` | A level lists a model that no enabled account can run, or a model the catalog does not know. Add an account for that harness, or edit the level with `superorchestrator config edit`. A config that still uses the old choices table does not load; see [routing](routing.md#migrating-from-the-choices-table). |
 | `pass_env` | Common secret variables (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `SSH_AUTH_SOCK`, `GH_TOKEN` and so on) are set in the supervisor's environment but no `pass_env` lists them, so harness runs do not see them. Names only are printed. Add the ones a harness needs; see the entry below. |
 | `state.db` | `not created yet` is normal before first use. A failure means the database does not open. |
 | `supervisor` | `not running` is normal, because it starts on demand. `stale socket` means the socket file is left over from a crash. Remove the file, or run `superorchestrator daemon`. |
@@ -26,7 +26,7 @@ Start with `superorchestrator doctor`. It prints one line per check. A check is 
 
 **Claude Code does not list the tools.** Run `superorchestrator install` (or install the plugin, not both), then restart Claude Code. `claude mcp list` should show `superorchestrator`.
 
-**`harness: auto` never picks an account.** Run `superorchestrator route "task" --explain`. The choice may be disabled, the account signed out, flagged, exhausted or at its cap. Check `superorchestrator status` and `superorchestrator account list`.
+**`harness: auto` never picks an account.** Run `superorchestrator route "task" --explain`. No level may list the model, or the account may be signed out, flagged, exhausted or at its cap. Check `superorchestrator status` and `superorchestrator account list`.
 
 **A run sits in `queued`.** An account cap or `limits.global_cap` is full. Wait, cancel a run (`superorchestrator runs cancel <id>`), or raise a cap.
 
@@ -40,7 +40,7 @@ Start with `superorchestrator doctor`. It prints one line per check. A check is 
 
 **The wrapper command is not found.** Put `~/.local/bin` (or your `accounts.wrapper_dir`) on `PATH`.
 
-**The skill is out of date.** Superorchestrator regenerates `use-superorchestrator-mcp` when accounts, choices or agents change, but only if it is installed and the file still has the `superorchestrator:managed` marker. It also writes `superorchestrator-cli` if that is missing. Run `superorchestrator install` to write them. A skill file you edited by hand without the marker is left alone.
+**The skill is out of date.** Superorchestrator regenerates `use-superorchestrator-mcp` when accounts, levels or agents change, but only if it is installed and the file still has the `superorchestrator:managed` marker. It also writes `superorchestrator-cli` if that is missing. Run `superorchestrator install` to write them. A skill file you edited by hand without the marker is left alone.
 
 **`~/.claude/CLAUDE.md` has a block I did not write.** `install` adds a short delegation block between `<!-- superorchestrator:begin -->` and `<!-- superorchestrator:end -->`. Re-running `install` replaces it in place, `install --no-claude-md` skips it and `uninstall` removes only the block. Text outside the markers is never touched.
 

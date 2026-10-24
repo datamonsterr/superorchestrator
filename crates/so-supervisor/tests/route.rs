@@ -1,25 +1,17 @@
 #![allow(clippy::unwrap_used)]
 //! The `route` method over the supervisor socket.
 
+mod common;
+
 use std::time::Duration;
+
+use common::level;
 
 use serde_json::{Value, json};
 use so_core::proto::{RouteResult, RouteSource};
-use so_core::{AccountFile, Choice, Config, EventType, Harness, Paths};
+use so_core::{AccountFile, Config, EventType, Harness, Paths};
 use so_store::Store;
 use so_supervisor::{ClientError, Supervisor, SupervisorClient, SupervisorOptions};
-
-fn choice(id: &str, h: Harness, model: &str) -> Choice {
-    Choice {
-        id: id.into(),
-        harness: h,
-        model: model.into(),
-        effort: None,
-        roles: vec!["worker".into()],
-        description: "d".into(),
-        enabled: true,
-    }
-}
 
 #[tokio::test]
 async fn route_previews_and_records_a_route_decision_event() {
@@ -36,13 +28,11 @@ async fn route_previews_and_records_a_route_decision_event() {
         .unwrap()
         .save(&paths)
         .unwrap();
-    let mut config = Config {
-        choices: vec![
-            choice("agy-fast", Harness::Agy, "gemini-3.8-flash-low"),
-            choice("codex-big", Harness::Codex, "gpt-6.1-sol"),
-        ],
-        ..Config::default()
-    };
+    let mut config = Config::default();
+    config.router.levels = vec![
+        level("low", 0, 37, &["agy/gemini-3.8-flash-low"]),
+        level("high", 38, 100, &["codex/gpt-6.1-sol"]),
+    ];
     config.router.jev.key_env = "SO_ROUTE_TEST_NO_SUCH_KEY".into();
     let opts = SupervisorOptions::new(paths.clone(), config, dir.path().join("run/s.sock"))
         .with_idle_exit(Duration::from_secs(600))
@@ -60,7 +50,7 @@ async fn route_previews_and_records_a_route_decision_event() {
         .await
         .unwrap();
     assert_eq!(r.source, RouteSource::Heuristic);
-    assert_eq!(r.choice_id, "codex-big");
+    assert_eq!(r.choice_id, "codex/gpt-6.1-sol");
     assert_eq!(r.account, "codex-a");
 
     let store = Store::open(paths.state_db()).unwrap();
@@ -71,15 +61,18 @@ async fn route_previews_and_records_a_route_decision_event() {
         .iter()
         .find(|e| e.event_type == EventType::RouteDecision)
         .expect("route_decision event");
-    assert_eq!(ev.data["choice_id"], "codex-big");
+    assert_eq!(ev.data["choice_id"], "codex/gpt-6.1-sol");
     assert!(!ev.data.to_string().contains("scheduler"), "no task text");
     // Preview only: no run was created.
     assert_eq!(store.count_active_runs_total().unwrap(), 0);
 
     let bad: Result<Value, _> = c
-        .call("route", json!({"prompt": "x", "role": "nobody"}))
+        .call("route", json!({"prompt": "x", "model": "codex/"}))
         .await;
-    assert!(matches!(bad, Err(ClientError::Rpc(_))));
+    match bad {
+        Err(ClientError::Rpc(e)) => assert_eq!(e.code, so_core::proto::INVALID_PARAMS),
+        other => panic!("{other:?}"),
+    }
     let bad: Result<Value, _> = c.call("route", json!({"nope": 1})).await;
     assert!(matches!(bad, Err(ClientError::Rpc(_))));
     h.shutdown().await;

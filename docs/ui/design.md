@@ -19,7 +19,7 @@ The frontend talks only to `/api/v1` (SPEC 14). It never reads the database, soc
 | Dashboard |                                                              |
 | Sessions  |                      <Outlet/>  (page)                       |
 | Accounts  |                                                              |
-| Choices   |                                                              |
+| Levels    |                                                              |
 | Agents    |                                                              |
 | Workflows |                                                              |
 | Settings  |                                                              |
@@ -44,7 +44,7 @@ The frontend talks only to `/api/v1` (SPEC 14). It never reads the database, soc
 | `/sessions/:sessionId` | Session timeline | `features/timeline/TimelinePage` |
 | `/sessions/:sessionId/runs/:runId` | Same page with the run panel open (deep link) | `features/timeline/TimelinePage` |
 | `/accounts` | Accounts | `features/accounts/AccountsPage` |
-| `/choices` | Choices and routing | `features/routing/RoutingPage` |
+| `/routing` | Levels and routing (nav label Levels) | `features/routing/RoutingPage` |
 | `/agents` | Agents | `features/agents/AgentsPage` |
 | `/agents/:name` | Agent editor | `features/agents/AgentEditor` |
 | `/workflows` | Workflows | `features/workflows/WorkflowsPage` |
@@ -103,8 +103,8 @@ CLI twin column lists only SPEC 15 commands; "UI-only" means no CLI command exis
 | `POST /accounts/:name/flag` | `{ pool?, until?, hours?, clear?, reason? }` | `AccountView` | `account flag` |
 | `POST /accounts/:name/login` | | `SignInStart` (below) | `account login` |
 | `GET /accounts/:name/login` | | `SignInStatus`, the poll target | `account login` |
-| `GET /choices` | | `{ choices: Choice[], routing_instruction: string }` | `config get` |
-| `PUT /choices` | same shape | same | `config edit` |
+| `GET /levels` | | `{ levels: Level[], routing_instruction: string }` | `config get` |
+| `PUT /levels` | same shape | same; `restart_required` in the response; 422 with the validator's message; an empty list is rejected ("needs at least one level") | `config edit` |
 | `GET /models` | | `ModelCatalog` (`{ refreshed_at, models: { harness, id, efforts[] }[] }`) | `models list` |
 | `POST /models/refresh` | | `ModelCatalog` | `models refresh` |
 | `GET /worktrees` | | `WorktreeView[]` (`{ path, branch, run_id?, size_bytes, orphaned }`) | `worktrees list` |
@@ -136,7 +136,7 @@ Types the supervisor adds in `so-core` or `so-web` (T2.1 defines them with `sche
 ["status"] ["dashboard"] ["usage","daily",days] ["harnesses"] ["accounts"] ["accounts","scan"]
 ["accounts",name,"signin"] ["sessions",filter] ["session",id] ["session",id,"events"]
 ["run",id] ["run",id,"events"] ["run",id,"transcript"] ["run",id,"route"] ["run",id,"messages"]
-["choices"] ["routing","records"] ["agents"] ["agent",name] ["workflows"] ["workflow-runs"]
+["levels"] ["routing","records"] ["agents"] ["agent",name] ["workflows"] ["workflow-runs"]
 ["workflow-run",id] ["config"]
 ```
 
@@ -253,27 +253,30 @@ Purpose: manage accounts and their sign-in. Detailed sign-in flow in section 5.
 Components: `Table`, `Switch` (enable), `Badge`, `Progress`, `DropdownMenu` (row actions: Edit, Flag cooldown, Sign in, Remove), `Dialog` (add, import, login), `AlertDialog` (remove, type the name to confirm), `Sheet` (edit cap, priority, pools: `Form`, `Input type=number`, `Checkbox` per pool), `Popover` plus `Calendar`/`Input` (flag until), `Select` (harness), `sonner` toasts.
 Data: `GET /accounts`; mutations per table above. Live: `account`, `headroom` events.
 
-### 3.5 Choices and routing
+### 3.5 Levels and routing
 
-Purpose: edit the approved Choices and the routing instruction, preview a Route, review the Route log.
+Purpose: edit the complexity levels (each with its models in preference order) and the routing instruction, preview a Route, review the Route log. The page is at `/routing`; its first tab is Levels.
 
 ```
 +-------------------------------------------------------------------------+
-| Choices & routing   [Choices] [Routing instruction] [Preview] [Log]     |
-| Choices tab:                                                            |
-| Id          Harness Model         Effort Roles        Enabled  Description|
-| codex-high  codex   gpt-5.x       high   code,review  [on]     Hard ... |
-|                                                       [+ Add choice]    |
+| Levels and routing  [Levels] [Routing instruction] [Preview] [Route log]|
+| Levels tab:                                                             |
+| complex  63-87                            [Edit level] [Delete level]   |
+|   1  agy/claude-sonnet-4-6/thinking   [Up] [Down] [Remove]             |
+|   2  opencode/opencode/muse-spark-1.3 [Up] [Down] [Remove]             |
+|   3  codex/gpt-6.1-sol/high           [Up] [Down] [Remove]             |
+|                                              [+ Add model] [+ Add level]|
 | Preview tab:                                                            |
-| Prompt [textarea]  Role [select] Pin: harness/account/model/effort      |
+| Prompt [textarea]  Model [name or ref]  Harness  Account  Effort         |
 | [Run preview]                                                           |
-|  Result: codex-high on codex-acc1  source: jev  confidence 0.82         |
-|  codex-high  ████████ 0.62 | agy-pro ███ 0.21 | ...   Rationale: ...    |
+|  Result: codex/gpt-6.1-sol/high on codex-acc1  source: jev  confidence 0.82|
 +-------------------------------------------------------------------------+
 ```
 
-Components: `Tabs`, `Table` with inline edit through `Dialog` + `Field` with react-hook-form (`Input`, `Select` for harness, `Textarea` for description, `Switch` enabled, `Checkbox`/`ToggleGroup` for roles), `Textarea` (instruction, with a character count and Save/Revert buttons), `Progress`-style probability bars (shared `ProbabilityBars` component), `Badge` (source: jev, heuristic, pinned), `Table` + `Pagination` (log), `sonner` toasts.
-Data: `GET/PUT /choices`, `POST /route`, `GET /routing/records`. Live: `route_decision` invalidates the log. Saving shows validation errors from 422 `data` next to fields.
+Levels tab: a card per level with Edit level and Delete level (the last level cannot be deleted). Each card lists its models in order, with Move up, Move down and Remove. The Add model dialog takes harness, model (with catalog suggestions) and effort, and shows the ref it will write as a live preview. The Add level dialog takes name, min, max and an optional tier. The preview has no role or agent field; Model accepts a name or harness/model/effort.
+
+Components: `Tabs`, cards with ordered lists, `Dialog` + `Field` with react-hook-form (`Input`, `Select` for harness and tier, model suggestions from the catalog), `Textarea` (instruction, with a character count and Save/Revert buttons), `Progress`-style probability bars (shared `ProbabilityBars` component), `Badge` (source: jev, heuristic, pinned), `Table` + `Pagination` (log), `sonner` toasts.
+Data: `GET/PUT /levels` (body `{levels, routing_instruction}`), `POST /route`, `GET /routing/records`. Live: `route_decision` invalidates the log. Saving shows validation errors from 422 `data` next to fields.
 
 ### 3.6 Agents
 
@@ -471,7 +474,7 @@ web/src/
                                        WorktreeTab, JoinTab, RunActions)
     accounts/              AccountsPage, AccountsTable, AddAccountDialog, SignInDialog, ImportDialog,
                            EditAccountSheet, FlagDialog, RemoveAccountDialog
-    routing/               RoutingPage, ChoicesTable, ChoiceDialog, InstructionEditor, RoutePreview, RouteLog
+    routing/               RoutingPage, LevelsEditor, LevelDialog, ModelDialog, InstructionEditor, RoutePreview, RouteLog
     agents/                AgentsPage, AgentEditor
     workflows/             WorkflowsPage, WorkflowRunPage
     settings/              SettingsPage, sections/*
@@ -510,7 +513,7 @@ export type EventType = "run_queued" | "run_started" | "state_changed" | "run_fi
 export interface Event { id: string; session_id: string; run_id: string | null; ts: string; type: EventType; data: unknown }
 export interface Headroom { account: string; pool: string; five_hour_remaining_pct: number | null; five_hour_resets_at: string | null;
   weekly_remaining_pct: number | null; weekly_resets_at: string | null; status: HeadroomStatus; source: string; observed_at: string }
-export interface Choice { id: string; harness: Harness; model: string; effort?: string; roles: string[]; description: string; enabled: boolean }
+export interface Level { name: string; min: number; max: number; tier?: string; models: string[] }  // models are model refs
 export interface UsageTotals { input_tokens: number; output_tokens: number; cost: number }
 export interface RunViewPublic { run_id: string; state: RunState; harness?: Harness; account?: string; model?: string;
   recent_events: Event[]; result?: unknown; usage: UsageTotals; worktree?: string; branch?: string;
@@ -519,12 +522,12 @@ export interface RunViewPublic { run_id: string; state: RunState; harness?: Harn
 export interface AccountView { name: string; harness: Harness; signed_in: SignInState; enabled: boolean; cap: number;
   active_runs: number; headroom: Headroom[]; error?: string; priority?: number; pools?: string[]; flags?: AccountFlag[] }
 export interface AccountFlag { pool?: string; until: string; reason?: string }
-export interface HarnessesView { accounts: AccountView[]; choices: Choice[] }
+export interface HarnessesView { accounts: AccountView[]; choices: string[] }  // model refs
 export interface RouteAlternative { choice_id: string; account?: string; score?: number }
 export interface RouteResult { choice_id: string; harness: Harness; account: string; model: string; effort?: string;
   source: RouteSource; rationale: string; confidence?: number; probabilities: Record<string, number>;
   usage: UsageTotals; alternatives: RouteAlternative[]; config_fingerprint: string }
-export interface RouteParams { prompt: string; role?: string; exclude?: string[]; harness?: string; account?: string; model?: string; effort?: string }
+export interface RouteParams { prompt: string; agent?: string; exclude?: string[]; harness?: string; account?: string; model?: string; effort?: string }
 export interface MessageView { id: string; from_run?: string; to_run?: string; kind: MessageKind; body: string; created_at: string }
 export interface SendMessageParams { text: string; kind?: MessageKind }
 export interface StatusResult { pid: number; version: string; uptime_s: number; sessions: number; active_runs: number }
@@ -570,7 +573,7 @@ Tailwind `dark` class strategy on `<html>`, three-way toggle (system default). A
 
 ### 7.4 Empty, error, loading
 - Loading: `Skeleton` shaped like the final content (table rows, cards, a grey lane stack for the timeline); no spinners except in buttons and login polling.
-- Empty: sessions ("No sessions yet. Connect an orchestrator with `superorchestrator install`." with the command in `CommandBlock`), accounts ("Add your first account"), live runs ("No active runs"), choices, agents, workflows.
+- Empty: sessions ("No sessions yet. Connect an orchestrator with `superorchestrator install`." with the command in `CommandBlock`), accounts ("Add your first account"), live runs ("No active runs"), levels ("no levels list models (nothing routes until one does)"), agents, workflows.
 - Error: query errors render `ErrorAlert` (message, code, Retry). A global `QueryCache.onError` toasts background refetch errors once per minute. 401 redirects to `/login`; 503 `UNAVAILABLE` shows "Supervisor unavailable" with the header pill red. A React error boundary per route shows a fallback card, so a timeline crash does not take down navigation.
 - Stream offline: amber pill and the 5 s polling fallback (2.3).
 
@@ -653,7 +656,7 @@ Numbering follows `docs/plans/v1-plan.md` (Phase 2). T2.1 (server) is owned sepa
 
 ### T2.7 Accounts and Choices/routing pages (sonnet)
 - Goal: sections 3.4, 3.5 and 5.
-- Acceptance: accounts table and all dialogs and sheets (add, sign-in with device-auth and manual polling flows, import scan, edit, flag, remove with typed confirmation), choices CRUD, instruction editor, route preview with `ProbabilityBars`, Route log pagination, `models list/refresh` control on the Choices tab; forms via `field` + react-hook-form + zod; tests for sign-in polling (fake timers) and remove confirmation.
+- Acceptance: accounts table and all dialogs and sheets (add, sign-in with device-auth and manual polling flows, import scan, edit, flag, remove with typed confirmation), levels editor (models per level, add and remove, move up and down), instruction editor, route preview with `ProbabilityBars`, Route log pagination, `models list/refresh` control on the Levels tab; forms via `field` + react-hook-form + zod; tests for sign-in polling (fake timers) and remove confirmation.
 - Out of scope: Rust account commands, agents, workflows, settings.
 
 ### T2.8 Agents, Workflows, Settings and polish (sonnet)

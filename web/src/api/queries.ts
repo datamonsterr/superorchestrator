@@ -11,7 +11,7 @@ import { qk, type SessionFilter } from './keys'
 import { useStreamState } from './stream'
 
 export { qk, type SessionFilter }
-import type { ChoicesPut, ConfigPatch, PruneRequest, ModelCatalog, EventType, Harness, RouteParams, SendMessageParams } from './types'
+import type { LevelsPut, ConfigPatch, PruneRequest, ModelCatalog, EventType, Harness, RouteParams, SendMessageParams } from './types'
 
 /** 5 s polling while the SSE stream is down (design 2.3), otherwise false. */
 export function usePollingInterval(ms = 5000): number | false {
@@ -103,8 +103,8 @@ export function useRunMessages(id: string) {
   return useQuery({ queryKey: qk.runMessages(id), queryFn: ({ signal }) => endpoints.listRunMessages(id, { signal }), enabled: !!id })
 }
 
-export function useChoices() {
-  return useQuery({ queryKey: qk.choices(), queryFn: ({ signal }) => endpoints.getChoices({ signal }) })
+export function useLevels() {
+  return useQuery({ queryKey: qk.levels(), queryFn: ({ signal }) => endpoints.getLevels({ signal }) })
 }
 export function useModels() {
   return useQuery({ queryKey: qk.models(), queryFn: ({ signal }) => endpoints.getModels({ signal }) })
@@ -170,7 +170,17 @@ export const useRejectRun = () =>
 /** Records a `join_command_issued` audit event server side, so the run's events are stale afterwards. */
 export const useJoinRun = () => useApiMutation(({ id }: Id) => endpoints.joinRun(id), ({ id }) => [qk.runEvents(id)])
 export const useRoutePreview = () => useApiMutation((params: RouteParams) => endpoints.route(params))
-export const usePutChoices = () => useApiMutation((body: ChoicesPut) => endpoints.putChoices(body), () => [qk.choices(), qk.harnesses()])
+/** The PUT response is the server's view of the levels, so it goes straight into the cache. */
+export function usePutLevels() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: LevelsPut) => endpoints.putLevels(body),
+    onSuccess: (data) => {
+      qc.setQueryData(qk.levels(), data)
+      return qc.invalidateQueries({ queryKey: qk.harnesses() })
+    },
+  })
+}
 export const useRefreshModels = () => useApiMutation<void, ModelCatalog>(() => endpoints.refreshModels(), () => [qk.models()])
 export const useCreateAccount = () =>
   useApiMutation((v: { harness: Harness; name: string; home?: string }) => endpoints.createAccount(v), ACCOUNT_KEYS)

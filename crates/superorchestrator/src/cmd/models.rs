@@ -80,7 +80,7 @@ async fn refresh_cmd(ctx: &Ctx) -> Result<()> {
         if !report.unknown_choice_models.is_empty() {
             writeln!(
                 w,
-                "choices whose model is not in the catalog (choices are never edited):"
+                "listed models not in the catalog (levels are never edited):"
             )?;
             for c in &report.unknown_choice_models {
                 writeln!(w, "  {}  {} / {}", c.choice, c.harness, c.model)?;
@@ -89,7 +89,7 @@ async fn refresh_cmd(ctx: &Ctx) -> Result<()> {
         if !report.missing_choice_models.is_empty() {
             writeln!(
                 w,
-                "choices whose model the harness does not list (runs on them will fail):"
+                "listed models the harness does not list (runs on them will fail):"
             )?;
             for c in &report.missing_choice_models {
                 writeln!(w, "  {}  {} / {}", c.choice, c.harness, c.model)?;
@@ -97,7 +97,7 @@ async fn refresh_cmd(ctx: &Ctx) -> Result<()> {
         }
         writeln!(
             w,
-            "{} catalog model(s) are used by no choice",
+            "{} catalog model(s) are listed by no level",
             report.unused_models.len()
         )?;
         Ok(())

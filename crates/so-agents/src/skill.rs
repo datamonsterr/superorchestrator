@@ -1,5 +1,5 @@
 //! The shipped skills (SPEC 19.1): `use-superorchestrator-mcp`, generated from the current
-//! accounts, choices and agents and regenerated whenever they change, and the static
+//! accounts, levels and agents and regenerated whenever they change, and the static
 //! `superorchestrator-cli`.
 //!
 //! They live in this crate so the CLI and the web API can both refresh them.
@@ -7,7 +7,8 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use so_core::{AccountFile, Choice, Config, Paths};
+use so_core::config::Level;
+use so_core::{AccountFile, Config, Paths};
 
 use crate::{AgentDef, discover::discover_user};
 
@@ -40,7 +41,7 @@ const DESCRIPTION_MAX: usize = 160;
 pub const MARKER: &str = "<!-- superorchestrator:managed -->";
 
 /// Renders the skill's `SKILL.md`.
-pub fn render_skill(accounts: &[AccountFile], choices: &[Choice], agents: &[AgentDef]) -> String {
+pub fn render_skill(accounts: &[AccountFile], levels: &[Level], agents: &[AgentDef]) -> String {
     let mut out = String::new();
     out.push_str(MCP_FRONT_MATTER);
     let _ = writeln!(out, "{MARKER}\n");
@@ -64,26 +65,31 @@ pub fn render_skill(accounts: &[AccountFile], choices: &[Choice], agents: &[Agen
         out.push('\n');
     }
 
-    out.push_str("## Choices\n\n");
-    let enabled: Vec<&Choice> = choices.iter().filter(|c| c.enabled).collect();
-    if enabled.is_empty() {
-        out.push_str("None enabled. Edit `choices` in `config.toml`.\n\n");
+    out.push_str("## Levels\n\n");
+    if levels.iter().all(|l| l.models.is_empty()) {
+        out.push_str("None. List models on `[[router.levels]]` in `config.toml`.\n\n");
     } else {
-        for c in enabled {
-            let _ = write!(out, "- `{}`: {} / {}", c.id, c.harness.as_str(), c.model);
-            if let Some(e) = &c.effort {
-                let _ = write!(out, " ({e})");
-            }
-            if so_core::model_name_is_free(&c.model) {
-                out.push_str(" free");
-            }
-            if !c.roles.is_empty() && c.roles != ["worker"] {
-                let _ = write!(out, ", roles: {}", c.roles.join(", "));
-            }
-            if !c.description.is_empty() {
-                let _ = write!(out, ". {}", c.description);
-            }
-            out.push('\n');
+        for l in levels.iter().filter(|l| !l.models.is_empty()) {
+            let refs: Vec<String> = l
+                .models
+                .iter()
+                .map(|m| {
+                    let free = if so_core::model_name_is_free(&m.model) {
+                        " free"
+                    } else {
+                        ""
+                    };
+                    format!("`{}`{free}", m.id())
+                })
+                .collect();
+            let _ = writeln!(
+                out,
+                "- {} ({}-{}): {}",
+                l.name,
+                l.min,
+                l.max,
+                refs.join(", ")
+            );
         }
         out.push('\n');
     }
@@ -177,13 +183,16 @@ pub fn is_managed(text: &str) -> bool {
     text.lines().any(|l| l.trim_end() == MARKER)
 }
 
-/// Renders the skill from what is on disk now: accounts, `choices` in `config.toml` and the
+/// Renders the skill from what is on disk now: accounts, the levels in `config.toml` and the
 /// user's agents. Project agents depend on the working directory, so they are left out.
 pub fn render_current(paths: &Paths) -> Result<String, String> {
     let accounts = AccountFile::list(paths).map_err(|e| e.to_string())?;
-    let choices = Config::load(paths).map_err(|e| e.to_string())?.choices;
+    let levels = Config::load(paths)
+        .map_err(|e| e.to_string())?
+        .router
+        .levels;
     let agents = discover_user(paths).agents;
-    Ok(render_skill(&accounts, &choices, &agents))
+    Ok(render_skill(&accounts, &levels, &agents))
 }
 
 /// What [`refresh`] did.
@@ -314,7 +323,7 @@ Global: `--json`, `-y`/`--yes`, `--config-dir DIR`. `<cmd> --help` lists flags.
 
 - `superorchestrator setup`: first command. Config, detect harnesses, import logins, add accounts, `install`. Re-run safe. Flags: `--yes`, `--codex N --claude N --opencode N --agy N` (accounts per harness; claude default 0), `--no-login`, `--no-install`, `--no-claude-md`. No terminal, no `--yes`: prints plan only.
 - `superorchestrator` or `superorchestrator tui`: terminal UI, tabs Overview/Accounts/Runs/Setup. `j`/`k` move, Enter detail, `a` accept+merge, `r` reject, `o` join, `?` help.
-- `init`: config dir, `config.toml`, choices, model catalog.
+- `init`: config dir, `config.toml`, model catalog.
 - `install [--force] [--dry-run] [--no-claude-md]`: MCP server per harness, both skills, managed block in `~/.claude/CLAUDE.md`. `uninstall [--dry-run]` reverses.
 
 ## Accounts
@@ -331,7 +340,7 @@ Account = one signed-in credential home, one harness (codex, agy, opencode, clau
 
 - `status`: accounts, headroom, supervisor.
 - `doctor`: binaries, config, db, socket, UI port, sign-ins. Run first when broken.
-- `route \"<task>\" [--role ROLE] [--explain]`: preview pick, runs nothing.
+- `route \"<task>\" [--model REF] [--agent NAME] [--explain]`: preview pick, runs nothing.
 
 ## Runs
 
@@ -358,15 +367,13 @@ mod tests {
     use crate::parse::{AgentSource, HarnessPref};
     use so_core::Harness;
 
-    fn choice(id: &str, enabled: bool) -> Choice {
-        Choice {
-            id: id.into(),
-            harness: Harness::Codex,
-            model: "gpt".into(),
-            effort: Some("high".into()),
-            roles: vec!["code".into()],
-            description: "fast".into(),
-            enabled,
+    fn level(name: &str, min: u8, max: u8, models: &[&str]) -> Level {
+        Level {
+            name: name.into(),
+            min,
+            max,
+            tier: None,
+            models: models.iter().map(|m| m.parse().unwrap()).collect(),
         }
     }
 
@@ -384,20 +391,30 @@ mod tests {
     }
 
     #[test]
-    fn lists_accounts_and_enabled_choices_with_marker() {
+    fn lists_accounts_and_levels_with_marker() {
         let mut off = AccountFile::new("claude-b", Harness::Claude, "~/b", "claude").unwrap();
         off.enabled = false;
         let accounts = [
             AccountFile::new("codex-a", Harness::Codex, "~/a", "codex").unwrap(),
             off,
         ];
-        let s = render_skill(&accounts, &[choice("c1", true), choice("c2", false)], &[]);
+        let s = render_skill(
+            &accounts,
+            &[
+                level("low", 0, 37, &["agy/gemini-3.8-flash-low/low"]),
+                level("high", 63, 100, &["codex/gpt/high", "claude/opus"]),
+                level("empty", 38, 62, &[]),
+            ],
+            &[],
+        );
         assert!(s.starts_with("---\nname: use-superorchestrator-mcp\n"));
         assert!(s.contains(MARKER));
         assert!(s.contains("- `codex-a`: codex, cap"));
         assert!(s.contains("(disabled)"));
-        assert!(s.contains("`c1`: codex / gpt (high), roles: code. fast"));
-        assert!(!s.contains("`c2`"));
+        assert!(s.contains("## Levels\n\n"));
+        assert!(s.contains("- low (0-37): `agy/gemini-3.8-flash-low/low`\n"));
+        assert!(s.contains("- high (63-100): `codex/gpt/high`, `claude/opus`\n"));
+        assert!(!s.contains("- empty"));
         assert!(s.contains("superorchestrator status"));
     }
 
@@ -405,7 +422,7 @@ mod tests {
     fn empty_state_still_renders() {
         let s = render_skill(&[], &[], &[]);
         assert!(s.contains("## Accounts\n\nNone. Run `superorchestrator account add`"));
-        assert!(s.contains("None enabled."));
+        assert!(s.contains("## Levels\n\nNone. List models on `[[router.levels]]`"));
         assert!(s.contains("None. `superorchestrator agent create`"));
     }
 
@@ -463,14 +480,22 @@ mod tests {
     }
 
     #[test]
-    fn choices_say_free_and_hide_the_default_role() {
-        let mut free = choice("oc", true);
-        free.harness = Harness::Opencode;
-        free.model = "opencode/deepseek-v4.1-flash-free".into();
-        free.roles = vec!["worker".into()];
-        let s = render_skill(&[], &[free], &[]);
-        let line = s.lines().find(|l| l.starts_with("- `oc`")).unwrap();
-        assert!(line.contains(" free") && !line.contains("roles"), "{line}");
+    fn models_say_free() {
+        let s = render_skill(
+            &[],
+            &[level(
+                "low",
+                0,
+                37,
+                &["opencode/opencode/deepseek-v4.1-flash-free", "codex/gpt"],
+            )],
+            &[],
+        );
+        let line = s.lines().find(|l| l.starts_with("- low")).unwrap();
+        assert!(
+            line.ends_with("`opencode/opencode/deepseek-v4.1-flash-free` free, `codex/gpt`"),
+            "{line}"
+        );
     }
 
     #[test]

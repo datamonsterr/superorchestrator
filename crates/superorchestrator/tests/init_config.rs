@@ -55,36 +55,25 @@ fn init_prints_the_next_steps_in_order() {
 }
 
 #[test]
-fn seeded_choices_parse_with_core_config() {
+fn seeded_levels_parse_with_core_config() {
     let e = Env::new();
     e.init();
     let cfg = so_core::Config::load(&e.paths()).unwrap();
-    assert!(cfg.choices.len() >= 11, "{}", cfg.choices.len());
-    let by = |id: &str| cfg.choices.iter().find(|c| c.id == id).unwrap();
-    assert!(by("agy-flash-medium").enabled);
-    assert_eq!(by("agy-sonnet-thinking").model, "claude-sonnet-4-6");
+    let refs: Vec<String> = cfg.choices().iter().map(|c| c.id()).collect();
+    assert!(refs.len() >= 8, "{refs:?}");
+    assert!(refs.contains(&"agy/gemini-3.8-flash-medium/medium".to_string()));
+    assert!(refs.contains(&"agy/claude-sonnet-4-6/thinking".to_string()));
+    // Codex refs are listed: without a signed-in account they are just not eligible.
     assert!(
-        cfg.choices
-            .iter()
-            .filter(|c| c.harness == so_core::Harness::Claude)
-            .all(|c| !c.enabled)
-    );
-    // Codex choices are on: without a signed-in account they are just not eligible.
-    assert!(
-        cfg.choices
-            .iter()
-            .filter(|c| c.harness == so_core::Harness::Codex)
-            .all(|c| c.enabled)
-    );
-    assert!(
-        cfg.choices
+        cfg.choices()
             .iter()
             .any(|c| c.harness == so_core::Harness::Codex)
     );
+    // Claude stays out of the seed: auto routing never spends it unless the user adds a line.
     assert!(
-        cfg.choices
+        cfg.choices()
             .iter()
-            .any(|c| c.harness == so_core::Harness::Claude)
+            .all(|c| c.harness != so_core::Harness::Claude)
     );
 }
 
@@ -97,7 +86,7 @@ fn init_seeds_levels_that_validate_and_cover_the_scale() {
         .router
         .levels
         .iter()
-        .map(|l| (l.name.as_str(), l.min, l.max, l.choices.len()))
+        .map(|l| (l.name.as_str(), l.min, l.max, l.models.len()))
         .collect();
     assert_eq!(
         l,
@@ -109,13 +98,6 @@ fn init_seeds_levels_that_validate_and_cover_the_scale() {
             ("expert", 88, 100, 3),
         ]
     );
-    // Every seeded level choice is a seeded choice, and Claude choices stay out.
-    for lv in &cfg.router.levels {
-        for c in &lv.choices {
-            let ch = cfg.choices.iter().find(|x| x.id == c.id).unwrap();
-            assert_ne!(ch.harness, so_core::Harness::Claude);
-        }
-    }
 }
 
 #[test]
@@ -154,7 +136,7 @@ fn config_get_set_roundtrip_and_validation() {
     // Comments survive a set.
     let text = std::fs::read_to_string(e.cfg.join("config.toml")).unwrap();
     assert!(text.contains("# superorchestrator configuration."));
-    assert!(so_core::Config::load(&e.paths()).unwrap().choices.len() >= 11);
+    assert!(so_core::Config::load(&e.paths()).unwrap().choices().len() >= 8);
 
     // Wrong type and unknown key are rejected and change nothing.
     e.cmd()

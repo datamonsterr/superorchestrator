@@ -369,12 +369,23 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     let done = s.checks.iter().filter(|c| c.level == Level::Ok).count();
     let fixes = s.checks.iter().filter(|c| c.fix.is_some()).count();
     let check_rows = (1 + s.checks.len() + fixes) as u16;
-    let [cards, list, feed] = Layout::vertical([
+    let [cards, list, rest] = Layout::vertical([
         Constraint::Length(4),
         Constraint::Length(check_rows + 1),
         Constraint::Min(0),
     ])
     .areas(area);
+    // Recent runs come first; the Levels block takes what they leave.
+    let feed_rows = if s.runs.is_empty() {
+        0
+    } else {
+        1 + s.runs.len() as u16
+    };
+    let [feed, levels] = Layout::vertical([
+        Constraint::Length(feed_rows.min(rest.height)),
+        Constraint::Min(0),
+    ])
+    .areas(rest);
 
     let cols: [Rect; 4] = Layout::horizontal([Constraint::Ratio(1, 4); 4])
         .spacing(1)
@@ -451,6 +462,36 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
             lines.push(run_line(t, r, app.now, feed.width as usize));
         }
         f.render_widget(Paragraph::new(lines), feed);
+    }
+
+    // Drawn only when rows remain after recent runs, so it is absent at 80x24 with runs.
+    // A blank row, the heading and at least one line.
+    if levels.height >= 3 {
+        let levels = levels.inner(Margin::new(1, 0));
+        let mut lines = vec![Line::raw(""), Line::styled("Levels", t.bold())];
+        if s.levels.is_empty() {
+            lines.push(Line::styled(
+                "no levels list models (nothing routes until one does)",
+                t.muted(),
+            ));
+        }
+        let name_w = s.levels.iter().map(|l| l.name.width()).max().unwrap_or(0);
+        for l in &s.levels {
+            let text = format!(
+                "{:<name_w$}  {:>3}-{:<3}  {}",
+                l.name,
+                l.min,
+                l.max,
+                l.models.join(", ")
+            );
+            lines.push(Line::raw(truncate(
+                &text,
+                levels.width as usize,
+                t.ellipsis(),
+            )));
+        }
+        lines.truncate(levels.height as usize);
+        f.render_widget(Paragraph::new(lines), levels);
     }
 }
 

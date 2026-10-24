@@ -58,16 +58,8 @@ pub fn check_effort(harness: Harness, effort: Option<&str>) -> Result<(), Driver
 /// or `:/_.@-[]` (including Claude's `sonnet[1m]` model suffix).
 pub fn check_selector(model: Option<&str>, effort: Option<&str>) -> Result<(), DriverError> {
     for (name, value) in [("model", model), ("effort", effort)] {
-        if let Some(value) = value
-            && (value.is_empty()
-                || value.starts_with('-')
-                || !value
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b":/_.@-[]".contains(&b)))
-        {
-            return Err(DriverError::Other(format!(
-                "invalid {name}: expected a nonempty value without a leading '-' using only A-Za-z0-9:/_.@-[]"
-            )));
+        if let Some(problem) = value.and_then(|v| so_core::selector_problem(name, v)) {
+            return Err(DriverError::Other(problem));
         }
     }
     Ok(())

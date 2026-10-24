@@ -87,8 +87,8 @@ pub fn routes() -> Router<AppState> {
             post(accounts::login_start).get(accounts::login_status),
         )
         .route(
-            "/api/v1/choices",
-            get(system::choices_get).put(system::choices_put),
+            "/api/v1/levels",
+            get(system::levels_get).put(system::levels_put),
         )
         .route(
             "/api/v1/config",

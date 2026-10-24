@@ -63,6 +63,16 @@ pub struct Check {
     pub fix: Option<String>,
 }
 
+/// One routing level of `config.toml`, for the Overview.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LevelRow {
+    pub name: String,
+    pub min: u8,
+    pub max: u8,
+    /// Model refs (`harness/model[/effort]`), most preferred first.
+    pub models: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub at: DateTime<Utc>,
@@ -74,6 +84,7 @@ pub struct Snapshot {
     pub active_runs: usize,
     pub pending_review: usize,
     pub checks: Vec<Check>,
+    pub levels: Vec<LevelRow>,
 }
 
 impl Snapshot {
@@ -330,7 +341,28 @@ pub fn load_snapshot(
         runs: rows.iter().map(run_item).collect(),
         active_runs: active,
         pending_review,
+        levels: level_rows(ctx),
     }
+}
+
+/// The levels as `config.toml` lists them; none when the config is missing or invalid (the
+/// checklist already reports that).
+fn level_rows(ctx: &Ctx) -> Vec<LevelRow> {
+    let Ok(config) = ctx.config() else {
+        return Vec::new();
+    };
+    config
+        .router
+        .levels
+        .iter()
+        .filter(|l| !l.models.is_empty())
+        .map(|l| LevelRow {
+            name: l.name.clone(),
+            min: l.min,
+            max: l.max,
+            models: l.models.iter().map(|m| m.id()).collect(),
+        })
+        .collect()
 }
 
 /// The detail pane of one run, from the store (no supervisor needed).
@@ -381,7 +413,7 @@ fn clean_multiline(s: &str) -> String {
 fn route_lines(data: &serde_json::Value) -> Vec<String> {
     let get = |k: &str| data.get(k).and_then(|v| v.as_str());
     let mut out = Vec::new();
-    let who: Vec<&str> = ["source", "choice_id", "account", "model"]
+    let who: Vec<&str> = ["source", "choice_id", "account"]
         .iter()
         .filter_map(|k| get(k))
         .collect();
@@ -449,10 +481,10 @@ mod tests {
 
     #[test]
     fn route_lines_prefer_who_and_why() {
-        let v = serde_json::json!({"source":"jev","choice_id":"codex-fast","account":"codex-1","model":"gpt","rationale":"small edit"});
+        let v = serde_json::json!({"source":"jev","choice_id":"codex/gpt-6.1-sol/high","account":"codex-1","rationale":"small edit"});
         assert_eq!(
             route_lines(&v),
-            vec!["jev / codex-fast / codex-1 / gpt", "small edit"]
+            vec!["jev / codex/gpt-6.1-sol/high / codex-1", "small edit"]
         );
         let v =
             serde_json::json!({"source":"jev","choice_id":"c","complexity":55.04,"level":"mid"});

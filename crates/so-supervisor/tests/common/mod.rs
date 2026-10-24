@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use so_accounts::HostEnv;
+use so_core::config::Level;
 use so_core::proto::{
     METHOD_GET_RUN, METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, RunRef, RunView, SpawnParams,
     SpawnResult, WaitParams, WaitResult,
@@ -168,7 +169,7 @@ impl Env {
         self.account_of(name, "agy", cap, script_text);
     }
 
-    fn account_of(&self, name: &str, harness: &str, cap: u32, script_text: &str) {
+    pub fn account_of(&self, name: &str, harness: &str, cap: u32, script_text: &str) {
         let script_path = self.dir.path().join(format!("{name}.jsonl"));
         std::fs::write(&script_path, script_text).unwrap();
         let wrapper = self.dir.path().join(format!("{name}.sh"));
@@ -208,6 +209,15 @@ impl Env {
             ),
         )
         .unwrap();
+    }
+
+    /// An executable script that exits 0, written into the test dir. Stand-in binaries
+    /// for accounts whose runs only need to start (`/bin/true` is not portable).
+    pub fn noop_binary(&self, name: &str) -> PathBuf {
+        let path = self.dir.path().join(format!("{name}-noop.sh"));
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
     }
 
     /// Where the fake harness of `name` records each launch (argv and env keys).
@@ -328,6 +338,23 @@ impl Env {
             cwd: Some(self.repo.to_str().unwrap().into()),
             ..SpawnParams::default()
         }
+    }
+}
+
+/// One level over the whole complexity range that lists `refs` (model refs, in preference
+/// order). Assign it to `config.router.levels`.
+pub fn levels(refs: &[&str]) -> Vec<Level> {
+    vec![level("all", 0, 100, refs)]
+}
+
+/// A level spanning `min..=max` that lists `refs`.
+pub fn level(name: &str, min: u8, max: u8, refs: &[&str]) -> Level {
+    Level {
+        name: name.into(),
+        min,
+        max,
+        tier: None,
+        models: refs.iter().map(|r| r.parse().unwrap()).collect(),
     }
 }
 

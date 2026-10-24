@@ -107,19 +107,13 @@ async fn refresh_merges_reports_and_caches_models_dev() {
         models_dev_url: Some(&url),
         now: chrono::Utc::now(),
     };
-    let choice = |id: &str, h, m: &str| Choice {
-        id: id.into(),
-        harness: h,
-        model: m.into(),
-        effort: None,
-        roles: vec!["worker".into()],
-        description: String::new(),
-        enabled: true,
-    };
-    let choices = vec![
-        choice("known", Harness::Agy, "gemini-3.8-flash-low"),
-        choice("typo", Harness::Agy, "gemini-3.8-flash-lwo"),
-    ];
+    let choices: Vec<Choice> = [
+        "agy/gemini-3.8-flash-low/low",
+        "agy/gemini-3.8-flash-lwo/low",
+    ]
+    .iter()
+    .map(|r| r.parse().unwrap())
+    .collect();
     let before = Catalog::default_catalog();
     let (cat, rep) = refresh(&env, before.clone(), &choices).await;
 
@@ -149,7 +143,10 @@ async fn refresh_merges_reports_and_caches_models_dev() {
     );
     // Reported against choices, which are never edited.
     assert_eq!(rep.unknown_choice_models.len(), 1);
-    assert_eq!(rep.unknown_choice_models[0].choice, "typo");
+    assert_eq!(
+        rep.unknown_choice_models[0].choice,
+        "agy/gemini-3.8-flash-lwo/low"
+    );
     // The fake agy lists only gemini-9-flash: both agy choices are absent from that list,
     // while the (unlisted) codex and opencode harnesses have no choice here to report.
     let missing: Vec<_> = rep
@@ -157,7 +154,13 @@ async fn refresh_merges_reports_and_caches_models_dev() {
         .iter()
         .map(|c| c.choice.as_str())
         .collect();
-    assert_eq!(missing, ["known", "typo"]);
+    assert_eq!(
+        missing,
+        [
+            "agy/gemini-3.8-flash-low/low",
+            "agy/gemini-3.8-flash-lwo/low"
+        ]
+    );
     assert!(rep.unused_models.iter().any(|m| m.model == "gpt-new"));
     assert!(
         !rep.unused_models

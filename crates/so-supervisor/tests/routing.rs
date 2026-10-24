@@ -6,24 +6,17 @@ mod common;
 use common::*;
 use serde_json::{Value, json};
 use so_core::proto::{METHOD_CANCEL_AGENT, RouteResult, RouteSource, RunRef, RunView};
-use so_core::{Choice, ErrorKind, Harness, Isolation, RunState};
+use so_core::{ErrorKind, Harness, Isolation, RunState};
 
-fn choice(id: &str, model: &str) -> Choice {
-    Choice {
-        id: id.into(),
-        harness: Harness::Claude,
-        model: model.into(),
-        effort: Some("medium".into()),
-        roles: vec!["worker".into()],
-        description: "test choice".into(),
-        enabled: true,
-    }
+/// The model ref of a claude model at medium effort.
+fn claude(model: &str) -> String {
+    format!("claude/{model}/medium")
 }
 
 /// Claude accounts only: no decider key, one choice.
 fn routed_env() -> Env {
     let mut env = Env::new();
-    env.config.choices = vec![choice("claude-mid", "claude-sonnet-5-5")];
+    env.config.router.levels = levels(&[&claude("claude-sonnet-5-5")]);
     env.config.router.jev.key_env = "SO_ROUTING_TEST_NO_SUCH_KEY".into();
     env
 }
@@ -76,7 +69,7 @@ async fn auto_routing_picks_an_account_and_records_the_decision() {
     let ev = events(&v, "route_decision");
     assert_eq!(ev.len(), 1, "{:?}", types(&v));
     let result: RouteResult = serde_json::from_value(ev[0].data.clone()).unwrap();
-    assert_eq!(result.choice_id, "claude-mid");
+    assert_eq!(result.choice_id, "claude/claude-sonnet-5-5/medium");
     assert_eq!(result.account, "claude-a");
     assert_eq!(result.source, RouteSource::Heuristic);
     assert_eq!(result.ranked_accounts, vec!["claude-a", "claude-b"]);
@@ -150,7 +143,7 @@ async fn pinned_fields_are_respected() {
 #[tokio::test]
 async fn a_harness_pin_works_without_a_matching_choice() {
     let mut env = routed_env();
-    env.config.choices.clear();
+    env.config.router.levels = Vec::new();
     env.account("claude-a", 2, &ok_script(&[]));
     let h = env.start().await;
     let c = env.client(&h).await;
@@ -550,10 +543,7 @@ fn agy_ok_script() -> String {
 #[cfg(target_os = "linux")]
 fn agy_env() -> Env {
     let mut env = Env::new();
-    env.config.choices = vec![Choice {
-        harness: Harness::Agy,
-        ..choice("agy-fast", "gemini-3.8-flash-low")
-    }];
+    env.config.router.levels = levels(&["agy/gemini-3.8-flash-low"]);
     env.config.router.jev.key_env = "SO_ROUTING_TEST_NO_SUCH_KEY".into();
     env
 }
@@ -855,10 +845,7 @@ async fn an_opencode_http_429_at_launch_fails_over() {
         return;
     }
     let mut env = Env::new();
-    env.config.choices = vec![Choice {
-        harness: Harness::Opencode,
-        ..choice("oc-fast", "opencode/fake-model")
-    }];
+    env.config.router.levels = levels(&["opencode/opencode/fake-model"]);
     env.config.router.jev.key_env = "SO_ROUTING_TEST_NO_SUCH_KEY".into();
     for n in ["oc-a", "oc-b"] {
         let bin = fake_opencode_429(&env, n);
@@ -895,10 +882,7 @@ async fn an_opencode_http_429_at_launch_fails_over() {
 /// Two choices and a key, so the decider is asked; its endpoint refuses connections.
 fn unreachable_decider_env() -> Env {
     let mut env = Env::new();
-    env.config.choices = vec![
-        choice("claude-a-choice", "claude-sonnet-5-5"),
-        choice("claude-b-choice", "claude-haiku-5-5"),
-    ];
+    env.config.router.levels = levels(&[&claude("claude-sonnet-5-5"), &claude("claude-haiku-5-5")]);
     let key = env.dir.path().join("jev.env");
     std::fs::write(&key, "SO_ROUTING_TEST_DECIDER_KEY=sk-test-secret\n").unwrap();
     env.config.router.jev.key_env = "SO_ROUTING_TEST_DECIDER_KEY".into();
@@ -1020,14 +1004,11 @@ async fn flaky_decider(ok_hits: usize) -> (String, std::sync::Arc<std::sync::ato
 
 fn outage_env(endpoint: &str, key_tag: &str) -> Env {
     let mut env = Env::new();
-    env.config.choices = vec![
-        Choice {
-            harness: Harness::Agy,
-            ..choice("agy-fast", "gemini-3.8-flash-low")
-        },
-        choice("claude-x", "claude-sonnet-5-5"),
-        choice("claude-y", "claude-haiku-5-5"),
-    ];
+    env.config.router.levels = levels(&[
+        "agy/gemini-3.8-flash-low",
+        &claude("claude-sonnet-5-5"),
+        &claude("claude-haiku-5-5"),
+    ]);
     let key = env.dir.path().join("jev.env");
     std::fs::write(&key, format!("{key_tag}=sk-test-secret\n")).unwrap();
     env.config.router.jev.key_env = key_tag.into();
@@ -1074,7 +1055,9 @@ async fn a_queued_reroute_during_a_decider_outage_degrades_to_the_heuristic() {
     // The decider answers the spawn (hit 1) and is down afterwards.
     let (url, hits) = flaky_decider(1).await;
     let mut env = outage_env(&url, "SO_OUTAGE_QUEUE_KEY");
-    env.config.choices.retain(|c| c.harness == Harness::Claude);
+    env.config.router.levels[0]
+        .models
+        .retain(|m| m.harness == Harness::Claude);
     env.account("claude-a", 1, &idle_script());
     env.account("claude-b", 1, &idle_script());
     let h = env.start().await;
@@ -1242,16 +1225,9 @@ srv.serve_forever()
     path
 }
 
-fn oc_choice(id: &str, model: &str) -> Choice {
-    Choice {
-        harness: Harness::Opencode,
-        ..choice(id, model)
-    }
-}
-
-fn opencode_env(choices: Vec<Choice>) -> Env {
+fn opencode_env(refs: &[&str]) -> Env {
     let mut env = Env::new();
-    env.config.choices = choices;
+    env.config.router.levels = levels(refs);
     env.config.router.jev.key_env = "SO_ROUTING_TEST_NO_SUCH_KEY".into();
     for n in ["oc-a", "oc-b"] {
         let bin = model_missing_opencode(&env, n);
@@ -1262,10 +1238,7 @@ fn opencode_env(choices: Vec<Choice>) -> Env {
 
 fn two_choices_env() -> Env {
     let mut env = routed_env();
-    env.config.choices = vec![
-        choice("claude-mid", "claude-sonnet-5-5"),
-        choice("claude-other", "claude-haiku-5-5"),
-    ];
+    env.config.router.levels = levels(&[&claude("claude-sonnet-5-5"), &claude("claude-haiku-5-5")]);
     env
 }
 
@@ -1286,10 +1259,7 @@ async fn a_config_error_fails_over_to_another_choice_and_spares_the_account() {
     if !std::path::Path::new("/usr/bin/python3").exists() {
         return;
     }
-    let env = opencode_env(vec![
-        oc_choice("oc-one", "opencode/one"),
-        oc_choice("oc-two", "opencode/two"),
-    ]);
+    let env = opencode_env(&["opencode/opencode/one", "opencode/opencode/two"]);
     let h = env.start().await;
     let c = env.client(&h).await;
 
@@ -1335,7 +1305,7 @@ async fn a_config_error_on_a_pinned_model_fails_at_once() {
     if !std::path::Path::new("/usr/bin/python3").exists() {
         return;
     }
-    let env = opencode_env(vec![oc_choice("oc-one", "opencode/one")]);
+    let env = opencode_env(&["opencode/opencode/one"]);
     let h = env.start().await;
     let c = env.client(&h).await;
 
@@ -1354,13 +1324,13 @@ async fn a_config_error_on_a_pinned_model_fails_at_once() {
     h.shutdown().await;
 }
 
-/// A harness pin with no model and no matching choice runs on a synthetic `pinned-` choice.
+/// A harness pin with no model and no matching choice runs on a synthetic choice whose id is the harness name.
 #[tokio::test]
 async fn a_config_error_on_a_harness_only_pin_fails_at_once() {
     if !std::path::Path::new("/usr/bin/python3").exists() {
         return;
     }
-    let env = opencode_env(Vec::new());
+    let env = opencode_env(&[]);
     let h = env.start().await;
     let c = env.client(&h).await;
 

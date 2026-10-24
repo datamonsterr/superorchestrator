@@ -4,6 +4,7 @@ import { server } from '@/test/server'
 import { LARGE_SESSION_ID } from '@/test/fixtures/large'
 import { endpoints } from '../endpoints'
 import { createHandlers, paginate } from './handlers'
+import * as fx from './fixtures'
 const GOOD = '---\nname: new-agent\ndescription: d\n---\nbody\n'
 
 describe('base handlers cover every endpoint in design 2.1', () => {
@@ -37,8 +38,8 @@ describe('base handlers cover every endpoint in design 2.1', () => {
     ['flagAccount', () => endpoints.flagAccount('agy-acc1', { hours: 5 })],
     ['startLogin', () => endpoints.startLogin('agy-acc1')],
     ['getLoginStatus', () => endpoints.getLoginStatus('agy-acc1')],
-    ['getChoices', () => endpoints.getChoices()],
-    ['putChoices', () => endpoints.putChoices({ choices: [], routing_instruction: '' })],
+    ['getLevels', () => endpoints.getLevels()],
+    ['putLevels', () => endpoints.putLevels({ levels: fx.levels.levels, routing_instruction: '' })],
     ['getModels', () => endpoints.getModels()],
     ['refreshModels', () => endpoints.refreshModels()],
     ['listWorktrees', () => endpoints.listWorktrees()],
@@ -80,6 +81,20 @@ describe('behaviour', () => {
     expect(p1.items).toHaveLength(1000)
     expect(p1.next_cursor).toBe('1000')
     expect(paginate(all, new URL('http://x/?cursor=2000&limit=1000')).next_cursor).toBeNull()
+  })
+})
+
+describe('mock levels', () => {
+  it('keeps a PUT for the session and lists the distinct refs as harness choices', async () => {
+    server.use(...createHandlers())
+    const first = await endpoints.getLevels()
+    expect(first.levels.map((l) => l.name)).toEqual(['trivial', 'simple', 'moderate', 'complex', 'expert'])
+    const harnesses = await endpoints.getHarnesses()
+    expect(harnesses.choices).toEqual([...new Set(first.levels.flatMap((l) => l.models))])
+    await endpoints.putLevels({ levels: first.levels.slice(0, 1), routing_instruction: 'x' })
+    const after = await endpoints.getLevels()
+    expect(after.levels).toHaveLength(1)
+    expect(after.routing_instruction).toBe('x')
   })
 })
 

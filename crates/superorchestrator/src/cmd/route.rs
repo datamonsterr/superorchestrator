@@ -38,20 +38,27 @@ pub fn run(ctx: &Ctx, args: RouteArgs) -> Result<ExitCode> {
             }
             let task = args.task.join(" ");
             runtime()?
-                .block_on(route(ctx, task, args.role, args.explain))
+                .block_on(route(ctx, task, args.model, args.agent, args.explain))
                 .map(|()| ExitCode::SUCCESS)
         }
     }
 }
 
-async fn route(ctx: &Ctx, task: String, role: Option<String>, explain: bool) -> Result<()> {
+async fn route(
+    ctx: &Ctx,
+    task: String,
+    model: Option<String>,
+    agent: Option<String>,
+    explain: bool,
+) -> Result<()> {
     let client = connect(ctx).await?;
     let r: RouteResult = client
         .call(
             METHOD_ROUTE,
             RouteParams {
                 prompt: task,
-                role,
+                model,
+                agent,
                 ..RouteParams::default()
             },
         )
@@ -99,6 +106,9 @@ async fn route(ctx: &Ctx, task: String, role: Option<String>, explain: bool) -> 
                     })
                     .collect();
                 write_table(w, &["CHOICE", "ACCOUNT", "SCORE"], &rows)?;
+            }
+            if !r.ranked_accounts.is_empty() {
+                writeln!(w, "accounts:   {}", r.ranked_accounts.join(", "))?;
             }
             writeln!(
                 w,

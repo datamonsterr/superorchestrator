@@ -10,7 +10,7 @@ use serde_json::Value;
 use so_core::proto::{
     AccountView, MessageView, RouteResult, RunView, SignInState, StatusResult, UsageTotals,
 };
-use so_core::{Choice, Config, ErrorKind, Event, Harness, RunState};
+use so_core::{Config, ErrorKind, Event, Harness, RunState};
 
 /// One page of a list. `next_cursor` is opaque; pass it back as `cursor` (or `after`).
 #[derive(Debug, Clone, Serialize)]
@@ -274,8 +274,9 @@ pub struct PruneResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct ChoicesView {
-    pub choices: Vec<Choice>,
+pub struct LevelsView {
+    /// The Levels in config order; each lists its Choices as `harness/model[/effort]` refs.
+    pub levels: Vec<so_core::config::Level>,
     pub routing_instruction: String,
     /// The file differs from what the running supervisor loaded.
     pub restart_required: bool,

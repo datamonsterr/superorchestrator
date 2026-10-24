@@ -2,8 +2,8 @@
 //! The API key is never logged, printed or placed in an error message.
 //!
 //! The decider rates the complexity of the task against fixed anchors (a `score` question).
-//! Privacy: only the task text, the role and the routing instruction are sent. Choices,
-//! account names, quota, credentials and tokens are not.
+//! Privacy: only the task text, the agent profile name and the routing instruction are sent.
+//! Choices, account names, quota, credentials and tokens are not.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -69,7 +69,8 @@ pub struct JevRequest<'a> {
     /// The caller's own system prompt, when it has one; routing never supplies it today.
     pub system_instruction: &'a str,
     pub routing_instruction: &'a str,
-    pub role: &'a str,
+    /// Agent profile name the work is for (`worker` by default).
+    pub agent: &'a str,
 }
 
 /// An answer that passed validation.
@@ -207,7 +208,7 @@ pub fn build_payload(model: &str, req: &JevRequest<'_>) -> Value {
             "task_content": req.task,
             "system_instruction": req.system_instruction,
             "routing_instruction": req.routing_instruction,
-            "role": req.role,
+            "agent": req.agent,
         },
         "questions": {
             "complexity": {
@@ -677,7 +678,7 @@ mod tests {
             task: "t",
             system_instruction: "",
             routing_instruction: "rate it",
-            role: "worker",
+            agent: "worker",
         };
         let b = build_payload("m", &req);
         let q = &b["questions"]["complexity"];

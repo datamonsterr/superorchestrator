@@ -19,7 +19,7 @@ A header (version, supervisor state, config directory), the tabs, the body for t
 
 ## Tabs
 
-**1 Overview.** Four counters (accounts, active runs, runs waiting for review, checklist progress), the setup checklist and the latest runs. The checklist covers the config, the harnesses found on `PATH`, accounts, sign-ins, whether superorchestrator is registered with Claude Code, and the OpenRouter router key. Each missing item shows the fix beside it.
+**1 Overview.** Four counters (accounts, active runs, runs waiting for review, checklist progress), the setup checklist, the latest runs and a Levels block. The Levels block lists each level as `name  min-max  ref, ref` (the model refs in order). It is shown when rows remain after the recent runs, so at 80x24 with runs listed it may be out of view. When no level lists models, the block shows one line: no levels list models (nothing routes until one does). The checklist covers the config, the harnesses found on `PATH`, accounts, sign-ins, whether superorchestrator is registered with Claude Code, and the OpenRouter router key. Each missing item shows the fix beside it.
 
 **2 Accounts.** The account table: name, harness, signed in, enabled, cap, active runs and headroom.
 
@@ -32,7 +32,7 @@ A header (version, supervisor state, config directory), the tabs, the body for t
 | `x` | Remove. You must type the account name to confirm. |
 | `i` | Scan for logins already on this machine and import them. |
 
-**3 Runs.** Recent runs, newest first: id, state, account, age and title. `Enter` opens a run: brief, route decision, recent events, result and, for a run waiting for review, its diff, all scrolling with `j` / `k`.
+**3 Runs.** Recent runs, newest first: id, state, account, age and title. `Enter` opens a run: brief, route decision (its route line is `source / choice_id / account`, where the choice id is the model ref), recent events, result and, for a run waiting for review, its diff, all scrolling with `j` / `k`.
 
 | Key | Action |
 | --- | --- |

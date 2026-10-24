@@ -1,5 +1,5 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
-import type { ApiErrorBody, Event, Harness, Page, TranscriptLine } from '../types'
+import type { ApiErrorBody, Event, Harness, LevelsPut, LevelsView, Page, TranscriptLine } from '../types'
 import { LARGE_SESSION_ID, makeLargeSession, type LargeSession } from '@/test/fixtures/large'
 import * as fx from './fixtures'
 
@@ -30,6 +30,7 @@ export interface HandlerOptions {
 export function createHandlers({ large = false, largeOptions }: HandlerOptions = {}): RequestHandler[] {
   let cached: LargeSession | null = null
   const getLarge = () => (cached ??= makeLargeSession({ seed: 1, ...largeOptions }))
+  let levels: LevelsView = structuredClone(fx.levels)
   // Harness of accounts created through the mock API, by name.
   const createdHarness = new Map<string, Harness>()
   const harnessOf = (name: string): Harness | undefined => createdHarness.get(name) ?? fx.accounts.find((a) => a.name === name)?.harness
@@ -45,7 +46,7 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
       return HttpResponse.json(fx.daily.slice(-days))
     }),
     http.get(`${B}/doctor`, () => HttpResponse.json(fx.doctor)),
-    http.get(`${B}/harnesses`, () => HttpResponse.json({ accounts: fx.accounts, choices: fx.choices.choices })),
+    http.get(`${B}/harnesses`, () => HttpResponse.json({ accounts: fx.accounts, choices: fx.choiceRefs(levels) })),
 
     http.get(`${B}/sessions`, ({ request }) => {
       const url = new URL(request.url)
@@ -138,8 +139,13 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
     ),
     http.get(`${B}/accounts/:name/login`, () => HttpResponse.json({ signed_in: 'signed_out', mode: 'device_auth', state: 'pending' })),
 
-    http.get(`${B}/choices`, () => HttpResponse.json(fx.choices)),
-    http.put(`${B}/choices`, async ({ request }) => HttpResponse.json(await request.json())),
+    http.get(`${B}/levels`, () => HttpResponse.json(levels)),
+    http.put(`${B}/levels`, async ({ request }) => {
+      // Kept for the session so a follow-up GET shows the change, like the real server.
+      const body = (await request.json()) as LevelsPut
+      levels = { ...levels, levels: body.levels, routing_instruction: body.routing_instruction, restart_required: true }
+      return HttpResponse.json(levels)
+    }),
     http.get(`${B}/models`, () => HttpResponse.json(fx.models)),
     http.post(`${B}/models/refresh`, () => HttpResponse.json(fx.models)),
 

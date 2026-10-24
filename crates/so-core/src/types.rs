@@ -221,29 +221,185 @@ str_enum!(SessionKind, |s| CoreError::UnknownValue { kind: "session kind", value
     Interactive => "interactive",
 });
 
-fn default_roles() -> Vec<String> {
-    vec!["worker".to_string()]
-}
-
-fn default_true() -> bool {
-    true
-}
-
-/// One routable combination of harness, model and effort (SPEC 8.2).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+/// One routable combination of harness, model and effort (SPEC 8.2). Its text form is the
+/// model ref `harness/model[/effort]`, which is also the choice id in runs, events and results.
+///
+/// For `codex`, `agy` and `claude` the last `/` segment is the effort when the harness accepts
+/// it as one; otherwise the whole rest is the model. For `opencode` the rest is
+/// `provider/model[/variant]`: two segments are a model, a third is the effort (variant).
+///
+/// `Display` round-trips only for ids minted by `from_str`: a model containing `/` that is
+/// pinned on codex, agy or claude may not parse back to the same choice.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, JsonSchema)]
+#[schemars(
+    with = "String",
+    description = "Model ref `harness/model[/effort]`, for example `codex/gpt-6.1-sol/high` or `opencode/opencode/deepseek-v4.1-flash-free`"
+)]
 pub struct Choice {
-    pub id: String,
     pub harness: Harness,
     pub model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
-    #[serde(default = "default_roles")]
-    pub roles: Vec<String>,
-    #[serde(default)]
-    pub description: String,
-    #[serde(default = "default_true")]
-    pub enabled: bool,
+}
+
+impl Choice {
+    /// The canonical ref string, used as the choice id everywhere.
+    pub fn id(&self) -> String {
+        self.to_string()
+    }
+}
+
+impl fmt::Display for Choice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.harness, self.model)?;
+        if let Some(e) = &self.effort {
+            write!(f, "/{e}")?;
+        }
+        Ok(())
+    }
+}
+
+/// The text rule for model and effort values: nonempty, no leading `-`, ASCII alphanumerics
+/// or `:/_.@-[]` (GHSA-fh9p). `so-harness` applies it at launch, and refs and route pins
+/// apply it earlier. `name` is `model` or `effort`, for the message.
+pub fn selector_problem(name: &str, value: &str) -> Option<String> {
+    let ok = !value.is_empty()
+        && !value.starts_with('-')
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b":/_.@-[]".contains(&b));
+    (!ok).then(|| {
+        format!("invalid {name} `{value}`: expected a nonempty value without a leading '-' using only A-Za-z0-9:/_.@-[]")
+    })
+}
+
+impl FromStr for Choice {
+    type Err = CoreError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bad = |reason: String| CoreError::InvalidModelRef {
+            value: s.to_string(),
+            reason,
+        };
+        let (h, rest) = s
+            .split_once('/')
+            .ok_or_else(|| bad("expected harness/model[/effort]".into()))?;
+        let harness = h
+            .parse::<Harness>()
+            .map_err(|_| bad(format!("unknown harness `{h}` (codex|agy|opencode|claude)")))?;
+        if rest.is_empty() {
+            return Err(bad("the model is empty".into()));
+        }
+        let segments: Vec<&str> = rest.split('/').collect();
+        if segments.iter().any(|seg| seg.is_empty()) {
+            return Err(bad("empty segment".into()));
+        }
+        let split_last = || match rest.rsplit_once('/') {
+            Some((model, effort)) => (model.to_string(), Some(effort.to_string())),
+            None => (rest.to_string(), None),
+        };
+        let (model, effort) = match harness {
+            Harness::Opencode => match segments.len() {
+                1 => return Err(bad("opencode models are provider/model".into())),
+                2 => (rest.to_string(), None),
+                _ => split_last(),
+            },
+            _ => {
+                let last_is_effort = segments.len() > 1
+                    && segments.last().is_some_and(|last| {
+                        harness
+                            .accepted_efforts()
+                            .is_some_and(|ok| ok.contains(last))
+                    });
+                if last_is_effort {
+                    split_last()
+                } else {
+                    (rest.to_string(), None)
+                }
+            }
+        };
+        if let Some(p) = selector_problem("model", &model) {
+            return Err(bad(p));
+        }
+        if let Some(e) = &effort {
+            if let Some(p) = selector_problem("effort", e) {
+                return Err(bad(p));
+            }
+            if let Some(p) = harness.model_effort_problem(&model, e) {
+                return Err(bad(p));
+            }
+        }
+        Ok(Choice {
+            harness,
+            model,
+            effort,
+        })
+    }
+}
+
+/// Whether `model` is a model ref (`harness/model[/effort]`) rather than a plain model name:
+/// it starts with a harness name and `/`. `opencode/<one segment>` is a plain model name,
+/// because opencode model ids start with their provider, which can be `opencode`.
+pub fn is_model_ref(model: &str) -> bool {
+    match model.split_once('/') {
+        Some((h, rest)) if h.parse::<Harness>().is_ok() => {
+            !(h == "opencode" && !rest.is_empty() && !rest.contains('/'))
+        }
+        _ => false,
+    }
+}
+
+/// A harness, model and effort where each may be unset.
+pub type Selector = (Option<Harness>, Option<String>, Option<String>);
+
+/// Applies a model ref in `model` to an explicit `harness` and `effort`. A plain model name
+/// (or none) passes through unchanged. A ref sets harness, model and effort; an explicit
+/// harness or effort that disagrees with it is an error, and so is a malformed ref.
+pub fn resolve_model_ref(
+    harness: Option<Harness>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> std::result::Result<Selector, String> {
+    let plain = || (harness, model.map(String::from), effort.map(String::from));
+    let Some(m) = model.filter(|m| is_model_ref(m)) else {
+        return Ok(plain());
+    };
+    let r = m.parse::<Choice>().map_err(|e| e.to_string())?;
+    // Only opencode model ids contain `/`. Elsewhere a `/` left in the model means the last
+    // segment was meant as an effort the harness does not accept.
+    if r.harness != Harness::Opencode && r.model.contains('/') {
+        let list = r.harness.accepted_efforts().unwrap_or_default().join("|");
+        return Err(format!(
+            "invalid model ref: `{}` is not a {} effort ({list})",
+            r.model.rsplit('/').next().unwrap_or_default(),
+            r.harness
+        ));
+    }
+    if let Some(h) = harness.filter(|h| *h != r.harness) {
+        return Err(format!("model ref names {} but harness is {h}", r.harness));
+    }
+    if let (Some(re), Some(e)) = (&r.effort, effort)
+        && re != e
+    {
+        return Err(format!("model ref has effort {re} but effort is {e}"));
+    }
+    Ok((
+        Some(r.harness),
+        Some(r.model),
+        r.effort.or_else(|| effort.map(String::from)),
+    ))
+}
+
+impl Serialize for Choice {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Choice {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        s.parse().map_err(serde::de::Error::custom)
+    }
 }
 
 /// Whether a model id names itself free: a `-free` or `:free` suffix. The one name rule behind
@@ -336,20 +492,6 @@ pub enum ErrorKind {
     /// the same prompt would be refused again.
     Refused,
     Other,
-}
-
-/// Id of the synthetic choice a run gets when the caller pinned a harness (and a model)
-/// and no configured choice covers it.
-pub fn pinned_choice_id(harness: Harness, model: Option<&str>) -> String {
-    match model {
-        Some(m) => format!("pinned-{harness}-{m}"),
-        None => format!("pinned-{harness}"),
-    }
-}
-
-/// Whether `id` came from [`pinned_choice_id`]: no configured choice stands behind it.
-pub fn is_pinned_choice(id: &str) -> bool {
-    id.starts_with("pinned-")
 }
 
 impl ErrorKind {
@@ -644,20 +786,120 @@ mod tests {
         assert_str_matches_serde(&EventType::ALL);
     }
 
-    #[test]
-    fn choice_rejects_unknown_fields() {
-        assert!(
-            toml::from_str::<Choice>("id = \"a\"\nharness = \"codex\"\nmodel = \"m\"\nbogus = 1")
-                .is_err()
-        );
+    fn choice(s: &str) -> Choice {
+        s.parse().unwrap_or_else(|e| panic!("{s}: {e}"))
+    }
+
+    fn ref_error(s: &str) -> String {
+        s.parse::<Choice>().unwrap_err().to_string()
     }
 
     #[test]
-    fn choice_defaults() {
-        let c: Choice = toml::from_str("id = \"a\"\nharness = \"codex\"\nmodel = \"m\"").unwrap();
-        assert_eq!(c.roles, vec!["worker"]);
-        assert!(c.enabled);
-        assert_eq!(c.effort, None);
+    fn refs_parse_for_every_harness() {
+        let cases = [
+            (
+                "codex/gpt-6.1-sol/high",
+                Harness::Codex,
+                "gpt-6.1-sol",
+                Some("high"),
+            ),
+            ("codex/gpt-6.1-sol", Harness::Codex, "gpt-6.1-sol", None),
+            (
+                "claude/claude-sonnet-5-5/medium",
+                Harness::Claude,
+                "claude-sonnet-5-5",
+                Some("medium"),
+            ),
+            ("claude/sonnet[1m]", Harness::Claude, "sonnet[1m]", None),
+            (
+                "agy/gemini-3.8-flash-low/low",
+                Harness::Agy,
+                "gemini-3.8-flash-low",
+                Some("low"),
+            ),
+            (
+                "agy/claude-sonnet-4-6/thinking",
+                Harness::Agy,
+                "claude-sonnet-4-6",
+                Some("thinking"),
+            ),
+            (
+                "agy/claude-sonnet-4-6",
+                Harness::Agy,
+                "claude-sonnet-4-6",
+                None,
+            ),
+            (
+                "opencode/opencode/muse-spark-1.3",
+                Harness::Opencode,
+                "opencode/muse-spark-1.3",
+                None,
+            ),
+            (
+                "opencode/openrouter/some-model/max",
+                Harness::Opencode,
+                "openrouter/some-model",
+                Some("max"),
+            ),
+            ("opencode/a/b/c/d", Harness::Opencode, "a/b/c", Some("d")),
+            ("codex/high", Harness::Codex, "high", None),
+            (
+                "claude/sonnet/thinking",
+                Harness::Claude,
+                "sonnet/thinking",
+                None,
+            ),
+        ];
+        for (text, harness, model, effort) in cases {
+            let c = choice(text);
+            assert_eq!(
+                (c.harness, c.model.as_str(), c.effort.as_deref()),
+                (harness, model, effort),
+                "{text}"
+            );
+            assert_eq!(c.id(), text);
+            assert_eq!(c.to_string(), text);
+        }
+    }
+
+    #[test]
+    fn invalid_refs_are_rejected() {
+        let cases = [
+            ("codex", "harness/model"),
+            ("nope/model", "unknown harness `nope`"),
+            ("codex/", "model is empty"),
+            ("codex//high", "empty segment"),
+            ("codex/gpt/", "empty segment"),
+            ("opencode/deepseek-v4.1-flash-free", "provider/model"),
+            ("agy/claude-sonnet-4-6/high", "takes no effort"),
+            ("codex/gpt;rm/high", "invalid model"),
+            ("codex/-gpt", "invalid model"),
+            ("opencode/p/m/bad effort", "invalid effort"),
+            ("codex/gpt sol", "invalid model"),
+        ];
+        for (text, needle) in cases {
+            let e = ref_error(text);
+            assert!(e.contains(needle), "{text}: {e}");
+        }
+    }
+
+    #[test]
+    fn choice_serde_is_the_ref_string() {
+        let c = choice("codex/gpt-6.1-sol/high");
+        assert_eq!(serde_json::to_value(&c).unwrap(), "codex/gpt-6.1-sol/high");
+        let back: Choice = serde_json::from_str("\"agy/claude-sonnet-4-6/thinking\"").unwrap();
+        assert_eq!(back.effort.as_deref(), Some("thinking"));
+        assert!(serde_json::from_str::<Choice>("\"nope/x\"").is_err());
+        assert!(serde_json::from_str::<Choice>("{\"harness\":\"codex\"}").is_err());
+    }
+
+    #[test]
+    fn effort_problem_is_none_for_a_parsed_ref() {
+        assert_eq!(
+            choice("agy/claude-sonnet-4-6/thinking").effort_problem(),
+            None
+        );
+        assert_eq!(choice("opencode/p/m/anything").effort_problem(), None);
     }
 
     #[test]
@@ -710,5 +952,41 @@ mod headroom_wire_tests {
         assert!(v["observed_at"].is_string(), "{v}");
         let back: Headroom = serde_json::from_value(v).unwrap();
         assert_eq!(back.observed_at, t);
+    }
+
+    #[test]
+    fn model_refs_resolve_and_conflicts_fail() {
+        let (h, m, e) = resolve_model_ref(None, Some("codex/gpt-6.1-sol/high"), None).unwrap();
+        assert_eq!(h, Some(Harness::Codex));
+        assert_eq!(
+            (m.as_deref(), e.as_deref()),
+            (Some("gpt-6.1-sol"), Some("high"))
+        );
+        let err = resolve_model_ref(Some(Harness::Agy), Some("codex/gpt-6.1-sol/high"), None)
+            .unwrap_err();
+        assert_eq!(err, "model ref names codex but harness is agy");
+        let err = resolve_model_ref(None, Some("codex/gpt-6.1-sol/high"), Some("low")).unwrap_err();
+        assert_eq!(err, "model ref has effort high but effort is low");
+        // `opencode/<one segment>` is a plain model name.
+        let (h, m, _) = resolve_model_ref(
+            Some(Harness::Opencode),
+            Some("opencode/deepseek-v4.1-flash-free"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(h, Some(Harness::Opencode));
+        assert_eq!(m.as_deref(), Some("opencode/deepseek-v4.1-flash-free"));
+        // A leftover `/` on codex means the last segment was a bad effort.
+        let err = resolve_model_ref(None, Some("codex/gpt-6.1-sol/hgih"), None).unwrap_err();
+        assert!(err.contains("`hgih` is not a codex effort"), "{err}");
+        // A malformed ref is an error, not a plain model.
+        let err = resolve_model_ref(None, Some("codex/"), None).unwrap_err();
+        assert!(err.contains("the model is empty"), "{err}");
+        // A plain model keeps an explicit effort.
+        let (_, m, e) = resolve_model_ref(None, Some("gpt-6.1-sol"), Some("low")).unwrap();
+        assert_eq!(
+            (m.as_deref(), e.as_deref()),
+            (Some("gpt-6.1-sol"), Some("low"))
+        );
     }
 }

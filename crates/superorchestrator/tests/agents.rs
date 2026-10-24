@@ -29,7 +29,16 @@ fn init_installs_starters_once() {
         .iter()
         .map(|a| a["name"].as_str().unwrap().into())
         .collect();
-    assert_eq!(names, ["issue-summarizer", "pr-reviewer", "ui-ux-designer"]);
+    assert_eq!(
+        names,
+        [
+            "conductor",
+            "issue-summarizer",
+            "pr-reviewer",
+            "ui-ux-designer",
+            "worker"
+        ]
+    );
     std::fs::write(
         e.cfg.join("agents/pr-reviewer/AGENT.md"),
         "---\nname: pr-reviewer\ndescription: mine\n---\nx",

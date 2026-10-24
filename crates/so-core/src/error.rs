@@ -37,6 +37,8 @@ pub enum CoreError {
     TomlEdit { path: PathBuf, message: String },
     #[error("unknown harness `{0}`")]
     UnknownHarness(String),
+    #[error("invalid model ref `{value}`: {reason}")]
+    InvalidModelRef { value: String, reason: String },
     #[error("cannot determine the home directory (HOME is unset)")]
     NoHomeDir,
 }

@@ -6,7 +6,9 @@ use so_core::Paths;
 
 use crate::error::{AgentError, Result};
 
-const STARTERS: [(&str, &str); 3] = [
+const STARTERS: [(&str, &str); 5] = [
+    ("worker", include_str!("starters/worker.md")),
+    ("conductor", include_str!("starters/conductor.md")),
     ("ui-ux-designer", include_str!("starters/ui-ux-designer.md")),
     ("pr-reviewer", include_str!("starters/pr-reviewer.md")),
     (
@@ -67,7 +69,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let paths = Paths::from_dir(t.path().join("cfg"));
         let first = install_starters(&paths).unwrap();
-        assert!(first.iter().all(|(_, c)| *c) && first.len() == 3);
+        assert!(first.iter().all(|(_, c)| *c) && first.len() == 5);
         let p = paths.agents_dir().join("pr-reviewer/AGENT.md");
         std::fs::write(&p, "edited").unwrap();
         let second = install_starters(&paths).unwrap();

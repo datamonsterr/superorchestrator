@@ -1,5 +1,5 @@
 //! Model catalog (SPEC 8.1): known models per harness with tier, efforts, pool and cost.
-//! Used only for discovery and validation; it never edits choices.
+//! Used only for discovery and validation; it never edits the models listed on levels.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -175,7 +175,7 @@ impl Catalog {
             reason: e.to_string(),
         })?;
         let text = format!(
-            "# Model catalog (SPEC 8.1). Discovery and validation only; never edits choices.\n{text}"
+            "# Model catalog (SPEC 8.1). Discovery and validation only; never edits the models listed on levels.\n{text}"
         );
         write_file(&paths.models_toml(), &text)
     }
@@ -650,7 +650,7 @@ async fn gather_models_dev(env: &RefreshEnv<'_>) -> Gathered {
 
 /// Collects models from the harness CLIs and models.dev (concurrently), merges them into
 /// `catalog` (existing entries keep their tier, efforts and pool) and reports against
-/// `choices`. Does not write.
+/// `choices` (the distinct refs of `Config::choices()`). Does not write.
 pub async fn refresh(
     env: &RefreshEnv<'_>,
     mut catalog: Catalog,
@@ -722,7 +722,6 @@ pub async fn refresh(
 fn missing_choice_models(listed: &[Collected], choices: &[Choice]) -> Vec<ChoiceRef> {
     choices
         .iter()
-        .filter(|c| c.enabled)
         .filter(|c| listed.iter().any(|m| m.harness == c.harness))
         .filter(|c| {
             !listed
@@ -730,7 +729,7 @@ fn missing_choice_models(listed: &[Collected], choices: &[Choice]) -> Vec<Choice
                 .any(|m| m.harness == c.harness && m.id == c.model)
         })
         .map(|c| ChoiceRef {
-            choice: c.id.clone(),
+            choice: c.id(),
             harness: c.harness,
             model: c.model.clone(),
         })
@@ -743,7 +742,7 @@ pub fn unknown_choice_models(catalog: &Catalog, choices: &[Choice]) -> Vec<Choic
         .iter()
         .filter(|c| !catalog.contains(c.harness, &c.model))
         .map(|c| ChoiceRef {
-            choice: c.id.clone(),
+            choice: c.id(),
             harness: c.harness,
             model: c.model.clone(),
         })
@@ -909,22 +908,13 @@ pool = "gemini"
     #[test]
     fn reports_unknown_and_unused() {
         let cat = Catalog::default_catalog();
-        let mk = |id: &str, h: Harness, model: &str| Choice {
-            id: id.into(),
-            harness: h,
-            model: model.into(),
-            effort: None,
-            roles: vec!["worker".into()],
-            description: String::new(),
-            enabled: true,
-        };
-        let choices = vec![
-            mk("ok", Harness::Agy, "gemini-3.8-flash-low"),
-            mk("bad", Harness::Agy, "no-such-model"),
-        ];
+        let choices: Vec<Choice> = ["agy/gemini-3.8-flash-low/low", "agy/no-such-model/low"]
+            .iter()
+            .map(|r| r.parse().unwrap())
+            .collect();
         let unknown = unknown_choice_models(&cat, &choices);
         assert_eq!(unknown.len(), 1);
-        assert_eq!(unknown[0].choice, "bad");
+        assert_eq!(unknown[0].choice, "agy/no-such-model/low");
         let unused = unused_models(&cat, &choices);
         assert_eq!(unused.len(), cat.model_count() - 1);
         assert!(!unused.iter().any(|m| m.model == "gemini-3.8-flash-low"));

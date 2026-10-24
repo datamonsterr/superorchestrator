@@ -35,7 +35,7 @@ impl ToolSpec {
 /// Parameter descriptions as `(tool, param, text)`. A parameter not listed has none: its name
 /// and type say enough. The supervisor validates the values.
 const PARAM_DOCS: &[(&str, &str, &str)] = &[
-    ("route", "exclude", "choice ids to skip"),
+    ("route", "exclude", "model refs to skip"),
     ("route", "exclude_accounts", "account names to skip"),
     (
         "spawn_agent",
@@ -47,7 +47,7 @@ const PARAM_DOCS: &[(&str, &str, &str)] = &[
         "harness",
         "auto (default), claude, codex, opencode, agy",
     ),
-    ("spawn_agent", "model", "e.g. a free opencode model"),
+    ("spawn_agent", "model", "model, or harness/model/effort"),
     ("spawn_agent", "isolation", "default worktree"),
     ("spawn_agent", "output_schema", "JSON Schema of the result"),
     (

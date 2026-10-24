@@ -37,8 +37,8 @@ expression: "shot(& mut a, w, h)"
   ✓ succeeded      codex-1            2d   Split the big module
   ✓ succeeded      codex-1            2d   Speed up the tests
 
-
-
-
+  Levels
+  simple    13-37   agy/gemini-3.8-flash-medium/medium, opencode/opencode/deepseek-v4.1-flash-free
+  complex   63-87   agy/claude-sonnet-4-6/thinking, codex/gpt-6.1-sol/high
  updated 3s ago
  1-4 tabs  R refresh  ? help  q quit

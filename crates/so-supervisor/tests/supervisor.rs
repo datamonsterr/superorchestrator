@@ -19,6 +19,21 @@ use tempfile::TempDir;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
+/// A level spanning `min..=max` that lists the model refs `refs`.
+fn level(name: &str, min: u8, max: u8, refs: &[&str]) -> so_core::config::Level {
+    so_core::config::Level {
+        name: name.into(),
+        min,
+        max,
+        tier: None,
+        models: refs.iter().map(|r| r.parse().unwrap()).collect(),
+    }
+}
+
+fn levels(refs: &[&str]) -> Vec<so_core::config::Level> {
+    vec![level("all", 0, 100, refs)]
+}
+
 struct Env {
     dir: TempDir,
     paths: Paths,
@@ -860,8 +875,8 @@ async fn oversized_request_is_rejected_by_client() {
 
 #[tokio::test]
 async fn list_harnesses_reports_accounts_load_and_choices() {
+    use so_core::AccountFile;
     use so_core::proto::HarnessesView;
-    use so_core::{AccountFile, Choice};
 
     let env = Env::new();
     let home = env.dir.path().join("homes");
@@ -898,17 +913,7 @@ async fn list_harnesses_reports_accounts_load_and_choices() {
     store.insert_session(&inter).unwrap();
 
     let mut config = Config::default();
-    for (id, enabled) in [("c1", true), ("c2", false)] {
-        config.choices.push(Choice {
-            id: id.into(),
-            harness: Harness::Codex,
-            model: "m".into(),
-            effort: None,
-            roles: vec!["code".into()],
-            description: String::new(),
-            enabled,
-        });
-    }
+    config.router.levels = levels(&["codex/m1", "codex/m2"]);
     let opts = SupervisorOptions::new(env.paths.clone(), config, env.sock.clone())
         .with_idle_exit(Duration::from_secs(600))
         .with_lock_wait(Duration::ZERO)
@@ -947,13 +952,13 @@ async fn list_harnesses_reports_accounts_load_and_choices() {
     assert!(alpha.error.is_none());
     assert_eq!(alpha.headroom[0].observed_at, chrono::DateTime::UNIX_EPOCH);
     assert_eq!(v.choices.len(), 2);
-    assert!(v.choices.iter().any(|c| c.id == "c2" && !c.enabled));
+    assert!(v.choices.iter().any(|c| c.id() == "codex/m2"));
     h.shutdown().await;
 }
 
 #[tokio::test]
 async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
-    use so_core::{AccountFile, Choice, Headroom, HeadroomSource, HeadroomStatus};
+    use so_core::{AccountFile, Headroom, HeadroomSource, HeadroomStatus};
     use so_store::FlagRow;
 
     let env = Env::new();
@@ -997,36 +1002,29 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
         })
         .unwrap();
 
-    let choice = |id: &str, harness: Harness, model: &str, enabled: bool| Choice {
-        id: id.into(),
-        harness,
-        model: model.into(),
-        effort: None,
-        roles: vec!["worker".into()],
-        description: String::new(),
-        enabled,
-    };
-    let config = Config {
-        choices: vec![
-            choice("codex-c", Harness::Codex, "gpt-6.1-sol", true),
-            choice(
-                "free-c",
-                Harness::Opencode,
-                "opencode/deepseek-v4.1-flash-free",
-                true,
-            ),
-            choice(
-                "paid-c",
-                Harness::Opencode,
-                "opencode/claude-opus-5-5",
-                true,
-            ),
-            choice("claude-c", Harness::Claude, "claude-sonnet-5-5", true),
-            choice("agy-c", Harness::Agy, "gemini-3.8-flash-low", true),
-            choice("off-c", Harness::Opencode, "opencode/beam-free", false),
-        ],
-        ..Config::default()
-    };
+    let mut config = Config::default();
+    config.router.levels = vec![
+        level(
+            "low",
+            0,
+            37,
+            &[
+                "opencode/opencode/deepseek-v4.1-flash-free",
+                "agy/gemini-3.8-flash-low",
+            ],
+        ),
+        level(
+            "high",
+            38,
+            100,
+            &[
+                "codex/gpt-6.1-sol",
+                "opencode/opencode/claude-opus-5-5",
+                "claude/claude-sonnet-5-5",
+                "agy/gemini-3.8-flash-low",
+            ],
+        ),
+    ];
     let opts = SupervisorOptions::new(env.paths.clone(), config, env.sock.clone())
         .with_idle_exit(Duration::from_secs(600))
         .with_lock_wait(Duration::ZERO)
@@ -1082,21 +1080,38 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
     assert_eq!(account("claude-a")["disabled"], true);
     assert!(oc.get("disabled").is_none());
 
-    assert_eq!(choice("codex-c")["eligible"], false);
-    assert_eq!(choice("codex-c")["why"], "at cap");
-    assert_eq!(choice("free-c")["free"], true);
-    assert_eq!(choice("free-c")["why"], "cooldown");
-    assert!(choice("paid-c").get("free").is_none());
-    assert_eq!(choice("claude-c")["why"], "account disabled");
+    const CODEX: &str = "codex/gpt-6.1-sol";
+    const FREE: &str = "opencode/opencode/deepseek-v4.1-flash-free";
+    const AGY: &str = "agy/gemini-3.8-flash-low";
+    assert_eq!(choice(CODEX)["eligible"], false);
+    assert_eq!(choice(CODEX)["why"], "at cap");
+    assert_eq!(choice(FREE)["free"], true);
+    assert_eq!(choice(FREE)["why"], "cooldown");
     assert!(
-        choice("agy-c").get("eligible").is_none() && choice("agy-c").get("why").is_none(),
+        choice("opencode/opencode/claude-opus-5-5")
+            .get("free")
+            .is_none()
+    );
+    assert_eq!(
+        choice("claude/claude-sonnet-5-5")["why"],
+        "account disabled"
+    );
+    assert!(
+        choice(AGY).get("eligible").is_none() && choice(AGY).get("why").is_none(),
         "eligible is the default"
     );
-    assert_eq!(choice("off-c")["why"], "disabled");
-    assert!(
-        choice("free-c").get("roles").is_none(),
-        "worker is the default role"
-    );
+    // A row names its model ref, parts and the levels that list it, in config order; there
+    // is no role, description or enabled flag.
+    assert_eq!(choice(CODEX)["harness"], "codex");
+    assert_eq!(choice(CODEX)["model"], "gpt-6.1-sol");
+    assert!(choice(CODEX).get("effort").is_none());
+    assert_eq!(choice(CODEX)["levels"], json!(["high"]));
+    assert_eq!(choice(AGY)["levels"], json!(["low", "high"]));
+    assert_eq!(choice(FREE)["levels"], json!(["low"]));
+    for key in ["roles", "description", "enabled"] {
+        assert!(choice(CODEX).get(key).is_none(), "{key}");
+    }
+    assert_eq!(v["choices"].as_array().unwrap().len(), 5);
 
     let free = v["free_models"]["opencode"].as_array().unwrap();
     assert!(free.contains(&json!("opencode/deepseek-v4.1-flash-free")));

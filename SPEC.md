@@ -84,7 +84,7 @@ Before coding against `rmcp`, `axum`, `rquickjs` or any harness protocol, check 
 | `so-harness` | One driver per harness: launch, event parsing, message injection, usage extraction, cancel, resume, join command |
 | `so-accounts` | Account files, credential homes, wrappers, login flows, sign-in check, import |
 | `so-usage` | Active probes, passive capture, local ledger, headroom per (account, pool) |
-| `so-router` | Catalog, choices, heuristic scorer, Jev decider, account selection, failover |
+| `so-router` | Catalog, levels and model refs, heuristic scorer, Jev decider, account selection, failover |
 | `so-agents` | Agent file parsing and per-harness materialisation |
 | `so-workflow` | QuickJS runtime, script API, result cache |
 | `so-supervisor` | Run lifecycle, caps, stall watcher, notifications, socket API |
@@ -230,10 +230,10 @@ queued ─► starting ─► running ⇄ waiting
 | Field | Meaning |
 |---|---|
 | `prompt` | Task brief (required unless `agent` supplies one) |
-| `agent` | Custom agent name (section 10) |
+| `agent` | Agent profile name (section 10). Any profile runs on any model. |
 | `harness` | `auto` (default), or a harness name |
 | `account` | Account name, or omitted for the router's choice |
-| `model`, `effort` | Overrides |
+| `model`, `effort` | Overrides. `model` takes a plain model name or a model ref `harness/model[/effort]` (8.2), which also sets harness and effort. |
 | `cwd` | Working directory, default the caller's cwd. For subagents, canonical resolution must remain inside the calling run's worktree/cwd. |
 | `isolation` | `worktree` (default) or `none` |
 | `output_schema` | JSON Schema for the final result |
@@ -313,31 +313,47 @@ A run whose process died unexpectedly is resumed once from its native session, i
 - `opencode models`, plus free models from models.dev, cached 24 h
 - `agy models`
 
-The catalog is used only for discovery and validation. `models refresh` reports models that no choice uses, and never edits choices.
+The catalog is used only for discovery, validation, tiers and the free flag. `models refresh` reports listed models that the catalog does not know and catalog models that no level lists, and never edits config.
 
-### 8.2 Choices
+### 8.2 Models and levels
 
-Choices are the routable set, in `config.toml`. A choice binds harness, model and effort atomically, so the router can never produce an unsupported combination.
+The routable set is the models listed on levels in `config.toml`. Each listed model is a model ref, a single string that binds harness, model and effort, so the router can never produce an unsupported combination. A ref has the form `harness/model[/effort]`:
+
+- `harness` is `codex`, `agy`, `opencode` or `claude`.
+- For `codex`, `agy` and `claude` the last segment is the effort when the harness accepts it: `claude` takes low, medium, high, xhigh and max; `agy` takes low, medium, high, xhigh, max and thinking; `codex` takes minimal, low, medium, high, xhigh, max and ultra. Otherwise the whole rest is the model and there is no effort.
+- For `opencode` the rest is `provider/model[/variant]`. Two segments mean no effort, three or more mean the last one is the effort: `opencode/opencode/muse-spark-1.3` and `opencode/openai/gpt-5/high`.
+- `agy/claude-sonnet-4-6/thinking` and `agy/claude-sonnet-4-6` are valid. `agy/claude-sonnet-4-6/high` is rejected at load, because `high` is not an agy effort for that model.
+
+The ref string is the id everywhere: `choice_id` in runs, the `route_decision` event, route results and `list_harnesses`.
 
 ```toml
-[[choices]]
-id = "agy-flash-medium"
-harness = "agy"
-model = "gemini-3.8-flash-medium"
-effort = "medium"
-roles = ["worker"]
-description = "Fast worker for bounded implementation, scripts, docs and routine UI work."
-enabled = true
+[[router.levels]]
+name = "complex"
+min = 63
+max = 87
+models = ["agy/claude-sonnet-4-6/thinking", "opencode/opencode/muse-spark-1.3", "codex/gpt-6.1-sol/high"]
 ```
 
-`init` seeds the choices from agent-dispatcher's current `config.example.json`, plus Codex and Claude choices. Codex choices are enabled: a choice with no usable account is not eligible (8.3), so they start routing when a codex account is added. Claude choices are disabled by default (8.4); set `enabled = true` to let auto routing use them as the last resort. `enabled` is the user's switch and `init` is the only thing that writes it.
+A level lists its models in preference order: the first eligible one is preferred. `tier` (`high`, `mid` or `fast`) applies only when `models` is empty, and a level needs one of the two. Duplicate refs in one level are rejected. A model is enabled by being listed; there is no separate switch, and models carry no role, description or priority.
+
+A file that still has `[[choices]]` at the top level, or `choices = [...]` on a level, fails to load with this message: `[[choices]] is no longer read: list models on each [[router.levels]] entry as harness/model/effort, e.g. models = ["codex/gpt-6.1-sol/high"] (docs/guide/routing.md)`. There is no compatibility mode; the message is the migration guide.
+
+`init` seeds five levels, with these models in order:
+
+- trivial (0-12): `agy/gemini-3.8-flash-low/low`, `agy/gemini-3.8-flash-medium/medium`
+- simple (13-37): `agy/gemini-3.8-flash-medium/medium`, `opencode/opencode/deepseek-v4.1-flash-free`
+- moderate (38-62): `agy/gemini-3.8-flash-high/high`, `codex/gpt-6.1-sol/medium`
+- complex (63-87): `agy/claude-sonnet-4-6/thinking`, `opencode/opencode/muse-spark-1.3`, `codex/gpt-6.1-sol/high`
+- expert (88-100): `opencode/opencode/muse-spark-1.3`, `codex/gpt-6.1-sol/high`, `agy/claude-sonnet-4-6/thinking`
+
+Claude is not seeded. Codex models are seeded, so they start routing when a codex account is added. A Claude model routes only when a level lists it, for example `claude/claude-sonnet-5-5/medium`, and it still ranks last unless the call names it (8.4).
 
 ### 8.3 Decision procedure (`route`)
 
-1. **Eligible choices.** Keep choices that are enabled, match the role (`worker` by default), and have at least one account with headroom for their pool and below its cap. Drop choices the call excludes. Claude rank (8.4) applies.
+1. **Eligible models.** Keep the models listed on levels whose harness has at least one enabled account with headroom for the model's pool and below its cap. There is no role filter. Drop the models the call excludes (`exclude`, a list of model refs). Claude rank (8.4) applies.
 2. **Complexity.** The router needs one number, complexity from 0 to 100, to pick a level. It comes from the first source below that applies.
-   - **Decider.** If an OpenRouter key is configured (`router.jev.key_env`, default `OPENROUTER_API_KEY`, or `router.jev.key_file`) and more than one choice is eligible, call `POST https://openrouter.ai/api/alpha/decisions` with model `router.jev.model` (default `inception/mercury-decide:free`). The model is any OpenRouter model id, set in `config.toml` or by `SUPERORCHESTRATOR_ROUTER_MODEL`; the environment beats the config, which beats the default, and an empty value counts as unset. `router.jev.fallback_model` (default `~typesafe/jev-latest`, env `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL`, `none` disables it) is tried only when the primary model is unusable: a transport error, a timeout, HTTP 429 or 5xx, or HTTP 400/404 for a missing model. A 429, 5xx, 408 or refused connection is retried once first; a timeout is not retried, because it uses up the time left for that model. Other 4xx responses, invalid or oversized bodies and a disallowed endpoint (plain http to a non-loopback host) are not about the model: they go to the heuristic. A refused key (401/403) and a rejected answer never reach the fallback. Both calls together stay within `router.jev.timeout`; with a fallback the primary may use 3/5 of it. `route --explain`, `doctor` and the eval summary show the models in effect and where each came from. The request is:
-     - `state`: `task_content`, `system_instruction`, `routing_instruction`, `role`. No account names, quota, usage or credentials are sent.
+   - **Decider.** If an OpenRouter key is configured (`router.jev.key_env`, default `OPENROUTER_API_KEY`, or `router.jev.key_file`) and more than one model is eligible, call `POST https://openrouter.ai/api/alpha/decisions` with model `router.jev.model` (default `inception/mercury-decide:free`). The model is any OpenRouter model id, set in `config.toml` or by `SUPERORCHESTRATOR_ROUTER_MODEL`; the environment beats the config, which beats the default, and an empty value counts as unset. `router.jev.fallback_model` (default `~typesafe/jev-latest`, env `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL`, `none` disables it) is tried only when the primary model is unusable: a transport error, a timeout, HTTP 429 or 5xx, or HTTP 400/404 for a missing model. A 429, 5xx, 408 or refused connection is retried once first; a timeout is not retried, because it uses up the time left for that model. Other 4xx responses, invalid or oversized bodies and a disallowed endpoint (plain http to a non-loopback host) are not about the model: they go to the heuristic. A refused key (401/403) and a rejected answer never reach the fallback. Both calls together stay within `router.jev.timeout`; with a fallback the primary may use 3/5 of it. `route --explain`, `doctor` and the eval summary show the models in effect and where each came from. The request is:
+     - `state`: `task_content`, `system_instruction`, `routing_instruction`, `agent` (the profile name, `worker` when none is named). No account names, quota, usage or credentials are sent.
      - `questions.complexity`: `type: "score"`, `instructions` = `router.instruction`, and `criteria` = the five anchors in `so_core::config::COMPLEXITY_ANCHORS`, lowest first: 0 trivial and mechanical (under 15 developer-minutes), 1 simple and scoped, including read-only search, listing or inventory of code and summaries of tool output (up to about an hour), 2 moderate across several files (one to four hours), 3 complex and multi-step, needing analysis before implementation (more than four hours), 4 highly complex and open-ended (architecture, long reasoning chains, coordinating agents).
    - **Validation.** Reject the answer unless all of these hold:
      - `type` is `score`
@@ -348,40 +364,39 @@ enabled = true
      A response over 1 MB is rejected. The answer is accepted only if `confidence ≥ router.policy.min_confidence`. `router.policy.min_margin` is deprecated: it still parses, but it is ignored, because a score has no margin between choices.
 
      Complexity = `score / 4 × 100`, rounded to one decimal place. Permanent auth or validation errors from the decider are not retried.
-   - **Heuristic.** Used when there is no key, when validation or the gate rejects the answer, when only one choice is eligible (the decider is not called), or when the decider is unreachable and `router.jev.on_unreachable = "heuristic"`. The estimate counts keywords and prompt length: refactor, architecture, migrate, concurrency and security raise it; typo, rename, format and docs lower it. It maps to 20 (low), 55 (mid) or 85 (high), which fall in the default levels.
+   - **Heuristic.** Used when there is no key, when validation or the gate rejects the answer, when only one model is eligible (the decider is not called), or when the decider is unreachable and `router.jev.on_unreachable = "heuristic"`. The estimate counts keywords and prompt length: refactor, architecture, migrate, concurrency and security raise it; typo, rename, format and docs lower it. It maps to 20 (low), 55 (mid) or 85 (high), which fall in the default levels.
      With the default `on_unreachable = "error"`, a configured decider that cannot be reached after its fallback (transport error, timeout, 5xx, 429, a missing model, or a refused key) fails the call instead: `route` exits non-zero, the MCP tool returns `isError`, `spawn_agent` with `harness: auto` spawns nothing, `POST /route` returns 502 and `route eval` counts an error. The message names the models, the cause and the next step, never the key. With no key at all, routing uses the heuristic and records `fallback_reason`.
-3. **Level.** Pick the level whose span contains the complexity. A level `min..max` spans `[min, max + 1)`, so 37.5 falls in `0..=37`, and a level with `max = 100` also includes 100.0. Levels never overlap (validated at load). A level choice id that names no `[[choices]]` entry is accepted and skipped at route time (it is never eligible); `doctor` warns and names such ids. Outside every level (a gap), pick the level with the nearest bound; ties go to the higher level. An explicit empty `router.levels = []` loads and disables levels: the decider still scores the task, but `level` is null and every eligible choice is ranked by the heuristic scorer (step 4), with the rationale "no levels configured". The defaults apply only when the key is absent.
+3. **Level.** Pick the level whose span contains the complexity. A level `min..max` spans `[min, max + 1)`, so 37.5 falls in `0..=37`, and a level with `max = 100` also includes 100.0. Levels never overlap (validated at load). `doctor` reports a level whose models have no enabled account, and a listed model that the catalog does not know. Outside every level (a gap), pick the level with the nearest bound; ties go to the higher level. An explicit empty `router.levels = []` loads and disables levels: the decider still scores the task, but `level` is null and every eligible model is ranked by the heuristic scorer (step 4), with the rationale "no levels configured". The defaults apply only when the key is absent.
 4. **Candidates.** A level's candidates are:
-   - its listed `choices`, in listed order, that are eligible; or, when it lists none,
-   - the eligible choices whose catalog tier equals the level's `tier`, in config order.
+   - its listed models, in list order, that are eligible; or, when it lists none,
+   - the eligible models whose catalog tier equals the level's `tier`, in config order.
 
-   If the level has no candidate, the other levels are tried in order of distance from the complexity, higher first on ties. If no level has one, every eligible choice is ranked by the heuristic scorer and the rationale says so:
+   If the level has no candidate, the other levels are tried in order of distance from the complexity, higher first on ties. If no level has one, every eligible model is ranked by the heuristic scorer and the rationale says so:
 
    `score = fit + w_headroom·headroom − w_load·active_runs − w_cost·cost + priority`
 
    - `fit` compares the complexity with the model tier.
-   - Within a tier, a choice loses 0.05 per step between the effort the complexity wants and its own effort. This only breaks ties. A choice with no effort is not penalised.
-   - `priority` is the harness priority. Default `agy > opencode > codex > claude`.
+   - Within a tier, a model loses 0.05 per step between the effort the complexity wants and its own effort. This only breaks ties. A model with no effort is not penalised.
+   - `priority` is the harness priority from `router.priority`. Default `agy > opencode > codex > claude`.
    - Free models get a cost bonus.
-5. **Pick.** Among the candidates, the choice with the lowest `priority` number wins (`level.choices[].priority`). Candidates without a priority come after those with one. Ties, including two candidates without a priority, are broken by the most headroom on the choice's best account for its pool, then the fewest active runs on that account, then config order.
-6. **Account selection.** In code, among the chosen choice's accounts: most headroom for its pool first, then fewest active runs, then `priority`, then least recently used. Only accounts below their cap are eligible.
-7. **Result.** `{choice_id, harness, account, model, effort, source: jev|heuristic|pinned, complexity, level, rationale, confidence, probabilities, usage{input_tokens, output_tokens, cost}, alternatives (up to 3), decider_model, decider_models, config_fingerprint}`.
+5. **Pick.** Within the level, the first eligible model in list order wins. There are no priorities and no ties: the order the operator wrote is the answer. The rationale says `first in the level`, or `the only eligible choice of the level` when only one model of the level is eligible.
+6. **Account selection.** Among the chosen model's harness's enabled accounts that are below their cap and whose pool is available, the order is: most headroom for the pool, then fewest active runs, then higher account `priority`, then least recently used, then name. `RouteResult.ranked_accounts` lists the accounts best first. The rationale ends with `account <name>: <why>`, where `why` names the criterion that decided it: `most headroom (N%)`, `fewest active runs (N)`, `higher priority`, `least recently used`, `the only usable account` or `name order`.
+7. **Result.** `{choice_id, harness, account, model, effort, source: jev|heuristic|pinned, complexity, level, rationale, confidence, probabilities, usage{input_tokens, output_tokens, cost}, alternatives (up to 3), decider_model, decider_models, config_fingerprint, ranked_accounts}`. `choice_id` is the model ref.
    - `complexity` is the number from step 2, and `source` says where it came from.
    - `probabilities` are the decider's per-anchor probabilities, keyed `"0"` to `"4"`. They are empty without a decider.
-   - `level` is the level the chosen choice came from. It is null when the all-eligible fallback picked.
-   - `alternatives` are the rest of the level in the same order, then the other eligible choices. They carry no score.
-   - `decider_model` is the model that answered (also when its answer was rejected) and `decider_models` the models in effect with their source. The result is stored as a `route_decision` event.
-   - A pinned call (one that names the harness, account, model or effort) keeps its pick. Its complexity comes from the heuristic and `level` is the level the complexity maps to.
-   - `config_fingerprint` covers the choices, the policy, the instruction and `router.levels`.
+   - `level` is the level the chosen model came from. It is null when the all-eligible fallback picked.
+   - `alternatives` are the rest of the level in the same order, then the other eligible models. They carry no score.
+   - `decider_model` is the model that answered (also when its answer was rejected) and `decider_models` the models in effect with their source. The result is stored as a `route_decision` event, whose data carries `agent`.
+   - A pinned call keeps its pick. A pin names a model ref, or a harness, model or effort; a ref that no level lists still runs, as a synthetic candidate whose id is the ref. Its complexity comes from the heuristic and `level` is the level the complexity maps to.
+   - `config_fingerprint` covers the levels, the policy and the instruction.
 
 `route` previews only; it reserves nothing. `spawn_agent` with `harness: auto` runs the same procedure and reserves the cap slot in the same supervisor step. Task text is data and cannot change the eligible set.
 
 ### 8.4 Claude rank
 
-Claude ranks lowest by default. The router picks a Claude choice only when one of these holds:
+Claude ranks lowest by default. The router picks a Claude model only when one of these holds:
 - the call names it
-- no other eligible choice has an account with headroom
-- the choice's role is the only one that matches
+- no other eligible model has an account with headroom
 
 This keeps Claude limits for the orchestrator.
 
@@ -389,7 +404,7 @@ This keeps Claude limits for the orchestrator.
 
 On a quota, rate-limit or auth error during a run:
 1. The (account, pool) is marked exhausted (6.3).
-2. The run restarts on the next-ranked account of the same choice. If none exists, it moves to the next eligible choice.
+2. The run restarts on the next-ranked account of the same model. If none exists, it moves to the next eligible model.
 3. The run keeps its run id. The UI shows each attempt as a segment on the run's lane.
 
 Other non-zero exits are not retried. The run fails and the parent is told.
@@ -398,7 +413,7 @@ Failing on an unreachable decider (8.3 step 2) applies to explicit routing reque
 
 ### 8.6 Evaluation
 
-`superorchestrator route eval [--cases FILE] [--require-live] [--min-accuracy X] [--min-complexity-accuracy X]` replays labelled cases. It ships agent-dispatcher's English and Vietnamese cases (the tuning set) and keeps a separate held-out set, `crates/so-router/evals/holdout.jsonl`, that is never tuned on (`--cases` runs it). The held-out cases are same-distribution paraphrases: new wording and domains for the same kinds of task, not a different distribution, so its score is an optimistic estimate. A case may list a second expected choice with a written `reason`, and an `expected_complexity` range `[min, max]` (inclusive, on the anchor scale: trivial 0-12, simple 13-37, moderate 38-62, complex 63-87, expert 88-100); every shipped case has one. Each case record carries the scored `complexity`, the `level` and `complexity_ok`, and the text report shows them as the CX and LEVEL columns. It reports accuracy, complexity accuracy (the share of cases with a range and a score that land inside it), eligible-choice compliance, fallback count, error count, source counts, the decider models in effect, p50/p95 latency and total cost. A decider that cannot be reached counts as an error, not a fallback. `expected_choices` is checked against the choice the router picks from your levels, so accuracy depends on how you set the levels, their choice order and priorities; a missed case may need a different level rather than a different decider. Reports never include task text or credentials.
+`superorchestrator route eval [--cases FILE] [--require-live] [--min-accuracy X] [--min-complexity-accuracy X]` replays labelled cases. It ships agent-dispatcher's English and Vietnamese cases (the tuning set) and keeps a separate held-out set, `crates/so-router/evals/holdout.jsonl`, that is never tuned on (`--cases` runs it). The held-out cases are same-distribution paraphrases: new wording and domains for the same kinds of task, not a different distribution, so its score is an optimistic estimate. A case may list a second expected choice with a written `reason`, and an `expected_complexity` range `[min, max]` (inclusive, on the anchor scale: trivial 0-12, simple 13-37, moderate 38-62, complex 63-87, expert 88-100); every shipped case has one. A `role` key in a case is ignored. Each case record carries the scored `complexity`, the `level` and `complexity_ok`, and the text report shows them as the CX and LEVEL columns. It reports accuracy, complexity accuracy (the share of cases with a range and a score that land inside it), eligible-choice compliance, fallback count, error count, source counts, the decider models in effect, p50/p95 latency and total cost. A decider that cannot be reached counts as an error, not a fallback. `expected_choices` lists model refs and is checked against the ref the router picks from your levels, so accuracy depends on how you set the levels and the order of their models; a missed case may need a different level rather than a different decider. Reports never include task text or credentials.
 
 ## 9. Communication and nesting
 
@@ -443,6 +458,8 @@ review: false
 System prompt body…
 ```
 
+`model:` takes a plain model name or a model ref (`harness/model[/effort]`, 8.2). A ref sets `harness`, `model` and `effort`; a `harness:` that names another harness is an error. Any profile can run on any model: `spawn_agent(agent: "worker", model: "codex/gpt-6.1-sol/high")` overrides the profile's model for one call.
+
 **Materialisation at spawn**, in each harness's native format inside the run directory:
 - Codex: `config.toml` overrides, `AGENTS.md` and `skills/`.
 - OpenCode: `opencode.json` agent and permission entries.
@@ -454,7 +471,7 @@ System prompt body…
 - `memory` loads `MEMORY.md` from the scope into the instructions.
 - `hooks` are passed through only to Claude and Codex.
 
-**Starter agents**, installed by `init`: `ui-ux-designer`, `pr-reviewer`, `issue-summarizer`.
+**Starter agents**, installed by `init`: `worker`, `conductor`, `ui-ux-designer`, `pr-reviewer`, `issue-summarizer`. `worker` (`harness: auto`, no model pin) is the profile `route` and the decider use when none is named.
 
 **CLI:** `agent create|list|show|edit|remove`.
 
@@ -524,14 +541,14 @@ The supervisor's replies stay complete, because the CLI and the web UI read them
 | `spawn_agent`, `fork_agent` | `{run_id, state, result?, warnings?, error_kind?}`. With `wait`, `result` is set once the run finished or reached the review gate (`state: pending_review`). |
 | `wait_agent` | `{finished: [{run_id, name?, state, result?, error_kind?, branch?, failed_checks?, failover?, question?}], updates: [...], timed_out?}`. The bridge reads each finished run, so no `get_run` is needed to act; a run it cannot read is `{run_id, state: "unknown", error}`. An update is an event with its data flattened: `{run_id, type: "question", question, options?}` for a question, `{run_id, type: "progress", step?, status?}` for progress. |
 | `get_run` | `{run_id, name?, state, harness, account, model?, result?, error_kind?, branch?, worktree?, parent_run?, usage?, finished_at?, question?, events?, diff?}`. `events` are the last 5 of the significant ones (failover, stall, nudge, escalation, questions, check results, review decisions, run end, progress; at most the last 2 progress events), plus the latest check result, failed-check gate, failover, escalation and stall even when older; each is `{ts, type, data}` with strings cut at 300 characters (2000 for a check result). `question` is set while the run waits. `diff` is `{base (10 characters), stat, patch, truncated?, error?}`; the branch is above. `verbose: true` returns the supervisor's full `RunView`. |
-| `route` | `{choice_id, harness, account, model, effort?, source, rationale, alternatives: [choice ids], ranked_accounts? (when more than one)}`. |
+| `route` | `{choice_id (the model ref), harness, account, model, effort?, source, rationale, alternatives: [refs], ranked_accounts? (when more than one)}`. |
 | `accept_run` | `{merged, branch?, merge_command?, note?}`. A refused merge is an error. |
-| `list_harnesses` | `{accounts: [{name, harness, signed_in?, disabled?, load: "active/cap", headroom?, cooldown?, error?}], choices: [{id, harness, model, effort?, roles?, description?, free?, eligible?: false, why?}], free_models?: {opencode: [...]}}`. `headroom` is `status 5hN wkN` per pool (remaining percent; `pool:` prefix unless `default`), left out when unknown, as is `signed_in`. `cooldown` is the latest `until`. `roles` is left out when it is `["worker"]`. A choice is eligible when the router would take it; otherwise `eligible: false` and `why` is `disabled`, `no account`, `account disabled`, `at cap`, `cooldown`, `no headroom` or `not eligible` (the router found no usable account for a reason the view cannot name). A choice is `free` when the catalog entry says `cost = "free"`; a model the catalog does not list is free when its id ends in `-free` or `:free` (one rule, `so_core::model_name_is_free`, shared with the generated skill). `free_models` lists the free catalog models of each harness that has an enabled account (opencode; `models refresh` updates the catalog, which is cached by file time). The supervisor builds this view when `list_harnesses` is called with `{"brief": true}`, which the bridge always does; without it the reply is the full `HarnessesView`. |
+| `list_harnesses` | `{accounts: [{name, harness, signed_in?, disabled?, load: "active/cap", headroom?, cooldown?, error?}], choices: [{id (the ref), harness, model, effort?, levels: [level names], free?, eligible?: false, why?}], free_models?: {opencode: [...]}}`. `headroom` is `status 5hN wkN` per pool (remaining percent; `pool:` prefix unless `default`), left out when unknown, as is `signed_in`. `cooldown` is the latest `until`. `levels` names the levels that list the model. A row is eligible when the router would take it; otherwise `eligible: false` and `why` is `no account`, `account disabled`, `at cap`, `cooldown`, `no headroom` or `not eligible` (the router found no usable account for a reason the view cannot name). A choice is `free` when the catalog entry says `cost = "free"`; a model the catalog does not list is free when its id ends in `-free` or `:free` (one rule, `so_core::model_name_is_free`, shared with the generated skill). `free_models` lists the free catalog models of each harness that has an enabled account (opencode; `models refresh` updates the catalog, which is cached by file time). The supervisor builds this view when `list_harnesses` is called with `{"brief": true}`, which the bridge always does; without it the reply is the full `HarnessesView`, whose `choices` are ref strings. |
 | `read_messages` | `{messages: [{from_run, kind, body, created_at}]}`. |
 | `run_workflow` | `{id, state, result?, error?}`. |
 | `workflow_status` | `{id, name, state, result?, error?, started_at, finished_at?, steps: [{name, state, run_id?, phase?}]}`, steps in start order. A step state is `queued`, `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`. |
 
-`spawn_agent` accepts `model` to pin a model, so an orchestrator can pick one of `free_models` for a simple task.
+`spawn_agent` accepts `model` (a name or a model ref) to pin a model, so an orchestrator can pick one of `free_models` for a simple task.
 
 Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tasks when the client declares the tasks extension. Progress goes to the task's status message, and `tasks/cancel` stops the wait without cancelling the runs. Otherwise the tools block, with progress notifications.
 
@@ -553,7 +570,7 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
   - The view updates live over SSE.
 - **Accounts.** Add (with a login flow), import, edit cap, priority and pools, enable or disable, flag cooldown, remove.
   - Login runs `codex login --device-auth` where available and shows the URL and code. For other harnesses, the page shows the command to run, then polls the sign-in check.
-- **Choices and routing.** Edit choices and the routing instruction, run a route preview, and view the decision log.
+- **Levels and routing.** Edit levels (models in preference order, min, max and tier), the routing instruction, run a route preview, and view the decision log. The page is at `/routing`.
 - **Agents.** List, view and edit agent files.
 - **Workflows.** Saved workflows, runs and step status.
 - **Settings.** `config.toml` fields, notifications, worktree defaults, and the OpenRouter key source. The key value is never shown.
@@ -568,7 +585,7 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
 setup [--codex N] [--claude N] [--opencode N] [--agy N] [--no-login] [--no-install] [--no-claude-md]
                           first-run guide: init, detect harnesses, offer account import --scan,
                           add N accounts per harness, sign in, install, doctor summary
-init                      create config dir, seed config, choices, catalog, starter agents
+init                      create config dir, seed config, levels, catalog, starter agents
 install                   register the MCP server with Claude Code (claude mcp add) and other harnesses, install skills
 uninstall
 doctor                    binaries on PATH, versions, bwrap, sign-ins, socket, db, UI port
@@ -576,7 +593,7 @@ status                    accounts and headroom, active runs, supervisor state
 account add [--name N] [--count K] [--login]|import|login|list|remove|enable|disable|flag
 agent create|list|show|edit|remove
 models refresh|list
-route "<task>" [--role R] [--explain]
+route "<task>" [--model REF] [--agent NAME] [--explain]
 route eval [...]
 runs list|show|watch|cancel
 join <run> [--exec]
@@ -593,7 +610,7 @@ migrate [--apply]
 
 `tui` (also the bare command on a terminal) is a ratatui UI with four tabs: Overview (setup checklist with the fix for each missing item, account and run counts), Accounts (add, sign in (claude and agy in a session of their wrapper), enable or disable, flag a cooldown, remove with a typed-name confirmation, import scan), Runs (recent runs from the store refreshed every 2 s, a detail pane with the diff of a run waiting for review, cancel, open session (`o`), accept (`a` accepts and merges a run with a worktree, `A` only accepts) and reject) and Setup (the `setup` steps one at a time with live status, plus `install` and `doctor`). `?` opens help, `Tab` and `1` to `4` switch tabs, `j`/`k`/`g`/`G` or the arrow keys move, `q` or `Esc` quits from the top level. It calls the same library functions as the commands above and adds no business logic. Sign-in and join hand the terminal to the child process and restore it afterwards. The diff, cancel, open session, accept and reject use the supervisor socket and never start it; when it is not running they report that. It honors `NO_COLOR`, needs at least 60x16, redraws on resize and restores the terminal on every exit path. Without a terminal `tui` exits 2.
 
-`setup` is the first command a new user runs and is idempotent. It runs `init` (silent when nothing is created), prints the installed harnesses, offers the `account import --scan` results, asks for each installed harness how many accounts to add (default 0, or 1 when the harness has no account or importable login; claude defaults to 0 because its accounts are kept for the orchestrator and its choices are disabled, 8.2), signs in to the new accounts on a terminal (otherwise prints the commands), runs `install`, and prints a short `doctor` summary. `--yes` takes the defaults, `--codex N --claude N --opencode N --agy N` set the counts, `--no-login` and `--no-install` skip those steps, and `--no-claude-md` is passed to `install`. Accounts that are still signed out, new or from an earlier run, are offered a sign-in on a terminal and get their `account login` command printed otherwise. A run that adds nothing prints which accounts are already set up. A harness whose count was asked for but whose binary is not on `PATH` fails the run (exit 1) after the other steps. Ctrl-C at a prompt exits 130. `setup --yes --json` prints one summary object (`ok`, `created`, `imported`, `installed`, `signed_in_needed`, `doctor`). Without a terminal and without `--yes` it prints the plan and exits 0. Counts that are not asked are never added twice, so a second run changes nothing. On macOS only one agy account is added (ADR-0005).
+`setup` is the first command a new user runs and is idempotent. It runs `init` (silent when nothing is created), prints the installed harnesses, offers the `account import --scan` results, asks for each installed harness how many accounts to add (default 0, or 1 when the harness has no account or importable login; claude defaults to 0 because its accounts are kept for the orchestrator and no level lists a Claude model by default, 8.2), signs in to the new accounts on a terminal (otherwise prints the commands), runs `install`, and prints a short `doctor` summary. `--yes` takes the defaults, `--codex N --claude N --opencode N --agy N` set the counts, `--no-login` and `--no-install` skip those steps, and `--no-claude-md` is passed to `install`. Accounts that are still signed out, new or from an earlier run, are offered a sign-in on a terminal and get their `account login` command printed otherwise. A run that adds nothing prints which accounts are already set up. A harness whose count was asked for but whose binary is not on `PATH` fails the run (exit 1) after the other steps. Ctrl-C at a prompt exits 130. `setup --yes --json` prints one summary object (`ok`, `created`, `imported`, `installed`, `signed_in_needed`, `doctor`). Without a terminal and without `--yes` it prints the plan and exits 0. Counts that are not asked are never added twice, so a second run changes nothing. On macOS only one agy account is added (ADR-0005).
 
 `account add <harness>` without `--name` names the account `<harness>-<n>` with the lowest free `n` from 1; a name is skipped when the account exists or when it would shadow a command on `PATH`. `--count K` creates K accounts; `--name` with `--count` above 1 is a usage error (exit 2). `--login` signs in to each new account in turn on a terminal, and prints the commands otherwise. With `--json` the result lists every created account under `accounts`.
 
@@ -634,10 +651,10 @@ priority = ["agy", "opencode", "codex", "claude"]
 weights = { headroom = 1.0, load = 0.5, cost = 0.3 }
 instruction = "Rate the complexity of task_content against the ordered criteria…"
 # [[router.levels]]                 # optional; defaults: low 0-37 (fast), mid 38-62 (mid), high 63-100 (high)
-# name = "high"
+# name = "complex"
 # min = 63
-# max = 100
-# choices = [{ id = "codex-gpt-high", priority = 1 }]
+# max = 87
+# models = ["codex/gpt-6.1-sol/high", "agy/claude-sonnet-4-6/thinking"]   # preference order
 
 [router.jev]
 endpoint = "https://openrouter.ai/api/alpha/decisions"
@@ -707,8 +724,8 @@ The supervisor sends notifications for the events listed in `notifications.on`, 
 
 `superorchestrator-cli` is static text: a guide to the command line for people and agents (setup, accounts, `status`, `doctor`, runs, `join`, `ui`, workflows, `route`, config and where troubleshooting is documented).
 
-`use-superorchestrator-mcp` is regenerated whenever accounts, choices or agents change (a refresh also writes the CLI skill when it is missing). It explains:
-- the accounts and choices that exist
+`use-superorchestrator-mcp` is regenerated whenever accounts, levels or agents change (a refresh also writes the CLI skill when it is missing). It explains:
+- the accounts, levels and models that exist
 - when to call `route` versus `spawn_agent`
 - how to write a task brief with acceptance criteria and out-of-scope items
 - how to wait, message and review runs
@@ -740,7 +757,6 @@ The supervisor sends notifications for the events listed in `notifications.on`, 
    - `~/.local/bin/add-agy-worker`
    - the `jev-router-mcp` entries in the Codex, agy and OpenCode configs
 5. Rewrite the delegation rules in `~/.claude/CLAUDE.md`: implementation is delegated through the superorchestrator MCP tools and skill, not the `orchestrate` skill. Other lines are left unchanged. A diff is shown first.
-6. Seed `choices` from `~/.config/jev-router/config.json`, if it exists.
 
 ## 20. Security
 
@@ -783,9 +799,9 @@ Each milestone is one or more PRs with `cargo test` coverage, and is usable by i
 4. **M4 Communication, nesting, review.**
    - Scope: messages, `send_message` (live and resume), `read_messages`, `report_progress`, `ask_parent`, elicitation, progress notifications, nested spawn with depth 2 and caps, `fork_agent`, review gate and checks, stall nudges and escalation, notifications.
 5. **M5 Routing.**
-   - Scope: catalog and `models refresh`, choices, heuristic, Jev decider with validation and gate, account selection, `route`, `harness: auto`, failover across accounts and choices, `route eval` with the shipped cases.
+   - Scope: catalog and `models refresh`, choices, heuristic, Jev decider with validation and gate, account selection, `route`, `harness: auto`, failover across accounts and levels, `route eval` with the shipped cases.
 6. **M6 Web UI.**
-   - Scope: axum API and SSE, dashboard, sessions list, session timeline Gantt with the run panel, accounts pages with login flows, choices and settings pages, `ui --install-service`.
+   - Scope: axum API and SSE, dashboard, sessions list, session timeline Gantt with the run panel, accounts pages with login flows, levels and settings pages, `ui --install-service`.
 7. **M7 Custom agents.**
    - Scope: `AGENT.md` parsing with Claude Code parity, per-harness materialisation, `.claude/agents` import, `agent` CLI, starter agents, the UI agents page.
 8. **M8 Workflows.**

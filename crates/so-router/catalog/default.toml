@@ -1,4 +1,4 @@
-# Default model catalog (SPEC 8.1). Discovery and validation only; it never edits choices.
+# Default model catalog (SPEC 8.1). Discovery and validation only; it never edits the models listed on levels.
 
 [[agy.models]]
 id = "gemini-3.8-flash-high"

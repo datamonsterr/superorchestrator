@@ -1,50 +1,77 @@
 import '@/lib/zod-setup'
 import { z } from 'zod'
-import type { Choice, RouteParams } from '@/api/types'
+import type { Harness, Level, RouteParams } from '@/api/types'
 
 export const HARNESSES = ['codex', 'agy', 'opencode', 'claude'] as const
+export const TIERS = ['high', 'mid', 'fast'] as const
 
-export function choiceSchema(otherIds: readonly string[]) {
-  return z.object({
-    id: z
-      .string()
-      .min(1, 'Enter an id')
-      .regex(/^[a-z0-9-]+$/, 'Use lowercase letters, digits and dashes')
-      .refine((v) => !otherIds.includes(v), 'A choice with this id already exists'),
-    harness: z.enum(HARNESSES),
-    model: z.string().trim().min(1, 'Enter a model'),
-    effort: z.string().trim(),
-    roles: z.string().refine((s) => parseRoles(s).length > 0, 'Enter at least one role'),
-    description: z.string().trim(),
-    enabled: z.boolean(),
-  })
-}
-export type ChoiceValues = z.infer<ReturnType<typeof choiceSchema>>
-
-/** "code, review" -> ["code", "review"]; blanks and duplicates dropped. */
-export function parseRoles(csv: string): string[] {
-  return [...new Set(csv.split(',').map((r) => r.trim()).filter(Boolean))]
+/** `harness/model[/effort]`: the ref a Choice is written as in `config.toml` and on the wire. */
+export function buildRef(harness: string, model: string, effort?: string): string {
+  const m = model.trim()
+  const e = effort?.trim()
+  return e ? `${harness}/${m}/${e}` : `${harness}/${m}`
 }
 
-export function toChoice(v: ChoiceValues): Choice {
+/**
+ * The inverse of `buildRef`. OpenCode models are `provider/model`, so a third segment is the
+ * effort; for the other harnesses a model has no slash, so a second segment is the effort.
+ * A display heuristic for the harness badge only: the server decides what a ref means. Model ids
+ * containing `/` are not expected on the other harnesses.
+ */
+export function splitRef(ref: string): { harness: Harness; model: string; effort: string } {
+  const [harness, ...rest] = ref.split('/')
+  const modelSegments = harness === 'opencode' ? 2 : 1
   return {
-    id: v.id,
-    harness: v.harness,
-    model: v.model.trim(),
-    ...(v.effort ? { effort: v.effort } : {}),
-    roles: parseRoles(v.roles),
-    description: v.description,
-    enabled: v.enabled,
+    harness: harness as Harness,
+    model: rest.slice(0, modelSegments).join('/'),
+    effort: rest.slice(modelSegments).join('/'),
   }
 }
 
-export function fromChoice(c: Choice): ChoiceValues {
-  return { id: c.id, harness: c.harness, model: c.model, effort: c.effort ?? '', roles: c.roles.join(', '), description: c.description, enabled: c.enabled }
+/** The fields of the "Add model" dialog; `existing` are the refs the level already lists. */
+export function modelRefSchema(existing: readonly string[]) {
+  return z
+    .object({
+      harness: z.enum(HARNESSES),
+      model: z.string().trim().min(1, 'Enter a model'),
+      effort: z.string().trim(),
+    })
+    .superRefine((v, ctx) => {
+      if (v.model && v.harness === 'opencode' && !v.model.includes('/')) {
+        ctx.addIssue({ code: 'custom', path: ['model'], message: 'OpenCode models are provider/model, for example opencode/muse-spark-1.3' })
+      } else if (v.model && existing.includes(buildRef(v.harness, v.model, v.effort))) {
+        ctx.addIssue({ code: 'custom', path: ['model'], message: 'This level already lists this model' })
+      }
+    })
 }
+export type ModelRefValues = z.infer<ReturnType<typeof modelRefSchema>>
+
+/** Name and range of a Level; `others` are the other levels, so duplicates and overlaps show before the server says so. */
+export function levelSchema(others: readonly Pick<Level, 'name' | 'min' | 'max'>[]) {
+  const bound = (label: string) => z.number({ error: `Enter ${label} from 0 to 100` }).int('Use a whole number').min(0, 'Use 0 to 100').max(100, 'Use 0 to 100')
+  return z
+    .object({
+      name: z.string().trim().min(1, 'Enter a name'),
+      min: bound('a start'),
+      max: bound('an end'),
+      tier: z.string(),
+    })
+    .superRefine((v, ctx) => {
+      if (others.some((o) => o.name.trim() === v.name)) ctx.addIssue({ code: 'custom', path: ['name'], message: 'A level with this name already exists' })
+      if (v.min > v.max) ctx.addIssue({ code: 'custom', path: ['max'], message: 'The end must not be below the start' })
+      else {
+        const clash = others.find((o) => o.min <= v.max && v.min <= o.max)
+        if (clash) ctx.addIssue({ code: 'custom', path: ['max'], message: `Overlaps ${clash.name} (${clash.min}–${clash.max})` })
+      }
+    })
+}
+export type LevelValues = z.infer<ReturnType<typeof levelSchema>>
+
+/** The select value for "no tier". */
+export const NO_TIER = 'none'
 
 export const previewSchema = z.object({
   prompt: z.string().trim().min(1, 'Enter a prompt to route'),
-  role: z.string().trim(),
   harness: z.string(),
   account: z.string(),
   model: z.string().trim(),
@@ -57,11 +84,9 @@ export const ANY = 'any'
 export function paramsFrom(v: PreviewValues): RouteParams {
   return {
     prompt: v.prompt,
-    ...(v.role ? { role: v.role } : {}),
     ...(v.harness !== ANY ? { harness: v.harness } : {}),
     ...(v.account !== ANY ? { account: v.account } : {}),
     ...(v.model ? { model: v.model } : {}),
     ...(v.effort ? { effort: v.effort } : {}),
   }
 }
-

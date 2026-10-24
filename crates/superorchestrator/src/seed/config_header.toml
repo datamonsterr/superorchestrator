@@ -26,10 +26,11 @@
 # on_unreachable = "error"                  # or "heuristic" to degrade when no decider answers
 # key_file = "~/.config/jev/.env"           # dotenv with OPENROUTER_API_KEY
 
-# Levels map the decider's 0-100 complexity score to choices. Ranges are inclusive and must
-# not overlap (gaps are fine); a lower `priority` number is preferred, and `tier` is used only
-# when `choices` is empty. Without any [[router.levels]] the defaults low/mid/high apply
-# (0-37 fast, 38-62 mid, 63-100 high). `init` writes five levels at the end of a new file.
+# Levels map the decider's 0-100 complexity score to models, listed as harness/model/effort
+# with the most preferred first. Ranges are inclusive and must not overlap (gaps are fine);
+# `tier` is used only when `models` is empty. Without any [[router.levels]] the defaults
+# low/mid/high apply (0-37 fast, 38-62 mid, 63-100 high). `init` writes five levels at the
+# end of a new file.
 # [[router.levels]]
 # name = "low"
 # min = 0
@@ -40,7 +41,7 @@
 # name = "high"
 # min = 63
 # max = 100
-# choices = [{ id = "agy-flash-high", priority = 1 }, { id = "agy-flash-medium" }]
+# models = ["agy/gemini-3.8-flash-high/high", "agy/gemini-3.8-flash-medium/medium"]
 
 # [worktrees]
 # dir = "{repo_parent}/{repo}-worktrees"
@@ -58,5 +59,3 @@
 
 # [notifications]
 # desktop = true
-
-# Choices are the routable set: each binds a harness, model and effort.

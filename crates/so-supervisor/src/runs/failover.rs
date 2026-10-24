@@ -163,12 +163,12 @@ impl RunManager {
             .is_ok()
     }
 
-    /// The run was routed to a pin, not to one of the configured choices.
+    /// The run was routed to a pin: no level lists the choice that stands behind it.
     async fn run_is_pinned(&self, run_id: &str) -> bool {
         let id = run_id.to_string();
         matches!(
             self.db(move |s| s.get_run(&id)).await,
-            Ok(Some(r)) if r.choice_id.as_deref().is_some_and(so_core::is_pinned_choice)
+            Ok(Some(r)) if r.choice_id.as_deref().is_some_and(|c| !self.config().lists_choice(c))
         )
     }
 
