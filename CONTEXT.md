@@ -14,6 +14,10 @@ _Avoid_: Parent session, main agent, controller
 A coding agent started by superorchestrator on behalf of an orchestrator or another subagent.
 _Avoid_: Worker, child agent, delegate
 
+**Agent profile**:
+A custom agent file (section 10 of SPEC) named by `spawn_agent(agent: "<name>")`. It sets the instructions, tools, skills and default settings of a run. It is orthogonal to the model: any profile can run on any model, and `route` and the decider use the profile `worker` when none is named.
+_Avoid_: Role, worker type, persona
+
 **Run**:
 One subagent's life from spawn to finish, on one account, with one native session behind it. Runs form a tree through their parent run.
 _Avoid_: Job, task, execution
@@ -78,15 +82,19 @@ The ranked choice of account, model and effort for a piece of work, with a ratio
 _Avoid_: Decision, selection, placement
 
 **Choice**:
-One routable combination of harness, model and effort that the operator has approved, with a description of the work it suits. Routing picks a choice from the level that the task's complexity falls in, then picks an account for the choice.
-_Avoid_: Option, route option, model config
+One harness, model and effort combination, written as the model ref `harness/model[/effort]` and listed on a level. The ref is its id everywhere (runs, events, route results). Routing picks a choice from the level that the task's complexity falls in, then picks an account for it.
+_Avoid_: Option, route option, model config, role
+
+**Model ref**:
+The string `harness/model[/effort]` that names a Choice, for example `codex/gpt-6.1-sol/high` or `agy/claude-sonnet-4-6/thinking`. The last segment is the effort only when the harness accepts it; for `opencode` the rest is `provider/model[/variant]`.
+_Avoid_: Model id, model name (for the full string)
 
 **Complexity**:
 The 0 to 100 estimate of how much reasoning, analysis and multi-step work a task needs. The decider scores it against fixed anchors, or the heuristic estimates it when no decider answers.
 _Avoid_: Difficulty, size
 
 **Level**:
-A named, operator-defined range of complexity, with the choices allowed for tasks in that range or a model tier when it lists none. A level's choice list is not a Pool.
+A named, operator-defined range of complexity, with the models allowed for tasks in that range, in preference order, or a model tier when it lists none. A level's model list is not a Pool.
 _Avoid_: Tier, bucket, band, pool
 
 **Pool**:

@@ -27,7 +27,6 @@ superorchestrator migrate --apply
 3. Imports cooldowns from `~/.local/state/coding-agent/.state/*/*.meta` as flags.
 4. Removes `~/.claude/orchestrator/`, `~/.claude/orchestrator-state*.json`, `~/.claude/skills/coding-agent-management/`, `~/.local/bin/check-account-usage`, `~/.local/bin/add-agy-worker`, and the `jev-router-mcp` entries in the Codex, agy and OpenCode configs.
 5. Rewrites the delegation rule in `~/.claude/CLAUDE.md`, so implementation goes through the superorchestrator tools and skill, not the `orchestrate` skill. Only the first line that names the old skill is replaced. Other such lines stay and are listed for you to edit. Lines with a prohibition ("never", "don't") are left alone. A diff is shown first.
-6. Seeds choices from `~/.config/jev-router/config.json`, if it exists.
 
 If it finds any legacy artifact, it also runs `init` and `install`. On a clean machine it says so and points you to `superorchestrator install`.
 

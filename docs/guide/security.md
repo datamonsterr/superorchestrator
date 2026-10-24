@@ -59,7 +59,7 @@ A subagent can read and write anything your user account can, and run any comman
 
 ## Task text
 
-Task text goes to subagents as argv elements or JSON, never through a shell string. It cannot change which choices are eligible. The one place a shell command runs is the `checks` option, for example `cmd:make test`. Only an orchestrator (depth 0, no calling run) may supply `cmd:` in a `spawn_agent` call. Subagent callers may supply only `ci` and `pr_threads`. It runs with your privileges, outside the harness sandbox. It is never built from task text or run output. Treat `checks` like a command you would run yourself.
+Task text goes to subagents as argv elements or JSON, never through a shell string. It cannot change which models are eligible. The one place a shell command runs is the `checks` option, for example `cmd:make test`. Only an orchestrator (depth 0, no calling run) may supply `cmd:` in a `spawn_agent` call. Subagent callers may supply only `ci` and `pr_threads`. It runs with your privileges, outside the harness sandbox. It is never built from task text or run output. Treat `checks` like a command you would run yourself.
 
 Subagents cannot supply inline `script` to `run_workflow`; they can invoke saved workflows by `name` only from the user config directory. The supervisor never searches project or run directories for subagent workflow scripts, including files that would shadow a config workflow. A subagent's requested spawn `cwd` must canonicalise inside its calling run's worktree/cwd. All workflow steps must stay inside their workflow base, including after symlink resolution. These supervisor request restrictions do not sandbox the harness's own filesystem or shell access.
 

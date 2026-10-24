@@ -24,7 +24,7 @@ superorchestrator account list
 superorchestrator route fix the flaky retry test --explain
 ```
 
-You see the chosen choice, harness, account and model, with the reason and the runner-up choices.
+You see the chosen model ref (`choice_id`), harness, account and model, with the reason and the runner-up models.
 
 When an account runs out, ask Claude Code to start several tasks. Runs spread over the accounts. If a run fails with a quota or rate-limit error, that account is marked exhausted until its reset time, and the run restarts on the next account. The run keeps its id, and the timeline shows each attempt. To take an account out by hand for five hours:
 
@@ -45,7 +45,7 @@ After `superorchestrator setup`, open Claude Code in your project and ask:
 
 Claude Code loads the `use-superorchestrator-mcp` skill and then calls:
 
-1. `list_harnesses` to see the accounts and choices;
+1. `list_harnesses` to see the accounts, levels and agents;
 2. `spawn_agent` with your task (`harness` stays `auto`, so the router picks);
 3. `wait_agent` until the run finishes;
 4. `get_run` for the result.

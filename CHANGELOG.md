@@ -24,6 +24,15 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Changed (breaking)
 
+- Choices are removed. `[[choices]]` and `choices = [...]` on a level are no longer read: the config fails to load with a message that shows the new form. List model refs (`harness/model[/effort]`) on each `[[router.levels]]` entry in preference order instead. `enabled`, `roles`, `description` and `priority` have no equivalent. See `docs/guide/routing.md`.
+- Roles are removed from config, `route`, `spawn_agent`, the CLI, the web preview and eval cases. Agent profiles replace them: `spawn_agent(agent: "<name>")`, sent to the decider as `agent`. `route --role` is removed; use `route --agent`.
+- `route_decision` events carry `agent` in place of `role`.
+- `/api/v1/choices` is removed. `GET/PUT /api/v1/levels` takes `{levels, routing_instruction}` and returns `restart_required`. An empty levels list is rejected.
+- `migrate` no longer has a `choices` step.
+- `list_harnesses` choice rows are `{id, harness, model, effort?, levels, free?, eligible?, why?}`, where `id` is the model ref. `why` no longer reports `disabled`. `choice_id` in runs, events and route results is the ref, for example `codex/gpt-6.1-sol/high`.
+- Routing picks the first eligible model in the level's list order. `priority` on a level entry is gone, and so is the choice `enabled` switch: a model is enabled by being listed.
+- The `route eval` `role` key is ignored. `expected_choices` are model refs.
+
 - GHSA-rfwj-83wf-qr2g: supervisor-launched children no longer inherit provider API keys, `ANTHROPIC_BASE_URL`, `GH_TOKEN`, `GITHUB_TOKEN`, `SSH_AUTH_SOCK` or CA variables such as `NODE_EXTRA_CA_CERTS`. Opt in by name with `pass_env` on an account or `accounts.pass_env` in `config.toml`, then restart the supervisor. `doctor` warns when common names are set but not passed.
 - GHSA-4j5v-hrm3-743p: old bookmarks of `http://127.0.0.1:7878` now show the token prompt. Use `superorchestrator ui`.
 - GHSA-58xv-wg3h-fcwq, GHSA-fh9p-x854-c6x7: project agents using `hooks`, `mcpServers`, `isolation: none` or `extra_args` are refused. Claude `extra_args` parsing is stricter for user agents too.
@@ -51,6 +60,16 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Added
 
+- Model refs: `harness/model[/effort]` names a harness, model and effort in one string, and levels list them. Each harness's effort list is checked when the config loads. `agy/claude-sonnet-4-6/thinking` is valid, and `agy/claude-sonnet-4-6/high` is rejected.
+- Model pins accept a ref: `route --model codex/gpt-6.1-sol/high`, `spawn_agent(model: ...)`, the agent file's `model:` and `defaults.model`. A ref sets harness, model and effort. A conflicting `harness` or `effort` is an error. A pinned ref that no level lists still runs.
+- `route --model REF` and `route --agent NAME` replace `route --role`. `--explain` prints an `accounts:` line with the ranked accounts, best first.
+- Account choice rationale: the rationale ends with `account <name>: <why>` (`most headroom (N%)`, `fewest active runs (N)`, `higher priority`, `least recently used`, `the only usable account` or `name order`). `RouteResult.ranked_accounts` lists the accounts best first.
+- Levels editor on the `/routing` page (nav label Levels): a card per level, with ordered model rows (move up, move down, remove), add model with a live ref preview, and add and edit level. The last level cannot be deleted.
+- TUI Overview shows a Levels block (`name  min-max  ref, ref`).
+- Starter agents `worker` and `conductor`. `worker` is the profile used when a call names none. Any profile can run on any model.
+- `doctor` reports a `levels` check: a level whose models have no enabled account, and a listed model the catalog does not know. `models refresh` reports listed models missing from the catalog and catalog models that no level lists.
+- `docs/adr/0007-levels-list-model-refs.md` records the decision.
+
 - Complexity levels: `[[router.levels]]` with `name`, `min`, `max`, an optional `tier` and `choices` (`id`, optional `priority`). With no levels set, low 0-37, mid 38-62 and high 63-100 apply. Overlaps and duplicates are refused at load. A level choice id that is not in `[[choices]]` is accepted, skipped when routing and reported by `doctor`.
 - `init` writes five seeded levels (trivial 0-12, simple 13-37, moderate 38-62, complex 63-87, expert 88-100) to a new `config.toml`; an existing file is never changed. The default tier levels moved to the anchor centres: low 0-37, mid 38-62, high 63-100. Anchor 1 now names read-only search, listing and summarising tool output as simple work.
 - `route eval`: cases take `expected_complexity`; reports add `complexity`, `level`, `complexity_ok` per case, `complexity_accuracy` and CX / LEVEL columns; `--min-complexity-accuracy X` fails below it.
@@ -72,6 +91,11 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
   phrase is detected, from the result parser (#13).
 - `models refresh` reports `missing_choice_models`: enabled choices whose model a harness did not
   list (#7).
+
+### Removed
+
+- `[[choices]]`, `choices` on levels, roles (`roles`, `--role`, `role` in `route` and `spawn_agent`), the `enabled`, `description` and `priority` choice fields, `effort_skips` and the `/api/v1/choices` endpoint.
+- `migrate` `choices` step and the `choices` and `choice efforts` doctor checks.
 
 ### Fixed
 

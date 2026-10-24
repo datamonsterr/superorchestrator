@@ -4,7 +4,7 @@ Superorchestrator keeps its files in one directory:
 
 ```
 ~/.config/superorchestrator/
-  config.toml        defaults, limits, router, usage, worktrees, ui, notifications, choices
+  config.toml        defaults, limits, router, usage, worktrees, ui, notifications
   models.toml        model catalog
   accounts/<name>.toml
   agents/<name>/AGENT.md
@@ -90,43 +90,41 @@ superorchestrator config edit
 
 ### `[[router.levels]]`
 
-Each level maps a range of complexity (0 to 100, from the decider or from the heuristic estimate) to the choices allowed for tasks in that range. [Routing](routing.md#complexity-levels) explains how a task is picked from them.
+Each level maps a range of complexity (0 to 100, from the decider or from the heuristic estimate) to the models allowed for tasks in that range. Models are model refs (`harness/model[/effort]`, see [routing](routing.md#models-and-levels)), listed in preference order. [Routing](routing.md#how-the-router-decides) explains how a task is picked from them.
+
+```toml
+[[router.levels]]
+name = "complex"
+min = 63
+max = 87
+models = ["agy/claude-sonnet-4-6/thinking", "opencode/opencode/muse-spark-1.3", "codex/gpt-6.1-sol/high"]
+```
 
 | Key | Default | Meaning |
 |---|---|---|
 | `name` | required | Level name. Non-empty and unique after trimming. |
 | `min` | required | Lowest complexity in the level, an integer from 0 to 100 |
 | `max` | required | Highest integer in the level, from `min` to 100. The level covers up to `max + 1`, so 37.5 is in `0`-`37`. With `max = 100`, 100.0 is included too. |
-| `tier` | unset | `high`, `mid` or `fast`. Used only when `choices` is empty: then every eligible choice of that tier is a candidate. Ignored when `choices` is set. |
-| `choices` | `[]` | List of `{ id = "...", priority = 1 }` entries. `id` names a `[[choices]]` entry and may appear once per level. `priority` is optional; a lower number is preferred, and choices without one come after those with one. |
+| `models` | `[]` | Model refs in preference order, for example `"codex/gpt-6.1-sol/high"`. The first eligible one is preferred. A model is enabled by being listed. |
+| `tier` | unset | `high`, `mid` or `fast`. Used only when `models` is empty: then every eligible model of that tier is a candidate, in config order. Ignored when `models` is set. |
 
-With no `[[router.levels]]` in the file, the defaults are `low` 0-37 (tier `fast`), `mid` 38-62 (tier `mid`) and `high` 63-100 (tier `high`), with no choices. Gaps between levels are allowed. A complexity that falls in a gap goes to the nearest level, and a tie goes to the higher one. An explicit empty list, `router.levels = []`, loads and turns levels off: `level` is null and every eligible choice is ranked by the heuristic scorer. The defaults apply only when the key is absent.
+A level needs `models`, `tier`, or both. With no `[[router.levels]]` in the file, the defaults are `low` 0-37 (tier `fast`), `mid` 38-62 (tier `mid`) and `high` 63-100 (tier `high`), with no models. `superorchestrator init` writes the five seeded levels (`trivial`, `simple`, `moderate`, `complex`, `expert`) into a new config file; the list is in [routing](routing.md#seeded-levels). Gaps between levels are allowed. A complexity that falls in a gap goes to the nearest level, and a tie goes to the higher one. An explicit empty list, `router.levels = []`, loads and turns levels off: `level` is null and every eligible model is ranked by the heuristic scorer.
 
 The file is refused at load when:
 
 - a name is empty or repeated
 - `min` is greater than `max`, or `max` is greater than 100
 - two ranges overlap
-- a level has neither `choices` nor `tier`
-- a level lists the same choice id twice (an id that is not in `[[choices]]` is accepted: it is skipped when routing and `doctor` warns about it)
+- a level has neither `models` nor `tier`
+- a level lists the same ref twice
+- a ref is malformed, or its effort is not one its harness accepts (for example `agy/claude-sonnet-4-6/high`)
+- the file still has the old choices table or a `choices` list on a level (see [the removed choices table](#removed-choices-table))
 
 `doctor` reports the levels under "levels" and warns when:
 
-- every listed choice of a level is disabled or unknown, so the level falls through to the nearest one
-- `tier` is set together with a non-empty `choices` list, so `tier` is ignored
-- a level with only `tier` has no enabled `worker` choice of that tier
-- the model catalog is unavailable, so tier checks are skipped
-
-```toml
-[[router.levels]]
-name = "high"
-min = 80
-max = 100
-choices = [
-  { id = "codex-gpt-high", priority = 1 },   # id must match a [[choices]] entry
-  { id = "agy-pro-high" },                   # no priority: after the ones that have one
-]
-```
+- a level's models have no enabled account, so the level falls through to the nearest one
+- a listed model is not in the model catalog
+- `tier` is set together with a non-empty `models` list, so `tier` is ignored
 
 ### `[worktrees]`
 
@@ -175,9 +173,9 @@ Used when a spawn and its agent name no harness, model or effort.
 | `model` | unset | Model id |
 | `effort` | unset | Effort level |
 
-### `[[choices]]`
+### Removed: choices table
 
-See [routing](routing.md). Fields: `id`, `harness`, `model`, `effort`, `roles`, `description`, `enabled`.
+The old top-level choices table, and a `choices = [...]` list on a level, are no longer read. The config fails to load with this message: `[[choices]] is no longer read: list models on each [[router.levels]] entry as harness/model/effort, e.g. models = ["codex/gpt-6.1-sol/high"] (docs/guide/routing.md)`. Move each entry to a model ref on the level, as described in [routing](routing.md#migrating-from-the-choices-table).
 
 ## Environment variables
 

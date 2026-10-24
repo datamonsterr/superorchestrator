@@ -59,7 +59,7 @@ More in [accounts](accounts.md#logging-in-per-harness). To add more accounts lat
 
 - **Registers the MCP server.** It runs `claude mcp add` for Claude Code and adds an entry to the Codex, agy and OpenCode configs.
 - **Writes two skills**, to `~/.claude/skills/` and `~/.agents/skills/`:
-  - `use-superorchestrator-mcp` teaches the agent to delegate through the MCP tools. It lists your accounts, choices and agents, and refreshes when they change.
+  - `use-superorchestrator-mcp` teaches the agent to delegate through the MCP tools. It lists your accounts, levels and agents, and refreshes when they change.
   - `superorchestrator-cli` teaches the agent the command line: accounts, status and runs.
 - **Adds a block to `~/.claude/CLAUDE.md`**, between `<!-- superorchestrator:begin -->` and `<!-- superorchestrator:end -->`. It says:
   - delegate implementation through superorchestrator, and load the `use-superorchestrator-mcp` skill before the first delegation;
@@ -91,5 +91,5 @@ Watch it with `superorchestrator runs list`, or open the web UI with `superorche
 ## Next
 
 - [Use cases](use-cases.md): worked examples.
-- [Routing and choices](routing.md): how the router picks.
+- [Routing, models and levels](routing.md): how the router picks.
 - [Reviewing and landing runs](review.md).

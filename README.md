@@ -78,7 +78,7 @@ Claude Code loads the `use-superorchestrator-mcp` skill, calls `spawn_agent`, wa
 - [Getting started](docs/guide/getting-started.md)
 - [Use cases](docs/guide/use-cases.md)
 - [Accounts and wrappers](docs/guide/accounts.md)
-- [Routing and choices](docs/guide/routing.md)
+- [Routing, models and levels](docs/guide/routing.md)
 - [Custom agents](docs/guide/agents.md)
 - [Workflows](docs/guide/workflows.md)
 - [Reviewing and landing runs](docs/guide/review.md)

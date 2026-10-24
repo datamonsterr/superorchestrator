@@ -10,7 +10,7 @@ Superorchestrator searches these places in order. An earlier match wins.
 2. `~/.config/superorchestrator/agents/`
 3. `.claude/agents/` in the working directory (a read-only import)
 
-Each place holds `<name>/AGENT.md` folders and flat `<name>.md` files. A folder can also hold `skills/` and extra files. `init` installs three starter agents: `ui-ux-designer`, `pr-reviewer` and `issue-summarizer`.
+Each place holds `<name>/AGENT.md` folders and flat `<name>.md` files. A folder can also hold `skills/` and extra files. `init` installs five starter agents: `worker`, `conductor`, `ui-ux-designer`, `pr-reviewer` and `issue-summarizer`. `worker` is the profile used when a call names none.
 
 ## Trust and shadowing
 
@@ -80,9 +80,23 @@ System prompt body…
 
 `description` is required. Every other field is optional, and the name defaults to the folder or file name. Model selection order: call argument, agent file, `defaults` in `config.toml`, router.
 
+## Profiles and models
+
+An agent file is an **agent profile**: the instructions, tools, skills and defaults for a kind of run. It is named by `spawn_agent(agent: "<name>")`. A profile is independent of the model. Any profile can run on any model, so you choose the model when you spawn:
+
+```
+spawn_agent(agent: "worker", prompt: "Port the parser to the new API", model: "codex/gpt-6.1-sol/high")
+```
+
+The call's `model` overrides the profile's `model:` for that run. The router is not involved when the call names a harness and model; without them, it picks the model from the levels (see [routing](routing.md)).
+
+`model:` in an agent file takes a plain model name, or a model ref (`harness/model[/effort]`). A ref sets `harness`, `model` and `effort` together. A `harness:` in the same file that names another harness is an error, and so is an `effort:` that disagrees with the ref. For example, `model: agy/claude-sonnet-4-6/thinking` sets the agy harness, that model and the `thinking` effort.
+
+Profiles replace the old per-role setup. There is no role in config, in `route`, or in `spawn_agent`: the router sends the profile name to the decider as `agent`, and that name does not select a model.
+
 ### Model and effort characters
 
-`model` and `effort` values (from a call, an agent file, `defaults` or a choice) are checked before launch: they must be non-empty, must not start with `-`, and may use only the characters `[A-Za-z0-9:/_.@\-\[\]]`. Characters such as `~`, `+` and `#` are rejected, so a model id that uses them cannot be passed through; the run fails with `invalid model` or `invalid effort` before any process starts.
+`model` and `effort` values (from a call, an agent file, `defaults` or a model ref) are checked before launch: they must be non-empty, must not start with `-`, and may use only the characters `[A-Za-z0-9:/_.@\-\[\]]`. Characters such as `~`, `+` and `#` are rejected, so a model id that uses them cannot be passed through; the run fails with `invalid model` or `invalid effort` before any process starts.
 
 ## Commands
 

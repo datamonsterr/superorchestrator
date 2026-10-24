@@ -20,7 +20,7 @@ The browser's global history may still record the original fragment. A history e
 - **Sessions.** Orchestrator and interactive sessions. Filter by active, escalated or failed.
 - **Session timeline.** One lane per run, nested under its parent, updated live. Click a lane for the run panel: brief, route decision, events, transcript, result, worktree, join command, and actions (message, cancel, accept, reject).
 - **Accounts.** Add, import, edit cap, priority and pools, enable or disable, flag a cooldown, remove, and sign in.
-- **Choices.** Edit choices and the routing instruction, preview a route, read the decision log.
+- **Levels.** Edit levels and the routing instruction, preview a route, read the decision log. The page is at `/routing`. Each level lists its models in order, with add, remove and move controls.
 - **Agents.** List, view and edit agent files.
 - **Workflows.** Saved workflows, runs and step status.
 - **Settings.** `config.toml` fields, notifications, worktree defaults and the key source for Jev. The key value is never shown.
