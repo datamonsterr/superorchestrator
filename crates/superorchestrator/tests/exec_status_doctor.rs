@@ -205,73 +205,22 @@ fn doctor_checks(e: &Env) -> Vec<serde_json::Value> {
 }
 
 #[test]
-fn doctor_warns_about_codex_choices_left_off_by_the_old_seed() {
+fn doctor_flags_levels_with_nothing_to_route_to() {
     let e = Env::new();
     e.init();
-    // A fresh seed has nothing to warn about.
-    assert!(!doctor_checks(&e).iter().any(|c| c["name"] == "choices"));
-
-    // An older config: the seeded text with the codex choices off.
     let path = e.cfg.join("config.toml");
-    let mut text = std::fs::read_to_string(&path).unwrap();
-    for id in ["codex-high", "codex-medium"] {
-        let at = text.find(&format!("id = \"{id}\"")).unwrap();
-        let off = text[at..].find("enabled = true").unwrap() + at;
-        text.replace_range(off..off + "enabled = true".len(), "enabled = false");
-    }
-    text = text.replace(
-        "Not eligible until a codex account is signed in.",
-        "Disabled until a codex account is signed in.",
-    );
-    std::fs::write(&path, &text).unwrap();
+    std::fs::write(
+        &path,
+        "[[router.levels]]\nname = \"all\"\nmin = 0\nmax = 100\ntier = \"mid\"\nmodels = [\"codex/gpt-6.1-sol/high\"]\n",
+    )
+    .unwrap();
     let checks = doctor_checks(&e);
-    let w = checks.iter().find(|c| c["name"] == "choices").unwrap();
+    let w = checks.iter().find(|c| c["name"] == "levels").unwrap();
     assert_eq!(w["status"], "warn");
     let d = w["detail"].as_str().unwrap();
     assert!(
-        d.contains("codex-high") && d.contains("codex-medium") && d.contains("enabled = true"),
-        "{d}"
-    );
-
-    // A choice the user turned off with their own description is theirs.
-    let text = text.replace(
-        "Disabled until a codex account is signed in.",
-        "Off on purpose.",
-    );
-    std::fs::write(&path, text).unwrap();
-    assert!(!doctor_checks(&e).iter().any(|c| c["name"] == "choices"));
-}
-
-#[test]
-fn doctor_flags_a_choice_effort_its_harness_rejects() {
-    let e = Env::new();
-    e.init();
-    // The seed's agy `thinking` hint is valid.
-    assert!(
-        !doctor_checks(&e)
-            .iter()
-            .any(|c| c["name"] == "choice efforts")
-    );
-
-    let path = e.cfg.join("config.toml");
-    let text = std::fs::read_to_string(&path).unwrap();
-    let at = text.find("id = \"codex-high\"").unwrap();
-    let eff = text[at..].find("effort = \"").unwrap() + at;
-    let end = text[eff..].find('\n').unwrap() + eff;
-    let mut edited = text.clone();
-    edited.replace_range(eff..end, "effort = \"thinking\"");
-    std::fs::write(&path, edited).unwrap();
-    let checks = doctor_checks(&e);
-    let w = checks
-        .iter()
-        .find(|c| c["name"] == "choice efforts")
-        .unwrap();
-    assert_eq!(w["status"], "warn");
-    let d = w["detail"].as_str().unwrap();
-    assert!(
-        d.contains(
-            "effort `thinking` is not valid for codex (minimal|low|medium|high|xhigh|max|ultra)"
-        ) && d.contains("config.toml"),
+        d.contains("level all: no model has an enabled account")
+            && d.contains("`tier` is ignored because `models` is not empty"),
         "{d}"
     );
 }

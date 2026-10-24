@@ -1,4 +1,4 @@
-//! The installed skill follows accounts, choices and agents (SPEC 19.1).
+//! The installed skill follows accounts, levels and agents (SPEC 19.1).
 #![allow(clippy::unwrap_used)]
 
 mod common;
@@ -86,7 +86,7 @@ fn agent_commands_refresh_the_skill() {
 }
 
 #[test]
-fn setting_choices_refreshes_the_skill() {
+fn setting_levels_refreshes_the_skill() {
     let e = Env::new();
     e.init();
     install_skill(&e);
@@ -95,12 +95,12 @@ fn setting_choices_refreshes_the_skill() {
         &[
             "config",
             "set",
-            "choices",
-            r#"[{id = "mine", harness = "codex", model = "m1", effort = "high", roles = ["worker"], description = "Custom", enabled = true}]"#,
+            "router.levels",
+            r#"[{name = "all", min = 0, max = 100, models = ["codex/m1/high"]}]"#,
         ],
     );
     let s = skill(&e);
-    assert!(s.contains("`mine`: codex / m1 (high). Custom"), "{s}");
+    assert!(s.contains("codex/m1/high"), "{s}");
 }
 
 #[test]

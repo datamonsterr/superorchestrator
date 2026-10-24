@@ -75,11 +75,6 @@ fn seed(e: &Env) {
         &state.join("codex/codex-acc2.meta"),
         "exhausted_until=1000\n",
     );
-    // Router choices.
-    write(
-        &h.join(".config/jev-router/config.json"),
-        r#"{"choices":[{"id":"legacy-pick","harness":"codex","model":"gpt-x","effort":"high","roles":["worker"],"description":"from jev","enabled":true}]}"#,
-    );
 }
 
 fn cmd(e: &Env) -> assert_cmd::Command {
@@ -155,7 +150,6 @@ fn dry_run_is_the_default_prints_the_plan_and_changes_nothing() {
         "check-account-usage",
         "add-agy-worker",
         "jev-router-mcp",
-        "legacy-pick",
     ] {
         assert!(s.contains(want), "plan lacks {want}:\n{s}");
     }
@@ -169,7 +163,6 @@ fn dry_run_is_the_default_prints_the_plan_and_changes_nothing() {
     let line = |words: &[&str]| s.lines().any(|l| words.iter().all(|w| l.contains(w)));
     assert!(line(&["cooldown", "flag", "agy-acc1", "until"]), "{s}");
     assert!(!line(&["flag", "codex-acc2"]), "{s}");
-    assert!(line(&["choices", "create", "legacy-pick"]), "{s}");
     assert!(line(&["rules", "update", "CLAUDE.md"]), "{s}");
     assert!(s.contains("--- ~/.claude/CLAUDE.md"), "{s}");
     assert_eq!(before, snapshot(&e), "dry run changed files");
@@ -260,11 +253,6 @@ fn apply_performs_every_step_with_backups() {
     assert!(md.ends_with("- Check docs first\n"), "{md}");
     assert!(!md.contains("`orchestrate`"), "{md}");
     assert!(md.contains("superorchestrator MCP tools"), "{md}");
-
-    // 6. choices seeded.
-    let cfg = so_core::Config::load(&e.paths()).unwrap();
-    let c = cfg.choices.iter().find(|c| c.id == "legacy-pick").unwrap();
-    assert_eq!(c.model, "gpt-x");
 
     // MCP and skill installed.
     assert!(
@@ -360,21 +348,6 @@ fn credentials_never_appear_in_any_output() {
         assert_clean("stdout", &String::from_utf8_lossy(&o.stdout));
         assert_clean("stderr", &String::from_utf8_lossy(&o.stderr));
     }
-}
-
-#[test]
-fn unreadable_jev_config_entries_are_skipped_not_fatal() {
-    let e = Env::new();
-    write(
-        &e.home.join(".config/jev-router/config.json"),
-        r#"{"choices":[{"id":"ok","harness":"codex","model":"m"},{"nope":1}]}"#,
-    );
-    cmd(&e)
-        .args(["migrate", "--apply", "--yes"])
-        .assert()
-        .success();
-    let cfg = so_core::Config::load(&e.paths()).unwrap();
-    assert!(cfg.choices.iter().any(|c| c.id == "ok"));
 }
 
 fn minimal_env() -> Env {
@@ -565,23 +538,6 @@ fn only_real_state_files_are_removed() {
 }
 
 #[test]
-fn choices_are_not_written_into_an_invalid_config() {
-    let e = Env::new();
-    write(
-        &e.home.join(".config/jev-router/config.json"),
-        r#"{"choices":[{"id":"x","harness":"codex","model":"m"}]}"#,
-    );
-    let broken = "limits = \"not a table\"\n";
-    write(&e.cfg.join("config.toml"), broken);
-    cmd(&e)
-        .args(["migrate", "--apply", "--yes"])
-        .assert()
-        .code(1)
-        .stderr(predicates::str::contains("config.toml"));
-    assert_eq!(read(&e.cfg.join("config.toml")), broken);
-}
-
-#[test]
 fn cooldowns_for_unknown_accounts_are_skipped_and_stay_idempotent() {
     let e = Env::new();
     write(
@@ -633,11 +589,7 @@ fn installing_the_skill_does_not_create_a_claude_account_on_the_next_run() {
 
 #[test]
 fn migrate_into_a_fresh_home_seeds_levels() {
-    let e = Env::new();
-    write(
-        &e.home.join(".config/jev-router/config.json"),
-        r#"{"choices":[{"id":"ok","harness":"codex","model":"m"}]}"#,
-    );
+    let e = minimal_env();
     cmd(&e)
         .args(["migrate", "--apply", "--yes"])
         .assert()
@@ -649,11 +601,7 @@ fn migrate_into_a_fresh_home_seeds_levels() {
 
 #[test]
 fn migrate_leaves_an_existing_configs_levels_alone() {
-    let e = Env::new();
-    write(
-        &e.home.join(".config/jev-router/config.json"),
-        r#"{"choices":[{"id":"ok","harness":"codex","model":"m"}]}"#,
-    );
+    let e = minimal_env();
     write(
         &e.cfg.join("config.toml"),
         "[[router.levels]]\nname = \"all\"\nmin = 0\nmax = 100\ntier = \"mid\"\n",
@@ -665,5 +613,4 @@ fn migrate_leaves_an_existing_configs_levels_alone() {
     let cfg = so_core::Config::load(&e.paths()).unwrap();
     assert_eq!(cfg.router.levels.len(), 1);
     assert_eq!(cfg.router.levels[0].name, "all");
-    assert!(cfg.choices.iter().any(|c| c.id == "ok"));
 }

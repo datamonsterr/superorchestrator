@@ -39,12 +39,12 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use dialoguer::Confirm;
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use so_accounts::{HostEnv, SELF_EXE, is_managed, manage, scan, scan_new, write_wrapper};
-use so_core::{AccountFile, Config, Harness};
+use so_core::{AccountFile, Config};
 use so_store::Store;
 use so_supervisor::services::accounts::{FlagAction, apply_flag};
-use toml_edit::{Array, ArrayOfTables, DocumentMut, Item as TomlItem, Table, value};
+use toml_edit::{DocumentMut, Item as TomlItem};
 
 use super::init;
 use super::install::{self, FileTarget, Kind, Writer};
@@ -55,7 +55,7 @@ use crate::register::{codex_remove_key, json_remove_key};
 const JEV_KEY: &str = "jev-router-mcp";
 
 /// Steps whose non-skip items mean that legacy tooling was found.
-const LEGACY_STEPS: [&str; 5] = ["accounts", "cooldown", "choices", "remove", "rules"];
+const LEGACY_STEPS: [&str; 4] = ["accounts", "cooldown", "remove", "rules"];
 
 /// One thing the plan found, and what happens to it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -299,7 +299,6 @@ fn step_init(ctx: &Ctx, host: &HostEnv, r: &mut Report) {
 fn steps(ctx: &Ctx, cfg: &Config, host: &HostEnv, w: &Writer, r: &mut Report) {
     let accounts = import_accounts(ctx, cfg, host, w, r);
     cooldowns(ctx, host, w, &accounts, r);
-    seed_choices(ctx, host, w, r);
     remove_legacy(host, w, r);
     remove_jev_entries(ctx, host, w, r);
     claude_md(host, w, r);
@@ -542,128 +541,6 @@ fn sorted_children(dir: &Path) -> Vec<PathBuf> {
         .unwrap_or_default();
     v.sort();
     v
-}
-
-/// The choice fields the old router config shares with ours; unknown keys are ignored.
-fn choice_table(v: &Value) -> Result<(String, Table)> {
-    let s = |k: &str| v.get(k).and_then(Value::as_str);
-    let id = s("id").context("no `id`")?;
-    let harness: Harness = s("harness")
-        .context("no `harness`")?
-        .parse()
-        .map_err(|_| anyhow!("unknown harness"))?;
-    let model = s("model").context("no `model`")?;
-    let mut t = Table::new();
-    t["id"] = value(id);
-    t["harness"] = value(harness.as_str());
-    t["model"] = value(model);
-    if let Some(e) = s("effort") {
-        t["effort"] = value(e);
-    }
-    let roles: Vec<&str> = v
-        .get("roles")
-        .and_then(Value::as_array)
-        .map(|a| a.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
-    if !roles.is_empty() {
-        t["roles"] = value(roles.into_iter().collect::<Array>());
-    }
-    if let Some(d) = s("description") {
-        t["description"] = value(d);
-    }
-    if let Some(en) = v.get("enabled").and_then(Value::as_bool) {
-        t["enabled"] = value(en);
-    }
-    Ok((id.to_string(), t))
-}
-
-/// What merging the old choices into `config.toml` text produced.
-#[derive(Debug, Default)]
-struct Merged {
-    /// The new text; `None` when nothing was added.
-    text: Option<String>,
-    added: Vec<String>,
-    /// `(entry description, reason)` for entries that were not usable.
-    skipped: Vec<(String, String)>,
-}
-
-/// Appends the choices of `list` that `base` does not have. The result must parse and
-/// validate as a [`Config`], otherwise nothing is produced.
-fn merge_choices(base: &str, list: &[Value], path: &Path) -> Result<Merged> {
-    let mut doc: DocumentMut = base.parse().context("config.toml is not valid TOML")?;
-    let mut have: Vec<String> = doc
-        .get("choices")
-        .and_then(TomlItem::as_array_of_tables)
-        .map(|a| {
-            a.iter()
-                .filter_map(|t| t.get("id").and_then(TomlItem::as_str).map(String::from))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut out = Merged::default();
-    for (n, v) in list.iter().enumerate() {
-        match choice_table(v) {
-            Ok((id, _)) if have.contains(&id) => {}
-            Ok((id, table)) => {
-                doc.entry("choices")
-                    .or_insert_with(|| TomlItem::ArrayOfTables(ArrayOfTables::new()))
-                    .as_array_of_tables_mut()
-                    .context("`choices` is not an array of tables")?
-                    .push(table);
-                have.push(id.clone());
-                out.added.push(id);
-            }
-            Err(e) => out.skipped.push((format!("entry {n}"), format!("{e:#}"))),
-        }
-    }
-    if !out.added.is_empty() {
-        let text = doc.to_string();
-        Config::parse(&text, path).context("the merged choices make config.toml invalid")?;
-        out.text = Some(text);
-    }
-    Ok(out)
-}
-
-/// Step 6: add the old router's choices that `config.toml` does not have yet.
-fn seed_choices(ctx: &Ctx, host: &HostEnv, w: &Writer, r: &mut Report) {
-    const STEP: &str = "choices";
-    let src = host.home.join(".config/jev-router/config.json");
-    let Ok(text) = std::fs::read_to_string(&src) else {
-        return;
-    };
-    let shown = host.tildify(&src);
-    let cfg_path = ctx.paths.config_toml();
-    let result = (|| -> Result<Merged> {
-        let json: Value =
-            serde_json::from_str(&text).with_context(|| format!("{shown} is not valid JSON"))?;
-        let list = json.get("choices").unwrap_or(&json);
-        let list = list
-            .as_array()
-            .with_context(|| format!("{shown} has no choices list"))?;
-        let base = match std::fs::read_to_string(&cfg_path) {
-            Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => init::config_toml_text(),
-            Err(e) => {
-                return Err(anyhow!(e).context(format!("could not read {}", cfg_path.display())));
-            }
-        };
-        let merged = merge_choices(&base, list, &cfg_path)?;
-        if let Some(t) = &merged.text {
-            w.write(&cfg_path, t)?;
-        }
-        Ok(merged)
-    })();
-    match result {
-        Ok(m) => {
-            for id in m.added {
-                r.add(STEP, "create", id);
-            }
-            for (entry, why) in m.skipped {
-                r.add_note(STEP, "skip", entry, why);
-            }
-        }
-        Err(e) => r.error(STEP, shown, &e),
-    }
 }
 
 /// `orchestrator-state.json` or `orchestrator-state-<digits>.json`.
@@ -1064,26 +941,6 @@ mod tests {
         ));
         assert!(!same_plan(&a, &report(&[("remove", "z")], None)));
         assert!(!same_plan(&a, &report(&[("remove", "x")], Some("d"))));
-    }
-
-    #[test]
-    fn merged_choices_must_leave_a_valid_config() {
-        let path = Path::new("config.toml");
-        let list = [json!({"id": "n", "harness": "codex", "model": "m"})];
-        let ok = merge_choices("", &list, path).unwrap();
-        assert_eq!(ok.added, ["n"]);
-        let text = ok.text.unwrap();
-        assert_eq!(merge_choices(&text, &list, path).unwrap().text, None);
-        // An already-invalid config is never extended.
-        assert!(merge_choices("limits = \"x\"\n", &list, path).is_err());
-        // Unusable entries are skipped, not fatal.
-        let bad = [
-            json!({"nope": 1}),
-            json!({"id": "z", "harness": "zzz", "model": "m"}),
-        ];
-        let m = merge_choices("", &bad, path).unwrap();
-        assert_eq!(m.skipped.len(), 2);
-        assert_eq!(m.text, None);
     }
 
     #[test]

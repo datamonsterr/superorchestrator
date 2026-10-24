@@ -6,7 +6,7 @@ expression: "shot(& mut a, w, h)"
    1 Overview     2 Accounts     3 Runs !1     4 Setup
   First-run steps. Safe to repeat; each does only what is missing.
 
-    ✓ init          create the config dir, config.toml, choices and catalog
+    ✓ init          create the config dir, config.toml, levels and catalog
   ▸ ✓ harnesses     find the harness binaries on PATH
     ○ import        import logins found on disk as accounts
     ○ add accounts  add one account for each installed harness without one

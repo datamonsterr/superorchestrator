@@ -103,7 +103,7 @@ async fn route_json_goes_through_the_supervisor() {
     assert!(v["level"].is_string(), "{v}");
 
     let mut cmd = e.cmd();
-    cmd.args(["route", "--explain", "--role", "worker", "fix typo"]);
+    cmd.args(["route", "--explain", "--agent", "worker", "fix typo"]);
     let out = tokio::task::spawn_blocking(move || cmd.output().unwrap())
         .await
         .unwrap();
@@ -117,13 +117,8 @@ async fn route_json_goes_through_the_supervisor() {
         text.contains("complexity: ") && text.contains("(heuristic)") && text.contains("level:"),
         "{text}"
     );
+    assert!(text.contains("accounts:   agy-a"), "{text}");
 
-    let mut cmd = e.cmd();
-    cmd.args(["route", "x", "--role", "nobody"]);
-    let out = tokio::task::spawn_blocking(move || cmd.output().unwrap())
-        .await
-        .unwrap();
-    assert!(!out.status.success());
     sup.shutdown().await;
 }
 
@@ -134,9 +129,9 @@ fn route_eval_runs_locally_with_the_heuristic() {
     std::fs::write(
         &cases,
         concat!(
-            r#"{"id":"a","task":"SECRET-TEXT rename a variable","expected_choices":["agy-flash-low","agy-flash-medium"]}"#,
+            r#"{"id":"a","task":"SECRET-TEXT rename a variable","expected_choices":["agy/gemini-3.8-flash-low/low","agy/gemini-3.8-flash-medium/medium"]}"#,
             "\n",
-            r#"{"id":"b","task":"Tìm file khai báo timeout","expected_choices":["agy-flash-medium","agy-flash-low"]}"#,
+            r#"{"id":"b","task":"Tìm file khai báo timeout","expected_choices":["agy/gemini-3.8-flash-medium/medium","agy/gemini-3.8-flash-low/low"]}"#,
             "\n"
         ),
     )
@@ -195,11 +190,11 @@ fn route_eval_scores_complexity_against_expected_ranges() {
     std::fs::write(
         &cases,
         concat!(
-            r#"{"id":"a","task":"rename a variable","expected_choices":["agy-flash-low","agy-flash-medium"],"expected_complexity":[0,37]}"#,
+            r#"{"id":"a","task":"rename a variable","expected_choices":["agy/gemini-3.8-flash-low/low","agy/gemini-3.8-flash-medium/medium"],"expected_complexity":[0,37]}"#,
             "\n",
-            r#"{"id":"b","task":"rename a variable","expected_choices":["agy-flash-low","agy-flash-medium"],"expected_complexity":[88,100]}"#,
+            r#"{"id":"b","task":"rename a variable","expected_choices":["agy/gemini-3.8-flash-low/low","agy/gemini-3.8-flash-medium/medium"],"expected_complexity":[88,100]}"#,
             "\n",
-            r#"{"id":"c","task":"rename a variable","expected_choices":["agy-flash-low","agy-flash-medium"]}"#,
+            r#"{"id":"c","task":"rename a variable","expected_choices":["agy/gemini-3.8-flash-low/low","agy/gemini-3.8-flash-medium/medium"]}"#,
             "\n"
         ),
     )
@@ -291,8 +286,9 @@ fn models_list_json_uses_the_default_catalog() {
 }
 
 /// `init` with no accounts, then a codex account added later; `route` runs through a
-/// supervisor started on the config as it is now.
-async fn route_after_adding_codex(disable_codex: bool) -> std::process::Output {
+/// supervisor started on the config as it is now. With `drop_codex_refs` the codex refs are
+/// first removed from every level.
+async fn route_after_adding_codex(drop_codex_refs: bool, args: &[&str]) -> std::process::Output {
     let e = Env::new();
     std::fs::set_permissions(e.tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     e.init();
@@ -300,15 +296,15 @@ async fn route_after_adding_codex(disable_codex: bool) -> std::process::Output {
         .args(["config", "set", "router.jev.key_env", "SO_CLI_TEST_NO_KEY"])
         .assert()
         .success();
-    if disable_codex {
+    if drop_codex_refs {
         let path = e.cfg.join("config.toml");
-        let mut text = std::fs::read_to_string(&path).unwrap();
-        for id in ["codex-high", "codex-medium"] {
-            let at = text.find(&format!("id = \"{id}\"")).unwrap();
-            let off = text[at..].find("enabled = true").unwrap() + at;
-            text.replace_range(off..off + "enabled = true".len(), "enabled = false");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let mut dropped = text.clone();
+        for r in ["codex/gpt-6.1-sol/medium", "codex/gpt-6.1-sol/high"] {
+            dropped = dropped.replace(&format!(", \"{r}\""), "");
         }
-        std::fs::write(&path, text).unwrap();
+        assert!(!dropped.contains("codex/"), "{dropped}");
+        std::fs::write(&path, dropped).unwrap();
     }
     AccountFile::new(
         "codex-acc1",
@@ -331,7 +327,7 @@ async fn route_after_adding_codex(disable_codex: bool) -> std::process::Output {
         .with_setup(default_handlers);
     let sup = Supervisor::start(opts).await.unwrap();
     let mut cmd = e.cmd();
-    cmd.args(["route", "--json", "rename a variable in one file"]);
+    cmd.arg("route").args(args);
     let out = tokio::task::spawn_blocking(move || cmd.output().unwrap())
         .await
         .unwrap();
@@ -339,9 +335,11 @@ async fn route_after_adding_codex(disable_codex: bool) -> std::process::Output {
     out
 }
 
+const ROUTE_ARGS: [&str; 2] = ["--json", "rename a variable in one file"];
+
 #[tokio::test(flavor = "multi_thread")]
-async fn a_codex_account_added_after_init_makes_the_seeded_codex_choices_eligible() {
-    let out = route_after_adding_codex(false).await;
+async fn a_codex_account_added_after_init_makes_the_seeded_codex_refs_eligible() {
+    let out = route_after_adding_codex(false, &ROUTE_ARGS).await;
     assert!(
         out.status.success(),
         "{}",
@@ -353,9 +351,32 @@ async fn a_codex_account_added_after_init_makes_the_seeded_codex_choices_eligibl
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn codex_choices_the_user_disabled_stay_out_of_routing() {
-    let out = route_after_adding_codex(true).await;
+async fn a_ref_removed_from_every_level_is_not_routed() {
+    let out = route_after_adding_codex(true, &ROUTE_ARGS).await;
     assert!(!out.status.success());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn route_model_pins_a_ref_and_explain_lists_the_accounts() {
+    let out = route_after_adding_codex(
+        false,
+        &[
+            "--model",
+            "codex/gpt-6.1-sol/high",
+            "--explain",
+            "rename a variable in one file",
+        ],
+    )
+    .await;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(
+        out.status.success(),
+        "{}{text}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(text.starts_with("codex/gpt-6.1-sol/high"), "{text}");
+    assert!(text.contains("account:    codex-acc1"), "{text}");
+    assert!(text.contains("accounts:   codex-acc1"), "{text}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -392,5 +413,31 @@ async fn route_fails_when_the_decider_is_unreachable() {
     assert!(err.contains("inception/mercury-decide:free"), "{err}");
     assert!(!err.contains("sk-test-secret"), "{err}");
 
+    sup.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn route_model_with_an_effort_the_harness_rejects_fails() {
+    let e = setup();
+    let host = HostEnv {
+        home: e.home.clone(),
+        path_var: Some("/usr/bin:/bin".into()),
+        platform: Platform::current(),
+    };
+    let config = Config::load(&e.paths()).unwrap();
+    let opts = SupervisorOptions::new(e.paths(), config, e.tmp.path().join("so.sock"))
+        .with_host(host)
+        .with_idle_exit(Duration::from_secs(600))
+        .with_setup(default_handlers);
+    let sup = Supervisor::start(opts).await.unwrap();
+
+    let mut cmd = e.cmd();
+    cmd.args(["route", "--model", "agy/claude-sonnet-4-6/high", "fix typo"]);
+    let out = tokio::task::spawn_blocking(move || cmd.output().unwrap())
+        .await
+        .unwrap();
+    assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("effort"), "{err}");
     sup.shutdown().await;
 }

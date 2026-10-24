@@ -91,7 +91,7 @@ impl SetupStep {
     }
     pub fn describe(self) -> &'static str {
         match self {
-            SetupStep::Init => "create the config dir, config.toml, choices and catalog",
+            SetupStep::Init => "create the config dir, config.toml, levels and catalog",
             SetupStep::Harnesses => "find the harness binaries on PATH",
             SetupStep::Import => "import logins found on disk as accounts",
             SetupStep::AddAccounts => "add one account for each installed harness without one",

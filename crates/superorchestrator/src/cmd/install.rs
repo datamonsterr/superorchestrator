@@ -707,9 +707,9 @@ pub(crate) fn install_steps(
     let exe = std::env::current_exe().context("could not find this executable")?;
     let exe = exe.to_string_lossy().into_owned();
     let accounts = AccountFile::list(&ctx.paths)?;
-    let choices = ctx.config().map(|c| c.choices).unwrap_or_default();
+    let levels = ctx.config().map(|c| c.router.levels).unwrap_or_default();
     let agents = so_agents::discover_user(&ctx.paths).agents;
-    let skill = render_skill(&accounts, &choices, &agents);
+    let skill = render_skill(&accounts, &levels, &agents);
 
     let mut results = vec![(
         "claude".to_string(),

@@ -93,7 +93,7 @@ pub(crate) fn signed_out(ctx: &Ctx, host: &HostEnv) -> Result<Vec<AccountFile>> 
 }
 
 /// The note printed after adding claude accounts.
-pub(crate) const CLAUDE_NOTE: &str = "claude accounts are kept for the orchestrator: the claude choices are disabled, so routing never spends them. To let routing use them, run `superorchestrator config edit` and set `enabled = true` on claude-sonnet and claude-haiku.";
+pub(crate) const CLAUDE_NOTE: &str = "claude accounts are kept for the orchestrator: no level lists a claude model, so auto routing never spends them. To let routing use them, run `superorchestrator config edit` and add a ref such as claude/claude-sonnet-5-5/medium to a level's models.";
 
 /// Counts of doctor checks by status, plus the lines worth reading.
 pub(crate) struct DoctorSummary {

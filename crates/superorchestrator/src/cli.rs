@@ -30,14 +30,14 @@ pub struct Cli {
 pub enum Command {
     /// Guided first-run setup: config, accounts, sign-in and install
     Setup(SetupArgs),
-    /// Create the config dir, seed config, choices and catalog
+    /// Create the config dir, seed config, levels and catalog
     Init,
     /// Show accounts, headroom and supervisor state
     Status,
     /// Manage accounts
     #[command(subcommand)]
     Account(AccountCmd),
-    /// Route a task to a choice, or evaluate the router
+    /// Route a task to a harness/model/effort, or evaluate the router
     Route(RouteArgs),
     /// Inspect and control runs
     #[command(subcommand)]
@@ -250,8 +250,12 @@ pub struct RouteArgs {
     /// starts with `eval` or `-`
     #[arg(num_args = 1.., value_name = "TASK")]
     pub task: Vec<String>,
-    #[arg(long)]
-    pub role: Option<String>,
+    /// Pin the route to a model: a `harness/model[/effort]` ref, or a plain model name
+    #[arg(long, value_name = "REF")]
+    pub model: Option<String>,
+    /// Agent profile whose instructions the decider sees
+    #[arg(long, value_name = "NAME")]
+    pub agent: Option<String>,
     #[arg(long)]
     pub explain: bool,
     #[command(subcommand)]

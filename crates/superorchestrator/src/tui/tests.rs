@@ -66,6 +66,26 @@ fn snapshot() -> Snapshot {
             account("claude-1", Harness::Claude, SignIn::Unknown, false),
         ],
         accounts_error: None,
+        levels: vec![
+            LevelRow {
+                name: "simple".into(),
+                min: 13,
+                max: 37,
+                models: vec![
+                    "agy/gemini-3.8-flash-medium/medium".into(),
+                    "opencode/opencode/deepseek-v4.1-flash-free".into(),
+                ],
+            },
+            LevelRow {
+                name: "complex".into(),
+                min: 63,
+                max: 87,
+                models: vec![
+                    "agy/claude-sonnet-4-6/thinking".into(),
+                    "codex/gpt-6.1-sol/high".into(),
+                ],
+            },
+        ],
         runs: vec![
             run(
                 "0190aaaa-1111",
@@ -1484,4 +1504,17 @@ fn sigint_is_for_the_child_while_one_runs() {
     // The first request wins.
     assert!(!s.request(143));
     assert_eq!(s.requested(), Some(130));
+}
+
+#[test]
+fn overview_lists_levels_and_says_so_when_none_list_models() {
+    let mut a = app();
+    let full = shot(&mut a, 120, 40);
+    assert!(
+        full.contains("simple") && full.contains("13-37   agy/gemini-3.8-flash-medium/medium"),
+        "{full}"
+    );
+    a.snap.as_mut().unwrap().levels.clear();
+    let empty = shot(&mut a, 120, 40);
+    assert!(empty.contains("no levels list models"), "{empty}");
 }

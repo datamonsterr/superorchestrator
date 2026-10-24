@@ -293,7 +293,7 @@ fn choices_view(st: &AppState) -> ApiResult<ChoicesView> {
     let disk = Config::load(&st.sup.paths)?;
     Ok(ChoicesView {
         restart_required: restart_required(st, &disk),
-        choices: disk.choices,
+        choices: disk.choices(),
         routing_instruction: disk.router.instruction,
     })
 }
@@ -305,6 +305,7 @@ pub async fn choices_get(State(st): State<AppState>) -> ApiResult<Json<ChoicesVi
 
 #[derive(Debug, Deserialize)]
 pub struct ChoicesBody {
+    #[allow(dead_code)]
     choices: Vec<so_core::Choice>,
     routing_instruction: String,
 }
@@ -313,29 +314,11 @@ pub async fn choices_put(
     State(st): State<AppState>,
     ApiJson(b): ApiJson<ChoicesBody>,
 ) -> ApiResult<Json<ChoicesView>> {
-    let mut seen = std::collections::HashSet::new();
-    for c in &b.choices {
-        if c.id.trim().is_empty() || !seen.insert(c.id.clone()) {
-            return Err(ApiError::invalid(format!(
-                "choice id `{}` is empty or duplicated",
-                c.id
-            )));
-        }
-        if c.roles.is_empty() {
-            return Err(ApiError::invalid(format!(
-                "choice `{}` needs at least one role",
-                c.id
-            )));
-        }
-    }
+    // T4 stub: choices are no longer stored; only the routing instruction is written.
     let s = st.clone();
     st.blocking(move || {
-        let choices = toml::Value::try_from(&b.choices)
-            .map_err(ApiError::internal)?
-            .to_string();
         let instruction = toml::Value::String(b.routing_instruction).to_string();
         Config::set_in_file(&s.sup.paths, "router.instruction", &instruction)?;
-        Config::set_in_file(&s.sup.paths, "choices", &choices)?;
         s.refresh_skill();
         Ok(Json(choices_view(&s)?))
     })
