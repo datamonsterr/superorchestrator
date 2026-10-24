@@ -42,7 +42,8 @@ type Log = Arc<Mutex<Option<std::fs::File>>>;
 
 fn log(l: &Log, v: Value) {
     if let Some(f) = l.lock().unwrap().as_mut() {
-        writeln!(f, "{v}").expect("write log");
+        // One write(2) per record: the test reads the log while this process runs.
+        f.write_all(format!("{v}\n").as_bytes()).expect("write log");
     }
 }
 

@@ -233,7 +233,7 @@ pub struct WorkflowStepRow {
     pub phase: Option<String>,
     pub prompt_hash: String,
     pub run_id: Option<String>,
-    /// `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`.
+    /// `queued`, `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`.
     pub state: String,
     pub started_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,

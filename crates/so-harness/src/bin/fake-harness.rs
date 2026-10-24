@@ -35,7 +35,8 @@ fn main() {
     });
     let mut record = |v: Value| {
         if let Some(f) = log.as_mut() {
-            writeln!(f, "{v}").expect("write log");
+            // One write(2) per record: the test reads the log while this process runs.
+            f.write_all(format!("{v}\n").as_bytes()).expect("write log");
         }
     };
     let mut keys: Vec<String> = std::env::vars().map(|(k, _)| k).collect();

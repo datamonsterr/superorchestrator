@@ -725,7 +725,7 @@ export interface WorkflowStep {
   /** The run behind the step; none for a cached step. */
   run_id?: string | null;
   started_at?: string | null;
-  /** `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`. */
+  /** `queued`, `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`. */
   state: string;
 }
 

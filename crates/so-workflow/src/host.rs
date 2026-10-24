@@ -58,7 +58,9 @@ pub struct StepEvent {
     pub phase: Option<String>,
     pub prompt_hash: String,
     pub run_id: Option<String>,
-    /// `running`, `waiting`, `stalled`, `succeeded`, `failed` or `cached`.
+    /// `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`. A step is
+    /// `queued` in the store until it holds a permit; no event is emitted for that, so the
+    /// first event of a step is `running`.
     pub state: String,
 }
 

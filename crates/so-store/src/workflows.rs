@@ -147,7 +147,7 @@ impl Store {
         if n > 0 {
             tx.execute(
                 "UPDATE workflow_steps SET state = 'cancelled', finished_at = ?2 \
-                 WHERE workflow_run_id = ?1 AND state IN ('running','waiting','stalled')",
+                 WHERE workflow_run_id = ?1 AND state IN ('queued','running','waiting','stalled')",
                 params![id, ts],
             )?;
         }
@@ -163,7 +163,7 @@ impl Store {
         let ts = ts_to_sql(&now);
         tx.execute(
             "UPDATE workflow_steps SET state = 'cancelled', finished_at = ?1 \
-             WHERE state IN ('running','waiting','stalled') AND workflow_run_id IN \
+             WHERE state IN ('queued','running','waiting','stalled') AND workflow_run_id IN \
              (SELECT id FROM workflow_runs WHERE state = 'running')",
             [&ts],
         )?;
@@ -365,7 +365,7 @@ impl Store {
         Ok(())
     }
 
-    /// Marks steps still `running`, `waiting` or `stalled` as `cancelled`; returns them
+    /// Marks steps still `queued`, `running`, `waiting` or `stalled` as `cancelled`; returns them
     /// (as they were before) so callers can report the change.
     pub fn cancel_open_workflow_steps(
         &self,
@@ -375,11 +375,16 @@ impl Store {
         let open: Vec<WorkflowStepRow> = self
             .list_workflow_steps(workflow_run_id)?
             .into_iter()
-            .filter(|s| matches!(s.state.as_str(), "running" | "waiting" | "stalled"))
+            .filter(|s| {
+                matches!(
+                    s.state.as_str(),
+                    "queued" | "running" | "waiting" | "stalled"
+                )
+            })
             .collect();
         self.conn().execute(
             "UPDATE workflow_steps SET state = 'cancelled', finished_at = ?2 \
-             WHERE workflow_run_id = ?1 AND state IN ('running','waiting','stalled')",
+             WHERE workflow_run_id = ?1 AND state IN ('queued','running','waiting','stalled')",
             params![workflow_run_id, ts_to_sql(&finished_at)],
         )?;
         Ok(open)
@@ -504,6 +509,8 @@ mod tests {
         assert!(steps[0].finished_at.is_some());
         assert_eq!(steps[1].state, "running");
         s.insert_workflow_step(&mk(2)).unwrap();
+        s.update_workflow_step(&w.id, 2, "queued", None, None)
+            .unwrap();
         let open = s
             .cancel_open_workflow_steps(&w.id, crate::codec::now())
             .unwrap();
