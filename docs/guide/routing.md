@@ -65,7 +65,7 @@ choices = [
 - `min` and `max` are integers from 0 to 100. The range covers complexity from `min` up to, but not including, `max + 1`, so a complexity of 37.5 is in `low`. A level with `max = 100` also includes 100.
 - Level names must be non-empty and unique. Ranges must not overlap. Gaps are allowed: a complexity in a gap goes to the nearest level, and a tie goes to the higher one.
 - A level needs `choices`, `tier`, or both. `tier` is the catalog's model class (`high`, `mid` or `fast`). It is used only when `choices` is empty, and then every eligible choice of that tier is a candidate, in config order. When `choices` is not empty, `tier` is ignored.
-- Each `choices` entry names a choice from `[[choices]]`. A choice may appear only once in a level. `priority` is optional, and a lower number is preferred.
+- Each `choices` entry names a choice from `[[choices]]`. An id that names no choice (for example after you delete the choice) is accepted, never eligible, and skipped when routing; `doctor` warns and names it. A choice may appear only once in a level. `priority` is optional, and a lower number is preferred.
 
 When you set no levels, the defaults apply: `low` for 0-37 with tier `fast`, `mid` for 38-62 with tier `mid`, and `high` for 63-100 with tier `high`.
 

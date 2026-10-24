@@ -166,6 +166,19 @@ fn check_levels(c: &mut Checks, cfg: Option<&Config>, catalog: Option<&so_router
                 .choices
                 .iter()
                 .any(|lc| cfg.choices.iter().any(|ch| ch.id == lc.id && usable(ch)));
+            let unknown: Vec<&str> = l
+                .choices
+                .iter()
+                .filter(|lc| !cfg.choices.iter().any(|ch| ch.id == lc.id))
+                .map(|lc| lc.id.as_str())
+                .collect();
+            if !unknown.is_empty() {
+                problems.push(format!(
+                    "level {}: unknown choice id(s) {} are skipped",
+                    l.name,
+                    unknown.join(", ")
+                ));
+            }
             if !any {
                 problems.push(format!(
                     "level {}: every listed choice is disabled or unknown, so it falls through to the nearest level",
@@ -610,6 +623,16 @@ mod tests {
         let (st, d) = levels_detail(&cfg);
         assert_eq!(st, Status::Warn);
         assert!(!d.contains("disabled or unknown"), "{d}");
+        assert!(!d.contains("unknown choice"), "{d}");
+        cfg.router.levels[0]
+            .choices
+            .push(so_core::config::LevelChoice {
+                id: "gone".into(),
+                priority: None,
+            });
+        let (st, d) = levels_detail(&cfg);
+        assert_eq!(st, Status::Warn);
+        assert!(d.contains("unknown choice id(s) gone are skipped"), "{d}");
     }
 
     #[test]

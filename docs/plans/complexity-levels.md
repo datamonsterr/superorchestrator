@@ -64,7 +64,7 @@ choices = [
 - `Level { name: String, min: u8, max: u8, tier: Option<Tier>, choices: Vec<LevelChoice> }`
 - `LevelChoice { id: String, priority: Option<u32> }` (lower number = preferred).
 - Default levels (when the user sets none): `low` 0-37 tier fast, `mid` 38-62 tier mid, `high` 63-100 tier high, all with empty `choices`.
-- Validation (config load/`config set`/web PUT go through the existing validation path): name non-empty and unique; `min <= max <= 100`; ranges do not overlap; every `choices[].id` names an existing choice. Gaps are allowed.
+- Validation (config load/`config set`/web PUT go through the existing validation path): name non-empty and unique; `min <= max <= 100`; ranges do not overlap; a `choices[].id` may name no existing choice (skipped at route time, warned by doctor). Gaps are allowed.
 
 ## Routing procedure (replaces SPEC 8.3 steps 2-5 for unpinned calls)
 

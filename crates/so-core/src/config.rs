@@ -547,16 +547,6 @@ impl Config {
                     l.name, l.choices[j].id
                 ));
             }
-            if let Some(c) = l
-                .choices
-                .iter()
-                .find(|c| !self.choices.iter().any(|x| x.id == c.id))
-            {
-                return Err(format!(
-                    "router.levels `{}`: choice `{}` is not in [[choices]]",
-                    l.name, c.id
-                ));
-            }
         }
         Ok(())
     }
@@ -1368,13 +1358,6 @@ mod tests {
                 lv(&format!("{}\n{}", one("x", 0, 10), one("y", 10, 30))),
                 "overlaps",
             ),
-            (
-                "unknown choice",
-                lv(
-                    "[[router.levels]]\nname = \"x\"\nmin = 0\nmax = 5\nchoices = [{ id = \"zzz\" }]\n",
-                ),
-                "zzz",
-            ),
         ];
         for (name, text, needle) in cases {
             let e = levels_err(&text);
@@ -1388,6 +1371,15 @@ mod tests {
         );
         // min = 256 does not fit in u8.
         assert!(toml::from_str::<Config>(&one("x", 256, 256)).is_err());
+    }
+
+    #[test]
+    fn a_level_may_list_a_choice_id_that_does_not_exist() {
+        let text = format!(
+            "{CHOICE}\n[[router.levels]]\nname = \"x\"\nmin = 0\nmax = 5\nchoices = [{{ id = \"zzz\" }}]\n"
+        );
+        let c = Config::parse(&text, std::path::Path::new("c.toml")).unwrap();
+        assert_eq!(c.router.levels[0].choices[0].id, "zzz");
     }
 
     #[test]

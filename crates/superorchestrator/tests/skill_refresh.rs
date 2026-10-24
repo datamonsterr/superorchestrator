@@ -90,8 +90,6 @@ fn setting_choices_refreshes_the_skill() {
     let e = Env::new();
     e.init();
     install_skill(&e);
-    // The seeded levels name the seeded choices, so they go first.
-    run(&e, &["config", "set", "router.levels", "[]"]);
     run(
         &e,
         &[

@@ -939,6 +939,17 @@ async fn the_score_lands_in_the_level_that_contains_it() {
 }
 
 #[tokio::test]
+async fn a_level_choice_id_that_names_no_choice_is_skipped() {
+    let levels = vec![level(
+        "all",
+        0,
+        100,
+        &[("no-such-choice", Some(1)), ("codex-big", Some(2))],
+    )];
+    assert_eq!(pick(2.0, levels).await.choice_id, "codex-big");
+}
+
+#[tokio::test]
 async fn a_gap_goes_to_the_nearest_level_and_ties_to_the_higher() {
     let levels = || {
         vec![

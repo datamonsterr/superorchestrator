@@ -108,7 +108,7 @@ The file is refused at load when:
 - `min` is greater than `max`, or `max` is greater than 100
 - two ranges overlap
 - a level has neither `choices` nor `tier`
-- a `choices` entry names an `id` that is not in `[[choices]]`, or a level lists the same id twice
+- a level lists the same choice id twice (an id that is not in `[[choices]]` is accepted: it is skipped when routing and `doctor` warns about it)
 
 `doctor` reports the levels under "levels" and warns when:
 
