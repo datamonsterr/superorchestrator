@@ -15,7 +15,8 @@ export function buildRef(harness: string, model: string, effort?: string): strin
 /**
  * The inverse of `buildRef`. OpenCode models are `provider/model`, so a third segment is the
  * effort; for the other harnesses a model has no slash, so a second segment is the effort.
- * The server stays the judge of what a ref means: this only fills the model dialog when editing.
+ * A display heuristic for the harness badge only: the server decides what a ref means. Model ids
+ * containing `/` are not expected on the other harnesses.
  */
 export function splitRef(ref: string): { harness: Harness; model: string; effort: string } {
   const [harness, ...rest] = ref.split('/')

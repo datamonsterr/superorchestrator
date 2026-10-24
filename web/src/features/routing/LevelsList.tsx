@@ -35,7 +35,14 @@ export function LevelsList({ levels, pending, onEdit, onDelete, onAddModel, onMo
               <Button variant="outline" size="sm" disabled={pending} onClick={() => onEdit(level)}>
                 <Pencil aria-hidden /> Edit level
               </Button>
-              <Button variant="ghost" size="sm" disabled={pending} onClick={() => onDelete(level)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={pending || levels.length === 1}
+                title={levels.length === 1 ? 'The last level cannot be deleted' : undefined}
+                aria-description={levels.length === 1 ? 'The last level cannot be deleted' : undefined}
+                onClick={() => onDelete(level)}
+              >
                 <Trash2 aria-hidden /> Delete level
               </Button>
             </CardAction>

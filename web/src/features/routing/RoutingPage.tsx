@@ -39,6 +39,8 @@ export function RoutingPage() {
     if (!view) return Promise.reject(new Error('Levels are not loaded yet'))
     return put.mutateAsync({ levels, routing_instruction: view.routing_instruction })
   }
+  // Dialog saves clear an earlier list error once they succeed.
+  const saveFromDialog = (levels: Level[]) => save(levels).then((r) => (setListError(null), r))
   const withModels = (level: Level, models: string[]) => (view?.levels ?? []).map((l) => (l.name === level.name ? { ...l, models } : l))
 
   const saveFromList = (levels: Level[]) => {
@@ -120,28 +122,25 @@ export function RoutingPage() {
         </TabsContent>
       </Tabs>
 
-      <LevelDialog target={levelTarget} levels={view?.levels ?? []} onClose={() => setLevelTarget(null)} onSave={save} />
-      <ModelDialog level={modelTarget} onClose={() => setModelTarget(null)} onSave={(level, ref) => save(withModels(level, [...level.models, ref]))} />
+      <LevelDialog target={levelTarget} levels={view?.levels ?? []} onClose={() => setLevelTarget(null)} onSave={saveFromDialog} />
+      <ModelDialog level={modelTarget} onClose={() => setModelTarget(null)} onSave={(level, ref) => saveFromDialog(withModels(level, [...level.models, ref]))} />
       <ConfirmDialog
         open={deleting !== null}
         onOpenChange={(o) => !o && setDeleting(null)}
         title={`Delete level ${deleting?.name ?? ''}?`}
-        description="Tasks in its complexity range will have no level until another one covers them."
+        description="Tasks in its range are routed with the nearest remaining level."
         confirmLabel="Delete level"
         destructive
         pending={put.isPending}
         onConfirm={() => {
           if (!view || !deleting) return
           const name = deleting.name
-          put.mutate(
-            { levels: view.levels.filter((l) => l.name !== name), routing_instruction: view.routing_instruction },
-            {
-              onSuccess: () => {
-                toast.success(`Deleted level ${name}`)
-                setDeleting(null)
-              },
-            },
-          )
+          setListError(null)
+          put
+            .mutateAsync({ levels: view.levels.filter((l) => l.name !== name), routing_instruction: view.routing_instruction })
+            .then(() => toast.success(`Deleted level ${name}`))
+            .catch(setListError)
+            .finally(() => setDeleting(null))
         }}
       />
     </>

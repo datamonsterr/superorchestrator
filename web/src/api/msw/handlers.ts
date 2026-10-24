@@ -30,8 +30,8 @@ export interface HandlerOptions {
 export function createHandlers({ large = false, largeOptions }: HandlerOptions = {}): RequestHandler[] {
   let cached: LargeSession | null = null
   const getLarge = () => (cached ??= makeLargeSession({ seed: 1, ...largeOptions }))
-  // Harness of accounts created through the mock API, by name.
   let levels: LevelsView = structuredClone(fx.levels)
+  // Harness of accounts created through the mock API, by name.
   const createdHarness = new Map<string, Harness>()
   const harnessOf = (name: string): Harness | undefined => createdHarness.get(name) ?? fx.accounts.find((a) => a.name === name)?.harness
   const largeRunIds = () => new Set(getLarge().session.runs.map((r) => r.run_id))

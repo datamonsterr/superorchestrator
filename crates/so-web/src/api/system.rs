@@ -316,6 +316,10 @@ pub async fn levels_put(
     State(st): State<AppState>,
     ApiJson(b): ApiJson<LevelsBody>,
 ) -> ApiResult<Json<LevelsView>> {
+    if b.levels.is_empty() {
+        // `[]` would leave nothing routable and does not bring back the default tiers.
+        return Err(ApiError::invalid("needs at least one level"));
+    }
     let s = st.clone();
     st.blocking(move || {
         let levels = toml::Value::try_from(&b.levels)

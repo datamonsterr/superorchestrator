@@ -16,6 +16,7 @@ export function InstructionEditor({ view }: { view: LevelsView }) {
 
   async function save() {
     try {
+      // Last write wins: the levels sent back are the ones this page loaded.
       await put.mutateAsync({ levels: view.levels, routing_instruction: value })
       setDraft(null)
       toast.success('Routing instruction saved')

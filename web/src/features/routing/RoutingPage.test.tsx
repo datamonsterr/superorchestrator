@@ -165,6 +165,23 @@ describe('Levels tab', () => {
     expect(puts[0].levels.map((l) => l.name)).toEqual(['simple', 'moderate', 'complex', 'expert'])
   })
 
+  it('does not offer to delete the last level', async () => {
+    server.use(http.get('/api/v1/levels', () => HttpResponse.json({ ...fx.levels, levels: fx.levels.levels.slice(0, 1) })))
+    renderWithProviders(<RoutingPage />, { route: '/routing' })
+    const only = await level('trivial')
+    expect(within(only).getByRole('button', { name: 'Delete level' })).toBeDisabled()
+    expect(within(only).getByRole('button', { name: 'Delete level' })).toHaveAccessibleDescription('The last level cannot be deleted')
+  })
+
+  it('shows the error when a delete is rejected', async () => {
+    server.use(http.put('/api/v1/levels', () => HttpResponse.json({ error: { code: -32602, message: 'the server refused' } }, { status: 422 })))
+    renderWithProviders(<RoutingPage />, { route: '/routing' })
+    await userEvent.click(within(await level('trivial')).getByRole('button', { name: 'Delete level' }))
+    await userEvent.click(within(await screen.findByRole('alertdialog')).getByRole('button', { name: 'Delete level' }))
+    expect(await screen.findByText('the server refused')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
+  })
+
   it('shows a server error when removing a model is rejected', async () => {
     server.use(http.put('/api/v1/levels', () => HttpResponse.json({ error: { code: -32602, message: 'router.levels `trivial`: needs `models` or `tier`' } }, { status: 422 })))
     renderWithProviders(<RoutingPage />, { route: '/routing' })

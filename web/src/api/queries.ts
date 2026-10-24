@@ -170,7 +170,17 @@ export const useRejectRun = () =>
 /** Records a `join_command_issued` audit event server side, so the run's events are stale afterwards. */
 export const useJoinRun = () => useApiMutation(({ id }: Id) => endpoints.joinRun(id), ({ id }) => [qk.runEvents(id)])
 export const useRoutePreview = () => useApiMutation((params: RouteParams) => endpoints.route(params))
-export const usePutLevels = () => useApiMutation((body: LevelsPut) => endpoints.putLevels(body), () => [qk.levels(), qk.harnesses()])
+/** The PUT response is the server's view of the levels, so it goes straight into the cache. */
+export function usePutLevels() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: LevelsPut) => endpoints.putLevels(body),
+    onSuccess: (data) => {
+      qc.setQueryData(qk.levels(), data)
+      return qc.invalidateQueries({ queryKey: qk.harnesses() })
+    },
+  })
+}
 export const useRefreshModels = () => useApiMutation<void, ModelCatalog>(() => endpoints.refreshModels(), () => [qk.models()])
 export const useCreateAccount = () =>
   useApiMutation((v: { harness: Harness; name: string; home?: string }) => endpoints.createAccount(v), ACCOUNT_KEYS)
