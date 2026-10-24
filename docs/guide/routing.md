@@ -17,7 +17,7 @@ description = "Fast worker for bounded implementation, scripts, docs and routine
 enabled = true
 ```
 
-`init` seeds a set of choices. Codex choices start enabled. A choice with no signed-in account is skipped at routing time, so adding a Codex account is enough to use them. Claude choices start disabled. Set `enabled = true` to let auto routing use them as a last resort. Only you change `enabled`; `init` never rewrites it after the first run.
+`init` seeds a set of choices. Codex choices start enabled: `codex-medium`, `codex-high` and `codex-xhigh` on gpt-6.1-sol, and `codex-luna-medium` and `codex-luna-high` on the cheaper gpt-6-luna. `opencode-muse-long` starts disabled because opencode no longer lists its free model. A choice with no signed-in account is skipped at routing time, so adding a Codex account is enough to use them. Claude choices start disabled. Set `enabled = true` to let auto routing use them as a last resort. Only you change `enabled`; `init` never rewrites it after the first run.
 
 Edit choices with `superorchestrator config edit`, or on the Choices page of the web UI. The installed `use-superorchestrator-mcp` skill lists enabled choices and refreshes when they change.
 
@@ -69,7 +69,7 @@ choices = [
 
 When you set no levels, the defaults apply: `low` for 0-37 with tier `fast`, `mid` for 38-62 with tier `mid`, and `high` for 63-100 with tier `high`.
 
-`superorchestrator init` writes five levels into a new `config.toml`: `trivial` 0-12, `simple` 13-37, `moderate` 38-62, `complex` 63-87 and `expert` 88-100, each listing seeded non-Claude choices with priorities. It does this only when it creates the file; an existing config is never changed, so add `[[router.levels]]` yourself (copy them from `seed/levels.toml` in the source) to use them.
+`superorchestrator init` writes five levels into a new `config.toml`: `trivial` 0-12, `simple` 13-37, `moderate` 38-62, `complex` 63-87 and `expert` 88-100, each listing seeded non-Claude choices with priorities. The cheap levels lead with agy (`agy-flash-low`, `agy-flash-medium`); `moderate` leads with `codex-luna-medium`, `complex` with `codex-high` and `expert` with `codex-xhigh`, so Codex is used once a task needs more than a Flash worker. It does this only when it creates the file; an existing config is never changed, so add `[[router.levels]]` yourself (copy them from `seed/levels.toml` in the source) to use them.
 
 A level's choice list is not a pool. A pool is a separately metered slice of an account's usage, so the config key is `choices` and the docs call them the level's choices.
 
