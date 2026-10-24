@@ -354,6 +354,8 @@ async fn a_codex_account_added_after_init_makes_the_seeded_codex_refs_eligible()
 async fn a_ref_removed_from_every_level_is_not_routed() {
     let out = route_after_adding_codex(true, &ROUTE_ARGS).await;
     assert!(!out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("no eligible choice"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

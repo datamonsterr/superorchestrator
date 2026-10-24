@@ -250,7 +250,7 @@ pub struct RouteArgs {
     /// starts with `eval` or `-`
     #[arg(num_args = 1.., value_name = "TASK")]
     pub task: Vec<String>,
-    /// Pin the route to a model: a `harness/model[/effort]` ref, or a plain model name
+    /// Pin the route: harness/model[/effort], or a model name
     #[arg(long, value_name = "REF")]
     pub model: Option<String>,
     /// Agent profile whose instructions the decider sees

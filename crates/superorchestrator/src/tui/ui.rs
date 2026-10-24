@@ -464,12 +464,16 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new(lines), feed);
     }
 
+    // Drawn only when rows remain after recent runs, so it is absent at 80x24 with runs.
     // A blank row, the heading and at least one line.
     if levels.height >= 3 {
         let levels = levels.inner(Margin::new(1, 0));
         let mut lines = vec![Line::raw(""), Line::styled("Levels", t.bold())];
         if s.levels.is_empty() {
-            lines.push(Line::styled("no levels list models", t.muted()));
+            lines.push(Line::styled(
+                "no levels list models (tier defaults apply)",
+                t.muted(),
+            ));
         }
         let name_w = s.levels.iter().map(|l| l.name.width()).max().unwrap_or(0);
         for l in &s.levels {
