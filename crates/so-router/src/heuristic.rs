@@ -21,6 +21,29 @@ impl Complexity {
             Self::High => "high",
         }
     }
+
+    /// Numeric complexity (0 to 100) this class stands for; always inside the matching
+    /// default level (low 0-37, mid 38-62, high 63-100).
+    pub fn score(self) -> f64 {
+        match self {
+            Self::Low => 20.0,
+            Self::Mid => 55.0,
+            Self::High => 85.0,
+        }
+    }
+
+    /// The class a numeric complexity belongs to under the default levels, read as half-open
+    /// spans (low `[0, 38)`, mid `[38, 63)`, high `[63, 100]`). Ranks choices by
+    /// the heuristic scorer when no level yields one.
+    pub fn from_score(score: f64) -> Self {
+        if score < 38.0 {
+            Self::Low
+        } else if score < 63.0 {
+            Self::Mid
+        } else {
+            Self::High
+        }
+    }
 }
 
 const HIGH_KEYWORDS: &[&str] = &[
@@ -90,6 +113,11 @@ pub fn estimate_complexity(prompt: &str) -> Complexity {
     } else {
         Complexity::Mid
     }
+}
+
+/// Numeric complexity (0 to 100) estimated from the prompt, for when the decider gave none.
+pub fn estimate_complexity_score(prompt: &str) -> f64 {
+    estimate_complexity(prompt).score()
 }
 
 fn level(t: Tier) -> i32 {
@@ -202,6 +230,31 @@ mod tests {
         // High and low cancel out on a mid-length prompt.
         let both = format!("refactor docs {}", "y".repeat(300));
         assert_eq!(estimate_complexity(&both), Complexity::Mid);
+    }
+
+    #[test]
+    fn numeric_estimate_matches_the_class_and_the_default_levels() {
+        let cfg = so_core::Config::default();
+        for (prompt, class, level) in [
+            ("fix a typo in the readme", Complexity::Low, "low"),
+            (&"a".repeat(400), Complexity::Mid, "mid"),
+            ("Refactor the auth module", Complexity::High, "high"),
+        ] {
+            let n = estimate_complexity_score(prompt);
+            assert_eq!(estimate_complexity(prompt), class);
+            assert_eq!(Complexity::from_score(n), class);
+            let l = cfg
+                .router
+                .levels
+                .iter()
+                .find(|l| f64::from(l.min) <= n && n <= f64::from(l.max))
+                .unwrap();
+            assert_eq!(l.name, level);
+        }
+        assert_eq!(Complexity::from_score(37.9), Complexity::Low);
+        assert_eq!(Complexity::from_score(38.0), Complexity::Mid);
+        assert_eq!(Complexity::from_score(62.9), Complexity::Mid);
+        assert_eq!(Complexity::from_score(63.0), Complexity::High);
     }
 
     #[test]

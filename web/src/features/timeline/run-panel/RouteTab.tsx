@@ -1,4 +1,5 @@
 import { ProbabilityBars } from '@/components/common/ProbabilityBars'
+import { anchorProbabilities, complexityText, isAnchorKeyed } from '@/lib/complexity'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { Badge } from '@/components/ui/badge'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -11,6 +12,8 @@ export function RouteTab({ runId }: { runId: string }) {
   if (route.isPending) return <Skeleton className="h-40" />
   if (route.isError) return <ErrorAlert error={route.error} title="No route decision" onRetry={() => void route.refetch()} />
   const r = route.data
+  const cx = complexityText(r)
+  const anchored = isAnchorKeyed(r.probabilities)
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -20,13 +23,18 @@ export function RouteTab({ runId }: { runId: string }) {
           {r.harness} · {r.account} · {r.model}
           {r.effort ? ` · ${r.effort}` : ''}
         </span>
+        {cx && <span>{cx}</span>}
         {r.confidence != null && <span>Confidence {formatPercent(r.confidence * 100)}</span>}
       </div>
       <section aria-labelledby="prob-h">
         <h3 id="prob-h" className="mb-2 text-sm font-medium">
-          Probabilities
+          {anchored ? 'Probabilities by anchor' : 'Choice probabilities'}
         </h3>
-        <ProbabilityBars probabilities={r.probabilities} selected={r.choice_id} />
+        {anchored ? (
+          <ProbabilityBars probabilities={anchorProbabilities(r.probabilities)} ariaLabel="Complexity probabilities" sort={false} />
+        ) : (
+          <ProbabilityBars probabilities={r.probabilities} selected={r.choice_id} ariaLabel="Choice probabilities" />
+        )}
       </section>
       <section aria-labelledby="why-h">
         <h3 id="why-h" className="mb-1 text-sm font-medium">

@@ -334,7 +334,7 @@ fn items_of<'a>(v: &'a Value, key: &str) -> std::slice::Iter<'a, Value> {
         .iter()
 }
 
-/// `route`: the pick and why. Scores, token usage, fingerprints and decider details are
+/// `route`: the pick, its `complexity` and `level`, and why. Scores, token usage, fingerprints and decider details are
 /// left out; `alternatives` are choice ids.
 pub fn route_view(raw: Value) -> Value {
     let Value::Object(mut m) = raw else {
@@ -349,6 +349,8 @@ pub fn route_view(raw: Value) -> Value {
             "model",
             "effort",
             "source",
+            "complexity",
+            "level",
             "rationale",
         ],
     );
@@ -659,14 +661,16 @@ mod tests {
     fn route_keeps_the_pick_and_alternative_ids() {
         let v = route_view(json!({
             "choice_id": "c", "harness": "codex", "account": "a", "model": "m", "effort": null,
-            "source": "heuristic", "rationale": "why", "confidence": null, "probabilities": {},
+            "source": "heuristic", "complexity": 55.0, "level": "mid", "rationale": "why",
+            "confidence": null, "probabilities": {},
             "usage": {"cost": 0.0}, "config_fingerprint": "f", "ranked_accounts": ["a"],
             "alternatives": [{"choice_id": "d", "account": "b", "score": 0.5}],
         }));
         assert_eq!(
             v,
             json!({"choice_id": "c", "harness": "codex", "account": "a", "model": "m",
-                    "source": "heuristic", "rationale": "why", "alternatives": ["d"]})
+                    "source": "heuristic", "complexity": 55.0, "level": "mid", "rationale": "why",
+                    "alternatives": ["d"]})
         );
     }
 

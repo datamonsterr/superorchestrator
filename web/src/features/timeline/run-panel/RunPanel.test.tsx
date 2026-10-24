@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { toast } from 'sonner'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { paginate } from '@/api/msw/handlers'
-import { runs } from '@/api/msw/fixtures'
+import { routeResult, runs } from '@/api/msw/fixtures'
 import { qk } from '@/api/keys'
 import type { RunViewPublic } from '@/api/types'
 import { renderWithProviders } from '@/test/render'
@@ -45,14 +45,26 @@ describe('RunPanel', () => {
     expect(screen.getByRole('tab', { name: 'Result' })).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('Route tab: bars sorted by probability, selected highlighted, rationale and alternatives', async () => {
+  it('Route tab: a legacy event keyed by choice keeps sorted choice bars', async () => {
+    server.use(
+      http.get(`${B}/runs/:id/route`, () =>
+        HttpResponse.json({ ...routeResult, complexity: undefined, level: undefined, probabilities: { 'agy-pro': 0.2, 'codex-high': 0.8 } }),
+      ),
+    )
     panel('run-1')
     await userEvent.click(await tab('Route'))
     const bars = await screen.findByRole('list', { name: 'Choice probabilities' })
+    expect(within(bars).getAllByRole('listitem').map((li) => li.textContent?.split(/\d/)[0])).toEqual(['codex-high', 'agy-pro'])
+    expect(screen.getByText('Choice probabilities', { selector: 'h3' })).toBeInTheDocument()
+  })
+
+  it('Route tab: complexity, level, bars in anchor order, rationale and alternatives', async () => {
+    panel('run-1')
+    await userEvent.click(await tab('Route'))
+    const bars = await screen.findByRole('list', { name: 'Complexity probabilities' })
     const rows = within(bars).getAllByRole('listitem')
-    const pcts = rows.map((r) => Number(within(r).getByText(/%$/).textContent!.replace('%', '')))
-    expect([...pcts].sort((a, b) => b - a)).toEqual(pcts)
-    expect(rows.filter((r) => r.hasAttribute('data-selected'))).toHaveLength(1)
+    expect(rows.map((r) => r.textContent?.[0])).toEqual(['0', '1', '2', '3', '4'])
+    expect(screen.getByText('complexity 82.5 · level high')).toBeInTheDocument()
     expect(screen.getByText('Rationale')).toBeInTheDocument()
     expect(screen.getByText('Alternatives')).toBeInTheDocument()
   })

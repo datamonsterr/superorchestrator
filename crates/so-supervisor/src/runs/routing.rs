@@ -266,6 +266,8 @@ impl RunManager {
                 ),
                 confidence: None,
                 probabilities: Default::default(),
+                complexity: None,
+                level: None,
                 usage: Default::default(),
                 alternatives: Vec::new(),
                 config_fingerprint: so_router::config_fingerprint(self.config()),

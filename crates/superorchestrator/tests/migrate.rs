@@ -630,3 +630,40 @@ fn installing_the_skill_does_not_create_a_claude_account_on_the_next_run() {
     assert_eq!(before, snapshot(&e));
     assert!(!e.cfg.join("accounts/claude-acc1.toml").exists());
 }
+
+#[test]
+fn migrate_into_a_fresh_home_seeds_levels() {
+    let e = Env::new();
+    write(
+        &e.home.join(".config/jev-router/config.json"),
+        r#"{"choices":[{"id":"ok","harness":"codex","model":"m"}]}"#,
+    );
+    cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .success();
+    let cfg = so_core::Config::load(&e.paths()).unwrap();
+    assert_eq!(cfg.router.levels.len(), 5);
+    assert_eq!(cfg.router.levels[0].name, "trivial");
+}
+
+#[test]
+fn migrate_leaves_an_existing_configs_levels_alone() {
+    let e = Env::new();
+    write(
+        &e.home.join(".config/jev-router/config.json"),
+        r#"{"choices":[{"id":"ok","harness":"codex","model":"m"}]}"#,
+    );
+    write(
+        &e.cfg.join("config.toml"),
+        "[[router.levels]]\nname = \"all\"\nmin = 0\nmax = 100\ntier = \"mid\"\n",
+    );
+    cmd(&e)
+        .args(["migrate", "--apply", "--yes"])
+        .assert()
+        .success();
+    let cfg = so_core::Config::load(&e.paths()).unwrap();
+    assert_eq!(cfg.router.levels.len(), 1);
+    assert_eq!(cfg.router.levels[0].name, "all");
+    assert!(cfg.choices.iter().any(|c| c.id == "ok"));
+}

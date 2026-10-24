@@ -151,20 +151,35 @@ fn params(prompt: &str) -> RouteParams {
     }
 }
 
-fn answer(choice: &str, conf: f64, probs: Value) -> Value {
-    json!({"answers": {"route": {"type": "choice", "choice": choice,
-        "confidence": conf, "probabilities": probs}},
+/// A `score` answer with explicit probabilities.
+fn answer_with(score: f64, conf: f64, probs: Value) -> Value {
+    json!({"answers": {"complexity": {"type": "score", "score": score,
+        "confidence": conf, "probabilities": probs, "legend": {}}},
         "usage": {"input_tokens": 12, "output_tokens": 3, "cost": 0.001}})
 }
 
+/// A valid `score` answer: the probability mass sits on the two anchors around `score`.
+fn answer(score: f64, conf: f64) -> Value {
+    let lo = score.floor() as usize;
+    let frac = score - score.floor();
+    let mut probs = serde_json::Map::new();
+    for i in 0..5 {
+        let p = if i == lo {
+            1.0 - frac
+        } else if i == lo + 1 {
+            frac
+        } else {
+            0.0
+        };
+        probs.insert(i.to_string(), json!(p));
+    }
+    answer_with(score, conf, Value::Object(probs))
+}
+
 #[tokio::test]
-async fn valid_answer_is_source_jev_and_request_has_the_spec_shape() {
-    let (url, fake) = serve(vec![(
-        200,
-        answer("codex-big", 0.9, json!({"agy-fast": 0.1, "codex-big": 0.9})),
-        0,
-    )])
-    .await;
+async fn valid_answer_is_source_jev_and_request_has_the_score_shape() {
+    // Anchor index 3.4 is complexity 85: the default high level, whose tier is high.
+    let (url, fake) = serve(vec![(200, answer(3.4, 0.9), 0)]).await;
     let w = world(&url, true);
     let out = route_detailed(&w.inputs(), &params("do the thing"))
         .await
@@ -174,8 +189,12 @@ async fn valid_answer_is_source_jev_and_request_has_the_spec_shape() {
     assert_eq!(r.choice_id, "codex-big");
     assert_eq!(r.account, "codex-a");
     assert_eq!(r.confidence, Some(0.9));
+    assert_eq!(r.complexity, Some(85.0));
+    assert_eq!(r.level.as_deref(), Some("high"));
+    assert_eq!(r.probabilities.len(), 5);
     assert_eq!(r.usage.input_tokens, 12);
     assert_eq!(r.alternatives[0].choice_id, "agy-fast");
+    assert!(r.rationale.contains("85.0") && r.rationale.contains("`high`"));
     assert!(out.fallback_reason.is_none());
     assert_eq!(r.config_fingerprint, config_fingerprint(&w.config));
 
@@ -190,26 +209,27 @@ async fn valid_answer_is_source_jev_and_request_has_the_spec_shape() {
     );
     assert_eq!(b["state"]["task_content"], "do the thing");
     assert_eq!(b["state"]["role"], "worker");
-    assert!(b["state"]["context"].get("quota").is_some());
-    assert!(b["state"]["context"].get("usage_5h").is_some());
-    assert_eq!(b["questions"]["route"]["type"], "choice");
-    let crit = b["questions"]["route"]["criteria"].as_object().unwrap();
-    // Claude ranks last: it is not offered while others are eligible.
-    assert_eq!(crit.len(), 2);
-    assert!(crit["agy-fast"].as_str().unwrap().contains("harness=agy"));
+    // Account names, quota and choices stay private.
+    assert!(b["state"].get("context").is_none());
+    assert!(!b.to_string().contains("agy-a"));
+    assert!(!b.to_string().contains("codex-big"));
+    assert!(b["questions"].get("route").is_none());
+    let q = &b["questions"]["complexity"];
+    assert_eq!(q["type"], "score");
+    assert_eq!(q["instructions"], w.config.router.instruction);
+    let anchors = q["criteria"].as_array().unwrap();
+    assert_eq!(anchors.len(), 5);
+    assert_eq!(anchors[0], so_core::config::COMPLEXITY_ANCHORS[0]);
 }
 
 #[tokio::test]
 async fn invalid_answer_falls_back_to_heuristic_with_reason_and_never_leaks_the_key() {
-    let (url, fake) = serve(vec![(
-        200,
-        answer("agy-fast", 0.9, json!({"agy-fast": 0.9, "codex-big": 0.9})),
-        0,
-    )])
-    .await;
+    let bad = json!({"0": 0.9, "1": 0.9, "2": 0.0, "3": 0.0, "4": 0.0});
+    let (url, fake) = serve(vec![(200, answer_with(1.0, 0.9, bad), 0)]).await;
     let w = world(&url, true);
     let out = route_detailed(&w.inputs(), &params("tweak")).await.unwrap();
     assert_eq!(out.result.source, RouteSource::Heuristic);
+    assert!(out.result.complexity.is_some() && out.result.level.is_some());
     let why = out.fallback_reason.unwrap();
     assert!(why.contains("invalid response"), "{why}");
     assert!(!out.result.rationale.contains("sk-test"));
@@ -221,16 +241,14 @@ async fn invalid_answer_falls_back_to_heuristic_with_reason_and_never_leaks_the_
 
 #[tokio::test]
 async fn gate_rejection_falls_back_and_keeps_confidence() {
-    let (url, _) = serve(vec![(
-        200,
-        answer("agy-fast", 0.2, json!({"agy-fast": 0.6, "codex-big": 0.4})),
-        0,
-    )])
-    .await;
+    let (url, _) = serve(vec![(200, answer(3.4, 0.2), 0)]).await;
     let w = world(&url, true);
     let out = route_detailed(&w.inputs(), &params("tweak")).await.unwrap();
     assert_eq!(out.result.source, RouteSource::Heuristic);
     assert_eq!(out.result.confidence, Some(0.2));
+    // The rejected score is not used: the heuristic rates a short prompt low.
+    assert_eq!(out.result.complexity, Some(20.0));
+    assert_eq!(out.result.choice_id, "agy-fast");
     assert!(out.fallback_reason.unwrap().contains("rejected"));
 }
 
@@ -245,15 +263,7 @@ async fn auth_error_is_not_retried_but_server_error_is_retried_once() {
     assert!(out.fallback_reason.unwrap().contains("401"));
     assert_eq!(fake.hits.load(Ordering::SeqCst), 1);
 
-    let (url, fake) = serve(vec![
-        (503, json!({}), 0),
-        (
-            200,
-            answer("agy-fast", 0.9, json!({"agy-fast": 0.9, "codex-big": 0.1})),
-            0,
-        ),
-    ])
-    .await;
+    let (url, fake) = serve(vec![(503, json!({}), 0), (200, good(), 0)]).await;
     let w = world(&url, true);
     let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
     assert_eq!(out.result.source, RouteSource::Jev);
@@ -269,12 +279,7 @@ async fn auth_error_is_not_retried_but_server_error_is_retried_once() {
 
 #[tokio::test]
 async fn response_over_one_megabyte_is_rejected() {
-    let (url, _) = serve(vec![(
-        200,
-        answer("agy-fast", 0.9, json!({"agy-fast": 0.9, "codex-big": 0.1})),
-        1_100_000,
-    )])
-    .await;
+    let (url, _) = serve(vec![(200, good(), 1_100_000)]).await;
     let w = world(&url, true);
     let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
     assert_eq!(out.result.source, RouteSource::Heuristic);
@@ -290,6 +295,8 @@ async fn no_key_means_heuristic_without_calling_the_decider() {
         .unwrap();
     assert_eq!(out.result.source, RouteSource::Heuristic);
     assert_eq!(out.result.harness, Harness::Agy);
+    assert_eq!(out.result.complexity, Some(20.0));
+    assert_eq!(out.result.level.as_deref(), Some("low"));
     assert!(out.fallback_reason.unwrap().contains("key"));
     assert_eq!(fake.hits.load(Ordering::SeqCst), 0);
 }
@@ -320,6 +327,11 @@ async fn pinned_and_errors() {
     assert_eq!(
         (r.source, r.choice_id.as_str()),
         (RouteSource::Pinned, "claude-x")
+    );
+    // Complexity and level are filled in for information.
+    assert_eq!(
+        (r.complexity, r.level.as_deref()),
+        (Some(20.0), Some("low"))
     );
     p.account = Some("nobody".into());
     assert!(route_detailed(&w.inputs(), &p).await.is_err());
@@ -414,6 +426,9 @@ fn fingerprint_is_stable_and_tracks_choices_policy_and_instruction() {
     let mut c = w.config.clone();
     c.choices[0].enabled = false;
     assert_ne!(a, config_fingerprint(&c));
+    let mut c = w.config.clone();
+    c.router.levels[0].max = 30;
+    assert_ne!(a, config_fingerprint(&c));
     // Weights and unrelated sections do not change it.
     let mut c = w.config.clone();
     c.router.weights.load = 9.0;
@@ -453,15 +468,7 @@ async fn eval_reports_without_task_text() {
 #[tokio::test]
 async fn rate_limit_and_timeout_statuses_are_retried_once_honouring_retry_after() {
     for status in [429u16, 408] {
-        let (url, fake) = serve(vec![
-            (status, json!({}), 0),
-            (
-                200,
-                answer("agy-fast", 0.9, json!({"agy-fast": 0.9, "codex-big": 0.1})),
-                0,
-            ),
-        ])
-        .await;
+        let (url, fake) = serve(vec![(status, json!({}), 0), (200, good(), 0)]).await;
         let w = world(&url, true);
         let t = std::time::Instant::now();
         let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
@@ -526,8 +533,9 @@ async fn ranked_accounts_and_exclude_accounts_drive_failover() {
     );
 }
 
+/// Complexity 10: the default low level, whose tier is fast, so `agy-fast`.
 fn good() -> Value {
-    answer("agy-fast", 0.9, json!({"agy-fast": 0.9, "codex-big": 0.1}))
+    answer(0.4, 0.9)
 }
 
 fn models_seen(fake: &Fake) -> Vec<String> {
@@ -686,12 +694,7 @@ async fn env_model_beats_config_and_is_reported() {
 
 #[tokio::test]
 async fn rejected_answer_never_reaches_the_fallback() {
-    let (url, fake) = serve(vec![(
-        200,
-        answer("agy-fast", 0.2, json!({"agy-fast": 0.6, "codex-big": 0.4})),
-        0,
-    )])
-    .await;
+    let (url, fake) = serve(vec![(200, answer(0.4, 0.2), 0)]).await;
     let mut w = world(&url, true);
     with_fallback(&mut w);
     let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
@@ -738,7 +741,7 @@ async fn eval_records_decider_model_and_probabilities() {
         c.decider_model.as_deref(),
         Some("inception/mercury-decide:free")
     );
-    assert_eq!(c.probabilities.len(), 2);
+    assert_eq!(c.probabilities.len(), 5);
     assert!(c.fallback_reason.is_none());
 }
 
@@ -751,10 +754,15 @@ async fn effort_penalty_reorders_two_choices_of_the_same_tier() {
     low.effort = Some("low".into());
     let med = choice("agy-med", Harness::Agy, "gemini-3.8-flash-medium");
     w.config.choices = vec![low, med];
+    // The effort penalty belongs to the heuristic ranking, which only runs when no level
+    // yields a choice.
+    w.config.router.levels.clear();
     let out = route_detailed(&w.inputs(), &params("Please look into the report"))
         .await
         .unwrap();
     assert_eq!(out.result.choice_id, "agy-med");
+    assert!(out.result.rationale.contains("heuristic scorer"));
+    assert_eq!(out.result.level, None);
 }
 
 #[tokio::test]
@@ -837,4 +845,392 @@ async fn agy_thinking_hint_stays_routable() {
         .unwrap();
     assert_eq!(out.result.choice_id, "agy-fast");
     assert!(!out.result.rationale.contains("Skipped"));
+}
+
+// ---- levels ----
+// These tests set their own custom levels; none of them relies on the default levels.
+
+use so_core::config::{Level, LevelChoice, LevelTier};
+
+fn level(name: &str, min: u8, max: u8, ids: &[(&str, Option<u32>)]) -> Level {
+    Level {
+        name: name.into(),
+        min,
+        max,
+        tier: None,
+        choices: ids
+            .iter()
+            .map(|(id, priority)| LevelChoice {
+                id: (*id).into(),
+                priority: *priority,
+            })
+            .collect(),
+    }
+}
+
+/// Routes with `headroom` (account -> remaining %) and `active` (account -> runs) overridden
+/// in the snapshot.
+async fn route_with_state(
+    w: &World,
+    headroom: &[(&str, f64)],
+    active: &[(&str, u32)],
+    p: &RouteParams,
+) -> so_core::proto::RouteResult {
+    let mut snap = Snapshot::collect(&w.store, &w.accounts, 15.0, chrono::Utc::now()).unwrap();
+    for a in &mut snap.accounts {
+        for (name, pct) in headroom {
+            if a.file.name == *name {
+                a.pools.values_mut().for_each(|p| p.score = Some(*pct));
+            }
+        }
+        for (name, n) in active {
+            if a.file.name == *name {
+                a.active = *n;
+            }
+        }
+    }
+    let ctx = RouteCtx {
+        config: &w.config,
+        catalog: &w.catalog,
+        snapshot: &snap,
+        http: &w.http,
+        env: |_| None,
+    };
+    so_router::route_with(&ctx, p).await.unwrap().result
+}
+
+/// A world whose decider answers `score` and whose levels are `levels`.
+async fn scored(score: f64, levels: Vec<Level>) -> World {
+    let (url, _) = serve(vec![(200, answer(score, 0.9), 0)]).await;
+    let mut w = world(&url, true);
+    w.config.router.levels = levels;
+    w
+}
+
+async fn pick(score: f64, levels: Vec<Level>) -> so_core::proto::RouteResult {
+    let w = scored(score, levels).await;
+    route_detailed(&w.inputs(), &params("x"))
+        .await
+        .unwrap()
+        .result
+}
+
+#[tokio::test]
+async fn the_score_lands_in_the_level_that_contains_it() {
+    let levels = || {
+        vec![
+            level("low", 0, 39, &[("agy-fast", None)]),
+            level("high", 40, 100, &[("codex-big", None)]),
+        ]
+    };
+    for (score, want, lvl, c) in [
+        (0.4, "agy-fast", "low", 10.0),
+        (1.56, "agy-fast", "low", 39.0),
+        (1.6, "codex-big", "high", 40.0),
+        (4.0, "codex-big", "high", 100.0),
+    ] {
+        let r = pick(score, levels()).await;
+        assert_eq!(
+            (r.choice_id.as_str(), r.level.as_deref(), r.complexity),
+            (want, Some(lvl), Some(c)),
+            "{score}"
+        );
+        assert_eq!(r.source, RouteSource::Jev);
+    }
+}
+
+#[tokio::test]
+async fn a_level_choice_id_that_names_no_choice_is_skipped() {
+    let levels = vec![level(
+        "all",
+        0,
+        100,
+        &[("no-such-choice", Some(1)), ("codex-big", Some(2))],
+    )];
+    assert_eq!(pick(2.0, levels).await.choice_id, "codex-big");
+}
+
+#[tokio::test]
+async fn a_gap_goes_to_the_nearest_level_and_ties_to_the_higher() {
+    let levels = || {
+        vec![
+            level("low", 0, 20, &[("agy-fast", None)]),
+            level("high", 60, 100, &[("codex-big", None)]),
+        ]
+    };
+    // 35 is 14 from low (which ends at 21) and 25 from high; 45 is 24 and 15; 40.5 is 19.5
+    // from both.
+    for (score, want) in [(1.4, "low"), (1.8, "high"), (1.62, "high")] {
+        let r = pick(score, levels()).await;
+        assert_eq!(r.level.as_deref(), Some(want), "{score}");
+    }
+}
+
+#[tokio::test]
+async fn level_priority_beats_headroom_and_config_order() {
+    let w = scored(
+        3.6,
+        vec![level(
+            "high",
+            0,
+            100,
+            &[("agy-fast", Some(2)), ("codex-big", Some(1))],
+        )],
+    )
+    .await;
+    // agy-fast comes first in the config and has far more headroom.
+    let r = route_with_state(&w, &[("agy-a", 99.0), ("codex-a", 5.0)], &[], &params("x")).await;
+    assert_eq!(r.choice_id, "codex-big");
+    assert!(
+        r.rationale.contains("priority number (1)"),
+        "{}",
+        r.rationale
+    );
+    assert_eq!(r.alternatives[0].choice_id, "agy-fast");
+}
+
+#[tokio::test]
+async fn without_priority_the_best_headroom_then_load_then_config_order_wins() {
+    let w = scored(
+        3.6,
+        vec![level(
+            "high",
+            0,
+            100,
+            &[("codex-big", None), ("agy-fast", None)],
+        )],
+    )
+    .await;
+    let p = params("x");
+    let r = route_with_state(&w, &[("agy-a", 90.0), ("codex-a", 20.0)], &[], &p).await;
+    assert_eq!(r.choice_id, "agy-fast");
+    assert!(r.rationale.contains("headroom"), "{}", r.rationale);
+    let r = route_with_state(&w, &[("agy-a", 20.0), ("codex-a", 90.0)], &[], &p).await;
+    assert_eq!(r.choice_id, "codex-big");
+    // Equal headroom: fewest active runs.
+    let r = route_with_state(
+        &w,
+        &[("agy-a", 50.0), ("codex-a", 50.0)],
+        &[("agy-a", 0), ("codex-a", 1)],
+        &p,
+    )
+    .await;
+    assert_eq!(r.choice_id, "agy-fast");
+    // Equal headroom and load: config order, not the level's listing order.
+    let r = route_with_state(&w, &[("agy-a", 50.0), ("codex-a", 50.0)], &[], &p).await;
+    assert_eq!(r.choice_id, "agy-fast");
+    // A choice with a priority beats one without, whatever the headroom.
+    let mut w = w;
+    w.config.router.levels[0].choices[0].priority = Some(1);
+    let r = route_with_state(&w, &[("agy-a", 90.0), ("codex-a", 20.0)], &[], &p).await;
+    assert_eq!(r.choice_id, "codex-big");
+}
+
+#[tokio::test]
+async fn a_level_without_an_eligible_choice_falls_to_the_next_level() {
+    // Complexity 55: the mid level lists nothing and has no tier. Low is 16 away, high 25.
+    let mid_empty = vec![
+        level("low", 0, 39, &[("agy-fast", None)]),
+        level("mid", 40, 79, &[]),
+        level("high", 80, 100, &[("codex-big", None)]),
+    ];
+    let r = pick(2.2, mid_empty.clone()).await;
+    assert_eq!(r.choice_id, "agy-fast");
+    assert_eq!(r.level.as_deref(), Some("low"));
+    assert!(
+        r.rationale
+            .contains("maps to level `mid`; no eligible choice there; used level `low`"),
+        "{}",
+        r.rationale
+    );
+    // Complexity 60: high is 20 away, low 21.
+    assert_eq!(pick(2.4, mid_empty).await.choice_id, "codex-big");
+    // A listed choice that is not eligible (claude ranks last) counts as none.
+    let r = pick(
+        3.6,
+        vec![
+            level("low", 0, 39, &[("agy-fast", None)]),
+            level("high", 80, 100, &[("claude-x", None)]),
+        ],
+    )
+    .await;
+    assert_eq!(
+        (r.choice_id.as_str(), r.level.as_deref()),
+        ("agy-fast", Some("low"))
+    );
+}
+
+#[tokio::test]
+async fn no_level_with_a_choice_ranks_everything_by_the_heuristic_scorer() {
+    let r = pick(3.6, vec![level("low", 0, 39, &[("claude-x", None)])]).await;
+    assert_eq!(r.source, RouteSource::Jev);
+    assert_eq!(r.choice_id, "codex-big");
+    assert_eq!(r.level, None);
+    assert!(
+        r.rationale.contains("maps to level `low`"),
+        "{}",
+        r.rationale
+    );
+    assert!(r.rationale.contains("heuristic scorer"), "{}", r.rationale);
+}
+
+#[tokio::test]
+async fn empty_choices_use_the_level_tier() {
+    let mut levels = vec![level("any", 0, 100, &[])];
+    levels[0].tier = Some(LevelTier::High);
+    assert_eq!(pick(0.4, levels.clone()).await.choice_id, "codex-big");
+    levels[0].tier = Some(LevelTier::Fast);
+    assert_eq!(pick(3.6, levels).await.choice_id, "agy-fast");
+}
+
+#[tokio::test]
+async fn heuristic_complexity_picks_the_level_when_there_is_no_key() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    w.config.router.levels = vec![
+        level("easy", 0, 39, &[("agy-fast", None)]),
+        level("hard", 80, 100, &[("codex-big", None)]),
+    ];
+    let hard = route_detailed(&w.inputs(), &params("Refactor the architecture"))
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(
+        (
+            hard.choice_id.as_str(),
+            hard.level.as_deref(),
+            hard.complexity
+        ),
+        ("codex-big", Some("hard"), Some(85.0))
+    );
+    assert_eq!(hard.source, RouteSource::Heuristic);
+    // Mid (55) sits in the gap: 16 from easy, 25 from hard.
+    let mid = route_detailed(&w.inputs(), &params(&"a".repeat(400)))
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(
+        (mid.choice_id.as_str(), mid.level.as_deref()),
+        ("agy-fast", Some("easy"))
+    );
+}
+
+fn with_small_codex(w: &mut World) {
+    w.config
+        .choices
+        .push(choice("codex-small", Harness::Codex, "gpt-5.3-codex"));
+}
+
+#[tokio::test]
+async fn fractional_and_boundary_complexity_follow_the_half_open_spans() {
+    let levels = || {
+        vec![
+            level("low", 0, 39, &[("agy-fast", None)]),
+            level("mid", 40, 79, &[("codex-small", None)]),
+            level("high", 80, 100, &[("codex-big", None)]),
+        ]
+    };
+    for (score, c, want) in [
+        (1.56, 39.0, "low"),
+        (1.58, 39.5, "low"),
+        (1.6, 40.0, "mid"),
+        (3.196, 79.9, "mid"),
+        (3.2, 80.0, "high"),
+    ] {
+        let mut w = scored(score, levels()).await;
+        with_small_codex(&mut w);
+        let r = route_detailed(&w.inputs(), &params("x"))
+            .await
+            .unwrap()
+            .result;
+        assert_eq!(
+            (r.complexity, r.level.as_deref()),
+            (Some(c), Some(want)),
+            "{score}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_disabled_or_excluded_listed_choice_is_skipped_for_the_next_listed_one() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    with_small_codex(&mut w);
+    w.config.router.levels = vec![level(
+        "any",
+        0,
+        100,
+        &[
+            ("agy-fast", Some(1)),
+            ("codex-small", Some(2)),
+            ("codex-big", Some(3)),
+        ],
+    )];
+    // Everything listed and eligible: the top priority wins.
+    let r = route_detailed(&w.inputs(), &params("x"))
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(r.choice_id, "agy-fast");
+    // Disabled in the config, or excluded by the call: the next priority wins.
+    w.config.choices[0].enabled = false;
+    let r = route_detailed(&w.inputs(), &params("x"))
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(r.choice_id, "codex-small");
+    w.config.choices[0].enabled = true;
+    let mut p = params("x");
+    p.exclude = vec!["agy-fast".into()];
+    let r = route_detailed(&w.inputs(), &p).await.unwrap().result;
+    assert_eq!(r.choice_id, "codex-small");
+    assert!(r.alternatives.iter().all(|a| a.choice_id != "agy-fast"));
+}
+
+#[tokio::test]
+async fn equal_priorities_are_broken_by_headroom_and_the_rationale_says_so() {
+    let mut w = scored(
+        3.6,
+        vec![level(
+            "high",
+            0,
+            100,
+            &[("agy-fast", Some(1)), ("codex-big", Some(1))],
+        )],
+    )
+    .await;
+    w.config.router.levels[0].choices[1].priority = Some(1);
+    let r = route_with_state(&w, &[("agy-a", 10.0), ("codex-a", 90.0)], &[], &params("x")).await;
+    assert_eq!(r.choice_id, "codex-big");
+    assert!(r.rationale.contains("tied on priority"), "{}", r.rationale);
+}
+
+#[tokio::test]
+async fn a_single_eligible_choice_skips_the_decider_even_with_levels() {
+    let (url, fake) = serve(vec![(200, good(), 0)]).await;
+    let mut w = world(&url, true);
+    w.config.router.levels = vec![level("low", 0, 100, &[("agy-fast", None)])];
+    let mut p = params("x");
+    p.exclude = vec!["agy-fast".into()];
+    let r = route_detailed(&w.inputs(), &p).await.unwrap().result;
+    assert_eq!(r.choice_id, "codex-big");
+    assert_eq!(r.source, RouteSource::Heuristic);
+    assert!(
+        r.rationale.contains("the only eligible choice"),
+        "{}",
+        r.rationale
+    );
+    assert_eq!(fake.hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn pinned_calls_report_the_mapped_level_only() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    w.config.router.levels = vec![level("only", 0, 100, &[("agy-fast", None)])];
+    let mut p = params("x");
+    p.harness = Some("codex".into());
+    let r = route_detailed(&w.inputs(), &p).await.unwrap().result;
+    assert_eq!(
+        (r.source, r.choice_id.as_str()),
+        (RouteSource::Pinned, "codex-big")
+    );
+    assert_eq!(r.level.as_deref(), Some("only"));
 }

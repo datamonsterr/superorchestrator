@@ -334,30 +334,45 @@ enabled = true
 
 ### 8.3 Decision procedure (`route`)
 
-1. **Eligible choices.** Keep choices that are enabled, match the role (`worker` by default), and have at least one account with headroom for their pool and below its cap. Drop choices the call excludes.
-2. **Decider.** If an OpenRouter key is configured (`router.jev.key_env`, default `OPENROUTER_API_KEY`, or `router.jev.key_file`), call `POST https://openrouter.ai/api/alpha/decisions` with model `router.jev.model` (default `inception/mercury-decide:free`). The model is any OpenRouter model id, set in `config.toml` or by `SUPERORCHESTRATOR_ROUTER_MODEL`; the environment beats the config, which beats the default, and an empty value counts as unset. `router.jev.fallback_model` (default `~typesafe/jev-latest`, env `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL`, `none` disables it) is tried only when the primary model is unusable: a transport error, a timeout, HTTP 429 or 5xx, or HTTP 400/404 for a missing model. A 429, 5xx, 408 or refused connection is retried once first; a timeout is not retried, because it uses up the time left for that model. Other 4xx responses, invalid or oversized bodies and a disallowed endpoint (plain http to a non-loopback host) are not about the model: they go to the heuristic. A refused key (401/403) and a rejected answer never reach the fallback. Both calls together stay within `router.jev.timeout`; with a fallback the primary may use 3/5 of it. `route --explain`, `doctor` and the eval summary show the models in effect and where each came from:
-   - `state`: `task_content`, `system_instruction`, `routing_instruction`, `role`, `context`. The context carries `quota` (remaining % per family and window) and `usage_5h` (attempts per family and account).
-   - `questions.route`: `type: "choice"`, the routing `instructions`, and `criteria` mapping each eligible choice id to `description; harness=…; model=…; effort=…`.
-3. **Validation.** Reject the answer unless all of these hold:
-   - `type` is `choice`
-   - the choice is eligible
-   - `confidence` is a finite value in [0, 1]
-   - the probabilities cover exactly the eligible set and sum to 1 ± 0.02
-   - the chosen id has the highest probability
+1. **Eligible choices.** Keep choices that are enabled, match the role (`worker` by default), and have at least one account with headroom for their pool and below its cap. Drop choices the call excludes. Claude rank (8.4) applies.
+2. **Complexity.** The router needs one number, complexity from 0 to 100, to pick a level. It comes from the first source below that applies.
+   - **Decider.** If an OpenRouter key is configured (`router.jev.key_env`, default `OPENROUTER_API_KEY`, or `router.jev.key_file`) and more than one choice is eligible, call `POST https://openrouter.ai/api/alpha/decisions` with model `router.jev.model` (default `inception/mercury-decide:free`). The model is any OpenRouter model id, set in `config.toml` or by `SUPERORCHESTRATOR_ROUTER_MODEL`; the environment beats the config, which beats the default, and an empty value counts as unset. `router.jev.fallback_model` (default `~typesafe/jev-latest`, env `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL`, `none` disables it) is tried only when the primary model is unusable: a transport error, a timeout, HTTP 429 or 5xx, or HTTP 400/404 for a missing model. A 429, 5xx, 408 or refused connection is retried once first; a timeout is not retried, because it uses up the time left for that model. Other 4xx responses, invalid or oversized bodies and a disallowed endpoint (plain http to a non-loopback host) are not about the model: they go to the heuristic. A refused key (401/403) and a rejected answer never reach the fallback. Both calls together stay within `router.jev.timeout`; with a fallback the primary may use 3/5 of it. `route --explain`, `doctor` and the eval summary show the models in effect and where each came from. The request is:
+     - `state`: `task_content`, `system_instruction`, `routing_instruction`, `role`. No account names, quota, usage or credentials are sent.
+     - `questions.complexity`: `type: "score"`, `instructions` = `router.instruction`, and `criteria` = the five anchors in `so_core::config::COMPLEXITY_ANCHORS`, lowest first: 0 trivial and mechanical (under 15 developer-minutes), 1 simple and scoped, including read-only search, listing or inventory of code and summaries of tool output (up to about an hour), 2 moderate across several files (one to four hours), 3 complex and multi-step, needing analysis before implementation (more than four hours), 4 highly complex and open-ended (architecture, long reasoning chains, coordinating agents).
+   - **Validation.** Reject the answer unless all of these hold:
+     - `type` is `score`
+     - `score` is finite and in [0, 4]
+     - `confidence` is finite and in [0, 1]
+     - the probabilities have exactly the keys `"0"` to `"4"`, each finite and in [0, 1], and sum to 1 ± 0.02
 
-   A response over 1 MB is rejected. A decision is accepted only if `confidence ≥ router.policy.min_confidence` and the margin between the top two probabilities is `≥ router.policy.min_margin`.
-4. **Heuristic.** Used when there is no key, when validation or the gate rejects the answer, or when the decider is unreachable and `router.jev.on_unreachable = "heuristic"`. With the default `on_unreachable = "error"`, a configured decider that cannot be reached after its fallback (transport error, timeout, 5xx, 429, a missing model, or a refused key) fails the call instead: `route` exits non-zero, the MCP tool returns `isError`, `spawn_agent` with `harness: auto` spawns nothing, `POST /route` returns 502 and `route eval` counts an error. The message names the models, the cause and the next step, never the key. With no key at all, routing uses the heuristic and records `fallback_reason`:
+     A response over 1 MB is rejected. The answer is accepted only if `confidence ≥ router.policy.min_confidence`. `router.policy.min_margin` is deprecated: it still parses, but it is ignored, because a score has no margin between choices.
+
+     Complexity = `score / 4 × 100`, rounded to one decimal place. Permanent auth or validation errors from the decider are not retried.
+   - **Heuristic.** Used when there is no key, when validation or the gate rejects the answer, when only one choice is eligible (the decider is not called), or when the decider is unreachable and `router.jev.on_unreachable = "heuristic"`. The estimate counts keywords and prompt length: refactor, architecture, migrate, concurrency and security raise it; typo, rename, format and docs lower it. It maps to 20 (low), 55 (mid) or 85 (high), which fall in the default levels.
+     With the default `on_unreachable = "error"`, a configured decider that cannot be reached after its fallback (transport error, timeout, 5xx, 429, a missing model, or a refused key) fails the call instead: `route` exits non-zero, the MCP tool returns `isError`, `spawn_agent` with `harness: auto` spawns nothing, `POST /route` returns 502 and `route eval` counts an error. The message names the models, the cause and the next step, never the key. With no key at all, routing uses the heuristic and records `fallback_reason`.
+3. **Level.** Pick the level whose span contains the complexity. A level `min..max` spans `[min, max + 1)`, so 37.5 falls in `0..=37`, and a level with `max = 100` also includes 100.0. Levels never overlap (validated at load). A level choice id that names no `[[choices]]` entry is accepted and skipped at route time (it is never eligible); `doctor` warns and names such ids. Outside every level (a gap), pick the level with the nearest bound; ties go to the higher level. An explicit empty `router.levels = []` loads and disables levels: the decider still scores the task, but `level` is null and every eligible choice is ranked by the heuristic scorer (step 4), with the rationale "no levels configured". The defaults apply only when the key is absent.
+4. **Candidates.** A level's candidates are:
+   - its listed `choices`, in listed order, that are eligible; or, when it lists none,
+   - the eligible choices whose catalog tier equals the level's `tier`, in config order.
+
+   If the level has no candidate, the other levels are tried in order of distance from the complexity, higher first on ties. If no level has one, every eligible choice is ranked by the heuristic scorer and the rationale says so:
 
    `score = fit + w_headroom·headroom − w_load·active_runs − w_cost·cost + priority`
 
-   - `fit` compares task complexity with model tier. Complexity is estimated from prompt length and keywords: refactor, architecture, migrate, concurrency and security point to high; typo, rename, format and docs point to low.
-   - Within a tier, a choice loses 0.05 per step between the effort the complexity wants (medium for low and mid, high for high) and its own effort. This only breaks ties. A choice with no effort is not penalised. Low effort is never preferred: on the bundled and held-out cases, wanting low effort for low complexity lowered accuracy, because short prompts count as low.
+   - `fit` compares the complexity with the model tier.
+   - Within a tier, a choice loses 0.05 per step between the effort the complexity wants and its own effort. This only breaks ties. A choice with no effort is not penalised.
    - `priority` is the harness priority. Default `agy > opencode > codex > claude`.
    - Free models get a cost bonus.
-
-   Permanent auth or validation errors from the decider are not retried.
-5. **Account selection.** In code, among the chosen choice's accounts: most headroom for its pool first, then fewest active runs, then `priority`, then least recently used.
-6. **Result.** `{choice_id, harness, account, model, effort, source: jev|heuristic|pinned, rationale, confidence, probabilities, usage{input_tokens, output_tokens, cost}, alternatives[3], decider_model, decider_models, config_fingerprint}`, where `decider_model` is the model that answered (also when its answer was rejected) and `decider_models` the models in effect with their source. The result is stored as a `route_decision` event.
+5. **Pick.** Among the candidates, the choice with the lowest `priority` number wins (`level.choices[].priority`). Candidates without a priority come after those with one. Ties, including two candidates without a priority, are broken by the most headroom on the choice's best account for its pool, then the fewest active runs on that account, then config order.
+6. **Account selection.** In code, among the chosen choice's accounts: most headroom for its pool first, then fewest active runs, then `priority`, then least recently used. Only accounts below their cap are eligible.
+7. **Result.** `{choice_id, harness, account, model, effort, source: jev|heuristic|pinned, complexity, level, rationale, confidence, probabilities, usage{input_tokens, output_tokens, cost}, alternatives (up to 3), decider_model, decider_models, config_fingerprint}`.
+   - `complexity` is the number from step 2, and `source` says where it came from.
+   - `probabilities` are the decider's per-anchor probabilities, keyed `"0"` to `"4"`. They are empty without a decider.
+   - `level` is the level the chosen choice came from. It is null when the all-eligible fallback picked.
+   - `alternatives` are the rest of the level in the same order, then the other eligible choices. They carry no score.
+   - `decider_model` is the model that answered (also when its answer was rejected) and `decider_models` the models in effect with their source. The result is stored as a `route_decision` event.
+   - A pinned call (one that names the harness, account, model or effort) keeps its pick. Its complexity comes from the heuristic and `level` is the level the complexity maps to.
+   - `config_fingerprint` covers the choices, the policy, the instruction and `router.levels`.
 
 `route` previews only; it reserves nothing. `spawn_agent` with `harness: auto` runs the same procedure and reserves the cap slot in the same supervisor step. Task text is data and cannot change the eligible set.
 
@@ -379,11 +394,11 @@ On a quota, rate-limit or auth error during a run:
 
 Other non-zero exits are not retried. The run fails and the parent is told.
 
-Failing on an unreachable decider (8.3 step 4) applies to explicit routing requests only: `route`, `spawn_agent` with `harness: auto`, `POST /route` and `route eval`. Recovery of a run that already exists never fails because the decider is down. A failover and the re-routing of a queued run route with the heuristic in that case, record a `route_decision` whose `fallback_reason` is `decider unreachable: <models>`, log a warning, and ask the decider at most once (primary model, then fallback) for that recovery.
+Failing on an unreachable decider (8.3 step 2) applies to explicit routing requests only: `route`, `spawn_agent` with `harness: auto`, `POST /route` and `route eval`. Recovery of a run that already exists never fails because the decider is down. A failover and the re-routing of a queued run route with the heuristic in that case, record a `route_decision` whose `fallback_reason` is `decider unreachable: <models>`, log a warning, and ask the decider at most once (primary model, then fallback) for that recovery.
 
 ### 8.6 Evaluation
 
-`superorchestrator route eval [--cases FILE] [--require-live] [--min-accuracy X]` replays labelled cases. It ships agent-dispatcher's English and Vietnamese cases (the tuning set) and keeps a separate held-out set, `crates/so-router/evals/holdout.jsonl`, that is never tuned on (`--cases` runs it). The held-out cases are same-distribution paraphrases: new wording and domains for the same kinds of task, not a different distribution, so its score is an optimistic estimate. A case may list a second expected choice with a written `reason`. It reports accuracy, eligible-choice compliance, fallback count, error count, source counts, the decider models in effect, p50/p95 latency and total cost. A decider that cannot be reached counts as an error, not a fallback. Reports never include task text or credentials.
+`superorchestrator route eval [--cases FILE] [--require-live] [--min-accuracy X] [--min-complexity-accuracy X]` replays labelled cases. It ships agent-dispatcher's English and Vietnamese cases (the tuning set) and keeps a separate held-out set, `crates/so-router/evals/holdout.jsonl`, that is never tuned on (`--cases` runs it). The held-out cases are same-distribution paraphrases: new wording and domains for the same kinds of task, not a different distribution, so its score is an optimistic estimate. A case may list a second expected choice with a written `reason`, and an `expected_complexity` range `[min, max]` (inclusive, on the anchor scale: trivial 0-12, simple 13-37, moderate 38-62, complex 63-87, expert 88-100); every shipped case has one. Each case record carries the scored `complexity`, the `level` and `complexity_ok`, and the text report shows them as the CX and LEVEL columns. It reports accuracy, complexity accuracy (the share of cases with a range and a score that land inside it), eligible-choice compliance, fallback count, error count, source counts, the decider models in effect, p50/p95 latency and total cost. A decider that cannot be reached counts as an error, not a fallback. `expected_choices` is checked against the choice the router picks from your levels, so accuracy depends on how you set the levels, their choice order and priorities; a missed case may need a different level rather than a different decider. Reports never include task text or credentials.
 
 ## 9. Communication and nesting
 
@@ -458,6 +473,7 @@ Behaviour:
 - **Failover.** Usage-limit failover follows 8.5. If no account is available, the step waits until the earliest reset time.
 - **Stalls.** `stallMs` restarts a stalled step up to 5 times.
 - **Saved workflows.** Scripts in `~/.config/superorchestrator/workflows/` and `.superorchestrator/workflows/` can be run by name.
+- **Step states.** `queued` (registered, waiting for one of the concurrent-agent slots), `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`. No step event is emitted for `queued`; a step's first event is `running`.
 - **Progress.** `workflow_status(id)` and `superorchestrator runs watch --workflow <id>`.
 - **No input.** Workflows have no mid-run input from a person.
 
@@ -513,7 +529,7 @@ The supervisor's replies stay complete, because the CLI and the web UI read them
 | `list_harnesses` | `{accounts: [{name, harness, signed_in?, disabled?, load: "active/cap", headroom?, cooldown?, error?}], choices: [{id, harness, model, effort?, roles?, description?, free?, eligible?: false, why?}], free_models?: {opencode: [...]}}`. `headroom` is `status 5hN wkN` per pool (remaining percent; `pool:` prefix unless `default`), left out when unknown, as is `signed_in`. `cooldown` is the latest `until`. `roles` is left out when it is `["worker"]`. A choice is eligible when the router would take it; otherwise `eligible: false` and `why` is `disabled`, `no account`, `account disabled`, `at cap`, `cooldown`, `no headroom` or `not eligible` (the router found no usable account for a reason the view cannot name). A choice is `free` when the catalog entry says `cost = "free"`; a model the catalog does not list is free when its id ends in `-free` or `:free` (one rule, `so_core::model_name_is_free`, shared with the generated skill). `free_models` lists the free catalog models of each harness that has an enabled account (opencode; `models refresh` updates the catalog, which is cached by file time). The supervisor builds this view when `list_harnesses` is called with `{"brief": true}`, which the bridge always does; without it the reply is the full `HarnessesView`. |
 | `read_messages` | `{messages: [{from_run, kind, body, created_at}]}`. |
 | `run_workflow` | `{id, state, result?, error?}`. |
-| `workflow_status` | `{id, name, state, result?, error?, started_at, finished_at?, steps: [{name, state, run_id?, phase?}]}`, steps in start order. |
+| `workflow_status` | `{id, name, state, result?, error?, started_at, finished_at?, steps: [{name, state, run_id?, phase?}]}`, steps in start order. A step state is `queued`, `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`. |
 
 `spawn_agent` accepts `model` to pin a model, so an orchestrator can pick one of `free_models` for a simple task.
 
@@ -616,7 +632,12 @@ default_cooldown = "5h"
 [router]
 priority = ["agy", "opencode", "codex", "claude"]
 weights = { headroom = 1.0, load = 0.5, cost = 0.3 }
-instruction = "Choose the least costly eligible choice that can reliably complete task_content…"
+instruction = "Rate the complexity of task_content against the ordered criteria…"
+# [[router.levels]]                 # optional; defaults: low 0-37 (fast), mid 38-62 (mid), high 63-100 (high)
+# name = "high"
+# min = 63
+# max = 100
+# choices = [{ id = "codex-gpt-high", priority = 1 }]
 
 [router.jev]
 endpoint = "https://openrouter.ai/api/alpha/decisions"
@@ -629,7 +650,7 @@ timeout = "20s"
 
 [router.policy]
 min_confidence = 0.45
-min_margin = 0.15
+min_margin = 0.15                       # deprecated, ignored
 
 [worktrees]
 dir = "{repo_parent}/{repo}-worktrees"
@@ -653,7 +674,7 @@ on = ["escalated", "question_waiting_10m", "session_finished", "account_exhauste
 
 Environment variables: `SUPERORCHESTRATOR_CONFIG_DIR`, `SUPERORCHESTRATOR_RUN_ID`, `SUPERORCHESTRATOR_RUN_TOKEN`, `SUPERORCHESTRATOR_SOCKET`, `SUPERORCHESTRATOR_LOG`, `SUPERORCHESTRATOR_ROUTER_MODEL`, `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL`.
 
-The default `min_confidence` (0.45) and `min_margin` (0.15) were tuned on 2026-10-23 against `jev-1.14-20261014` (`~typesafe/jev-latest`). With the first, untuned descriptions, correct answers had confidence 0.47-0.56 and margin 0.29-0.42, while answers that should be rejected had confidence 0.20-0.36 and margin 0.00-0.22; the defaults sit in that gap. Live results with the shipped seeds, routing instruction and these defaults (one run each on 2026-10-23): on `inception/mercury-decide:free` the tuning set scored 87% (13 of 15, no fallbacks) and the held-out set 88% (14 of 16, one fallback); on `~typesafe/jev-latest` the tuning set scored 87% (3 fallbacks) and the held-out set 75% (2 fallbacks). The remaining misses were mostly a neighbouring tier (flash-high for sonnet-thinking work). Without a decider the heuristic scores 73% on the tuning set and 50% on the held-out set. Choices already in a user's `config.toml` keep their old descriptions: `init` never rewrites them (8.2), so copy the seeded descriptions to benefit from the tuning. The free `mercury-decide` tier can be rate limited or withdrawn and resolves to a dated snapshot; the fallback covers outages, and `SUPERORCHESTRATOR_ROUTER_MODEL=~typesafe/jev-latest` switches the primary.
+The default `min_confidence` (0.45) was tuned on 2026-10-23 against `jev-1.14-20261014` (`~typesafe/jev-latest`) for the earlier decider, which picked a choice and was gated by `min_margin` too. That tuning does not carry over to complexity scoring: the decider now answers a score, and `min_margin` is ignored. Re-run `route eval --require-live` with your levels and routing instruction, and adjust `min_confidence` from those results. The free `mercury-decide` tier can be rate limited or withdrawn and resolves to a dated snapshot; the fallback covers outages, and `SUPERORCHESTRATOR_ROUTER_MODEL=~typesafe/jev-latest` switches the primary.
 
 ## 17. Data model (SQLite)
 

@@ -99,6 +99,8 @@ async fn route_json_goes_through_the_supervisor() {
     assert_eq!(v["harness"], "agy");
     assert!(v["account"].as_str().unwrap().starts_with("agy-"));
     assert_eq!(v["config_fingerprint"].as_str().unwrap().len(), 64);
+    assert!(v["complexity"].is_number(), "{v}");
+    assert!(v["level"].is_string(), "{v}");
 
     let mut cmd = e.cmd();
     cmd.args(["route", "--explain", "--role", "worker", "fix typo"]);
@@ -109,6 +111,10 @@ async fn route_json_goes_through_the_supervisor() {
     assert!(out.status.success());
     assert!(
         text.contains("account:") && text.contains("config:"),
+        "{text}"
+    );
+    assert!(
+        text.contains("complexity: ") && text.contains("(heuristic)") && text.contains("level:"),
         "{text}"
     );
 
@@ -180,6 +186,61 @@ fn route_eval_runs_locally_with_the_heuristic() {
         .arg(&cases2)
         .assert()
         .failure();
+}
+
+#[test]
+fn route_eval_scores_complexity_against_expected_ranges() {
+    let e = setup();
+    let cases = e.tmp.path().join("cx.jsonl");
+    std::fs::write(
+        &cases,
+        concat!(
+            r#"{"id":"a","task":"rename a variable","expected_choices":["agy-flash-low","agy-flash-medium"],"expected_complexity":[0,37]}"#,
+            "\n",
+            r#"{"id":"b","task":"rename a variable","expected_choices":["agy-flash-low","agy-flash-medium"],"expected_complexity":[88,100]}"#,
+            "\n",
+            r#"{"id":"c","task":"rename a variable","expected_choices":["agy-flash-low","agy-flash-medium"]}"#,
+            "\n"
+        ),
+    )
+    .unwrap();
+    let out = e
+        .cmd()
+        .env_remove("OPENROUTER_API_KEY")
+        .args(["route", "eval", "--json", "--cases"])
+        .arg(&cases)
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["complexity_accuracy"], 0.5);
+    assert_eq!(v["cases"][0]["complexity_ok"], true);
+    assert_eq!(v["cases"][1]["complexity_ok"], false);
+    assert!(v["cases"][2]["complexity_ok"].is_null());
+    assert!(v["cases"][0]["complexity"].is_number());
+    assert!(v["cases"][0]["level"].is_string());
+
+    let text = e
+        .cmd()
+        .env_remove("OPENROUTER_API_KEY")
+        .args(["route", "eval", "--cases"])
+        .arg(&cases)
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&text.stdout).into_owned();
+    assert!(text.contains("complexity accuracy: 50.0%"), "{text}");
+    assert!(text.contains("CX") && text.contains("LEVEL"), "{text}");
+
+    for (bar, ok) in [("0.5", true), ("0.9", false)] {
+        let st = e
+            .cmd()
+            .env_remove("OPENROUTER_API_KEY")
+            .args(["route", "eval", "--min-complexity-accuracy", bar, "--cases"])
+            .arg(&cases)
+            .output()
+            .unwrap()
+            .status;
+        assert_eq!(st.success(), ok, "bar {bar}");
+    }
 }
 
 #[test]

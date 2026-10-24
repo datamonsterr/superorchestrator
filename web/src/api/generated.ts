@@ -292,6 +292,25 @@ export interface JoinView {
   env_names: string[];
 }
 
+/** A named range of complexity (`min` to `max`, within 0 to 100) and the choices allowed for it. Complexity can be fractional, so the integer range reads as the half-open span `[min, max + 1)`: 37.5 is in `0..=37`. A level with `max = 100` also includes 100.0. */
+export interface Level {
+  choices?: LevelChoice[];
+  max: number;
+  min: number;
+  name: string;
+  /** Used only when `choices` is empty (any eligible choice of this model class); ignored when `choices` is not empty. One of the two is required. */
+  tier?: LevelTier | null;
+}
+
+/** A choice a level allows. Lower `priority` is preferred. */
+export interface LevelChoice {
+  id: string;
+  priority?: number | null;
+}
+
+/** Model class a level falls back to when it lists no choices. Mirrors the catalog's tier, which lives in `so-router`. */
+export type LevelTier = "high" | "mid" | "fast";
+
 export interface Limits {
   global_cap?: number;
   max_children?: number;
@@ -347,6 +366,7 @@ export interface PatchAccountRequest {
 
 export interface Policy {
   min_confidence?: number;
+  /** Deprecated and unused: the decider scores complexity, so there is no margin between choices. Still parsed so old configs load. */
   min_margin?: number;
 }
 
@@ -370,7 +390,7 @@ export interface RejectBody {
 export interface RouteAlternative {
   account?: string | null;
   choice_id: string;
-  /** Source-dependent, so scores are not comparable across results: for `jev` it is the decider's probability for the choice, for `heuristic` and `pinned` the heuristic score. */
+  /** Not set today: alternatives are listed in routing order (the rest of the level, then other eligible choices), not scored. */
   score?: number | null;
 }
 
@@ -400,6 +420,8 @@ export interface RouteResult {
   account: string;
   alternatives?: RouteAlternative[];
   choice_id: string;
+  /** Complexity 0 to 100; `source` says whether the decider or the heuristic estimated it. */
+  complexity?: number | null;
   confidence?: number | null;
   config_fingerprint?: string;
   /** The decider model that produced the answer (the response's model id when it gave one). Also set when its answer was rejected; absent for pinned and key-less routing. */
@@ -408,7 +430,10 @@ export interface RouteResult {
   decider_models?: JevModels | null;
   effort?: string | null;
   harness: Harness;
+  /** Name of the level the complexity falls in (or is nearest to). */
+  level?: string | null;
   model: string;
+  /** The decider's per-anchor probabilities, keyed "0" to "4". */
   probabilities?: Record<string, number>;
   /** Usable accounts of the chosen choice, best first (`account` is the first). Failover walks this list, then re-routes with `exclude_accounts`. */
   ranked_accounts?: string[];
@@ -428,6 +453,7 @@ export interface RouteUsage {
 export interface Router {
   instruction?: string;
   jev?: Jev;
+  levels?: Level[];
   policy?: Policy;
   priority?: Harness[];
   weights?: Weights;
@@ -699,7 +725,7 @@ export interface WorkflowStep {
   /** The run behind the step; none for a cached step. */
   run_id?: string | null;
   started_at?: string | null;
-  /** `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`. */
+  /** `queued`, `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`. */
   state: string;
 }
 

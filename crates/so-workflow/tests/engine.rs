@@ -615,6 +615,54 @@ async fn unfinished_steps_are_cancelled_when_the_script_returns() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_step_waiting_for_a_permit_is_queued_without_an_event() {
+    let host = FakeHost::echo();
+    host.hang_on("a");
+    let store = Store::open_in_memory().unwrap();
+    let eng = WorkflowEngine::with_options(
+        store.clone(),
+        EngineOptions {
+            max_concurrent_agents: 1,
+            ..Default::default()
+        },
+    );
+    let cancel = CancelToken::new();
+    let opts = RunOptions {
+        run_id: Some("wf-q".into()),
+        cancel: cancel.clone(),
+        ..Default::default()
+    };
+    let h = host.clone();
+    let task = tokio::spawn(async move {
+        eng.run_with(opts, "agent('a'); await agent('b');", "wf", Value::Null, h)
+            .await
+    });
+    while !host.statuses().contains(&(0, "running".to_string())) {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let states: Vec<_> = store
+        .list_workflow_steps("wf-q")
+        .unwrap()
+        .into_iter()
+        .map(|s| s.state)
+        .collect();
+    assert_eq!(states, ["running", "queued"]);
+    assert!(
+        host.statuses().iter().all(|(i, _)| *i == 0),
+        "no event for the queued step"
+    );
+    cancel.cancel();
+    assert!(task.await.unwrap().is_err());
+    let states: Vec<_> = store
+        .list_workflow_steps("wf-q")
+        .unwrap()
+        .into_iter()
+        .map(|s| s.state)
+        .collect();
+    assert_eq!(states, ["cancelled", "cancelled"]);
+}
+
+#[tokio::test(start_paused = true)]
 async fn unfinished_steps_are_cancelled_when_the_script_throws() {
     let host = FakeHost::echo();
     host.hang_on("slow");

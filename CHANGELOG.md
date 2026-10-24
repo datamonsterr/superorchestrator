@@ -31,6 +31,8 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 - GHSA-fh9p-x854-c6x7: `model` and `effort` accept only `[A-Za-z0-9:/_.@\-\[\]]`; `~`, `+` and `#` are rejected. A stored resume id that is not a UUID makes the resume fail.
 - GHSA-vw56-37xq-jrf9: upgrading from a build before the run token (unreleased store migration V9): legacy runs are issued a token when launched or resumed, and legacy workflows have a NULL owner. In-flight pre-upgrade runs lose their MCP connection across a supervisor restart.
 - GHSA-jxj2-pfqh-ww3v: agy shared config roots (ADR-0005): a root writable by your primary group is accepted; world-writable or foreign-owned roots are refused. A top-level config symlink that resolves outside the account and the root is skipped with a warning instead of aborting the launch.
+- Routing scores complexity instead of picking a choice. The decider answers one `complexity` score question over five anchors (`so_core::config::COMPLEXITY_ANCHORS`) and no longer sees account names, quota or usage. Code picks the choice from the `[[router.levels]]` range the score falls in. `router.instruction` is now the instruction for that question. A config that sets it to the old text, which asks the decider to choose a choice, must be changed to the new default (see `docs/guide/config.md`).
+- `route` results carry `complexity` and `level`. `probabilities` are keyed `"0"` to `"4"`, one per anchor, and `alternatives` carry no score.
 
 ### Changed
 
@@ -43,8 +45,17 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
   it creates a worktree, the router skips choices that pair them with an effort, and `doctor`
   reports those choices. See `docs/guide/routing.md` (#11).
 
+### Deprecated
+
+- `router.policy.min_margin` is deprecated and ignored. Old configs still load. `min_confidence` is the only gate, and its default was tuned for the old decider.
+
 ### Added
 
+- Complexity levels: `[[router.levels]]` with `name`, `min`, `max`, an optional `tier` and `choices` (`id`, optional `priority`). With no levels set, low 0-37, mid 38-62 and high 63-100 apply. Overlaps and duplicates are refused at load. A level choice id that is not in `[[choices]]` is accepted, skipped when routing and reported by `doctor`.
+- `init` writes five seeded levels (trivial 0-12, simple 13-37, moderate 38-62, complex 63-87, expert 88-100) to a new `config.toml`; an existing file is never changed. The default tier levels moved to the anchor centres: low 0-37, mid 38-62, high 63-100. Anchor 1 now names read-only search, listing and summarising tool output as simple work.
+- `route eval`: cases take `expected_complexity`; reports add `complexity`, `level`, `complexity_ok` per case, `complexity_accuracy` and CX / LEVEL columns; `--min-complexity-accuracy X` fails below it.
+- `route --explain` prints the complexity, its source and the level. `doctor` has a "levels" check. The TUI and web route views show complexity, level and per-anchor probabilities. The seed `config_header.toml` has a commented `[[router.levels]]` example.
+- `docs/guide/routing.md` has a "Complexity levels" section; `docs/adr/0006-decider-scores-complexity.md` records the decision.
 - A daemon left running after a reinstall is now reported (#12). Build identity: the build id (executable size and mtime) is
   shown by `status` next to the daemon's and the CLI's version, and is sent in the `hello`
   and `status` results (additive optional fields). The daemon notices its executable was

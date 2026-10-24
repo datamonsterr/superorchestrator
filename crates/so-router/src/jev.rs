@@ -1,14 +1,15 @@
-//! Jev decider client (SPEC 8.3 steps 2-3): OpenRouter `POST /api/alpha/decisions`.
+//! Jev decider client (SPEC 8.3): OpenRouter `POST /api/alpha/decisions`.
 //! The API key is never logged, printed or placed in an error message.
 //!
-//! Privacy: the task text, the choice descriptions and the account names (inside the
-//! `usage_5h` context) are sent to the decider. Credentials and tokens are not.
+//! The decider rates the complexity of the task against fixed anchors (a `score` question).
+//! Privacy: only the task text, the role and the routing instruction are sent. Choices,
+//! account names, quota, credentials and tokens are not.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use so_core::config::{Jev, JevModels, Policy};
+use so_core::config::{COMPLEXITY_ANCHORS, Jev, JevModels, Policy};
 use so_core::expand_tilde;
 use so_core::proto::RouteUsage;
 
@@ -16,6 +17,8 @@ use crate::http::read_capped;
 
 pub const MAX_RESPONSE: usize = 1_000_000;
 const SUM_TOLERANCE: f64 = 0.02;
+/// Largest gap between the reported score and the probability-weighted mean of the anchors.
+const SCORE_TOLERANCE: f64 = 0.25;
 
 /// Environment lookup, a plain function so tests never touch the process environment.
 pub type EnvFn = fn(&str) -> Option<String>;
@@ -67,16 +70,17 @@ pub struct JevRequest<'a> {
     pub system_instruction: &'a str,
     pub routing_instruction: &'a str,
     pub role: &'a str,
-    pub context: Value,
-    /// Eligible choice id -> criteria text.
-    pub criteria: &'a BTreeMap<String, String>,
 }
 
 /// An answer that passed validation.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Validated {
-    pub choice_id: String,
+    /// The probability-weighted anchor index, 0 to `anchors - 1`.
+    pub score: f64,
+    /// `score` mapped to 0 to 100, one decimal.
+    pub complexity: f64,
     pub confidence: f64,
+    /// Probability per anchor, keyed "0" to "n-1".
     pub probabilities: BTreeMap<String, f64>,
 }
 
@@ -117,30 +121,38 @@ fn unit(v: &Value) -> Option<f64> {
         .filter(|x| x.is_finite() && (0.0..=1.0).contains(x))
 }
 
-/// Step 3 validation of a response body against the eligible ids.
-pub fn validate(data: &Value, eligible: &BTreeSet<&str>) -> Result<Validated, String> {
+/// Maps an anchor index in `[0, anchors - 1]` to complexity 0 to 100, one decimal.
+pub fn complexity_of(score: f64, anchors: usize) -> f64 {
+    let top = (anchors - 1) as f64;
+    (score / top * 100.0 * 10.0).round() / 10.0
+}
+
+/// Validation of a response body against the anchor list.
+pub fn validate(data: &Value) -> Result<Validated, String> {
     let bad = |m: &str| Err(m.to_string());
-    let Some(answer) = data.pointer("/answers/route") else {
-        return bad("response has no route answer");
+    let n = COMPLEXITY_ANCHORS.len();
+    let Some(answer) = data.pointer("/answers/complexity") else {
+        return bad("response has no complexity answer");
     };
-    if answer.get("type").and_then(Value::as_str) != Some("choice") {
-        return bad("answer type is not choice");
+    if answer.get("type").and_then(Value::as_str) != Some("score") {
+        return bad("answer type is not score");
     }
-    let Some(choice) = answer.get("choice").and_then(Value::as_str) else {
-        return bad("answer has no choice");
+    let Some(score) = answer
+        .get("score")
+        .and_then(Value::as_f64)
+        .filter(|x| x.is_finite() && (0.0..=(n - 1) as f64).contains(x))
+    else {
+        return bad("score is not a finite number within the anchor range");
     };
-    if !eligible.contains(choice) {
-        return bad("chosen id is not eligible");
-    }
     let Some(confidence) = answer.get("confidence").and_then(unit) else {
         return bad("confidence is not a finite number in [0, 1]");
     };
     let Some(map) = answer.get("probabilities").and_then(Value::as_object) else {
         return bad("probabilities missing");
     };
-    let keys: BTreeSet<&str> = map.keys().map(String::as_str).collect();
-    if keys != *eligible {
-        return bad("probabilities do not cover exactly the eligible set");
+    let expected: Vec<String> = (0..n).map(|i| i.to_string()).collect();
+    if map.len() != n || !expected.iter().all(|k| map.contains_key(k)) {
+        return bad("probabilities do not cover exactly the anchors");
     }
     let mut probabilities = BTreeMap::new();
     for (k, v) in map {
@@ -152,27 +164,25 @@ pub fn validate(data: &Value, eligible: &BTreeSet<&str>) -> Result<Validated, St
     if (probabilities.values().sum::<f64>() - 1.0).abs() > SUM_TOLERANCE {
         return bad("probabilities do not sum to 1");
     }
-    let max = probabilities.values().copied().fold(f64::MIN, f64::max);
-    if probabilities[choice] < max {
-        return bad("chosen id does not have the highest probability");
+    let expected_score: f64 = probabilities
+        .iter()
+        .filter_map(|(k, p)| k.parse::<f64>().ok().map(|i| i * p))
+        .sum();
+    if (score - expected_score).abs() > SCORE_TOLERANCE {
+        return bad("score disagrees with probabilities");
     }
     Ok(Validated {
-        choice_id: choice.to_string(),
+        score,
+        complexity: complexity_of(score, n),
         confidence,
         probabilities,
     })
 }
 
-/// Policy gate: confidence and the margin between the two highest probabilities.
+/// Policy gate: confidence only.
 pub fn gate(v: &Validated, policy: &Policy) -> Result<(), String> {
     if v.confidence < policy.min_confidence {
         return Err("confidence below the configured threshold".into());
-    }
-    let mut p: Vec<f64> = v.probabilities.values().copied().collect();
-    p.sort_by(|a, b| b.total_cmp(a));
-    let margin = p[0] - p.get(1).copied().unwrap_or(0.0);
-    if margin < policy.min_margin {
-        return Err("probability margin below the configured threshold".into());
     }
     Ok(())
 }
@@ -198,13 +208,12 @@ pub fn build_payload(model: &str, req: &JevRequest<'_>) -> Value {
             "system_instruction": req.system_instruction,
             "routing_instruction": req.routing_instruction,
             "role": req.role,
-            "context": req.context,
         },
         "questions": {
-            "route": {
-                "type": "choice",
+            "complexity": {
+                "type": "score",
                 "instructions": req.routing_instruction,
-                "criteria": req.criteria,
+                "criteria": COMPLEXITY_ANCHORS,
             },
         },
     })
@@ -344,7 +353,6 @@ async fn decide_model(
     deadline: Instant,
 ) -> Result<JevDecision, Failed> {
     let payload = build_payload(model, req);
-    let eligible: BTreeSet<&str> = req.criteria.keys().map(String::as_str).collect();
     let mut last = String::new();
     for n in 0..2 {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -364,7 +372,7 @@ async fn decide_model(
                     .filter(|m| !m.is_empty() && m.len() <= 200)
                     .unwrap_or(model)
                     .to_string();
-                let validated = validate(&data, &eligible).map_err(|e| {
+                let validated = validate(&data).map_err(|e| {
                     Failed::Final(JevFailure {
                         usage: usage.clone(),
                         model: Some(answered.clone()),
@@ -504,98 +512,182 @@ pub async fn decide(
 mod tests {
     use super::*;
 
-    fn set<'a>(ids: &[&'a str]) -> BTreeSet<&'a str> {
-        ids.iter().copied().collect()
+    fn body(score: Value, conf: Value, probs: Value) -> Value {
+        json!({"answers": {"complexity": {"type": "score", "score": score,
+            "confidence": conf, "probabilities": probs, "legend": {}}}})
     }
 
-    fn body(choice: &str, conf: Value, probs: Value) -> Value {
-        json!({"answers": {"route": {"type": "choice", "choice": choice,
-            "confidence": conf, "probabilities": probs}}})
+    fn probs() -> Value {
+        json!({"0": 0.0, "1": 0.1, "2": 0.6, "3": 0.3, "4": 0.0})
     }
 
     fn ok_body() -> Value {
-        body("a", json!(0.9), json!({"a": 0.8, "b": 0.2}))
+        body(json!(2.2), json!(0.9), probs())
     }
 
     #[test]
-    fn accepts_a_valid_answer() {
-        let v = validate(&ok_body(), &set(&["a", "b"])).unwrap();
-        assert_eq!(v.choice_id, "a");
-        assert_eq!(v.probabilities.len(), 2);
+    fn accepts_a_valid_answer_and_maps_the_score() {
+        let v = validate(&ok_body()).unwrap();
+        assert_eq!(v.score, 2.2);
+        assert_eq!(v.complexity, 55.0);
+        assert_eq!(v.probabilities.len(), 5);
+    }
+
+    #[test]
+    fn rejects_a_score_that_disagrees_with_the_probabilities() {
+        // Mean of probs() is 2.2.
+        assert!(validate(&body(json!(2.4), json!(0.9), probs())).is_ok());
+        assert!(validate(&body(json!(2.0), json!(0.9), probs())).is_ok());
+        let e = validate(&body(json!(2.6), json!(0.9), probs())).unwrap_err();
+        assert!(e.contains("disagrees"), "{e}");
+        assert!(validate(&body(json!(1.9), json!(0.9), probs())).is_err());
+    }
+
+    #[test]
+    fn complexity_mapping_is_linear_and_rounded_to_one_decimal() {
+        assert_eq!(complexity_of(0.0, 5), 0.0);
+        assert_eq!(complexity_of(1.0, 5), 25.0);
+        assert_eq!(complexity_of(4.0, 5), 100.0);
+        assert_eq!(complexity_of(1.0 / 3.0, 5), 8.3);
+        assert_eq!(complexity_of(2.999, 5), 75.0);
     }
 
     #[test]
     fn rejects_each_bad_case() {
-        let e = set(&["a", "b"]);
         let mut wrong_type = ok_body();
-        wrong_type["answers"]["route"]["type"] = json!("score");
+        wrong_type["answers"]["complexity"]["type"] = json!("choice");
+        let mut other_question = ok_body();
+        other_question["answers"] = json!({"route": other_question["answers"]["complexity"]});
         let cases = [
             ("wrong type", wrong_type),
+            ("wrong question", other_question),
+            ("score above range", body(json!(4.5), json!(0.9), probs())),
+            ("score negative", body(json!(-0.1), json!(0.9), probs())),
+            ("score string", body(json!("2"), json!(0.9), probs())),
+            ("score null (NaN)", body(Value::Null, json!(0.9), probs())),
+            ("conf > 1", body(json!(2.0), json!(1.5), probs())),
+            ("conf negative", body(json!(2.0), json!(-0.1), probs())),
+            ("conf string", body(json!(2.0), json!("0.9"), probs())),
+            ("conf null (NaN)", body(json!(2.0), Value::Null, probs())),
             (
-                "ineligible",
-                body("z", json!(0.9), json!({"a": 0.8, "b": 0.2})),
+                "missing key",
+                body(
+                    json!(2.0),
+                    json!(0.9),
+                    json!({"0": 0.2, "1": 0.2, "2": 0.3, "3": 0.3}),
+                ),
             ),
-            (
-                "conf > 1",
-                body("a", json!(1.5), json!({"a": 0.8, "b": 0.2})),
-            ),
-            (
-                "conf negative",
-                body("a", json!(-0.1), json!({"a": 0.8, "b": 0.2})),
-            ),
-            (
-                "conf string",
-                body("a", json!("0.9"), json!({"a": 0.8, "b": 0.2})),
-            ),
-            (
-                "conf null (NaN)",
-                body("a", Value::Null, json!({"a": 0.8, "b": 0.2})),
-            ),
-            ("missing key", body("a", json!(0.9), json!({"a": 1.0}))),
             (
                 "extra key",
-                body("a", json!(0.9), json!({"a": 0.7, "b": 0.2, "c": 0.1})),
+                body(
+                    json!(2.0),
+                    json!(0.9),
+                    json!({"0": 0.0, "1": 0.1, "2": 0.6, "3": 0.2, "4": 0.1, "5": 0.0}),
+                ),
+            ),
+            (
+                "wrong key names",
+                body(
+                    json!(2.0),
+                    json!(0.9),
+                    json!({"0": 0.0, "1": 0.1, "2": 0.6, "3": 0.3, "five": 0.0}),
+                ),
             ),
             (
                 "sum low",
-                body("a", json!(0.9), json!({"a": 0.5, "b": 0.2})),
+                body(
+                    json!(2.0),
+                    json!(0.9),
+                    json!({"0": 0.0, "1": 0.1, "2": 0.5, "3": 0.3, "4": 0.0}),
+                ),
             ),
             (
                 "sum high",
-                body("a", json!(0.9), json!({"a": 0.8, "b": 0.3})),
-            ),
-            (
-                "not max",
-                body("b", json!(0.9), json!({"a": 0.8, "b": 0.2})),
+                body(
+                    json!(2.0),
+                    json!(0.9),
+                    json!({"0": 0.0, "1": 0.1, "2": 0.7, "3": 0.4, "4": 0.0}),
+                ),
             ),
             (
                 "prob > 1",
-                body("a", json!(0.9), json!({"a": 1.2, "b": -0.2})),
+                body(
+                    json!(2.0),
+                    json!(0.9),
+                    json!({"0": 0.0, "1": 0.0, "2": 1.2, "3": -0.2, "4": 0.0}),
+                ),
             ),
+            (
+                "prob string",
+                body(
+                    json!(2.0),
+                    json!(0.9),
+                    json!({"0": 0.0, "1": 0.1, "2": "0.6", "3": 0.3, "4": 0.0}),
+                ),
+            ),
+            ("probabilities missing", {
+                let mut b = ok_body();
+                b["answers"]["complexity"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("probabilities");
+                b
+            }),
             ("no answer", json!({})),
         ];
         for (name, data) in cases {
-            assert!(validate(&data, &e).is_err(), "{name}");
+            assert!(validate(&data).is_err(), "{name}");
         }
     }
 
     #[test]
-    fn sum_tolerance_is_two_percent() {
-        let e = set(&["a", "b"]);
-        assert!(validate(&body("a", json!(0.9), json!({"a": 0.81, "b": 0.20})), &e).is_ok());
-        assert!(validate(&body("a", json!(0.9), json!({"a": 0.85, "b": 0.20})), &e).is_err());
+    fn score_bounds_are_inclusive() {
+        let at = |i: &str| {
+            let mut m = json!({"0": 0.0, "1": 0.0, "2": 0.0, "3": 0.0, "4": 0.0});
+            m[i] = json!(1.0);
+            m
+        };
+        assert!(validate(&body(json!(0), json!(0.9), at("0"))).is_ok());
+        assert!(validate(&body(json!(4), json!(0.9), at("4"))).is_ok());
     }
 
     #[test]
-    fn gate_checks_confidence_and_margin() {
-        let v = validate(&ok_body(), &set(&["a", "b"])).unwrap();
+    fn sum_tolerance_is_two_percent() {
+        let p = |s: f64| json!({"0": 0.0, "1": 0.1, "2": s, "3": 0.3, "4": 0.0});
+        assert!(validate(&body(json!(2.0), json!(0.9), p(0.61))).is_ok());
+        assert!(validate(&body(json!(2.0), json!(0.9), p(0.65))).is_err());
+    }
+
+    #[test]
+    fn gate_checks_confidence_only() {
+        let v = validate(&ok_body()).unwrap();
         let p = |c, m| Policy {
             min_confidence: c,
             min_margin: m,
         };
         assert!(gate(&v, &p(0.6, 0.1)).is_ok());
         assert!(gate(&v, &p(0.95, 0.1)).is_err());
-        assert!(gate(&v, &p(0.6, 0.7)).is_err());
+        // The deprecated margin is ignored.
+        assert!(gate(&v, &p(0.6, 0.99)).is_ok());
+    }
+
+    #[test]
+    fn payload_asks_one_score_question_and_sends_no_account_context() {
+        let req = JevRequest {
+            task: "t",
+            system_instruction: "",
+            routing_instruction: "rate it",
+            role: "worker",
+        };
+        let b = build_payload("m", &req);
+        let q = &b["questions"]["complexity"];
+        assert_eq!(q["type"], "score");
+        assert_eq!(q["instructions"], "rate it");
+        assert_eq!(q["criteria"].as_array().unwrap().len(), 5);
+        assert_eq!(q["criteria"][0], COMPLEXITY_ANCHORS[0]);
+        assert_eq!(b["questions"].as_object().unwrap().len(), 1);
+        assert!(b["state"].get("context").is_none());
+        assert_eq!(b["state"]["task_content"], "t");
     }
 
     #[test]

@@ -257,8 +257,8 @@ pub struct RouteAlternative {
     pub choice_id: String,
     #[serde(default)]
     pub account: Option<String>,
-    /// Source-dependent, so scores are not comparable across results: for `jev` it is the
-    /// decider's probability for the choice, for `heuristic` and `pinned` the heuristic score.
+    /// Not set today: alternatives are listed in routing order (the rest of the level, then
+    /// other eligible choices), not scored.
     #[serde(default)]
     pub score: Option<f64>,
 }
@@ -276,8 +276,15 @@ pub struct RouteResult {
     pub rationale: String,
     #[serde(default)]
     pub confidence: Option<f64>,
+    /// The decider's per-anchor probabilities, keyed "0" to "4".
     #[serde(default)]
     pub probabilities: BTreeMap<String, f64>,
+    /// Complexity 0 to 100; `source` says whether the decider or the heuristic estimated it.
+    #[serde(default)]
+    pub complexity: Option<f64>,
+    /// Name of the level the complexity falls in (or is nearest to).
+    #[serde(default)]
+    pub level: Option<String>,
     #[serde(default)]
     pub usage: RouteUsage,
     #[serde(default)]
@@ -752,7 +759,7 @@ pub struct WorkflowStep {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
-    /// `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`.
+    /// `queued`, `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`.
     pub state: String,
     /// The run behind the step; none for a cached step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -944,6 +951,8 @@ mod tests {
             rationale: "why".into(),
             confidence: None,
             probabilities: BTreeMap::new(),
+            complexity: None,
+            level: None,
             usage: RouteUsage::default(),
             alternatives: vec![],
             config_fingerprint: "f".into(),

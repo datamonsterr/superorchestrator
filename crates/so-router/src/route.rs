@@ -1,13 +1,14 @@
-//! `route` (SPEC 8.3): eligible choices, Jev decider, heuristic fallback, account selection.
+//! `route` (SPEC 8.3): eligible choices, complexity (Jev decider or heuristic), level, choice,
+//! account selection.
 //! It previews only: nothing is reserved and nothing is started.
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
-use serde_json::{Value, json};
+use serde_json::json;
 use sha2::{Digest, Sha256};
-use so_core::config::OnUnreachable;
+use so_core::config::{JevModels, OnUnreachable};
 use so_core::proto::{RouteAlternative, RouteParams, RouteResult, RouteSource, RouteUsage};
 use so_core::{AccountFile, Choice, Config, Harness};
 use so_store::Store;
@@ -16,9 +17,10 @@ use crate::catalog::Catalog;
 use crate::eligible::{Candidate, Snapshot, apply_claude_rank, candidate, effort_skips, eligible};
 use crate::error::{Result, RouterError};
 use crate::heuristic::{
-    Complexity, ScoreInputs, effort_gap, estimate_complexity, harness_priority, score,
+    Complexity, ScoreInputs, effort_gap, estimate_complexity_score, harness_priority, score,
 };
 use crate::jev::{EnvFn, JevFailure, JevRequest, decide, process_env, resolve_key};
+use crate::levels;
 use crate::select::{headroom_of, rank_accounts, select_account};
 
 pub const MAX_PROMPT_CHARS: usize = 200_000;
@@ -71,12 +73,13 @@ pub struct RouteOutcome {
     pub fallback_reason: Option<String>,
 }
 
-/// SHA-256 over choices, policy and instruction: changes when routing behaviour would.
+/// SHA-256 over choices, policy, instruction and levels: changes when routing behaviour would.
 pub fn config_fingerprint(config: &Config) -> String {
     let v = json!({
         "choices": config.choices,
         "policy": config.router.policy,
         "instruction": config.router.instruction,
+        "levels": config.router.levels,
     });
     let digest = Sha256::digest(serde_json::to_vec(&v).unwrap_or_default());
     digest.iter().map(|b| format!("{b:02x}")).collect()
@@ -238,46 +241,6 @@ fn heuristic_rank<'a>(
     out
 }
 
-/// `quota` (remaining % per pool and window) and `usage_5h` (attempts per pool and account).
-fn jev_context(snapshot: &Snapshot) -> Value {
-    let mut quota: BTreeMap<&str, BTreeMap<&str, f64>> = BTreeMap::new();
-    let mut usage: BTreeMap<&str, BTreeMap<&str, i64>> = BTreeMap::new();
-    for a in &snapshot.accounts {
-        for (pool, p) in &a.pools {
-            let q = quota.entry(pool).or_default();
-            for (win, pct) in [("five_hour", p.five_hour_pct), ("weekly", p.weekly_pct)] {
-                if let Some(pct) = pct {
-                    let e = q.entry(win).or_insert(pct);
-                    *e = e.max(pct);
-                }
-            }
-            usage
-                .entry(pool)
-                .or_default()
-                .insert(&a.file.name, p.attempts_5h);
-        }
-    }
-    json!({"quota": quota, "usage_5h": usage})
-}
-
-fn criteria(cands: &[Candidate<'_>]) -> BTreeMap<String, String> {
-    cands
-        .iter()
-        .map(|c| {
-            (
-                c.choice.id.clone(),
-                format!(
-                    "{}; harness={}; model={}; effort={}",
-                    c.choice.description,
-                    c.choice.harness,
-                    c.choice.model,
-                    c.choice.effort.as_deref().unwrap_or("default"),
-                ),
-            )
-        })
-        .collect()
-}
-
 fn alternative(cand: &Candidate<'_>, score: Option<f64>) -> RouteAlternative {
     RouteAlternative {
         choice_id: cand.choice.id.clone(),
@@ -354,118 +317,36 @@ async fn route_inner(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<RouteOu
             )
         }));
     }
-    let complexity = estimate_complexity(&params.prompt);
-    let ranked = heuristic_rank(ctx, &cands, complexity);
     let fingerprint = config_fingerprint(ctx.config);
-
-    let finish = |pick: usize,
-                  source: RouteSource,
-                  rationale: String,
-                  fail: Option<&JevFailure>,
-                  jev: Option<(f64, BTreeMap<String, f64>, RouteUsage)>,
-                  probs_rank: Option<Vec<(usize, f64)>>,
-                  fallback_reason: Option<String>,
-                  decider_model: Option<String>|
-     -> RouteOutcome {
-        let cand = &cands[pick];
-        let ranked_accounts: Vec<String> = rank_accounts(&cand.accounts, &cand.pool)
-            .iter()
-            .map(|a| a.file.name.clone())
-            .collect();
-        let account = ranked_accounts.first().cloned().unwrap_or_default();
-        let (confidence, probabilities, usage) = match (jev, fail) {
-            (Some((c, p, u)), _) => (Some(c), p, u),
-            (None, Some(f)) => (f.confidence, f.probabilities.clone(), f.usage.clone()),
-            (None, None) => (None, BTreeMap::new(), RouteUsage::default()),
-        };
-        let order: Vec<(usize, Option<f64>)> = match probs_rank {
-            Some(v) => v.into_iter().map(|(i, p)| (i, Some(p))).collect(),
-            None => ranked
-                .iter()
-                .filter_map(|r| {
-                    cands
-                        .iter()
-                        .position(|c| c.choice.id == r.cand.choice.id)
-                        .map(|i| (i, Some(r.score)))
-                })
-                .collect(),
-        };
-        let alternatives = order
-            .into_iter()
-            .filter(|(i, _)| *i != pick)
-            .take(ALTERNATIVES)
-            .map(|(i, s)| alternative(&cands[i], s))
-            .collect();
-        RouteOutcome {
-            result: RouteResult {
-                choice_id: cand.choice.id.clone(),
-                harness: cand.choice.harness,
-                account,
-                model: cand.choice.model.clone(),
-                effort: cand.choice.effort.clone(),
-                source,
-                rationale,
-                confidence,
-                probabilities,
-                usage,
-                alternatives,
-                config_fingerprint: fingerprint.clone(),
-                decider_model,
-                decider_models: None,
-                ranked_accounts,
-            },
-            fallback_reason,
-        }
+    let heuristic_rated = |note: Option<String>, fail: Option<&JevFailure>| Rated {
+        complexity: estimate_complexity_score(&params.prompt),
+        source: RouteSource::Heuristic,
+        note,
+        confidence: fail.and_then(|f| f.confidence),
+        probabilities: fail.map(|f| f.probabilities.clone()).unwrap_or_default(),
+        usage: fail.map(|f| f.usage.clone()).unwrap_or_default(),
+        decider_model: fail.and_then(|f| f.model.clone()),
+        decider_models: None,
+        forced_why: None,
     };
-
-    let best_heuristic = |ranked: &[Ranked<'_>]| -> usize {
-        ranked
-            .first()
-            .and_then(|r| cands.iter().position(|c| c.choice.id == r.cand.choice.id))
-            .unwrap_or(0)
+    let done = |rated: Rated, fallback_reason: Option<String>| RouteOutcome {
+        result: finish(ctx, &cands, &fingerprint, rated),
+        fallback_reason,
     };
 
     if pinned {
-        let pick = best_heuristic(&ranked);
-        let why = format!(
-            "pinned by the call; best match by heuristic score {:.2} (complexity {})",
-            ranked.first().map_or(0.0, |r| r.score),
-            complexity.as_str()
-        );
-        return Ok(finish(
-            pick,
-            RouteSource::Pinned,
-            why,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ));
+        let rated = Rated {
+            source: RouteSource::Pinned,
+            ..heuristic_rated(None, None)
+        };
+        return Ok(done(rated, None));
     }
-
-    let heuristic = |reason: Option<String>, fail: Option<&JevFailure>, note: &str| {
-        let decider_model = fail.and_then(|f| f.model.clone());
-        let pick = best_heuristic(&ranked);
-        let why = format!(
-            "heuristic: {note}; complexity {}, score {:.2}",
-            complexity.as_str(),
-            ranked.first().map_or(0.0, |r| r.score)
-        );
-        finish(
-            pick,
-            RouteSource::Heuristic,
-            why,
-            fail,
-            None,
-            None,
-            reason,
-            decider_model,
-        )
-    };
-
     if cands.len() == 1 {
-        return Ok(heuristic(None, None, "only one eligible choice"));
+        let rated = Rated {
+            forced_why: Some("the only eligible choice".into()),
+            ..heuristic_rated(Some("only one eligible choice".into()), None)
+        };
+        return Ok(done(rated, None));
     }
     // Reads a dotenv file, so it stays off the async threads.
     let (jev_cfg, env) = (ctx.config.router.jev.clone(), ctx.env);
@@ -475,16 +356,16 @@ async fn route_inner(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<RouteOu
         .flatten();
     let Some(key) = key else {
         let reason = "Jev API key unavailable.".to_string();
-        return Ok(heuristic(Some(reason.clone()), None, &reason));
+        return Ok(done(
+            heuristic_rated(Some(reason.clone()), None),
+            Some(reason),
+        ));
     };
-    let criteria = criteria(&cands);
     let request = JevRequest {
         task: &params.prompt,
         system_instruction: "",
         routing_instruction: &ctx.config.router.instruction,
         role: &role,
-        context: jev_context(ctx.snapshot),
-        criteria: &criteria,
     };
     let models = ctx.config.router.jev.resolve_models(ctx.env);
     match decide(
@@ -497,51 +378,152 @@ async fn route_inner(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<RouteOu
     )
     .await
     {
-        Ok(d) => {
-            let pick = cands
-                .iter()
-                .position(|c| c.choice.id == d.validated.choice_id)
-                .unwrap_or(0);
-            let mut by_prob: Vec<(usize, f64)> = cands
-                .iter()
-                .enumerate()
-                .map(|(i, c)| {
-                    (
-                        i,
-                        d.validated
-                            .probabilities
-                            .get(&c.choice.id)
-                            .copied()
-                            .unwrap_or(0.0),
-                    )
-                })
-                .collect();
-            by_prob.sort_by(|a, b| b.1.total_cmp(&a.1));
-            let why = format!(
-                "Jev selected the configured choice (confidence {:.2}).",
-                d.validated.confidence
-            );
-            let mut out = finish(
-                pick,
-                RouteSource::Jev,
-                why,
-                None,
-                Some((d.validated.confidence, d.validated.probabilities, d.usage)),
-                Some(by_prob),
-                None,
-                Some(d.model),
-            );
-            out.result.decider_models = Some(models);
-            Ok(out)
-        }
+        Ok(d) => Ok(done(
+            Rated {
+                complexity: d.validated.complexity,
+                source: RouteSource::Jev,
+                note: None,
+                confidence: Some(d.validated.confidence),
+                probabilities: d.validated.probabilities,
+                usage: d.usage,
+                decider_model: Some(d.model),
+                decider_models: Some(models),
+                forced_why: None,
+            },
+            None,
+        )),
         Err(f) if f.unreachable && ctx.config.router.jev.on_unreachable == OnUnreachable::Error => {
             Err(RouterError::DeciderUnreachable(f.reason))
         }
         Err(f) => {
             let reason = f.reason.clone();
-            let mut out = heuristic(Some(reason.clone()), Some(&f), &reason);
-            out.result.decider_models = Some(models);
-            Ok(out)
+            let rated = Rated {
+                decider_models: Some(models),
+                ..heuristic_rated(Some(reason.clone()), Some(&f))
+            };
+            Ok(done(rated, Some(reason)))
         }
+    }
+}
+
+/// What the complexity step produced, and where it came from.
+struct Rated {
+    complexity: f64,
+    source: RouteSource,
+    /// Why the heuristic stood in for the decider.
+    note: Option<String>,
+    confidence: Option<f64>,
+    probabilities: BTreeMap<String, f64>,
+    usage: RouteUsage,
+    decider_model: Option<String>,
+    decider_models: Option<JevModels>,
+    /// Replaces the level's reason for the pick (a single eligible choice).
+    forced_why: Option<String>,
+}
+
+/// Steps 3-7: level, choice, account, result.
+fn finish(
+    ctx: &RouteCtx<'_>,
+    cands: &[Candidate<'_>],
+    fingerprint: &str,
+    rated: Rated,
+) -> RouteResult {
+    let ranked = heuristic_rank(ctx, cands, Complexity::from_score(rated.complexity));
+    let mut fallback_order: Vec<usize> = ranked
+        .iter()
+        .filter_map(|r| cands.iter().position(|c| c.choice.id == r.cand.choice.id))
+        .collect();
+    let missing: Vec<usize> = (0..cands.len())
+        .filter(|i| !fallback_order.contains(i))
+        .collect();
+    fallback_order.extend(missing);
+    let top_score = ranked.first().map_or(0.0, |r| r.score);
+
+    let mut sel = if rated.source == RouteSource::Pinned {
+        let mapped = levels::levels_by_distance(&ctx.config.router.levels, rated.complexity)
+            .first()
+            .map(|&i| ctx.config.router.levels[i].name.clone());
+        levels::Selection {
+            order: fallback_order,
+            level: mapped.clone(),
+            mapped,
+            heuristic_fallback: false,
+            why: format!("pinned by the call; best match by heuristic score {top_score:.2}"),
+        }
+    } else {
+        levels::select(
+            &ctx.config.router.levels,
+            cands,
+            rated.complexity,
+            &fallback_order,
+        )
+    };
+    if let Some(w) = rated
+        .forced_why
+        .filter(|_| rated.source != RouteSource::Pinned)
+    {
+        sel.why = w;
+    } else if sel.heuristic_fallback {
+        sel.why = format!("{} (score {top_score:.2})", sel.why);
+    }
+    let pick = sel.order[0];
+    let cand = &cands[pick];
+    let ranked_accounts: Vec<String> = rank_accounts(&cand.accounts, &cand.pool)
+        .iter()
+        .map(|a| a.file.name.clone())
+        .collect();
+    let account = ranked_accounts.first().cloned().unwrap_or_default();
+    let alternatives = sel
+        .order
+        .iter()
+        .skip(1)
+        .take(ALTERNATIVES)
+        .map(|&i| alternative(&cands[i], None))
+        .collect();
+    let level = match (&sel.mapped, &sel.level) {
+        (None, _) => "no levels configured".to_string(),
+        (Some(_), Some(u)) if sel.mapped.as_ref() == Some(u) => format!("level `{u}`"),
+        (Some(m), Some(u)) => {
+            format!("maps to level `{m}`; no eligible choice there; used level `{u}`")
+        }
+        (Some(m), None) => format!("maps to level `{m}`; no level has an eligible choice"),
+    };
+    let c = rated.complexity;
+    let rationale = match (rated.source, &rated.note, rated.confidence) {
+        (RouteSource::Jev, _, conf) => format!(
+            "Jev rated complexity {c:.1} (confidence {:.2}); {level}; `{}` chosen: {}.",
+            conf.unwrap_or(0.0),
+            cand.choice.id,
+            sel.why
+        ),
+        (RouteSource::Pinned, _, _) => format!(
+            "complexity {c:.1} (heuristic estimate); {level}; `{}` chosen: {}.",
+            cand.choice.id, sel.why
+        ),
+        (RouteSource::Heuristic, note, _) => format!(
+            "heuristic: {}; complexity {c:.1} (heuristic estimate); {level}; `{}` chosen: {}.",
+            note.as_deref().unwrap_or("no decider answer"),
+            cand.choice.id,
+            sel.why
+        ),
+    };
+    RouteResult {
+        choice_id: cand.choice.id.clone(),
+        harness: cand.choice.harness,
+        account,
+        model: cand.choice.model.clone(),
+        effort: cand.choice.effort.clone(),
+        source: rated.source,
+        rationale,
+        confidence: rated.confidence,
+        probabilities: rated.probabilities,
+        complexity: Some(c),
+        level: sel.level,
+        usage: rated.usage,
+        alternatives,
+        config_fingerprint: fingerprint.to_string(),
+        decider_model: rated.decider_model,
+        decider_models: rated.decider_models,
+        ranked_accounts,
     }
 }

@@ -64,7 +64,8 @@ superorchestrator config edit
 |---|---|---|
 | `priority` | `["agy", "opencode", "codex", "claude"]` | Harness order for ties |
 | `weights` | `{ headroom = 1.0, load = 0.5, cost = 0.3 }` | Heuristic weights (`router.weights.headroom`, `.load`, `.cost`) |
-| `instruction` | A cost-first instruction | Routing instruction sent to the decider |
+| `instruction` | A complexity-rating instruction | Instruction sent to the decider with its complexity question. The default asks only for a rating and treats `task_content` as data. `doctor` warns when a custom instruction still looks written for the old choice question. |
+| `levels` | `low` 0-37, `mid` 38-62, `high` 63-100 | Complexity levels, set with `[[router.levels]]` below |
 
 ### `[router.jev]`
 
@@ -83,9 +84,49 @@ superorchestrator config edit
 | Key | Default | Meaning |
 |---|---|---|
 | `min_confidence` | `0.45` | Lowest confidence to accept a decision |
-| `min_margin` | `0.15` | Lowest gap between the top two probabilities |
+| `min_margin` | `0.15` | Deprecated and ignored. Still parsed so old configs load. A score has no margin between choices. |
 
-`doctor` and `route eval` report the models from the environment of the shell that runs them. A supervisor started elsewhere may have a different environment. The two defaults were tuned on 2026-10-23 against `jev-1.14-20261014`. The routing instruction and the seeded choice descriptions are what the decider reads; choices already in your `config.toml` keep their old descriptions. Re-run `route eval --require-live` after you change choice descriptions or the routing instruction.
+`doctor` and `route eval` report the models from the environment of the shell that runs them. A supervisor started elsewhere may have a different environment. `min_confidence` was tuned on 2026-10-23 against `jev-1.14-20261014` for the earlier decider, which picked a choice; it has not been re-tuned for complexity scores. Re-run `route eval --require-live` after you change `router.instruction`, your levels or your choices, and adjust `min_confidence` from those results.
+
+### `[[router.levels]]`
+
+Each level maps a range of complexity (0 to 100, from the decider or from the heuristic estimate) to the choices allowed for tasks in that range. [Routing](routing.md#complexity-levels) explains how a task is picked from them.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `name` | required | Level name. Non-empty and unique after trimming. |
+| `min` | required | Lowest complexity in the level, an integer from 0 to 100 |
+| `max` | required | Highest integer in the level, from `min` to 100. The level covers up to `max + 1`, so 37.5 is in `0`-`37`. With `max = 100`, 100.0 is included too. |
+| `tier` | unset | `high`, `mid` or `fast`. Used only when `choices` is empty: then every eligible choice of that tier is a candidate. Ignored when `choices` is set. |
+| `choices` | `[]` | List of `{ id = "...", priority = 1 }` entries. `id` names a `[[choices]]` entry and may appear once per level. `priority` is optional; a lower number is preferred, and choices without one come after those with one. |
+
+With no `[[router.levels]]` in the file, the defaults are `low` 0-37 (tier `fast`), `mid` 38-62 (tier `mid`) and `high` 63-100 (tier `high`), with no choices. Gaps between levels are allowed. A complexity that falls in a gap goes to the nearest level, and a tie goes to the higher one. An explicit empty list, `router.levels = []`, loads and turns levels off: `level` is null and every eligible choice is ranked by the heuristic scorer. The defaults apply only when the key is absent.
+
+The file is refused at load when:
+
+- a name is empty or repeated
+- `min` is greater than `max`, or `max` is greater than 100
+- two ranges overlap
+- a level has neither `choices` nor `tier`
+- a level lists the same choice id twice (an id that is not in `[[choices]]` is accepted: it is skipped when routing and `doctor` warns about it)
+
+`doctor` reports the levels under "levels" and warns when:
+
+- every listed choice of a level is disabled or unknown, so the level falls through to the nearest one
+- `tier` is set together with a non-empty `choices` list, so `tier` is ignored
+- a level with only `tier` has no enabled `worker` choice of that tier
+- the model catalog is unavailable, so tier checks are skipped
+
+```toml
+[[router.levels]]
+name = "high"
+min = 80
+max = 100
+choices = [
+  { id = "codex-gpt-high", priority = 1 },   # id must match a [[choices]] entry
+  { id = "agy-pro-high" },                   # no priority: after the ones that have one
+]
+```
 
 ### `[worktrees]`
 

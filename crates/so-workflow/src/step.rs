@@ -10,7 +10,7 @@ use chrono::Utc;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use so_store::{Store, WorkflowCacheRow, WorkflowStepRow};
-use tokio::sync::{Semaphore, SemaphorePermit};
+use tokio::sync::{Notify, Semaphore, SemaphorePermit};
 
 use crate::host::{HostError, StepEvent, StepOutcome, StepRequest, WorkflowHost};
 
@@ -72,6 +72,25 @@ pub(crate) struct RunState {
     occurrences: Mutex<HashMap<String, usize>>,
     tickets: Mutex<HashMap<usize, Ticket>>,
     permits: Semaphore,
+    /// Store calls handed to the blocking pool. They keep running when the awaiting future
+    /// is dropped, so `finalize` waits for them before it cancels open steps.
+    inflight: Arc<Inflight>,
+}
+
+#[derive(Default)]
+struct Inflight {
+    count: AtomicUsize,
+    idle: Notify,
+}
+
+struct InflightGuard(Arc<Inflight>);
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        if self.0.count.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.0.idle.notify_waiters();
+        }
+    }
 }
 
 fn sha_hex(parts: &[&str]) -> String {
@@ -128,13 +147,19 @@ fn resolve_cwd(base: &Path, opt: Option<&str>) -> Result<String, String> {
 
 async fn db<T: Send + 'static>(
     store: &Store,
+    inflight: &Arc<Inflight>,
     f: impl FnOnce(&Store) -> so_store::Result<T> + Send + 'static,
 ) -> Result<T, StepError> {
     let store = store.clone();
-    tokio::task::spawn_blocking(move || f(&store))
-        .await
-        .map_err(|e| StepError::fatal(format!("store task: {e}")))?
-        .map_err(|e| StepError::fatal(format!("store: {e}")))
+    inflight.count.fetch_add(1, Ordering::SeqCst);
+    let guard = InflightGuard(inflight.clone());
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        f(&store)
+    })
+    .await
+    .map_err(|e| StepError::fatal(format!("store task: {e}")))?
+    .map_err(|e| StepError::fatal(format!("store: {e}")))
 }
 
 impl RunState {
@@ -158,6 +183,7 @@ impl RunState {
             occurrences: Mutex::new(HashMap::new()),
             tickets: Mutex::new(HashMap::new()),
             permits: Semaphore::new(max_concurrent.max(1)),
+            inflight: Arc::default(),
         }
     }
 
@@ -166,7 +192,7 @@ impl RunState {
     pub fn begin(&self, prompt: &str, opts_json: &str, phase: &str) -> Result<usize, String> {
         let mut opts: Value =
             serde_json::from_str(opts_json).map_err(|e| format!("bad options: {e}"))?;
-        let step = self.started.fetch_add(1, Ordering::SeqCst);
+        let step = self.started.load(Ordering::SeqCst);
         if step >= MAX_AGENTS {
             return Err(format!("a workflow may start at most {MAX_AGENTS} agents"));
         }
@@ -193,10 +219,19 @@ impl RunState {
             opts,
             phase: (!phase.is_empty()).then(|| phase.to_string()),
         };
+        // Record the step now, not when its future first runs: a script may return before an
+        // un-awaited step is polled, and `finalize` can only cancel rows that exist. The row
+        // is `queued` until the step gets a concurrency permit.
+        // Sync on purpose (no `db()`/in-flight count): it completes before `begin` returns.
+        let row = self.step_row(&ticket, step, "queued", None);
+        self.store
+            .insert_workflow_step(&row)
+            .map_err(|e| format!("store: {e}"))?;
         self.tickets
             .lock()
             .map_err(|e| e.to_string())?
             .insert(step, ticket);
+        self.started.store(step + 1, Ordering::SeqCst);
         Ok(step)
     }
 
@@ -222,7 +257,7 @@ impl RunState {
     ) -> Result<(), StepError> {
         let wf = self.run_id.clone();
         let rid = run_id.clone();
-        db(&self.store, move |s| {
+        db(&self.store, &self.inflight, move |s| {
             s.update_workflow_step(
                 &wf,
                 step as i64,
@@ -248,21 +283,25 @@ impl RunState {
         let cached = if self.fresh {
             None
         } else {
-            db(&self.store, move |s| s.get_workflow_cache(&key)).await?
+            db(&self.store, &self.inflight, move |s| {
+                s.get_workflow_cache(&key)
+            })
+            .await?
         };
         if let Some(c) = cached {
             let now = Utc::now();
             let row = self.step_row(&t, step, "cached", Some(now));
-            db(&self.store, move |s| s.insert_workflow_step(&row)).await?;
+            db(&self.store, &self.inflight, move |s| {
+                s.insert_workflow_step(&row)
+            })
+            .await?;
             self.emit(&t, step, None, "cached").await;
             return serde_json::from_str(&c.result_json)
                 .map_err(|e| StepError::fatal(format!("corrupt cache entry: {e}")));
         }
 
         let mut permit = Some(self.acquire().await?);
-        let row = self.step_row(&t, step, "running", None);
-        db(&self.store, move |s| s.insert_workflow_step(&row)).await?;
-        self.emit(&t, step, None, "running").await;
+        self.set_state(&t, step, None, "running", false).await?;
 
         let req = StepRequest {
             workflow_run_id: self.run_id.clone(),
@@ -280,7 +319,10 @@ impl RunState {
                     result_json: result.to_string(),
                     created_at: Utc::now(),
                 };
-                db(&self.store, move |s| s.put_workflow_cache(&row)).await?;
+                db(&self.store, &self.inflight, move |s| {
+                    s.put_workflow_cache(&row)
+                })
+                .await?;
                 self.set_state(&t, step, run_id, "succeeded", true).await?;
                 Ok(result)
             }
@@ -361,12 +403,25 @@ impl RunState {
         }
     }
 
+    /// Waits until no store call issued by this run is still on the blocking pool.
+    async fn wait_for_store_calls(&self) {
+        loop {
+            let mut idle = std::pin::pin!(self.inflight.idle.notified());
+            idle.as_mut().enable();
+            if self.inflight.count.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            idle.await;
+        }
+    }
+
     /// Called once the script is over (returned, threw, cancelled or timed out), after the
     /// runtime dropped any in-flight host futures: marks steps that never finished as
     /// `cancelled` and removes rows left by a longer earlier run with the same id.
     pub async fn finalize(&self) -> Result<(), StepError> {
+        self.wait_for_store_calls().await;
         let (wf, started) = (self.run_id.clone(), self.started.load(Ordering::SeqCst));
-        let open = db(&self.store, move |s| {
+        let open = db(&self.store, &self.inflight, move |s| {
             let open = s.cancel_open_workflow_steps(&wf, Utc::now())?;
             s.delete_workflow_steps_from(&wf, started as i64)?;
             Ok(open)
