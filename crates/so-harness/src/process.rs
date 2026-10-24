@@ -715,8 +715,7 @@ mod tests {
         out
     }
 
-    const PROBE: &str =
-        r#"echo "$TMPDIR"; echo "$CLAUDE_CODE_TMPDIR"; echo "$BUN_TMPDIR"; stat -c %a "$TMPDIR""#;
+    const PROBE: &str = r#"echo "$TMPDIR"; echo "$CLAUDE_CODE_TMPDIR"; echo "$BUN_TMPDIR""#;
 
     #[tokio::test]
     async fn child_gets_a_private_run_tmp_dir() {
@@ -726,7 +725,10 @@ mod tests {
         cmd.args(["-c", PROBE]);
         let lines = stdout_lines(cmd, &run_dir).await;
         let tmp = so_core::paths::run_tmp_dir(&run_dir).display().to_string();
-        assert_eq!(lines, [tmp.clone(), tmp.clone(), tmp, "700".to_string()]);
+        assert_eq!(lines, [tmp.clone(), tmp.clone(), tmp.clone()]);
+        // so-harness never removes the dir, so the mode can be read after the child exits.
+        let mode = std::fs::metadata(&tmp).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
     }
 
     #[tokio::test]

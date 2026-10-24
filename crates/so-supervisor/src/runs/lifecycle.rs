@@ -896,7 +896,10 @@ impl RunManager {
                 }
                 // The run is over (or unreadable); a worktree it left behind is still ours.
                 self.cleanup_worktree(run_id).await;
-                self.cleanup_run_tmp(run_id).await;
+                // `Lost` may mean a resume won; its live process keeps its temp dir.
+                if self.still_terminal(run_id).await {
+                    self.cleanup_run_tmp(run_id).await;
+                }
                 false
             }
         };
