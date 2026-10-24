@@ -4,8 +4,6 @@
 
 mod common;
 
-use std::path::Path;
-
 use common::*;
 use serde_json::{Value, json};
 use so_core::proto::{INVALID_PARAMS, RouteResult, RouteSource};
@@ -24,8 +22,8 @@ fn env() -> Env {
     env.account("claude-a", 2, &ok_script(&[]));
     #[cfg(target_os = "linux")]
     env.agy_account("agy-a", 2, &ok_script(&[]));
-    env.account_with_binary("codex-a", "codex", 2, Path::new("/bin/true"));
-    env.account_with_binary("opencode-a", "opencode", 2, Path::new("/bin/true"));
+    env.account_with_binary("codex-a", "codex", 2, &env.noop_binary("codex-a"));
+    env.account_with_binary("opencode-a", "opencode", 2, &env.noop_binary("opencode-a"));
     env
 }
 
@@ -102,7 +100,7 @@ async fn spawn_by_ref_stores_choice_harness_model_and_effort() {
     let h = env.start().await;
     let c = env.client(&h).await;
     // Claude and agy run to completion on the scripted harness; codex and opencode accounts
-    // here are `/bin/true`, so those runs start and fail, but the stored route is the same.
+    // here are no-op scripts, so those runs start and fail, but the stored route is the same.
     let mut refs = vec![CLAUDE, CODEX, OPENCODE];
     if cfg!(target_os = "linux") {
         refs.push(AGY);

@@ -101,13 +101,8 @@ async fn canonical_flow_report() {
     ];
     let work = json!({"shell": "printf '%s' 'b' > b.txt && git add b.txt && git -c user.name=t -c user.email=t@e commit -q -m work"});
     env.account("claude-a", 3, &ok_script(&[work]));
-    env.account_with_binary("codex-a", "codex", 2, std::path::Path::new("/bin/true"));
-    env.account_with_binary(
-        "opencode-a",
-        "opencode",
-        2,
-        std::path::Path::new("/bin/true"),
-    );
+    env.account_with_binary("codex-a", "codex", 2, &env.noop_binary("codex-a"));
+    env.account_with_binary("opencode-a", "opencode", 2, &env.noop_binary("opencode-a"));
     let h = env.start().await;
     let c = env.client(&h).await;
     let repo = env.repo.to_str().unwrap().to_string();

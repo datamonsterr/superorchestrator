@@ -211,6 +211,15 @@ impl Env {
         .unwrap();
     }
 
+    /// An executable script that exits 0, written into the test dir. Stand-in binaries
+    /// for accounts whose runs only need to start (`/bin/true` is not portable).
+    pub fn noop_binary(&self, name: &str) -> PathBuf {
+        let path = self.dir.path().join(format!("{name}-noop.sh"));
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
     /// Where the fake harness of `name` records each launch (argv and env keys).
     pub fn launch_log(&self, name: &str) -> PathBuf {
         self.dir.path().join(format!("{name}.log"))
