@@ -66,7 +66,7 @@ pub async fn refresh_and_save(
         models_dev_url,
         now,
     };
-    let (catalog, report) = refresh(&env, before.clone(), &config.choices).await;
+    let (catalog, report) = refresh(&env, before.clone(), &config.choices()).await;
     let (p, saved) = (paths.clone(), catalog.clone());
     tokio::task::spawn_blocking(move || -> Result<(), ModelsError> {
         if saved != before || !p.models_toml().is_file() {

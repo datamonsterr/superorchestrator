@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use so_core::proto::{AgentsView, METHOD_LIST_AGENTS, METHOD_SPAWN_AGENT, NOT_FOUND, SpawnParams};
 use std::time::Duration;
 
-use so_core::{Choice, Harness, Isolation, RunState};
+use so_core::{Harness, Isolation, RunState};
 
 fn write_agent(env: &Env, file: &str, text: &str) {
     let path = env.paths.agents_dir().join(file);
@@ -31,15 +31,7 @@ You are the reviewer. Report only real bugs.\n";
 
 fn env() -> Env {
     let mut env = Env::new();
-    env.config.choices = vec![Choice {
-        id: "claude-mid".into(),
-        harness: Harness::Claude,
-        model: "claude-sonnet-5-5".into(),
-        effort: None,
-        roles: vec!["worker".into()],
-        description: "d".into(),
-        enabled: true,
-    }];
+    env.config.router.levels = levels(&["claude/claude-sonnet-5-5/medium"]);
     env.config.router.jev.key_env = "SO_AGENTS_TEST_NO_SUCH_KEY".into();
     env
 }
@@ -296,15 +288,9 @@ async fn an_agent_run_that_fails_over_is_materialised_again_and_keeps_its_allow_
 #[tokio::test]
 async fn a_tool_restricted_agent_does_not_fail_over_to_a_harness_that_cannot_enforce_them() {
     let mut env = env();
-    env.config.choices.push(Choice {
-        id: "codex-big".into(),
-        harness: Harness::Codex,
-        model: "gpt-6.1-sol".into(),
-        effort: None,
-        roles: vec!["worker".into()],
-        description: "d".into(),
-        enabled: true,
-    });
+    env.config.router.levels[0]
+        .models
+        .push("codex/gpt-6.1-sol".parse().unwrap());
     write_agent(
         &env,
         "careful.md",
@@ -366,15 +352,9 @@ async fn a_tool_restricted_agent_does_not_fail_over_to_a_harness_that_cannot_enf
 #[tokio::test]
 async fn a_tool_restricted_agent_fails_closed_when_its_file_cannot_be_read_at_failover() {
     let mut env = env();
-    env.config.choices.push(Choice {
-        id: "codex-big".into(),
-        harness: Harness::Codex,
-        model: "gpt-6.1-sol".into(),
-        effort: None,
-        roles: vec!["worker".into()],
-        description: "d".into(),
-        enabled: true,
-    });
+    env.config.router.levels[0]
+        .models
+        .push("codex/gpt-6.1-sol".parse().unwrap());
     write_agent(
         &env,
         "careful.md",

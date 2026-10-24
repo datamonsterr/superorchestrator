@@ -77,14 +77,14 @@ pub async fn route_decide(
 }
 
 /// The `route_decision` event data: the result (the shape `GET /runs/:id/route` and the
-/// routing log parse), the role and the fallback reason. No task text.
+/// routing log parse), the agent profile and the fallback reason. No task text.
 ///
 /// `task` is the prompt that was routed: any run of its words that came back in the
 /// rationale (a decider can echo the task) is cut out before the event is stored.
-pub fn decision_data(outcome: &RouteOutcome, role: &str, task: &str) -> Result<Value, RpcError> {
+pub fn decision_data(outcome: &RouteOutcome, agent: &str, task: &str) -> Result<Value, RpcError> {
     let mut data = serde_json::to_value(&outcome.result).map_err(internal)?;
     data["rationale"] = json!(scrub_task(&outcome.result.rationale, task));
-    data["role"] = json!(role);
+    data["agent"] = json!(agent);
     data["fallback_reason"] = json!(
         outcome
             .fallback_reason
@@ -125,7 +125,7 @@ pub async fn route_for(
     run_id: Option<&str>,
     params: &RouteParams,
 ) -> Result<RouteOutcome, RpcError> {
-    let role = params.role.clone().unwrap_or_else(|| "worker".into());
+    let agent = params.agent.clone().unwrap_or_else(|| "worker".into());
     let env = RouteEnv {
         store: &state.store,
         config: &state.config,
@@ -141,7 +141,7 @@ pub async fn route_for(
             run_id: run_id.map(String::from),
             ts: Utc::now(),
             event_type: EventType::RouteDecision,
-            data: decision_data(&outcome, &role, &params.prompt)?,
+            data: decision_data(&outcome, &agent, &params.prompt)?,
         };
         state.db(move |s| s.append_event(&ev).map(|_| ())).await?;
     }

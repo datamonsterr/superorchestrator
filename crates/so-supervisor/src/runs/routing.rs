@@ -22,7 +22,8 @@ use crate::handlers::route::{RouteEnv, decision_data, route_decide};
 /// What fixed a run's route.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RoutePins {
-    pub role: Option<String>,
+    /// The agent profile's name, which informs the decider.
+    pub agent: Option<String>,
     pub harness: Option<String>,
     pub account: Option<String>,
     pub model: Option<String>,
@@ -143,7 +144,7 @@ impl RunManager {
         choice: ChoiceFilter<'_>,
         queue_over_cap: bool,
     ) -> R<Routed> {
-        let role = pins.role.clone().unwrap_or_else(|| "worker".into());
+        let agent = pins.agent.clone().unwrap_or_else(|| "worker".into());
         let mut skip = exclude_accounts.to_vec();
         if !pins.allow_accounts.is_empty() {
             let paths = self.inner.paths.clone();
@@ -160,7 +161,7 @@ impl RunManager {
         let task: String = prompt.chars().take(MAX_PROMPT_CHARS).collect();
         let mut params = RouteParams {
             prompt: task,
-            role: Some(role.clone()),
+            agent: Some(agent.clone()),
             exclude: Vec::new(),
             exclude_accounts: skip,
             harness: pins.harness.clone(),
@@ -172,10 +173,10 @@ impl RunManager {
         let mut attempt = None;
         if let Some(cid) = choice.only {
             params.exclude = config
-                .choices
+                .choices()
                 .iter()
-                .filter(|c| c.id != cid)
-                .map(|c| c.id.clone())
+                .map(so_core::Choice::id)
+                .filter(|id| id != cid)
                 .collect();
             attempt = Some(route_decide(&env, &params).await);
             params.exclude.clear();
@@ -197,7 +198,7 @@ impl RunManager {
             }
             other => other?,
         };
-        let decision = decision_data(&outcome, &role, &params.prompt)?;
+        let decision = decision_data(&outcome, &agent, &params.prompt)?;
         Ok(Routed {
             result: outcome.result,
             decision,
@@ -253,12 +254,25 @@ impl RunManager {
         let Some(first) = ranked.first().cloned() else {
             return Err(why.clone());
         };
+        let model = params.model.clone().unwrap_or_default();
+        // No level lists this pin, so its id is a ref built from what was pinned; with no model
+        // named there is no ref to form and the id is the harness name.
+        let choice_id = if model.is_empty() {
+            harness.to_string()
+        } else {
+            so_core::Choice {
+                harness,
+                model: model.clone(),
+                effort: params.effort.clone(),
+            }
+            .id()
+        };
         Ok(RouteOutcome {
             result: RouteResult {
-                choice_id: so_core::pinned_choice_id(harness, None),
+                choice_id,
                 harness,
                 account: first,
-                model: params.model.clone().unwrap_or_default(),
+                model,
                 effort: params.effort.clone(),
                 source: RouteSource::Pinned,
                 rationale: format!(

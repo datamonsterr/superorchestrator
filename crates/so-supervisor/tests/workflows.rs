@@ -9,25 +9,17 @@ use std::time::Duration;
 use chrono::Utc;
 use common::*;
 use serde_json::{Value, json};
+use so_core::RunState;
 use so_core::proto::{
     DEPTH_LIMIT, METHOD_RUN_WORKFLOW, METHOD_WORKFLOW_STATUS, NOT_FOUND, RunWorkflowResult,
     WorkflowStatusResult,
 };
-use so_core::{Choice, Harness, RunState};
 use so_store::WorkflowRunRow;
 use so_supervisor::SupervisorClient;
 
 fn env() -> Env {
     let mut env = Env::new();
-    env.config.choices = vec![Choice {
-        id: "claude-mid".into(),
-        harness: Harness::Claude,
-        model: "claude-sonnet-5-5".into(),
-        effort: None,
-        roles: vec!["worker".into()],
-        description: "d".into(),
-        enabled: true,
-    }];
+    env.config.router.levels = levels(&["claude/claude-sonnet-5-5/medium"]);
     env.config.router.jev.key_env = "SO_WORKFLOW_TEST_NO_SUCH_KEY".into();
     env
 }
@@ -55,6 +47,28 @@ async fn status(c: &SupervisorClient, id: &str) -> WorkflowStatusResult {
 
 fn step_states(s: &WorkflowStatusResult) -> Vec<&str> {
     s.steps.iter().map(|x| x.state.as_str()).collect()
+}
+
+#[tokio::test]
+async fn a_model_ref_in_agent_options_reaches_spawn_intact() {
+    let env = env();
+    env.account("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let script = r#"return await agent("do the task", {model: "claude/claude-opus-9/high", isolation: "none"});"#;
+    let r = run(&c, json!({"script": script})).await;
+    assert_eq!(r.state.as_deref(), Some("succeeded"), "{r:?}");
+    // The ref was resolved by spawn: it pinned harness, model and effort.
+    let argv = env.launches("claude-a").pop().unwrap();
+    assert!(
+        argv.windows(2).any(|w| w == ["--model", "claude-opus-9"]),
+        "{argv:?}"
+    );
+    assert!(
+        argv.windows(2).any(|w| w == ["--effort", "high"]),
+        "{argv:?}"
+    );
+    h.shutdown().await;
 }
 
 #[tokio::test]

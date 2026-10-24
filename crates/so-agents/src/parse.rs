@@ -390,7 +390,7 @@ pub fn parse_agent(
         .description
         .filter(|d| !d.trim().is_empty())
         .ok_or_else(|| perr(file, "`description` is required"))?;
-    let harness = match raw.harness {
+    let mut harness = match raw.harness {
         Some(h) => HarnessPref::parse(&h).map_err(|m| perr(file, m))?,
         None => HarnessPref::Auto,
     };
@@ -408,13 +408,25 @@ pub fn parse_agent(
         .collect::<Result<Vec<_>>>()?;
     // Claude Code's `inherit` means "no override".
     let model = raw.model.filter(|m| m != "inherit");
+    // A model ref (`harness/model[/effort]`) sets all three fields; it may not contradict an
+    // explicit `harness` or `effort`.
+    let pinned = match harness {
+        HarnessPref::Fixed(h) => Some(h),
+        HarnessPref::Auto => None,
+    };
+    let (ref_harness, model, effort) =
+        so_core::resolve_model_ref(pinned, model.as_deref(), raw.effort.as_deref())
+            .map_err(|m| perr(file, format!("`model`: {m}")))?;
+    if let Some(h) = ref_harness {
+        harness = HarnessPref::Fixed(h);
+    }
     Ok(AgentDef {
         name,
         description: description.trim().to_string(),
         harness,
         accounts: raw.accounts.into_vec(),
         model,
-        effort: raw.effort,
+        effort,
         tools,
         disallowed_tools,
         skills,
@@ -465,6 +477,34 @@ System prompt body…
             AgentSource::User,
             "stem",
         )
+    }
+
+    #[test]
+    fn model_ref_sets_harness_model_and_effort() {
+        let a = parse("---\ndescription: d\nmodel: codex/gpt-6.1-sol/high\n---\nb\n").unwrap();
+        assert_eq!(a.harness, HarnessPref::Fixed(Harness::Codex));
+        assert_eq!(a.model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(a.effort.as_deref(), Some("high"));
+        // `harness: auto` does not conflict with a ref.
+        let a = parse("---\ndescription: d\nharness: auto\nmodel: agy/m\n---\nb\n").unwrap();
+        assert_eq!(a.harness, HarnessPref::Fixed(Harness::Agy));
+        // `opencode/<one segment>` stays a plain model.
+        let a = parse(
+            "---\ndescription: d\nharness: opencode\nmodel: opencode/deepseek-v4.1-flash-free\n---\nb\n",
+        )
+        .unwrap();
+        assert_eq!(
+            a.model.as_deref(),
+            Some("opencode/deepseek-v4.1-flash-free")
+        );
+        let e = parse("---\ndescription: d\nharness: agy\nmodel: codex/gpt-6.1-sol/high\n---\nb\n")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("codex") && e.contains("agy"), "{e}");
+        let e = parse("---\ndescription: d\neffort: low\nmodel: codex/gpt-6.1-sol/high\n---\nb\n")
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("high") && e.contains("low"), "{e}");
     }
 
     #[test]

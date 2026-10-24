@@ -89,6 +89,7 @@ pub fn run_checks(paths: &Paths, host: &HostEnv) -> DoctorReport {
         &mut c,
         cfg.as_ref(),
         so_router::Catalog::load(paths).ok().as_ref(),
+        &accounts,
     );
     check_pass_env(&mut c, cfg.as_ref(), &accounts, &|n| {
         std::env::var_os(n).is_some()
@@ -151,77 +152,50 @@ fn check_instruction(c: &mut Checks, cfg: Option<&Config>) {
     }
 }
 
-/// Complexity levels with nothing to route to for role `worker`: every listed choice is
-/// disabled, unknown or not a worker choice, or no enabled worker choice has the level's tier.
-/// A level that sets both `tier` and `choices` ignores the tier. Account headroom is not
-/// checked: it changes by the minute.
-fn check_levels(c: &mut Checks, cfg: Option<&Config>, catalog: Option<&so_router::Catalog>) {
+/// Levels with nothing to route to: a level whose models all lack an enabled account of their
+/// harness, a listed model the catalog does not know (the catalog is discovery only, so this is
+/// a warning), and a `tier` that `models` makes moot. Account headroom is not checked: it
+/// changes by the minute.
+fn check_levels(
+    c: &mut Checks,
+    cfg: Option<&Config>,
+    catalog: Option<&so_router::Catalog>,
+    accounts: &[AccountFile],
+) {
     let Some(cfg) = cfg else { return };
-    let usable = |ch: &so_core::types::Choice| ch.enabled && ch.roles.iter().any(|r| r == "worker");
     let mut problems = Vec::new();
-    let mut tiers_skipped = false;
     for l in &cfg.router.levels {
-        if !l.choices.is_empty() {
-            let any = l
-                .choices
-                .iter()
-                .any(|lc| cfg.choices.iter().any(|ch| ch.id == lc.id && usable(ch)));
-            let unknown: Vec<&str> = l
-                .choices
-                .iter()
-                .filter(|lc| !cfg.choices.iter().any(|ch| ch.id == lc.id))
-                .map(|lc| lc.id.as_str())
-                .collect();
-            if !unknown.is_empty() {
-                problems.push(format!(
-                    "level {}: unknown choice id(s) {} are skipped",
-                    l.name,
-                    unknown.join(", ")
-                ));
-            }
-            if !any {
-                problems.push(format!(
-                    "level {}: every listed choice is disabled or unknown, so it falls through to the nearest level",
-                    l.name
-                ));
-            }
-            if l.tier.is_some() {
-                problems.push(format!(
-                    "level {}: `tier` is ignored because `choices` is not empty",
-                    l.name
-                ));
-            }
-        } else if let Some(tier) = l.tier {
-            let Some(catalog) = catalog else {
-                tiers_skipped = true;
-                continue;
-            };
-            let want = so_router::levels::tier_of(tier);
-            if !cfg
-                .choices
-                .iter()
-                .any(|ch| usable(ch) && catalog.tier(ch.harness, &ch.model) == want)
-            {
-                problems.push(format!(
-                    "level {}: no enabled choice has tier {tier:?}, so it falls through to the nearest level",
-                    l.name
-                ));
-            }
+        if l.models.is_empty() {
+            continue;
+        }
+        if !l
+            .models
+            .iter()
+            .any(|m| accounts.iter().any(|a| a.enabled && a.harness == m.harness))
+        {
+            problems.push(format!("level {}: no model has an enabled account", l.name));
+        }
+        if l.tier.is_some() {
+            problems.push(format!(
+                "level {}: `tier` is ignored because `models` is not empty",
+                l.name
+            ));
         }
     }
-    if tiers_skipped {
-        problems.push("tier checks skipped: catalog unavailable".to_string());
+    if let Some(catalog) = catalog {
+        for m in cfg.choices() {
+            if !catalog.contains(m.harness, &m.model) {
+                problems.push(format!("model {} is not in the model catalog", m.id()));
+            }
+        }
     }
     if problems.is_empty() {
         c.ok(
             "levels",
-            format!(
-                "{} level(s) have a usable choice for role worker",
-                cfg.router.levels.len()
-            ),
+            format!("{} level(s) checked", cfg.router.levels.len()),
         );
     } else {
-        c.warn("levels", format!("{} (role worker)", problems.join("; ")));
+        c.warn("levels", problems.join("; "));
     }
 }
 
@@ -390,68 +364,12 @@ fn check_config(c: &mut Checks, paths: &Paths) -> Option<Config> {
                     "missing; using defaults (run `superorchestrator init`)",
                 );
             }
-            check_old_codex_choices(c, &cfg);
-            check_choice_efforts(c, &cfg);
             Some(cfg)
         }
         Err(e) => {
             c.fail("config.toml", format!("does not load: {e}"));
             None
         }
-    }
-}
-
-/// The description older `init` versions gave the codex choices they seeded off.
-const OLD_CODEX_SEED_NOTE: &str = "Disabled until a codex account is signed in.";
-
-/// Codex choices that an older `init` seeded as disabled "until a codex account is signed
-/// in". Routing now skips a choice without a usable account by itself, so they only need
-/// turning on. The config is the user's: this says what to change and never edits it.
-fn check_old_codex_choices(c: &mut Checks, cfg: &Config) {
-    let stale: Vec<&str> = cfg
-        .choices
-        .iter()
-        .filter(|ch| {
-            !ch.enabled
-                && ch.harness == so_core::Harness::Codex
-                && ch.description.contains(OLD_CODEX_SEED_NOTE)
-        })
-        .map(|ch| ch.id.as_str())
-        .collect();
-    if !stale.is_empty() {
-        c.warn(
-            "choices",
-            format!(
-                "{} still off from an older init, so `harness: auto` never routes to codex. \
-                 Routing skips a choice without a signed-in account by itself: set \
-                 `enabled = true` on {} in config.toml",
-                stale.join(", "),
-                if stale.len() == 1 { "it" } else { "each" }
-            ),
-        );
-    }
-}
-
-/// Enabled choices whose effort their harness CLI would refuse. Routing skips them, so they
-/// never run; the fix is in config.toml, which this never edits.
-fn check_choice_efforts(c: &mut Checks, cfg: &Config) {
-    let bad: Vec<String> = cfg
-        .choices
-        .iter()
-        .filter(|ch| ch.enabled)
-        .filter_map(|ch| {
-            ch.effort_problem()
-                .map(|p| format!("choice {}: {p}", ch.id))
-        })
-        .collect();
-    if !bad.is_empty() {
-        c.warn(
-            "choice efforts",
-            format!(
-                "{}. Routing skips these choices; change `effort` in config.toml to a listed value",
-                bad.join("; ")
-            ),
-        );
     }
 }
 
@@ -588,61 +506,55 @@ mod tests {
         assert_eq!(run(&cfg), 0);
     }
 
-    fn levels_detail(cfg: &Config) -> (Status, String) {
+    fn account_of(harness: Harness, enabled: bool) -> AccountFile {
+        let mut a = account(&[]);
+        a.name = format!("{harness}-acct");
+        a.harness = harness;
+        a.enabled = enabled;
+        a
+    }
+
+    fn levels_detail(cfg: &Config, accounts: &[AccountFile]) -> (Status, String) {
         let mut c = Checks::default();
-        check_levels(&mut c, Some(cfg), None);
+        let catalog = so_router::Catalog::default();
+        check_levels(&mut c, Some(cfg), Some(&catalog), accounts);
         let x = c.0.into_iter().find(|x| x.name == "levels").unwrap();
         (x.status, x.detail)
     }
 
-    #[test]
-    fn levels_warn_for_disabled_choices_and_ignored_tier() {
+    fn level_listing(models: &[&str]) -> Config {
         let mut cfg = Config::default();
-        let id = "x".to_string();
-        cfg.choices.push(so_core::types::Choice {
-            id: id.clone(),
-            harness: Harness::Agy,
-            model: "m".into(),
-            effort: None,
-            roles: vec!["worker".to_string()],
-            description: String::new(),
-            enabled: false,
-        });
         let mut l = cfg.router.levels[0].clone();
-        l.choices = vec![so_core::config::LevelChoice {
-            id: id.clone(),
-            priority: None,
-        }];
-        l.tier = Some(so_core::config::LevelTier::Fast);
+        l.tier = None;
+        l.models = models.iter().map(|m| m.parse().unwrap()).collect();
         cfg.router.levels = vec![l];
-        let (st, d) = levels_detail(&cfg);
-        assert_eq!(st, Status::Warn);
-        assert!(d.contains("disabled or unknown"), "{d}");
-        assert!(d.contains("`tier` is ignored"), "{d}");
-        cfg.choices[0].enabled = true;
-        let (st, d) = levels_detail(&cfg);
-        assert_eq!(st, Status::Warn);
-        assert!(!d.contains("disabled or unknown"), "{d}");
-        assert!(!d.contains("unknown choice"), "{d}");
-        cfg.router.levels[0]
-            .choices
-            .push(so_core::config::LevelChoice {
-                id: "gone".into(),
-                priority: None,
-            });
-        let (st, d) = levels_detail(&cfg);
-        assert_eq!(st, Status::Warn);
-        assert!(d.contains("unknown choice id(s) gone are skipped"), "{d}");
+        cfg
     }
 
     #[test]
-    fn levels_without_a_catalog_skip_tier_checks_with_a_warning() {
-        let (st, d) = levels_detail(&Config::default());
+    fn level_without_an_enabled_account_for_any_model_warns() {
+        let cfg = level_listing(&["agy/m", "codex/gpt-6.1-sol/high"]);
+        let (st, d) = levels_detail(&cfg, &[account_of(Harness::Agy, false)]);
         assert_eq!(st, Status::Warn);
         assert!(
-            d.contains("tier checks skipped: catalog unavailable"),
+            d.contains("level low: no model has an enabled account"),
             "{d}"
         );
+        let (_, d) = levels_detail(&cfg, &[account_of(Harness::Codex, true)]);
+        assert!(!d.contains("no model has an enabled account"), "{d}");
+    }
+
+    #[test]
+    fn models_missing_from_the_catalog_are_named_and_tier_is_noted() {
+        let mut cfg = level_listing(&["agy/not-a-real-model"]);
+        cfg.router.levels[0].tier = Some(so_core::config::LevelTier::Fast);
+        let (st, d) = levels_detail(&cfg, &[account_of(Harness::Agy, true)]);
+        assert_eq!(st, Status::Warn);
+        assert!(
+            d.contains("model agy/not-a-real-model is not in the model catalog"),
+            "{d}"
+        );
+        assert!(d.contains("`tier` is ignored"), "{d}");
     }
 
     #[test]

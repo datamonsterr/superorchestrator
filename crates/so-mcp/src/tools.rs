@@ -35,8 +35,8 @@ impl ToolSpec {
 /// Parameter descriptions as `(tool, param, text)`. A parameter not listed has none: its name
 /// and type say enough. The supervisor validates the values.
 const PARAM_DOCS: &[(&str, &str, &str)] = &[
-    ("route", "exclude", "choice ids to skip"),
-    ("route", "exclude_accounts", "account names to skip"),
+    ("route", "exclude", "model refs to skip"),
+    ("route", "agent", "profile name, informs the decider"),
     (
         "spawn_agent",
         "prompt",
@@ -47,9 +47,16 @@ const PARAM_DOCS: &[(&str, &str, &str)] = &[
         "harness",
         "auto (default), claude, codex, opencode, agy",
     ),
-    ("spawn_agent", "model", "e.g. a free opencode model"),
-    ("spawn_agent", "isolation", "default worktree"),
-    ("spawn_agent", "output_schema", "JSON Schema of the result"),
+    (
+        "spawn_agent",
+        "model",
+        "model, or harness/model/effort to pin all three",
+    ),
+    (
+        "spawn_agent",
+        "agent",
+        "profile: worker, conductor, ui-ux-designer, pr-reviewer, issue-summarizer or your own",
+    ),
     (
         "spawn_agent",
         "review",
@@ -60,11 +67,7 @@ const PARAM_DOCS: &[(&str, &str, &str)] = &[
         "checks",
         "ci, pr_threads; cmd:<shell> only at depth 0",
     ),
-    ("spawn_agent", "timeout", "e.g. 30m"),
     ("send_message", "kind", "answer replies to a question"),
-    ("run_workflow", "wait", "default true"),
-    ("run_workflow", "fresh", "ignore cached steps"),
-    ("report_progress", "step", "what you are doing"),
 ];
 
 /// The input schema of `T`, trimmed for tokens: refs inlined, nullable types plain, no

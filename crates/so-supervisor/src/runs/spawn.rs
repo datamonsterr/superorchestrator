@@ -226,6 +226,18 @@ impl RunManager {
             .clone()
             .or_else(|| agent.as_ref().and_then(|a| a.effort.clone()))
             .or_else(|| defaults.effort.clone());
+        // A model ref (call or `defaults.model`; an agent file's is resolved when it is
+        // parsed) pins harness, model and effort. It may not contradict what the call named
+        // outright; it does replace the agent's and the defaults' harness and effort.
+        let explicit_harness = match p.harness.as_deref() {
+            Some("auto") | None => None,
+            Some(h) => h.parse::<Harness>().ok(),
+        };
+        let (ref_harness, model, effort) =
+            so_core::resolve_model_ref(explicit_harness, model.as_deref(), p.effort.as_deref())
+                .map(|(h, m, e)| (h, m, e.or(effort)))
+                .map_err(|e| rpc(INVALID_PARAMS, e))?;
+        let harness_pin = ref_harness.or(harness_pin);
         let allow = agent
             .as_ref()
             .map(|a| a.accounts.clone())
@@ -253,7 +265,7 @@ impl RunManager {
             }
             (harness, account_pin) => {
                 let pins = RoutePins {
-                    role: None,
+                    agent: p.agent.clone(),
                     harness: harness.map(|h| h.as_str().to_string()),
                     account: account_pin,
                     model: model.clone(),

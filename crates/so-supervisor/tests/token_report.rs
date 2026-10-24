@@ -14,7 +14,6 @@ use so_core::proto::{
     METHOD_ACCEPT_RUN, METHOD_GET_RUN, METHOD_LIST_HARNESSES, METHOD_ROUTE, METHOD_RUN_WORKFLOW,
     METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, METHOD_WORKFLOW_STATUS,
 };
-use so_core::{Choice, Harness};
 use so_supervisor::SupervisorClient;
 
 struct Row {
@@ -79,51 +78,26 @@ fn tools_list_rows(rows: &mut Vec<Row>) {
 async fn canonical_flow_report() {
     let mut env = Env::new();
     env.config.router.jev.key_env = "SO_TOKEN_REPORT_NO_SUCH_KEY".into();
-    let choice = |id: &str, harness, model: &str, effort: Option<&str>, desc: &str| Choice {
-        id: id.into(),
-        harness,
-        model: model.into(),
-        effort: effort.map(Into::into),
-        roles: vec!["worker".into()],
-        description: desc.into(),
-        enabled: true,
-    };
-    env.config.choices = vec![
-        choice(
-            "claude-mid",
-            Harness::Claude,
-            "claude-sonnet-5-5",
-            Some("medium"),
-            "Balanced Claude model for most coding tasks",
+    env.config.router.levels = vec![
+        level(
+            "low",
+            0,
+            37,
+            &[
+                "opencode/opencode/deepseek-v4.1-flash-free",
+                "claude/claude-haiku-5-5/medium",
+            ],
         ),
-        choice(
-            "claude-fast",
-            Harness::Claude,
-            "claude-haiku-5-5",
-            Some("medium"),
-            "Fast Claude model for mechanical edits",
+        level(
+            "mid",
+            38,
+            62,
+            &[
+                "claude/claude-sonnet-5-5/medium",
+                "opencode/opencode/claude-opus-5-5",
+            ],
         ),
-        choice(
-            "codex-big",
-            Harness::Codex,
-            "gpt-6.1-sol",
-            Some("high"),
-            "Strongest Codex model for hard problems",
-        ),
-        choice(
-            "oc-free",
-            Harness::Opencode,
-            "opencode/deepseek-v4.1-flash-free",
-            None,
-            "Free opencode model for simple tasks",
-        ),
-        choice(
-            "oc-paid",
-            Harness::Opencode,
-            "opencode/claude-opus-5-5",
-            None,
-            "Paid opencode model, high tier",
-        ),
+        level("high", 63, 100, &["codex/gpt-6.1-sol/high"]),
     ];
     let work = json!({"shell": "printf '%s' 'b' > b.txt && git add b.txt && git -c user.name=t -c user.email=t@e commit -q -m work"});
     env.account("claude-a", 3, &ok_script(&[work]));

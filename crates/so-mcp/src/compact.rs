@@ -335,7 +335,7 @@ fn items_of<'a>(v: &'a Value, key: &str) -> std::slice::Iter<'a, Value> {
 }
 
 /// `route`: the pick, its `complexity` and `level`, and why. Scores, token usage, fingerprints and decider details are
-/// left out; `alternatives` are choice ids.
+/// left out; `alternatives` are model refs.
 pub fn route_view(raw: Value) -> Value {
     let Value::Object(mut m) = raw else {
         return raw;

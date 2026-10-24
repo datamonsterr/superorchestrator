@@ -336,6 +336,59 @@ impl FromStr for Choice {
     }
 }
 
+/// Whether `model` is a model ref (`harness/model[/effort]`) rather than a plain model name:
+/// it starts with a harness name and `/`. `opencode/<one segment>` is a plain model name,
+/// because opencode model ids start with their provider, which can be `opencode`.
+pub fn is_model_ref(model: &str) -> bool {
+    match model.split_once('/') {
+        Some((h, rest)) if h.parse::<Harness>().is_ok() => {
+            !(h == "opencode" && !rest.is_empty() && !rest.contains('/'))
+        }
+        _ => false,
+    }
+}
+
+/// A harness, model and effort where each may be unset.
+pub type Selector = (Option<Harness>, Option<String>, Option<String>);
+
+/// Applies a model ref in `model` to an explicit `harness` and `effort`. A plain model name
+/// (or none) passes through unchanged. A ref sets harness, model and effort; an explicit
+/// harness or effort that disagrees with it is an error, and so is a malformed ref.
+pub fn resolve_model_ref(
+    harness: Option<Harness>,
+    model: Option<&str>,
+    effort: Option<&str>,
+) -> std::result::Result<Selector, String> {
+    let plain = || (harness, model.map(String::from), effort.map(String::from));
+    let Some(m) = model.filter(|m| is_model_ref(m)) else {
+        return Ok(plain());
+    };
+    let r = m.parse::<Choice>().map_err(|e| e.to_string())?;
+    // Only opencode model ids contain `/`. Elsewhere a `/` left in the model means the last
+    // segment was meant as an effort the harness does not accept.
+    if r.harness != Harness::Opencode && r.model.contains('/') {
+        let list = r.harness.accepted_efforts().unwrap_or_default().join("|");
+        return Err(format!(
+            "invalid model ref: `{}` is not a {} effort ({list})",
+            r.model.rsplit('/').next().unwrap_or_default(),
+            r.harness
+        ));
+    }
+    if let Some(h) = harness.filter(|h| *h != r.harness) {
+        return Err(format!("model ref names {} but harness is {h}", r.harness));
+    }
+    if let (Some(re), Some(e)) = (&r.effort, effort)
+        && re != e
+    {
+        return Err(format!("model ref has effort {re} but effort is {e}"));
+    }
+    Ok((
+        Some(r.harness),
+        Some(r.model),
+        r.effort.or_else(|| effort.map(String::from)),
+    ))
+}
+
 impl Serialize for Choice {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         s.collect_str(self)
@@ -899,5 +952,35 @@ mod headroom_wire_tests {
         assert!(v["observed_at"].is_string(), "{v}");
         let back: Headroom = serde_json::from_value(v).unwrap();
         assert_eq!(back.observed_at, t);
+    }
+
+    #[test]
+    fn model_refs_resolve_and_conflicts_fail() {
+        let (h, m, e) = resolve_model_ref(None, Some("codex/gpt-6.1-sol/high"), None).unwrap();
+        assert_eq!(h, Some(Harness::Codex));
+        assert_eq!(
+            (m.as_deref(), e.as_deref()),
+            (Some("gpt-6.1-sol"), Some("high"))
+        );
+        let err = resolve_model_ref(Some(Harness::Agy), Some("codex/gpt-6.1-sol/high"), None)
+            .unwrap_err();
+        assert_eq!(err, "model ref names codex but harness is agy");
+        let err = resolve_model_ref(None, Some("codex/gpt-6.1-sol/high"), Some("low")).unwrap_err();
+        assert_eq!(err, "model ref has effort high but effort is low");
+        // `opencode/<one segment>` is a plain model name.
+        let (h, m, _) = resolve_model_ref(
+            Some(Harness::Opencode),
+            Some("opencode/deepseek-v4.1-flash-free"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(h, Some(Harness::Opencode));
+        assert_eq!(m.as_deref(), Some("opencode/deepseek-v4.1-flash-free"));
+        // A plain model keeps an explicit effort.
+        let (_, m, e) = resolve_model_ref(None, Some("gpt-6.1-sol"), Some("low")).unwrap();
+        assert_eq!(
+            (m.as_deref(), e.as_deref()),
+            (Some("gpt-6.1-sol"), Some("low"))
+        );
     }
 }
