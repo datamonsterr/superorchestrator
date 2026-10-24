@@ -192,7 +192,7 @@ impl RunState {
     pub fn begin(&self, prompt: &str, opts_json: &str, phase: &str) -> Result<usize, String> {
         let mut opts: Value =
             serde_json::from_str(opts_json).map_err(|e| format!("bad options: {e}"))?;
-        let step = self.started.fetch_add(1, Ordering::SeqCst);
+        let step = self.started.load(Ordering::SeqCst);
         if step >= MAX_AGENTS {
             return Err(format!("a workflow may start at most {MAX_AGENTS} agents"));
         }
@@ -221,8 +221,9 @@ impl RunState {
         };
         // Record the step now, not when its future first runs: a script may return before an
         // un-awaited step is polled, and `finalize` can only cancel rows that exist. The row
-        // reads `running` from here on, also while the step waits for a concurrency permit.
-        let row = self.step_row(&ticket, step, "running", None);
+        // is `queued` until the step gets a concurrency permit.
+        // Sync on purpose (no `db()`/in-flight count): it completes before `begin` returns.
+        let row = self.step_row(&ticket, step, "queued", None);
         self.store
             .insert_workflow_step(&row)
             .map_err(|e| format!("store: {e}"))?;
@@ -230,6 +231,7 @@ impl RunState {
             .lock()
             .map_err(|e| e.to_string())?
             .insert(step, ticket);
+        self.started.store(step + 1, Ordering::SeqCst);
         Ok(step)
     }
 

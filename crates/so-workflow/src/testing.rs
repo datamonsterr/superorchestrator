@@ -66,10 +66,13 @@ impl FakeHost {
     }
 
     /// Makes `spawn_and_wait` for this prompt never finish (until its future is dropped).
-    /// Calls for other prompts wait until every hung prompt has started, so tests do not
+    /// Call it before the run starts. Calls for other prompts wait until every hung prompt has started, so tests do not
     /// depend on how the scheduler orders the steps.
     pub fn hang_on(&self, prompt: &str) {
-        self.hang.lock().unwrap().push(prompt.to_string());
+        let mut hang = self.hang.lock().unwrap();
+        if !hang.iter().any(|p| p == prompt) {
+            hang.push(prompt.to_string());
+        }
     }
     /// How many hung `spawn_and_wait` futures were dropped (cancelled) so far.
     pub fn dropped(&self) -> usize {
