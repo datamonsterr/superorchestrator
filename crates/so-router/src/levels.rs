@@ -206,9 +206,10 @@ mod tests {
     fn contained_complexity_picks_its_level() {
         let d = Config::default().router.levels;
         assert_eq!(names(&d, 0.0)[0], "low");
-        assert_eq!(names(&d, 39.0)[0], "low");
-        assert_eq!(names(&d, 40.0)[0], "mid");
-        assert_eq!(names(&d, 79.0)[0], "mid");
+        assert_eq!(names(&d, 37.0)[0], "low");
+        assert_eq!(names(&d, 38.0)[0], "mid");
+        assert_eq!(names(&d, 62.0)[0], "mid");
+        assert_eq!(names(&d, 75.0)[0], "high");
         assert_eq!(names(&d, 100.0)[0], "high");
     }
 
@@ -228,10 +229,10 @@ mod tests {
     #[test]
     fn fractional_complexity_reads_integer_ranges_as_half_open() {
         let d = Config::default().router.levels;
-        assert_eq!(names(&d, 39.5)[0], "low");
-        assert_eq!(names(&d, 40.0)[0], "mid");
-        assert_eq!(names(&d, 79.9)[0], "mid");
-        assert_eq!(names(&d, 80.0)[0], "high");
+        assert_eq!(names(&d, 37.5)[0], "low");
+        assert_eq!(names(&d, 38.0)[0], "mid");
+        assert_eq!(names(&d, 62.9)[0], "mid");
+        assert_eq!(names(&d, 63.0)[0], "high");
         assert_eq!(names(&d, 100.0)[0], "high");
         // Gap 21..40: 21.0 is nearest to a's end.
         let g = vec![lv("a", 0, 20), lv("b", 40, 60)];

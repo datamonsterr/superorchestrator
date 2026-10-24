@@ -31,7 +31,7 @@ ComplexityRouter. Five anchors give score indices 0..4, mapped linearly to 0..10
 Anchors (`so_core::config::COMPLEXITY_ANCHORS`, in order):
 
 0. Trivial, fully specified mechanical edit: a typo, rename, formatting or a one-line config change. No reasoning or analysis needed; under 15 minutes for a developer.
-1. Simple, scoped change in one or two files with a clear spec: a small bug fix, a docs page, a test for existing behaviour. Little reasoning; up to about an hour.
+1. Simple, scoped change in one or two files with a clear spec: a small bug fix, a docs page, a test for existing behaviour, a read-only search, listing or inventory of code, or a summary of tool output. Little reasoning; up to about an hour.
 2. Moderate work across several files: a feature with known design, an ordinary bug that needs some investigation, a refactor with clear boundaries. Some multi-step reasoning; one to four hours.
 3. Complex, multi-step work that needs analysis before implementation: unclear root cause, cross-component change, concurrency, migration or security-sensitive code, where mistakes are costly. More than four hours.
 4. Highly complex, open-ended work: architecture or system design, long chains of reasoning, repeated rounds of analysis and planning, or coordinating other agents across many components.
@@ -63,7 +63,7 @@ choices = [
 
 - `Level { name: String, min: u8, max: u8, tier: Option<Tier>, choices: Vec<LevelChoice> }`
 - `LevelChoice { id: String, priority: Option<u32> }` (lower number = preferred).
-- Default levels (when the user sets none): `low` 0-39 tier fast, `mid` 40-79 tier mid, `high` 80-100 tier high, all with empty `choices`.
+- Default levels (when the user sets none): `low` 0-37 tier fast, `mid` 38-62 tier mid, `high` 63-100 tier high, all with empty `choices`.
 - Validation (config load/`config set`/web PUT go through the existing validation path): name non-empty and unique; `min <= max <= 100`; ranges do not overlap; every `choices[].id` names an existing choice. Gaps are allowed.
 
 ## Routing procedure (replaces SPEC 8.3 steps 2-5 for unpinned calls)

@@ -12,7 +12,7 @@ The question we actually need answered is narrower: how much work does this task
 
 1. **The decider answers one question.** `questions.complexity` has `type: "score"`, the five anchors as `criteria`, and `router.instruction` as `instructions`. Its `state` holds the task text, the system and routing instructions, and the role. It holds no account names, quota, usage or credentials.
 2. **Complexity is code's input, not the decider's choice.** Complexity = `score / 4 × 100`. The only gate is `router.policy.min_confidence`. `min_margin` is deprecated and ignored.
-3. **Operators define levels.** `[[router.levels]]` maps ranges of complexity to a level, and each level lists its choices, optionally with a `priority`, or a model `tier` when it lists none. The defaults are low 0-39, mid 40-79 and high 80-100, all by tier.
+3. **Operators define levels.** `[[router.levels]]` maps ranges of complexity to a level, and each level lists its choices, optionally with a `priority`, or a model `tier` when it lists none. The defaults are low 0-37, mid 38-62 and high 63-100, all by tier.
 4. **Code picks the choice.** The level comes from the complexity. Among the level's eligible choices, the lowest `priority` wins, then the most headroom on the choice's best account, then the fewest active runs, then config order. The account is chosen as before.
 5. **A heuristic stands in** when there is no key, when the answer is rejected or the gate fails, when only one choice is eligible, or when the decider is unreachable and `on_unreachable = "heuristic"`. It maps a keyword and length estimate to 20, 55 or 85.
 

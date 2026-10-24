@@ -28,16 +28,17 @@
 
 # Levels map the decider's 0-100 complexity score to choices. Ranges are inclusive and must
 # not overlap (gaps are fine); a lower `priority` number is preferred, and `tier` is used only
-# when `choices` is empty. Without any [[router.levels]] the defaults low/mid/high apply.
+# when `choices` is empty. Without any [[router.levels]] the defaults low/mid/high apply
+# (0-37 fast, 38-62 mid, 63-100 high). `init` writes five levels at the end of a new file.
 # [[router.levels]]
 # name = "low"
 # min = 0
-# max = 39
+# max = 37
 # tier = "fast"
 #
 # [[router.levels]]
 # name = "high"
-# min = 80
+# min = 63
 # max = 100
 # choices = [{ id = "agy-flash-high", priority = 1 }, { id = "agy-flash-medium" }]
 

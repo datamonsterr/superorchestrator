@@ -23,7 +23,7 @@ impl Complexity {
     }
 
     /// Numeric complexity (0 to 100) this class stands for; always inside the matching
-    /// default level (low 0-39, mid 40-79, high 80-100).
+    /// default level (low 0-37, mid 38-62, high 63-100).
     pub fn score(self) -> f64 {
         match self {
             Self::Low => 20.0,

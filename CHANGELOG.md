@@ -51,7 +51,9 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Added
 
-- Complexity levels: `[[router.levels]]` with `name`, `min`, `max`, an optional `tier` and `choices` (`id`, optional `priority`). With no levels set, low 0-39, mid 40-79 and high 80-100 apply. Overlaps, unknown choice ids and duplicates are refused at load.
+- Complexity levels: `[[router.levels]]` with `name`, `min`, `max`, an optional `tier` and `choices` (`id`, optional `priority`). With no levels set, low 0-37, mid 38-62 and high 63-100 apply. Overlaps, unknown choice ids and duplicates are refused at load.
+- `init` writes five seeded levels (trivial 0-12, simple 13-37, moderate 38-62, complex 63-87, expert 88-100) to a new `config.toml`; an existing file is never changed. The default tier levels moved to the anchor centres: low 0-37, mid 38-62, high 63-100. Anchor 1 now names read-only search, listing and summarising tool output as simple work.
+- `route eval`: cases take `expected_complexity`; reports add `complexity`, `level`, `complexity_ok` per case, `complexity_accuracy` and CX / LEVEL columns; `--min-complexity-accuracy X` fails below it.
 - `route --explain` prints the complexity, its source and the level. `doctor` has a "levels" check. The TUI and web route views show complexity, level and per-anchor probabilities. The seed `config_header.toml` has a commented `[[router.levels]]` example.
 - `docs/guide/routing.md` has a "Complexity levels" section; `docs/adr/0006-decider-scores-complexity.md` records the decision.
 - A daemon left running after a reinstall is now reported (#12). Build identity: the build id (executable size and mtime) is

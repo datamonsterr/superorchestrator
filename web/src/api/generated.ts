@@ -292,7 +292,7 @@ export interface JoinView {
   env_names: string[];
 }
 
-/** A named range of complexity (`min` to `max`, within 0 to 100) and the choices allowed for it. Complexity can be fractional, so the integer range reads as the half-open span `[min, max + 1)`: 39.5 is in `0..=39`. A level with `max = 100` also includes 100.0. */
+/** A named range of complexity (`min` to `max`, within 0 to 100) and the choices allowed for it. Complexity can be fractional, so the integer range reads as the half-open span `[min, max + 1)`: 37.5 is in `0..=37`. A level with `max = 100` also includes 100.0. */
 export interface Level {
   choices?: LevelChoice[];
   max: number;

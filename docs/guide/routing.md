@@ -62,12 +62,14 @@ choices = [
 ]
 ```
 
-- `min` and `max` are integers from 0 to 100. The range covers complexity from `min` up to, but not including, `max + 1`, so a complexity of 39.5 is in `low`. A level with `max = 100` also includes 100.
+- `min` and `max` are integers from 0 to 100. The range covers complexity from `min` up to, but not including, `max + 1`, so a complexity of 37.5 is in `low`. A level with `max = 100` also includes 100.
 - Level names must be non-empty and unique. Ranges must not overlap. Gaps are allowed: a complexity in a gap goes to the nearest level, and a tie goes to the higher one.
 - A level needs `choices`, `tier`, or both. `tier` is the catalog's model class (`high`, `mid` or `fast`). It is used only when `choices` is empty, and then every eligible choice of that tier is a candidate, in config order. When `choices` is not empty, `tier` is ignored.
 - Each `choices` entry names a choice from `[[choices]]`. A choice may appear only once in a level. `priority` is optional, and a lower number is preferred.
 
-When you set no levels, the defaults apply: `low` for 0-39 with tier `fast`, `mid` for 40-79 with tier `mid`, and `high` for 80-100 with tier `high`.
+When you set no levels, the defaults apply: `low` for 0-37 with tier `fast`, `mid` for 38-62 with tier `mid`, and `high` for 63-100 with tier `high`.
+
+`superorchestrator init` writes five levels into a new `config.toml`: `trivial` 0-12, `simple` 13-37, `moderate` 38-62, `complex` 63-87 and `expert` 88-100, each listing seeded non-Claude choices with priorities. It does this only when it creates the file; an existing config is never changed, so add `[[router.levels]]` yourself (copy them from `seed/levels.toml` in the source) to use them.
 
 A level's choice list is not a pool. A pool is a separately metered slice of an account's usage, so the config key is `choices` and the docs call them the level's choices.
 
@@ -155,11 +157,14 @@ The router checks each choice's `effort` against what its harness accepts: claud
 superorchestrator route eval --require-live --min-accuracy 0.8
 ```
 
-`route eval` replays labelled cases and reports accuracy, eligible-choice compliance, fallback count, source counts, p50 and p95 latency, and total cost. Reports never include task text or credentials. English and Vietnamese cases ship in the binary.
+`route eval` replays labelled cases and reports accuracy, complexity accuracy, eligible-choice compliance, fallback count, source counts, p50 and p95 latency, and total cost. Reports never include task text or credentials. English and Vietnamese cases ship in the binary.
 
-- `--cases FILE` uses your cases instead. The file is JSON Lines, or one JSON array. Each case has `id`, `task`, `expected_choices` and an optional `role` (default `worker`) and `available_choice_ids`.
+- `--cases FILE` uses your cases instead. The file is JSON Lines, or one JSON array. Each case has `id`, `task`, `expected_choices` and an optional `role` (default `worker`), `available_choice_ids` and `expected_complexity`, an inclusive `[min, max]` range on the 0-100 anchor scale (trivial `[0, 12]`, simple `[13, 37]`, moderate `[38, 62]`, complex `[63, 87]`, expert `[88, 100]`). Every bundled and held-out case has one.
 - `--require-live` fails when there is no Jev key, and when any case fell back from Jev.
 - `--min-accuracy X` (0 to 1) fails when accuracy is lower.
+- `--min-complexity-accuracy X` (0 to 1) fails when complexity accuracy is lower, or when no case has both a range and a score.
+
+The text report lists each case with its choice, source, complexity (`CX`) and `LEVEL`. Complexity accuracy is the share of cases, among those with an `expected_complexity` and a score, whose score is inside the range. It measures the decider and the anchors on their own, before any level mapping, so a low accuracy with a high complexity accuracy points at your levels. The JSON report adds `complexity`, `level` and `complexity_ok` to every case and `complexity_accuracy` to the summary.
 
 The command exits non-zero when a check fails.
 

@@ -65,7 +65,7 @@ superorchestrator config edit
 | `priority` | `["agy", "opencode", "codex", "claude"]` | Harness order for ties |
 | `weights` | `{ headroom = 1.0, load = 0.5, cost = 0.3 }` | Heuristic weights (`router.weights.headroom`, `.load`, `.cost`) |
 | `instruction` | A complexity-rating instruction | Instruction sent to the decider with its complexity question. The default asks only for a rating and treats `task_content` as data. `doctor` warns when a custom instruction still looks written for the old choice question. |
-| `levels` | `low` 0-39, `mid` 40-79, `high` 80-100 | Complexity levels, set with `[[router.levels]]` below |
+| `levels` | `low` 0-37, `mid` 38-62, `high` 63-100 | Complexity levels, set with `[[router.levels]]` below |
 
 ### `[router.jev]`
 
@@ -96,11 +96,11 @@ Each level maps a range of complexity (0 to 100, from the decider or from the he
 |---|---|---|
 | `name` | required | Level name. Non-empty and unique after trimming. |
 | `min` | required | Lowest complexity in the level, an integer from 0 to 100 |
-| `max` | required | Highest integer in the level, from `min` to 100. The level covers up to `max + 1`, so 39.5 is in `0`-`39`. With `max = 100`, 100.0 is included too. |
+| `max` | required | Highest integer in the level, from `min` to 100. The level covers up to `max + 1`, so 37.5 is in `0`-`37`. With `max = 100`, 100.0 is included too. |
 | `tier` | unset | `high`, `mid` or `fast`. Used only when `choices` is empty: then every eligible choice of that tier is a candidate. Ignored when `choices` is set. |
 | `choices` | `[]` | List of `{ id = "...", priority = 1 }` entries. `id` names a `[[choices]]` entry and may appear once per level. `priority` is optional; a lower number is preferred, and choices without one come after those with one. |
 
-With no `[[router.levels]]` in the file, the defaults are `low` 0-39 (tier `fast`), `mid` 40-79 (tier `mid`) and `high` 80-100 (tier `high`), with no choices. Gaps between levels are allowed. A complexity that falls in a gap goes to the nearest level, and a tie goes to the higher one. An explicit empty list, `router.levels = []`, loads and turns levels off: `level` is null and every eligible choice is ranked by the heuristic scorer. The defaults apply only when the key is absent.
+With no `[[router.levels]]` in the file, the defaults are `low` 0-37 (tier `fast`), `mid` 38-62 (tier `mid`) and `high` 63-100 (tier `high`), with no choices. Gaps between levels are allowed. A complexity that falls in a gap goes to the nearest level, and a tie goes to the higher one. An explicit empty list, `router.levels = []`, loads and turns levels off: `level` is null and every eligible choice is ranked by the heuristic scorer. The defaults apply only when the key is absent.
 
 The file is refused at load when:
 

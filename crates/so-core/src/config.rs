@@ -236,7 +236,7 @@ impl Default for Policy {
 /// score is an index into this list (0 to 4), mapped linearly to complexity 0 to 100.
 pub const COMPLEXITY_ANCHORS: [&str; 5] = [
     "Trivial, fully specified mechanical edit: a typo, rename, formatting or a one-line config change. No reasoning or analysis needed; under 15 minutes for a developer.",
-    "Simple, scoped change in one or two files with a clear spec: a small bug fix, a docs page, a test for existing behaviour. Little reasoning; up to about an hour.",
+    "Simple, scoped change in one or two files with a clear spec: a small bug fix, a docs page, a test for existing behaviour, a read-only search, listing or inventory of code, or a summary of tool output. Little reasoning; up to about an hour.",
     "Moderate work across several files: a feature with known design, an ordinary bug that needs some investigation, a refactor with clear boundaries. Some multi-step reasoning; one to four hours.",
     "Complex, multi-step work that needs analysis before implementation: unclear root cause, cross-component change, concurrency, migration or security-sensitive code, where mistakes are costly. More than four hours.",
     "Highly complex, open-ended work: architecture or system design, long chains of reasoning, repeated rounds of analysis and planning, or coordinating other agents across many components.",
@@ -270,7 +270,7 @@ pub struct LevelChoice {
 
 /// A named range of complexity (`min` to `max`, within 0 to 100) and the choices allowed for
 /// it. Complexity can be fractional, so the integer range reads as the half-open span
-/// `[min, max + 1)`: 39.5 is in `0..=39`. A level with `max = 100` also includes 100.0.
+/// `[min, max + 1)`: 37.5 is in `0..=37`. A level with `max = 100` also includes 100.0.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Level {
@@ -294,9 +294,9 @@ fn default_levels() -> Vec<Level> {
         choices: Vec::new(),
     };
     vec![
-        level("low", 0, 39, LevelTier::Fast),
-        level("mid", 40, 79, LevelTier::Mid),
-        level("high", 80, 100, LevelTier::High),
+        level("low", 0, 37, LevelTier::Fast),
+        level("mid", 38, 62, LevelTier::Mid),
+        level("high", 63, 100, LevelTier::High),
     ]
 }
 
@@ -890,9 +890,9 @@ mod tests {
         assert_eq!(
             levels,
             vec![
-                ("low", 0, 39, Some(LevelTier::Fast), 0),
-                ("mid", 40, 79, Some(LevelTier::Mid), 0),
-                ("high", 80, 100, Some(LevelTier::High), 0),
+                ("low", 0, 37, Some(LevelTier::Fast), 0),
+                ("mid", 38, 62, Some(LevelTier::Mid), 0),
+                ("high", 63, 100, Some(LevelTier::High), 0),
             ]
         );
         assert_eq!(

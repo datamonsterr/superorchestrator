@@ -89,6 +89,51 @@ fn seeded_choices_parse_with_core_config() {
 }
 
 #[test]
+fn init_seeds_levels_that_validate_and_cover_the_scale() {
+    let e = Env::new();
+    e.init();
+    let cfg = so_core::Config::load(&e.paths()).unwrap();
+    let l: Vec<_> = cfg
+        .router
+        .levels
+        .iter()
+        .map(|l| (l.name.as_str(), l.min, l.max, l.choices.len()))
+        .collect();
+    assert_eq!(
+        l,
+        [
+            ("trivial", 0, 12, 2),
+            ("simple", 13, 37, 2),
+            ("moderate", 38, 62, 2),
+            ("complex", 63, 87, 3),
+            ("expert", 88, 100, 3),
+        ]
+    );
+    // Every seeded level choice is a seeded choice, and Claude choices stay out.
+    for lv in &cfg.router.levels {
+        for c in &lv.choices {
+            let ch = cfg.choices.iter().find(|x| x.id == c.id).unwrap();
+            assert_ne!(ch.harness, so_core::Harness::Claude);
+        }
+    }
+}
+
+#[test]
+fn init_leaves_an_existing_config_without_levels_alone() {
+    let e = Env::new();
+    std::fs::create_dir_all(&e.cfg).unwrap();
+    let path = e.cfg.join("config.toml");
+    std::fs::write(&path, "[limits]\nglobal_cap = 3\n").unwrap();
+    e.init();
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "[limits]\nglobal_cap = 3\n"
+    );
+    let cfg = so_core::Config::load(&e.paths()).unwrap();
+    assert_eq!(cfg.router.levels.len(), 3);
+}
+
+#[test]
 fn config_get_set_roundtrip_and_validation() {
     let e = Env::new();
     e.init();

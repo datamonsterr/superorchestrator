@@ -15,12 +15,15 @@ const CONFIG_HEADER: &str = include_str!("../seed/config_header.toml");
 /// no signed-in codex account it is simply not eligible at routing time (SPEC 8.3),
 /// so adding an account later needs no config edit.
 pub const SEED_CHOICES: &str = include_str!("../seed/choices.toml");
+/// Complexity levels seeded with the choices above, only into a new `config.toml` (never
+/// merged into an existing one).
+pub const SEED_LEVELS: &str = include_str!("../seed/levels.toml");
 const MODELS_PLACEHOLDER: &str = "# Model catalog (SPEC 8.1): known models per harness with tier, efforts, pool and cost.\n\
 # Filled in by `superorchestrator models refresh`. The catalog is only used for\n\
 # discovery and validation; it never edits choices.\n";
 
 pub fn config_toml_text() -> String {
-    format!("{CONFIG_HEADER}\n{SEED_CHOICES}")
+    format!("{CONFIG_HEADER}\n{SEED_CHOICES}{SEED_LEVELS}")
 }
 
 #[derive(Debug, PartialEq, Eq)]
