@@ -1,7 +1,8 @@
 
 # Complexity levels: the decider scores each task 0-100, the level whose range holds the score
-# lists the choices allowed for it (lower `priority` is preferred). Ranges are inclusive and
-# match the decider's five anchors (0, 25, 50, 75, 100). Delete these to use the tier defaults.
+# lists the choices allowed for it (lower `priority` is preferred; agy leads the cheap levels,
+# Codex leads from moderate up). Ranges are inclusive and match the decider's five anchors
+# (0, 25, 50, 75, 100). Delete these to use the tier defaults.
 [[router.levels]]
 name = "trivial"
 min = 0
@@ -12,22 +13,29 @@ choices = [{ id = "agy-flash-low", priority = 1 }, { id = "agy-flash-medium", pr
 name = "simple"
 min = 13
 max = 37
-choices = [{ id = "agy-flash-medium", priority = 1 }, { id = "opencode-deepseek-small", priority = 2 }]
+choices = [
+  { id = "agy-flash-medium", priority = 1 },
+  { id = "codex-luna-medium", priority = 2 },
+  { id = "opencode-deepseek-small", priority = 3 },
+]
 
 [[router.levels]]
 name = "moderate"
 min = 38
 max = 62
-choices = [{ id = "agy-flash-high", priority = 1 }, { id = "codex-medium", priority = 2 }]
+choices = [
+  { id = "codex-luna-medium", priority = 1 },
+  { id = "agy-flash-high", priority = 2 },
+  { id = "codex-medium", priority = 3 },
+]
 
 [[router.levels]]
 name = "complex"
 min = 63
 max = 87
 choices = [
-  { id = "agy-sonnet-thinking", priority = 1 },
-  { id = "opencode-muse-long", priority = 2 },
-  { id = "codex-high", priority = 3 },
+  { id = "codex-high", priority = 1 },
+  { id = "agy-sonnet-thinking", priority = 2 },
 ]
 
 [[router.levels]]
@@ -35,7 +43,7 @@ name = "expert"
 min = 88
 max = 100
 choices = [
-  { id = "opencode-muse-long", priority = 1 },
+  { id = "codex-xhigh", priority = 1 },
   { id = "codex-high", priority = 2 },
   { id = "agy-sonnet-thinking", priority = 3 },
 ]

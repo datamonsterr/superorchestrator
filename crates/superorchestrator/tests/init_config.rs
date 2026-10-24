@@ -103,9 +103,9 @@ fn init_seeds_levels_that_validate_and_cover_the_scale() {
         l,
         [
             ("trivial", 0, 12, 2),
-            ("simple", 13, 37, 2),
-            ("moderate", 38, 62, 2),
-            ("complex", 63, 87, 3),
+            ("simple", 13, 37, 3),
+            ("moderate", 38, 62, 3),
+            ("complex", 63, 87, 2),
             ("expert", 88, 100, 3),
         ]
     );
@@ -114,6 +114,11 @@ fn init_seeds_levels_that_validate_and_cover_the_scale() {
         for c in &lv.choices {
             let ch = cfg.choices.iter().find(|x| x.id == c.id).unwrap();
             assert_ne!(ch.harness, so_core::Harness::Claude);
+            assert!(
+                ch.enabled,
+                "level {} lists disabled choice {}",
+                lv.name, c.id
+            );
         }
     }
 }

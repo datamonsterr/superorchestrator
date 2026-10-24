@@ -40,8 +40,8 @@ id = "opencode-muse-long"
 harness = "opencode"
 model = "opencode/muse-spark-1.3"
 roles = ["conductor", "worker"]
-description = "OpenCode worker on Muse Spark 1.3 with a large context window. For work that is broad rather than deep: many components or files held in mind at once, comparing or structuring whole systems, long multi-step jobs, and managing other workers (planning, delegating, integrating results, final verification)."
-enabled = true
+description = "OpenCode worker on Muse Spark 1.3 with a large context window. For work that is broad rather than deep: many components or files held in mind at once, comparing or structuring whole systems, long multi-step jobs, and managing other workers (planning, delegating, integrating results, final verification). Off by default: opencode no longer lists the free model this choice names (`models refresh` reports it), so runs on it would fail. Point `model` at a listed one and set enabled = true to use it again."
+enabled = false
 
 [[choices]]
 id = "opencode-deepseek-small"
@@ -76,6 +76,24 @@ model = "gpt-6.1-sol"
 effort = "medium"
 roles = ["worker"]
 description = "Codex with medium reasoning effort. Balanced worker for routine implementation. Not eligible until a codex account is signed in."
+enabled = true
+
+[[choices]]
+id = "codex-xhigh"
+harness = "codex"
+model = "gpt-6.1-sol"
+effort = "xhigh"
+roles = ["worker", "conductor"]
+description = "Codex gpt-6.1-sol with xhigh reasoning effort. Deepest reasoning, slowest: for open-ended design, unknown causes across a whole system, and coordinating other workers (planning, delegating, integrating, final verification). Not eligible until a codex account is signed in."
+enabled = true
+
+[[choices]]
+id = "codex-luna-medium"
+harness = "codex"
+model = "gpt-6-luna"
+effort = "medium"
+roles = ["worker"]
+description = "Codex gpt-6-luna (mid tier) with medium reasoning effort. Faster and cheaper than gpt-6.1-sol: balanced worker for ordinary implementation and review in one area. Not eligible until a codex account is signed in."
 enabled = true
 
 [[choices]]

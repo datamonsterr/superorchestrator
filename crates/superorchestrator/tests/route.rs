@@ -303,7 +303,12 @@ async fn route_after_adding_codex(disable_codex: bool) -> std::process::Output {
     if disable_codex {
         let path = e.cfg.join("config.toml");
         let mut text = std::fs::read_to_string(&path).unwrap();
-        for id in ["codex-high", "codex-medium"] {
+        for id in [
+            "codex-high",
+            "codex-medium",
+            "codex-xhigh",
+            "codex-luna-medium",
+        ] {
             let at = text.find(&format!("id = \"{id}\"")).unwrap();
             let off = text[at..].find("enabled = true").unwrap() + at;
             text.replace_range(off..off + "enabled = true".len(), "enabled = false");
