@@ -18,6 +18,9 @@ interface Props {
   /** `null` = closed, `'new'` = add, otherwise the choice being edited. */
   target: Choice | 'new' | null
   choices: Choice[]
+  /** Replaces the default description (used when opened from a level). */
+  description?: string
+  pending?: boolean
   onClose: () => void
   /** Persist the full next list; rejects on failure so the dialog stays open. */
   onSave: (next: Choice[]) => Promise<unknown>
@@ -26,7 +29,7 @@ interface Props {
 const EMPTY: ChoiceValues = { id: '', harness: 'codex', model: '', effort: '', roles: 'worker', description: '', enabled: true }
 const FIELDS = ['id', 'harness', 'model', 'effort', 'roles', 'description', 'enabled'] as const
 
-function ChoiceForm({ target, choices, onClose, onSave }: Omit<Props, 'target'> & { target: Choice | 'new' }) {
+function ChoiceForm({ target, choices, description, pending, onClose, onSave }: Omit<Props, 'target'> & { target: Choice | 'new' }) {
   const editing = target === 'new' ? null : target
   const models = useModels()
   const schema = useMemo(() => choiceSchema(choices.filter((c) => c.id !== editing?.id).map((c) => c.id)), [choices, editing])
@@ -53,7 +56,7 @@ function ChoiceForm({ target, choices, onClose, onSave }: Omit<Props, 'target'> 
     <form onSubmit={handleSubmit(submit)} noValidate className="flex flex-col gap-4">
       <DialogHeader>
         <DialogTitle>{editing ? `Edit ${editing.id}` : 'Add choice'}</DialogTitle>
-        <DialogDescription>A choice is a harness, model and effort the router may pick.</DialogDescription>
+        <DialogDescription>{description ?? 'A choice is a harness, model and effort the router may pick.'}</DialogDescription>
       </DialogHeader>
       <FieldGroup>
         <Field data-invalid={!!err.id}>
@@ -131,7 +134,7 @@ function ChoiceForm({ target, choices, onClose, onSave }: Omit<Props, 'target'> 
         <Button type="button" variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <Button type="submit" disabled={formState.isSubmitting}>
+        <Button type="submit" disabled={formState.isSubmitting || pending}>
           {formState.isSubmitting ? 'Saving…' : 'Save choice'}
         </Button>
       </DialogFooter>

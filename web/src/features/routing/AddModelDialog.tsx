@@ -13,12 +13,13 @@ interface Props {
   /** The level to add to; `null` = closed. */
   level: LevelView | null
   choices: Choice[]
+  pending?: boolean
   onClose: () => void
   /** Persist the model; rejects on failure so the dialog stays open. */
   onSave: (level: LevelView, id: string, priority: number | undefined) => Promise<unknown>
 }
 
-function AddModelForm({ level, choices, onClose, onSave }: Omit<Props, 'level'> & { level: LevelView }) {
+function AddModelForm({ level, choices, pending, onClose, onSave }: Omit<Props, 'level'> & { level: LevelView }) {
   const free = choices.filter((c) => !level.choices.some((x) => x.id === c.id))
   const form = useForm<AddModelValues>({ resolver: zodResolver(addModelSchema), defaultValues: { choice: '', priority: '' } })
   const { control, register, handleSubmit, setError, formState } = form
@@ -78,7 +79,7 @@ function AddModelForm({ level, choices, onClose, onSave }: Omit<Props, 'level'> 
         <Button type="button" variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <Button type="submit" disabled={formState.isSubmitting}>
+        <Button type="submit" disabled={formState.isSubmitting || pending}>
           {formState.isSubmitting ? 'Saving…' : 'Add model'}
         </Button>
       </DialogFooter>

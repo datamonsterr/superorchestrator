@@ -15,11 +15,12 @@ interface Props {
   target: LevelView | 'new' | null
   levels: LevelView[]
   onClose: () => void
-  /** Persist the full next list; rejects on failure so the dialog stays open. */
-  onSave: (next: Level[]) => Promise<unknown>
+  pending?: boolean
+  /** Persist the list `update` builds from the latest saved levels; rejects on failure so the dialog stays open. */
+  onSave: (update: (current: LevelView[]) => Level[]) => Promise<unknown>
 }
 
-function LevelForm({ target, levels, onClose, onSave }: Omit<Props, 'target'> & { target: LevelView | 'new' }) {
+function LevelForm({ target, levels, pending, onClose, onSave }: Omit<Props, 'target'> & { target: LevelView | 'new' }) {
   const editing = target === 'new' ? null : target
   const schema = useMemo(
     () => levelSchema(levels.filter((l) => l.name !== editing?.name).map((l) => l.name), (editing?.choices.length ?? 0) > 0),
@@ -30,10 +31,13 @@ function LevelForm({ target, levels, onClose, onSave }: Omit<Props, 'target'> & 
   const err = formState.errors
 
   async function submit(v: LevelValues) {
-    const next = toLevel(v, editing ? levelOf(editing).choices ?? [] : [])
-    const list = editing ? levels.map((l) => (l.name === editing.name ? next : levelOf(l))) : [...levels.map(levelOf), next]
     try {
-      await onSave(list)
+      await onSave((current) => {
+        if (!editing) return [...current.map(levelOf), toLevel(v, [])]
+        const live = current.find((l) => l.name === editing.name)
+        if (!live) throw new Error(`Level ${editing.name} no longer exists`)
+        return current.map((l) => (l === live ? toLevel(v, levelOf(live).choices ?? []) : levelOf(l)))
+      })
       onClose()
     } catch (e) {
       setError('root', { type: 'server', message: errorMessage(e) })
@@ -71,7 +75,7 @@ function LevelForm({ target, levels, onClose, onSave }: Omit<Props, 'target'> & 
             name="tier"
             render={({ field }) => (
               <Select value={field.value} onValueChange={field.onChange}>
-                <SelectTrigger id="level-tier" className="w-full">
+                <SelectTrigger id="level-tier" className="w-full" aria-invalid={!!err.tier}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -98,7 +102,7 @@ function LevelForm({ target, levels, onClose, onSave }: Omit<Props, 'target'> & 
         <Button type="button" variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <Button type="submit" disabled={formState.isSubmitting}>
+        <Button type="submit" disabled={formState.isSubmitting || pending}>
           {formState.isSubmitting ? 'Saving…' : 'Save level'}
         </Button>
       </DialogFooter>

@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
@@ -201,5 +201,66 @@ describe('Levels tab', () => {
     open()
     await userEvent.click(await screen.findByRole('button', { name: 'Remove codex-high from high' }))
     expect(await screen.findByText('level "high" needs choices or a tier')).toBeInTheDocument()
+  })
+
+  it('keeps the created choice and says so when adding it to the level fails', async () => {
+    mockLevels()
+    server.use(
+      http.put('/api/v1/choices', async ({ request }) => HttpResponse.json(await request.json())),
+      http.put('/api/v1/levels', () => HttpResponse.json({ error: { code: -32602, message: 'level "low" is full' } }, { status: 422 })),
+    )
+    open()
+    await userEvent.click(await screen.findByRole('button', { name: 'New model for low' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add choice' })
+    expect(within(dialog).getByText('The new choice is added to the low level.')).toBeInTheDocument()
+    await userEvent.type(within(dialog).getByLabelText('Id'), 'codex-low')
+    await userEvent.type(within(dialog).getByLabelText('Model'), 'gpt-5-mini')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save choice' }))
+    expect(await screen.findByText('Choice codex-low created, but adding it to low failed: level "low" is full')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add choice' })).not.toBeInTheDocument())
+  })
+
+  it('announces a model added through the new-model flow', async () => {
+    mockLevels()
+    server.use(http.put('/api/v1/choices', async ({ request }) => HttpResponse.json(await request.json())))
+    open()
+    await userEvent.click(await screen.findByRole('button', { name: 'New model for low' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Add choice' })
+    await userEvent.type(within(dialog).getByLabelText('Id'), 'codex-low')
+    await userEvent.type(within(dialog).getByLabelText('Model'), 'gpt-5-mini')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save choice' }))
+    expect(await screen.findByRole('status')).toHaveTextContent('Added codex-low to low')
+  })
+
+  it('applies two quick edits one after the other without losing either', async () => {
+    const m = mockLevels()
+    open()
+    const a = await screen.findByRole('button', { name: 'Remove codex-high from high' })
+    const b = await screen.findByRole('button', { name: 'Remove agy-pro from low' })
+    act(() => {
+      a.click()
+      b.click()
+    })
+    await waitFor(() => expect(m.puts).toHaveLength(2))
+    expect(m.puts[1].find((l) => l.name === 'high')?.choices).toEqual([{ id: 'gone', priority: 2 }])
+    expect(m.puts[1].find((l) => l.name === 'low')?.choices).toEqual([])
+  })
+
+  it('shows an alert when a delete is rejected', async () => {
+    mockLevels()
+    server.use(http.put('/api/v1/levels', () => HttpResponse.json({ error: { code: -32602, message: 'cannot delete' } }, { status: 422 })))
+    open()
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete low' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Delete level' }))
+    expect(await screen.findByText('cannot delete')).toBeInTheDocument()
+  })
+
+  it('shows an alert when a reset fails', async () => {
+    mockLevels()
+    server.use(http.delete('/api/v1/levels', () => HttpResponse.json({ error: { code: -32603, message: 'config is read-only' } }, { status: 500 })))
+    open()
+    await userEvent.click(await screen.findByRole('button', { name: 'Reset to defaults' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Reset levels' }))
+    expect(await screen.findByText('config is read-only')).toBeInTheDocument()
   })
 })

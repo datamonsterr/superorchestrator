@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { ArrowDown, ArrowUp, Layers, Pencil, Plus, RotateCcw, RotateCw, Trash2, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -11,9 +12,9 @@ import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { HarnessBadge } from '@/components/common/HarnessBadge'
 import { ScrollTable } from '@/components/common/ScrollTable'
 import { TableSkeleton } from '@/components/common/TableSkeleton'
-import { useChoices, useLevels, usePutChoices, usePutLevels, useResetLevels } from '@/api/queries'
+import { qk, useChoices, useLevels, usePutChoices, usePutLevels, useResetLevels } from '@/api/queries'
 import { errorMessage } from '@/lib/errors'
-import type { Choice, Level, LevelChoiceView, LevelView } from '@/api/types'
+import type { Choice, Level, LevelChoiceView, LevelView, LevelsView } from '@/api/types'
 import { AddModelDialog } from './AddModelDialog'
 import { ChoiceDialog } from './ChoiceDialog'
 import { LevelDialog } from './LevelDialog'
@@ -27,7 +28,7 @@ function State({ c }: { c: LevelChoiceView }) {
 interface TableProps {
   level: LevelView
   pending: boolean
-  onMove: (level: LevelView, index: number, by: -1 | 1) => void
+  onMove: (level: LevelView, id: string, by: -1 | 1) => void
   onRemove: (level: LevelView, id: string) => void
 }
 
@@ -61,10 +62,10 @@ function ModelsTable({ level, pending, onMove, onRemove }: TableProps) {
                 <State c={c} />
               </TableCell>
               <TableCell className="text-right whitespace-nowrap">
-                <Button size="icon-sm" variant="ghost" aria-label={`Move ${c.id} up in ${level.name}`} disabled={pending || i === 0} onClick={() => onMove(level, i, -1)}>
+                <Button size="icon-sm" variant="ghost" aria-label={`Move ${c.id} up in ${level.name}`} disabled={pending || i === 0} onClick={() => onMove(level, c.id, -1)}>
                   <ArrowUp aria-hidden />
                 </Button>
-                <Button size="icon-sm" variant="ghost" aria-label={`Move ${c.id} down in ${level.name}`} disabled={pending || i === last} onClick={() => onMove(level, i, 1)}>
+                <Button size="icon-sm" variant="ghost" aria-label={`Move ${c.id} down in ${level.name}`} disabled={pending || i === last} onClick={() => onMove(level, c.id, 1)}>
                   <ArrowDown aria-hidden />
                 </Button>
                 <Button size="icon-sm" variant="ghost" aria-label={`Remove ${c.id} from ${level.name}`} disabled={pending} onClick={() => onRemove(level, c.id)}>
@@ -81,6 +82,7 @@ function ModelsTable({ level, pending, onMove, onRemove }: TableProps) {
 
 /** The Levels tab: complexity levels and the models each one allows. */
 export function LevelsPanel() {
+  const qc = useQueryClient()
   const query = useLevels()
   const choicesQuery = useChoices()
   const putLevels = usePutLevels()
@@ -92,37 +94,68 @@ export function LevelsPanel() {
   const [newModelFor, setNewModelFor] = useState<LevelView | null>(null)
   const [resetting, setResetting] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const queue = useRef<Promise<unknown>>(Promise.resolve())
   const view = query.data
   const choices = choicesQuery.data?.choices ?? []
-  const pending = putLevels.isPending || reset.isPending
+  const pending = putLevels.isPending || putChoices.isPending || reset.isPending
 
-  const save = (levels: Level[]) => putLevels.mutateAsync({ levels })
+  /**
+   * Saves the list `update` builds from the latest levels. Saves run one at a time, and each
+   * reads the cache after the previous one refetched it, so quick edits never overwrite each other.
+   */
+  const save = (update: (current: LevelView[]) => Level[]) => {
+    const run = queue.current
+      .catch(() => undefined)
+      .then(() => {
+        const current = qc.getQueryData<LevelsView>(qk.levels())?.levels ?? []
+        return putLevels.mutateAsync({ levels: update(current) })
+      })
+    queue.current = run
+    return run
+  }
   /** Row actions have no dialog, so a failure shows above the list. */
-  const run = (levels: Level[], done?: string) => {
+  const run = (update: (current: LevelView[]) => Level[], done?: string) => {
     setActionError(null)
-    save(levels).then(
+    setNotice(null)
+    save(update).then(
       () => done && toast.success(done),
       (e) => setActionError(errorMessage(e)),
     )
   }
-  const all = view?.levels ?? []
-  const replace = (level: LevelView, choiceList: Level['choices']) => all.map((l) => (l.name === level.name ? { ...levelOf(l), choices: choiceList } : levelOf(l)))
-
-  const move = (level: LevelView, index: number, by: -1 | 1) => {
-    const ids = level.choices.map((c) => c.id)
-    ;[ids[index], ids[index + by]] = [ids[index + by], ids[index]]
-    run(replace(level, ids.map((id, i) => ({ id, priority: i + 1 }))))
+  const edit = (name: string, change: (l: Level) => Level['choices']) => (current: LevelView[]) => {
+    if (!current.some((l) => l.name === name)) throw new Error(`Level ${name} no longer exists`)
+    return current.map((l) => (l.name === name ? { ...levelOf(l), choices: change(levelOf(l)) } : levelOf(l)))
   }
-  const remove = (level: LevelView, id: string) => run(replace(level, levelOf(level).choices?.filter((c) => c.id !== id)), `Removed ${id} from ${level.name}`)
+
+  const move = (level: LevelView, id: string, by: -1 | 1) =>
+    run(
+      edit(level.name, (l) => {
+        const ids = (l.choices ?? []).map((c) => c.id)
+        const i = ids.indexOf(id)
+        if (i < 0 || i + by < 0 || i + by >= ids.length) return l.choices
+        ;[ids[i], ids[i + by]] = [ids[i + by], ids[i]]
+        return ids.map((x, k) => ({ id: x, priority: k + 1 }))
+      }),
+    )
+  const remove = (level: LevelView, id: string) => run(edit(level.name, (l) => l.choices?.filter((c) => c.id !== id)), `Removed ${id} from ${level.name}`)
   const addModel = (level: LevelView, id: string, priority: number | undefined) =>
-    save(replace(level, [...(levelOf(level).choices ?? []), { id, ...(priority !== undefined ? { priority } : {}) }]))
-  /** Saves the new choice first, then lists it in the level. */
+    save(edit(level.name, (l) => [...(l.choices ?? []), { id, ...(priority !== undefined ? { priority } : {}) }]))
+  /** Saves the new choice first, then lists it in the level; the second step never reads refetched choices. */
   const saveNewChoice = async (list: Choice[]) => {
     const level = newModelFor
     const created = list.find((c) => !choices.some((x) => x.id === c.id))
     await putChoices.mutateAsync({ choices: list, routing_instruction: choicesQuery.data?.routing_instruction ?? '' })
-    if (level && created) await addModel(level, created.id, undefined)
+    if (!level || !created) return
+    setActionError(null)
+    try {
+      await addModel(level, created.id, undefined)
+      setNotice(`Added ${created.id} to ${level.name}`)
+    } catch (e) {
+      setActionError(`Choice ${created.id} created, but adding it to ${level.name} failed: ${errorMessage(e)}`)
+    }
   }
+  const all = view?.levels ?? []
 
   if (query.isError && !view) return <ErrorAlert error={query.error} title="Could not load levels" onRetry={() => void query.refetch()} />
   if (!view) return <TableSkeleton rows={4} columns={7} />
@@ -160,15 +193,20 @@ export function LevelsPanel() {
           <RotateCcw aria-hidden /> Reset to defaults
         </Button>
       </div>
+      {notice && (
+        <p role="status" className="text-sm">
+          {notice}
+        </p>
+      )}
       {actionError && <ErrorAlert error={actionError} title="Could not save levels" />}
 
       {view.levels.length === 0 ? (
         <EmptyState icon={Layers} title="No levels" description="Levels are disabled: the router picks among all eligible choices." action={<Button onClick={() => setLevelTarget('new')}>Add level</Button>} />
       ) : (
-        view.levels.map((l) => (
-          <section key={l.name} aria-labelledby={`level-${l.name}`} className="flex flex-col gap-2 rounded-lg border p-4" data-level={l.name}>
+        view.levels.map((l, n) => (
+          <section key={l.name} aria-labelledby={`level-${n}`} className="flex flex-col gap-2 rounded-lg border p-4" data-level={l.name}>
             <div className="flex flex-wrap items-center gap-2">
-              <h2 id={`level-${l.name}`} className="text-base font-semibold">
+              <h2 id={`level-${n}`} className="text-base font-semibold">
                 {l.name}
               </h2>
               <Badge variant="outline">
@@ -199,9 +237,9 @@ export function LevelsPanel() {
         ))
       )}
 
-      <LevelDialog target={levelTarget} levels={all} onClose={() => setLevelTarget(null)} onSave={save} />
-      <AddModelDialog level={adding} choices={choices} onClose={() => setAdding(null)} onSave={addModel} />
-      <ChoiceDialog target={newModelFor ? 'new' : null} choices={choices} onClose={() => setNewModelFor(null)} onSave={saveNewChoice} />
+      <LevelDialog target={levelTarget} levels={all} pending={pending} onClose={() => setLevelTarget(null)} onSave={save} />
+      <AddModelDialog level={adding} choices={choices} pending={pending} onClose={() => setAdding(null)} onSave={addModel} />
+      <ChoiceDialog target={newModelFor ? 'new' : null} choices={choices} pending={pending} description={newModelFor ? `The new choice is added to the ${newModelFor.name} level.` : undefined} onClose={() => setNewModelFor(null)} onSave={saveNewChoice} />
       <ConfirmDialog
         open={deleting !== null}
         onOpenChange={(o) => !o && setDeleting(null)}
@@ -214,7 +252,7 @@ export function LevelsPanel() {
           if (!deleting) return
           const name = deleting.name
           setActionError(null)
-          save(all.filter((l) => l.name !== name).map(levelOf)).then(
+          save((cur) => cur.filter((l) => l.name !== name).map(levelOf)).then(
             () => {
               toast.success(`Deleted ${name}`)
               setDeleting(null)
