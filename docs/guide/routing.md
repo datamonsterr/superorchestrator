@@ -63,7 +63,7 @@ Claude is not seeded. To allow a Claude model, list it on a level, for example `
 
 - `min` and `max` are integers from 0 to 100. The range covers complexity from `min` up to, but not including, `max + 1`, so a complexity of 37.5 is in a level `0-37`. A level with `max = 100` also includes 100.
 - Level names must be non-empty and unique. Ranges must not overlap. Gaps are allowed: a complexity in a gap goes to the nearest level, and a tie goes to the higher one.
-- An explicit `router.levels = []` loads and turns levels off (see below). Without the key, the defaults apply.
+- An explicit `router.levels = []` loads and turns levels off (see below). Without the key, the defaults apply. The default levels list no models, so nothing routes until some level lists models; `superorchestrator init` seeds five levels that do.
 
 ## How the router decides
 

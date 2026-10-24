@@ -326,6 +326,28 @@ async fn no_key_means_heuristic_without_calling_the_decider() {
 }
 
 #[tokio::test]
+async fn a_config_where_no_level_lists_a_model_says_so() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    w.config.router.levels = Config::default().router.levels;
+    let e = route_detailed(&w.inputs(), &params("x")).await.unwrap_err();
+    let RouterError::NoEligible(m) = e else {
+        panic!("{e:?}")
+    };
+    assert_eq!(
+        m,
+        "no level lists a model: add models = [\"harness/model/effort\"] to a [[router.levels]] entry"
+    );
+    // With models listed, the generic message stays.
+    let w = world("http://127.0.0.1:1/x", false);
+    let mut p = params("x");
+    p.exclude = vec![AGY_FAST.into(), CODEX_BIG.into(), CLAUDE_X.into()];
+    let RouterError::NoEligible(m) = route_detailed(&w.inputs(), &p).await.unwrap_err() else {
+        panic!()
+    };
+    assert!(m.starts_with("no eligible choice"), "{m}");
+}
+
+#[tokio::test]
 async fn heuristic_prefers_strong_models_for_hard_tasks_and_ignores_task_text_for_eligibility() {
     let w = world("http://127.0.0.1:1/x", false);
     let hard = route_detailed(

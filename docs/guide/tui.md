@@ -19,7 +19,7 @@ A header (version, supervisor state, config directory), the tabs, the body for t
 
 ## Tabs
 
-**1 Overview.** Four counters (accounts, active runs, runs waiting for review, checklist progress), the setup checklist, the latest runs and a Levels block. The Levels block lists each level as `name  min-max  ref, ref` (the model refs in order). It is shown when rows remain after the recent runs, so at 80x24 with runs listed it may be out of view. When no level lists models, the block shows one line: no levels list models (tier defaults apply). The checklist covers the config, the harnesses found on `PATH`, accounts, sign-ins, whether superorchestrator is registered with Claude Code, and the OpenRouter router key. Each missing item shows the fix beside it.
+**1 Overview.** Four counters (accounts, active runs, runs waiting for review, checklist progress), the setup checklist, the latest runs and a Levels block. The Levels block lists each level as `name  min-max  ref, ref` (the model refs in order). It is shown when rows remain after the recent runs, so at 80x24 with runs listed it may be out of view. When no level lists models, the block shows one line: no levels list models (nothing routes until one does). The checklist covers the config, the harnesses found on `PATH`, accounts, sign-ins, whether superorchestrator is registered with Claude Code, and the OpenRouter router key. Each missing item shows the fix beside it.
 
 **2 Accounts.** The account table: name, harness, signed in, enabled, cap, active runs and headroom.
 

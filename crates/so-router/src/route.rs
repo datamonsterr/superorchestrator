@@ -298,6 +298,9 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
         return Err(RouterError::NoEligible(if pinned {
             "nothing matches the named harness, account, model and effort with an available account"
                 .into()
+        } else if ctx.config.choices().is_empty() {
+            "no level lists a model: add models = [\"harness/model/effort\"] to a [[router.levels]] entry"
+                .into()
         } else {
             "no eligible choice: every model listed on a level is excluded, over its cap or out of headroom (or no level lists a model)"
                 .into()

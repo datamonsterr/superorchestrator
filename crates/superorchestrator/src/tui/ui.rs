@@ -471,7 +471,7 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
         let mut lines = vec![Line::raw(""), Line::styled("Levels", t.bold())];
         if s.levels.is_empty() {
             lines.push(Line::styled(
-                "no levels list models (tier defaults apply)",
+                "no levels list models (nothing routes until one does)",
                 t.muted(),
             ));
         }

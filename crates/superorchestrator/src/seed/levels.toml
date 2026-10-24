@@ -2,7 +2,8 @@
 # score lists the models allowed for it as harness/model/effort, most preferred first.
 # Ranges are inclusive and match the decider's five anchors (0, 25, 50, 75, 100).
 # Add a Claude line such as "claude/claude-sonnet-5-5/medium" to let auto routing use Claude as
-# the last resort (it ranks last unless named, SPEC 8.4). Delete these to use the tier defaults.
+# the last resort (it ranks last unless named, SPEC 8.4). A level with no models and a `tier` picks among the models
+# listed by other levels of that tier; with no models listed anywhere nothing can be routed.
 [[router.levels]]
 name = "trivial"
 min = 0

@@ -163,6 +163,13 @@ fn check_levels(
     accounts: &[AccountFile],
 ) {
     let Some(cfg) = cfg else { return };
+    if cfg.choices().is_empty() {
+        c.warn(
+            "levels",
+            "no level lists a model, so nothing can be routed: add models = [\"harness/model/effort\"] to a level (docs/guide/routing.md)",
+        );
+        return;
+    }
     let mut problems = Vec::new();
     for l in &cfg.router.levels {
         if l.models.is_empty() {
@@ -532,6 +539,16 @@ mod tests {
         l.models = models.iter().map(|m| m.parse().unwrap()).collect();
         cfg.router.levels = vec![l];
         cfg
+    }
+
+    #[test]
+    fn default_config_with_tier_only_levels_warns_that_nothing_can_be_routed() {
+        let (st, d) = levels_detail(&Config::default(), &[account_of(Harness::Codex, true)]);
+        assert_eq!(st, Status::Warn);
+        assert_eq!(
+            d,
+            "no level lists a model, so nothing can be routed: add models = [\"harness/model/effort\"] to a level (docs/guide/routing.md)"
+        );
     }
 
     #[test]

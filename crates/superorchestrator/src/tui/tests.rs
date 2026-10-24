@@ -1517,7 +1517,7 @@ fn overview_lists_levels_and_says_so_when_none_list_models() {
     a.snap.as_mut().unwrap().levels.clear();
     let empty = shot(&mut a, 120, 40);
     assert!(
-        empty.contains("no levels list models (tier defaults apply)"),
+        empty.contains("no levels list models (nothing routes until one does)"),
         "{empty}"
     );
 }

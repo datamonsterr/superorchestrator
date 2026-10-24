@@ -573,7 +573,7 @@ Tailwind `dark` class strategy on `<html>`, three-way toggle (system default). A
 
 ### 7.4 Empty, error, loading
 - Loading: `Skeleton` shaped like the final content (table rows, cards, a grey lane stack for the timeline); no spinners except in buttons and login polling.
-- Empty: sessions ("No sessions yet. Connect an orchestrator with `superorchestrator install`." with the command in `CommandBlock`), accounts ("Add your first account"), live runs ("No active runs"), levels ("no levels list models (tier defaults apply)"), agents, workflows.
+- Empty: sessions ("No sessions yet. Connect an orchestrator with `superorchestrator install`." with the command in `CommandBlock`), accounts ("Add your first account"), live runs ("No active runs"), levels ("no levels list models (nothing routes until one does)"), agents, workflows.
 - Error: query errors render `ErrorAlert` (message, code, Retry). A global `QueryCache.onError` toasts background refetch errors once per minute. 401 redirects to `/login`; 503 `UNAVAILABLE` shows "Supervisor unavailable" with the header pill red. A React error boundary per route shows a fallback card, so a timeline crash does not take down navigation.
 - Stream offline: amber pill and the 5 s polling fallback (2.3).
 
