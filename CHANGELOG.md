@@ -36,7 +36,7 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Changed
 
-- Seeded complexity levels now use Codex: `moderate` leads with `codex-luna-medium`, `complex` with `codex-high` and `expert` with `codex-xhigh`. New seeded choices `codex-luna-medium`, `codex-luna-high` (gpt-6-luna, added to the bundled catalog) and `codex-xhigh`. `opencode-muse-long` is seeded disabled because opencode no longer lists its free model. Existing configs are not changed; copy the levels and choices from `seed/` to adopt them. The bundled eval labels follow the new seed.
+- Seeded complexity levels now use Codex: `moderate` leads with `codex-luna-medium`, `complex` with `codex-high` and `expert` with `codex-xhigh`. New seeded choices `codex-luna-medium` (gpt-6-luna, added to the bundled catalog) and `codex-xhigh`. gpt-6-luna is used only for `moderate` and below, so `complex` and `expert` do not seed it. `opencode-muse-long` is seeded disabled because opencode no longer lists its free model. Existing configs are not changed; copy the levels and choices from `seed/` to adopt them. The bundled eval labels follow the new seed.
 - The old seeded model id for `opencode-muse-long` (`opencode/muse-spark-1.3-contributor-free`) is gone from opencode, and runs on it failed with "Model not found" (#7). The seed now has the choice disabled (see the entry above), so it is no longer routed to. Existing `config.toml` files keep the old id: edit or disable the choice. `models refresh` reports it.
 - The agy thinking-variant models `claude-sonnet-4-6` and `claude-opus-4-6-thinking` take no
   `--effort`. `spawn_agent` refuses an explicit `effort` for them with `INVALID_PARAMS` before

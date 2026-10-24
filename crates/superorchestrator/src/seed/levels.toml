@@ -35,8 +35,7 @@ min = 63
 max = 87
 choices = [
   { id = "codex-high", priority = 1 },
-  { id = "codex-luna-high", priority = 2 },
-  { id = "agy-sonnet-thinking", priority = 3 },
+  { id = "agy-sonnet-thinking", priority = 2 },
 ]
 
 [[router.levels]]

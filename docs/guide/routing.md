@@ -17,7 +17,7 @@ description = "Fast worker for bounded implementation, scripts, docs and routine
 enabled = true
 ```
 
-`init` seeds a set of choices. Codex choices start enabled: `codex-medium`, `codex-high` and `codex-xhigh` on gpt-6.1-sol, and `codex-luna-medium` and `codex-luna-high` on the cheaper gpt-6-luna. `opencode-muse-long` starts disabled because opencode no longer lists its free model. A choice with no signed-in account is skipped at routing time, so adding a Codex account is enough to use them. Claude choices start disabled. Set `enabled = true` to let auto routing use them as a last resort. Only you change `enabled`; `init` never rewrites it after the first run.
+`init` seeds a set of choices. Codex choices start enabled: `codex-medium`, `codex-high` and `codex-xhigh` on gpt-6.1-sol, and `codex-luna-medium` on the cheaper gpt-6-luna, which is seeded only for `moderate` and below. `opencode-muse-long` starts disabled because opencode no longer lists its free model. A choice with no signed-in account is skipped at routing time, so adding a Codex account is enough to use them. Claude choices start disabled. Set `enabled = true` to let auto routing use them as a last resort. Only you change `enabled`; `init` never rewrites it after the first run.
 
 Edit choices with `superorchestrator config edit`, or on the Choices page of the web UI. The installed `use-superorchestrator-mcp` skill lists enabled choices and refreshes when they change.
 

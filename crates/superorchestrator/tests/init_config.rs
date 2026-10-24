@@ -105,7 +105,7 @@ fn init_seeds_levels_that_validate_and_cover_the_scale() {
             ("trivial", 0, 12, 2),
             ("simple", 13, 37, 3),
             ("moderate", 38, 62, 3),
-            ("complex", 63, 87, 3),
+            ("complex", 63, 87, 2),
             ("expert", 88, 100, 3),
         ]
     );

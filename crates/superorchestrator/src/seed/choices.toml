@@ -97,15 +97,6 @@ description = "Codex gpt-6-luna (mid tier) with medium reasoning effort. Faster 
 enabled = true
 
 [[choices]]
-id = "codex-luna-high"
-harness = "codex"
-model = "gpt-6-luna"
-effort = "high"
-roles = ["worker"]
-description = "Codex gpt-6-luna (mid tier) with high reasoning effort. Faster and cheaper than gpt-6.1-sol: for demanding implementation and review that still has a clear approach. Escalate to codex-high or codex-xhigh when the approach or cause is unknown. Not eligible until a codex account is signed in."
-enabled = true
-
-[[choices]]
 id = "claude-sonnet"
 harness = "claude"
 model = "claude-sonnet-5-5"

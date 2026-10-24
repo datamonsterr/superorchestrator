@@ -308,7 +308,6 @@ async fn route_after_adding_codex(disable_codex: bool) -> std::process::Output {
             "codex-medium",
             "codex-xhigh",
             "codex-luna-medium",
-            "codex-luna-high",
         ] {
             let at = text.find(&format!("id = \"{id}\"")).unwrap();
             let off = text[at..].find("enabled = true").unwrap() + at;
