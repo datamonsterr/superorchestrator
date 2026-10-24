@@ -473,6 +473,7 @@ Behaviour:
 - **Failover.** Usage-limit failover follows 8.5. If no account is available, the step waits until the earliest reset time.
 - **Stalls.** `stallMs` restarts a stalled step up to 5 times.
 - **Saved workflows.** Scripts in `~/.config/superorchestrator/workflows/` and `.superorchestrator/workflows/` can be run by name.
+- **Step states.** `queued` (registered, waiting for one of the concurrent-agent slots), `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`. No step event is emitted for `queued`; a step's first event is `running`.
 - **Progress.** `workflow_status(id)` and `superorchestrator runs watch --workflow <id>`.
 - **No input.** Workflows have no mid-run input from a person.
 
@@ -528,7 +529,7 @@ The supervisor's replies stay complete, because the CLI and the web UI read them
 | `list_harnesses` | `{accounts: [{name, harness, signed_in?, disabled?, load: "active/cap", headroom?, cooldown?, error?}], choices: [{id, harness, model, effort?, roles?, description?, free?, eligible?: false, why?}], free_models?: {opencode: [...]}}`. `headroom` is `status 5hN wkN` per pool (remaining percent; `pool:` prefix unless `default`), left out when unknown, as is `signed_in`. `cooldown` is the latest `until`. `roles` is left out when it is `["worker"]`. A choice is eligible when the router would take it; otherwise `eligible: false` and `why` is `disabled`, `no account`, `account disabled`, `at cap`, `cooldown`, `no headroom` or `not eligible` (the router found no usable account for a reason the view cannot name). A choice is `free` when the catalog entry says `cost = "free"`; a model the catalog does not list is free when its id ends in `-free` or `:free` (one rule, `so_core::model_name_is_free`, shared with the generated skill). `free_models` lists the free catalog models of each harness that has an enabled account (opencode; `models refresh` updates the catalog, which is cached by file time). The supervisor builds this view when `list_harnesses` is called with `{"brief": true}`, which the bridge always does; without it the reply is the full `HarnessesView`. |
 | `read_messages` | `{messages: [{from_run, kind, body, created_at}]}`. |
 | `run_workflow` | `{id, state, result?, error?}`. |
-| `workflow_status` | `{id, name, state, result?, error?, started_at, finished_at?, steps: [{name, state, run_id?, phase?}]}`, steps in start order. |
+| `workflow_status` | `{id, name, state, result?, error?, started_at, finished_at?, steps: [{name, state, run_id?, phase?}]}`, steps in start order. A step state is `queued`, `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`. |
 
 `spawn_agent` accepts `model` to pin a model, so an orchestrator can pick one of `free_models` for a simple task.
 

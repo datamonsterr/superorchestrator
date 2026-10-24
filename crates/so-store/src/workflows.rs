@@ -509,6 +509,8 @@ mod tests {
         assert!(steps[0].finished_at.is_some());
         assert_eq!(steps[1].state, "running");
         s.insert_workflow_step(&mk(2)).unwrap();
+        s.update_workflow_step(&w.id, 2, "queued", None, None)
+            .unwrap();
         let open = s
             .cancel_open_workflow_steps(&w.id, crate::codec::now())
             .unwrap();

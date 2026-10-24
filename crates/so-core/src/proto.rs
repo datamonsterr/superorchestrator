@@ -759,7 +759,7 @@ pub struct WorkflowStep {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
-    /// `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`.
+    /// `queued`, `running`, `waiting`, `stalled`, `succeeded`, `failed`, `cached` or `cancelled`.
     pub state: String,
     /// The run behind the step; none for a cached step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
