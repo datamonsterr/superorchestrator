@@ -1,5 +1,5 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
-import type { ApiErrorBody, Event, Harness, Page, TranscriptLine } from '../types'
+import type { ApiErrorBody, Event, Harness, Level, Page, TranscriptLine } from '../types'
 import { LARGE_SESSION_ID, makeLargeSession, type LargeSession } from '@/test/fixtures/large'
 import * as fx from './fixtures'
 
@@ -140,6 +140,9 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
 
     http.get(`${B}/choices`, () => HttpResponse.json(fx.choices)),
     http.put(`${B}/choices`, async ({ request }) => HttpResponse.json(await request.json())),
+    http.get(`${B}/levels`, () => HttpResponse.json(fx.levels)),
+    http.put(`${B}/levels`, async ({ request }) => HttpResponse.json(fx.levelsViewOf(((await request.json()) as { levels: Level[] }).levels))),
+    http.delete(`${B}/levels`, () => HttpResponse.json(fx.levels)),
     http.get(`${B}/models`, () => HttpResponse.json(fx.models)),
     http.post(`${B}/models/refresh`, () => HttpResponse.json(fx.models)),
 

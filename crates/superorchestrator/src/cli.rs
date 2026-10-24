@@ -60,6 +60,9 @@ pub enum Command {
     /// Read and write config.toml
     #[command(subcommand)]
     Config(ConfigCmd),
+    /// Manage complexity levels and the choices they allow
+    #[command(subcommand)]
+    Levels(LevelsCmd),
     /// Check binaries, config, database, socket, UI port and sign-ins
     Doctor,
     /// Register the MCP server with harnesses and ship the skills
@@ -366,6 +369,95 @@ pub enum ConfigCmd {
     Set { key: String, value: String },
     /// Open config.toml in $EDITOR and validate it afterwards
     Edit,
+}
+
+/// Edits `router.levels` in config.toml; restart the supervisor to apply.
+#[derive(Subcommand, Debug)]
+pub enum LevelsCmd {
+    /// List levels, their ranges and the choices each allows
+    List,
+    /// Add a level
+    Add(LevelAdd),
+    /// Change a level's name, range or tier
+    Edit(LevelEdit),
+    /// Remove a level
+    Remove { name: String },
+    /// Remove router.levels so the defaults apply again
+    Reset,
+    /// Manage the choices a level lists
+    #[command(subcommand)]
+    Choice(LevelChoiceCmd),
+}
+
+#[derive(Args, Debug)]
+pub struct LevelAdd {
+    pub name: String,
+    /// Lowest complexity in the level (0 to 100)
+    #[arg(long)]
+    pub min: u8,
+    /// Highest complexity in the level (0 to 100)
+    #[arg(long)]
+    pub max: u8,
+    /// Model class used while the level lists no choices
+    #[arg(long, value_parser = ["high", "mid", "fast"])]
+    pub tier: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct LevelEdit {
+    pub name: String,
+    /// New name
+    #[arg(long = "name", value_name = "NEW")]
+    pub new_name: Option<String>,
+    #[arg(long)]
+    pub min: Option<u8>,
+    #[arg(long)]
+    pub max: Option<u8>,
+    #[arg(long, value_parser = ["high", "mid", "fast"], conflicts_with = "no_tier")]
+    pub tier: Option<String>,
+    /// Remove the tier (the level then needs choices)
+    #[arg(long)]
+    pub no_tier: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LevelChoiceCmd {
+    /// Add a choice to a level: an existing one by id, or a new one from --harness and --model
+    Add(LevelChoiceAdd),
+    /// Change a listed choice's priority
+    Set {
+        level: String,
+        choice: String,
+        /// Lower is preferred
+        #[arg(long)]
+        priority: u32,
+    },
+    /// Remove a choice from a level (the choice itself stays)
+    Remove { level: String, choice: String },
+}
+
+#[derive(Args, Debug)]
+pub struct LevelChoiceAdd {
+    pub level: String,
+    /// Id of an existing choice
+    #[arg(conflicts_with_all = ["harness", "model", "effort", "id", "role"])]
+    pub choice: Option<String>,
+    /// Lower is preferred
+    #[arg(long)]
+    pub priority: Option<u32>,
+    /// Create a new choice on this harness
+    #[arg(long, requires = "model")]
+    pub harness: Option<String>,
+    #[arg(long, requires = "harness")]
+    pub model: Option<String>,
+    #[arg(long)]
+    pub effort: Option<String>,
+    /// Id of the new choice (default: harness-model-effort)
+    #[arg(long)]
+    pub id: Option<String>,
+    /// Role of the new choice, repeatable (default: worker)
+    #[arg(long = "role")]
+    pub role: Vec<String>,
 }
 
 #[derive(Args, Debug)]

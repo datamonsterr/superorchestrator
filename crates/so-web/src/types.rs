@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use so_core::config::{Level, LevelTier};
 use so_core::proto::{
     AccountView, MessageView, RouteResult, RunView, SignInState, StatusResult, UsageTotals,
 };
@@ -279,6 +280,91 @@ pub struct ChoicesView {
     pub routing_instruction: String,
     /// The file differs from what the running supervisor loaded.
     pub restart_required: bool,
+}
+
+/// One choice a level lists, resolved against `choices`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LevelChoiceView {
+    pub id: String,
+    pub priority: Option<u32>,
+    /// `None` when `known` is false.
+    pub harness: Option<Harness>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// False for an unknown choice.
+    pub enabled: bool,
+    /// False when the id names no choice.
+    pub known: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LevelView {
+    pub name: String,
+    pub min: u8,
+    pub max: u8,
+    pub tier: Option<LevelTier>,
+    /// Display order: priority (lowest first, unset last), then as listed. Routing breaks ties
+    /// by account headroom, then load, not by this order.
+    pub choices: Vec<LevelChoiceView>,
+}
+
+/// Body of `PUT /levels`: the whole `router.levels` list. An empty list disables levels.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LevelsPut {
+    pub levels: Vec<Level>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LevelsView {
+    pub levels: Vec<LevelView>,
+    /// `config.toml` has no `router.levels`, so the defaults are in effect.
+    pub default_levels: bool,
+    /// The file differs from what the running supervisor loaded.
+    pub restart_required: bool,
+}
+
+impl LevelsView {
+    /// The levels of `cfg` with each listed choice resolved against `cfg.choices`.
+    pub fn resolve(cfg: &Config, default_levels: bool, restart_required: bool) -> Self {
+        let levels = cfg
+            .router
+            .levels
+            .iter()
+            .map(|l| {
+                let mut choices: Vec<LevelChoiceView> = l
+                    .choices
+                    .iter()
+                    .map(|lc| {
+                        let ch = cfg.choices.iter().find(|c| c.id == lc.id);
+                        LevelChoiceView {
+                            id: lc.id.clone(),
+                            priority: lc.priority,
+                            harness: ch.map(|c| c.harness),
+                            model: ch.map(|c| c.model.clone()),
+                            effort: ch.and_then(|c| c.effort.clone()),
+                            enabled: ch.is_some_and(|c| c.enabled),
+                            known: ch.is_some(),
+                        }
+                    })
+                    .collect();
+                // Stable: equal priorities keep their listed order (display only; routing breaks
+                // ties by headroom, then load).
+                choices.sort_by_key(|c| c.priority.unwrap_or(u32::MAX));
+                LevelView {
+                    name: l.name.clone(),
+                    min: l.min,
+                    max: l.max,
+                    tier: l.tier,
+                    choices,
+                }
+            })
+            .collect();
+        Self {
+            levels,
+            default_levels,
+            restart_required,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

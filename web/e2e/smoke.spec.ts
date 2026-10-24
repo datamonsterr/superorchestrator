@@ -38,3 +38,10 @@ test('dark mode toggle', async ({ page }) => {
   await page.getByRole('menuitemradio', { name: 'Light' }).click()
   await expect(page.locator('html')).not.toHaveClass(/dark/)
 })
+
+test('routing page shows the Levels tab with its models', async ({ page }) => {
+  await page.goto('/choices?tab=levels')
+  await expect(page.getByRole('tab', { name: 'Levels', selected: true })).toBeVisible()
+  await expect(page.getByText('Using the default levels')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Add level' })).toBeVisible()
+})

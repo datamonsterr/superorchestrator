@@ -308,8 +308,44 @@ export interface LevelChoice {
   priority?: number | null;
 }
 
+/** One choice a level lists, resolved against `choices`. */
+export interface LevelChoiceView {
+  effort?: string | null;
+  /** False for an unknown choice. */
+  enabled: boolean;
+  /** `None` when `known` is false. */
+  harness?: Harness | null;
+  id: string;
+  /** False when the id names no choice. */
+  known: boolean;
+  model?: string | null;
+  priority?: number | null;
+}
+
 /** Model class a level falls back to when it lists no choices. Mirrors the catalog's tier, which lives in `so-router`. */
 export type LevelTier = "high" | "mid" | "fast";
+
+export interface LevelView {
+  /** Display order: priority (lowest first, unset last), then as listed. Routing breaks ties by account headroom, then load, not by this order. */
+  choices: LevelChoiceView[];
+  max: number;
+  min: number;
+  name: string;
+  tier?: LevelTier | null;
+}
+
+/** Body of `PUT /levels`: the whole `router.levels` list. An empty list disables levels. */
+export interface LevelsPut {
+  levels: Level[];
+}
+
+export interface LevelsView {
+  /** `config.toml` has no `router.levels`, so the defaults are in effect. */
+  default_levels: boolean;
+  levels: LevelView[];
+  /** The file differs from what the running supervisor loaded. */
+  restart_required: boolean;
+}
 
 export interface Limits {
   global_cap?: number;

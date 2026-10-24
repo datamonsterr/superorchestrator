@@ -21,6 +21,7 @@ The browser's global history may still record the original fragment. A history e
 - **Session timeline.** One lane per run, nested under its parent, updated live. Click a lane for the run panel: brief, route decision, events, transcript, result, worktree, join command, and actions (message, cancel, accept, reject).
 - **Accounts.** Add, import, edit cap, priority and pools, enable or disable, flag a cooldown, remove, and sign in.
 - **Choices.** Edit choices and the routing instruction, preview a route, read the decision log.
+- **Levels.** A tab on the same page. Each complexity level shows its range, its tier and the models it allows (priority, choice, harness, model, effort, on/off/unknown). Add, edit and delete levels; add an existing choice to a level or create a new one for it; move a model up or down (this rewrites the priorities 1..n) or remove it; reset to the default levels. Every edit saves the whole list in one request and shows the server message if it is rejected. Without saved levels the tab says "Using the default levels" and lists the tier defaults. A banner appears when the saved levels differ from what the running supervisor loaded.
 - **Agents.** List, view and edit agent files.
 - **Workflows.** Saved workflows, runs and step status.
 - **Settings.** `config.toml` fields, notifications, worktree defaults and the key source for Jev. The key value is never shown.

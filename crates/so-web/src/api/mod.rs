@@ -91,6 +91,12 @@ pub fn routes() -> Router<AppState> {
             get(system::choices_get).put(system::choices_put),
         )
         .route(
+            "/api/v1/levels",
+            get(system::levels_get)
+                .put(system::levels_put)
+                .delete(system::levels_delete),
+        )
+        .route(
             "/api/v1/config",
             get(system::config_get).patch(system::config_patch),
         )

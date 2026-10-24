@@ -48,6 +48,8 @@ fn roots(g: &mut SchemaGenerator) {
     add::<PruneRequest>(g);
     add::<PruneResult>(g);
     add::<ChoicesView>(g);
+    add::<LevelsView>(g);
+    add::<LevelsPut>(g);
     add::<ConfigView>(g);
     add::<AddAccountRequest>(g);
     add::<ImportAccountRequest>(g);

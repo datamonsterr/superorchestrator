@@ -16,6 +16,8 @@ import type {
   HarnessesView,
   ImportCandidate,
   JoinView,
+  LevelsPut,
+  LevelsView,
   MessageView,
   ModelCatalog,
   Page,
@@ -84,6 +86,10 @@ export const endpoints = {
     request<Page<RouteRecord>>('/routing/records', { query: q, ...o }),
   getChoices: (o?: Opt) => request<ChoicesView>('/choices', o),
   putChoices: (body: ChoicesPut) => request<ChoicesView>('/choices', { method: 'PUT', body }),
+  getLevels: (o?: Opt) => request<LevelsView>('/levels', o),
+  putLevels: (body: LevelsPut) => request<LevelsView>('/levels', { method: 'PUT', body }),
+  /** Removes `router.levels`, so the defaults apply again. */
+  resetLevels: () => request<LevelsView>('/levels', { method: 'DELETE' }),
   getModels: (o?: Opt) => request<ModelCatalog>('/models', o),
   refreshModels: () => request<ModelCatalog>('/models/refresh', { method: 'POST' }),
 

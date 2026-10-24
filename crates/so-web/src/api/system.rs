@@ -21,8 +21,9 @@ use crate::extract::{ApiJson, ApiQuery, OptionalJson};
 use crate::page::{clamp_limit, decode_cursor, encode_cursor};
 use crate::state::AppState;
 use crate::types::{
-    Caps, ChoicesView, ConfigView, DailyUsage, DashboardView, Page, PruneRequest, PruneResult,
-    RouteRecord, RunViewPublic, SecretOrigin, SecretSource, StatusView, WorktreeView,
+    Caps, ChoicesView, ConfigView, DailyUsage, DashboardView, LevelsPut, LevelsView, Page,
+    PruneRequest, PruneResult, RouteRecord, RunViewPublic, SecretOrigin, SecretSource, StatusView,
+    WorktreeView,
 };
 
 fn caps(st: &AppState) -> Caps {
@@ -338,6 +339,48 @@ pub async fn choices_put(
         Config::set_in_file(&s.sup.paths, "choices", &choices)?;
         s.refresh_skill();
         Ok(Json(choices_view(&s)?))
+    })
+    .await
+}
+
+// ------------------------------------------------------------------ levels
+
+fn levels_view(st: &AppState) -> ApiResult<LevelsView> {
+    let disk = Config::load(&st.sup.paths)?;
+    let default_levels = !Config::file_sets_key(&st.sup.paths, "router.levels")?;
+    Ok(LevelsView::resolve(
+        &disk,
+        default_levels,
+        restart_required(st, &disk),
+    ))
+}
+
+pub async fn levels_get(State(st): State<AppState>) -> ApiResult<Json<LevelsView>> {
+    let s = st.clone();
+    st.blocking(move || Ok(Json(levels_view(&s)?))).await
+}
+
+pub async fn levels_put(
+    State(st): State<AppState>,
+    ApiJson(b): ApiJson<LevelsPut>,
+) -> ApiResult<Json<LevelsView>> {
+    let s = st.clone();
+    st.blocking(move || {
+        let levels = toml::Value::try_from(&b.levels)
+            .map_err(ApiError::internal)?
+            .to_string();
+        Config::set_in_file(&s.sup.paths, "router.levels", &levels)?;
+        Ok(Json(levels_view(&s)?))
+    })
+    .await
+}
+
+/// Removes `router.levels` so the defaults apply again.
+pub async fn levels_delete(State(st): State<AppState>) -> ApiResult<Json<LevelsView>> {
+    let s = st.clone();
+    st.blocking(move || {
+        Config::unset_in_file(&s.sup.paths, "router.levels")?;
+        Ok(Json(levels_view(&s)?))
     })
     .await
 }
