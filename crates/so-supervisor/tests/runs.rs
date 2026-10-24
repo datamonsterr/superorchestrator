@@ -870,3 +870,97 @@ async fn run_tokens_are_distinct_and_authenticate_after_supervisor_restart() {
     assert_eq!(view(&c, &first.run_id).await.state, RunState::Succeeded);
     h.shutdown().await;
 }
+
+/// Shell step that proves `TMPDIR` is a live dir during the run: it drops a file in it
+/// and records the path next to it, outside the temp dir.
+fn tmp_probe() -> serde_json::Value {
+    json!({"shell": r#"touch "$TMPDIR/leftover" && printf %s "$TMPDIR" > "$TMPDIR/../tmp-seen""#})
+}
+
+fn assert_run_tmp_removed(env: &Env, run_id: &str) {
+    let run_dir = env.paths.run_dir(run_id);
+    let seen = std::fs::read_to_string(run_dir.join("tmp-seen")).unwrap();
+    assert_eq!(Path::new(&seen), env.paths.run_tmp_dir(run_id));
+    assert!(!run_dir.join("tmp").exists());
+    // Only the temp dir goes; the rest of the run dir stays.
+    assert!(run_dir.join("transcript.jsonl").exists());
+}
+
+#[tokio::test]
+async fn run_tmp_dir_is_removed_when_the_run_succeeds() {
+    let env = Env::new();
+    env.account("claude-acc1", 2, &ok_script(&[tmp_probe()]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = env.spawn_params("claude-acc1");
+    p.wait = true;
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Succeeded);
+    assert_run_tmp_removed(&env, &r.run_id);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn run_tmp_dir_is_removed_when_the_run_fails() {
+    let env = Env::new();
+    let result = result_msg(json!({"is_error": true, "result": "Claude AI usage limit reached"}));
+    env.account(
+        "claude-acc1",
+        2,
+        &script(&[
+            json!({"expect_stdin_contains": PROMPT}),
+            json!({"stdout": init_msg()}),
+            tmp_probe(),
+            json!({"stdout": result}),
+        ]),
+    );
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let mut p = env.spawn_params("claude-acc1");
+    p.wait = true;
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Failed);
+    assert_run_tmp_removed(&env, &r.run_id);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn run_tmp_dir_is_removed_when_the_run_is_cancelled() {
+    let env = Env::new();
+    env.account(
+        "claude-acc1",
+        2,
+        &script(&[
+            json!({"expect_stdin_contains": PROMPT}),
+            json!({"stdout": init_msg()}),
+            tmp_probe(),
+            json!({"expect_stdin_contains": "interrupt"}),
+            json!({"stdout": {"type": "control_response",
+                "response": {"subtype": "success", "request_id": "so-int-1"}}}),
+        ]),
+    );
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let r = spawn(&c, env.spawn_params("claude-acc1")).await;
+    wait_state(&c, &r.run_id, RunState::Running).await;
+    let tmp = env.paths.run_tmp_dir(&r.run_id);
+    for _ in 0..100 {
+        if tmp.join("leftover").exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(tmp.join("leftover").exists(), "temp dir missing mid-run");
+    let v: RunView = c
+        .call(
+            METHOD_CANCEL_AGENT,
+            RunRef {
+                run: r.run_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(v.state, RunState::Cancelled);
+    assert_run_tmp_removed(&env, &r.run_id);
+    h.shutdown().await;
+}

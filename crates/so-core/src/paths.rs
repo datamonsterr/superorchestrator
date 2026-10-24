@@ -113,6 +113,10 @@ impl Paths {
     pub fn run_dir(&self, run_id: &str) -> PathBuf {
         self.runs_dir().join(run_id)
     }
+    /// The run's private temp dir, exposed to its harness as `TMPDIR` and removed when the run ends.
+    pub fn run_tmp_dir(&self, run_id: &str) -> PathBuf {
+        run_tmp_dir(&self.run_dir(run_id))
+    }
     pub fn logs_dir(&self) -> PathBuf {
         self.config_dir.join("logs")
     }
@@ -127,6 +131,11 @@ impl Paths {
     pub fn socket_path() -> Result<PathBuf> {
         socket_path_with(&process_env, Platform::current())
     }
+}
+
+/// The temp dir of the run whose state dir is `run_dir`.
+pub fn run_tmp_dir(run_dir: &Path) -> PathBuf {
+    run_dir.join("tmp")
 }
 
 /// Socket path: `SUPERORCHESTRATOR_SOCKET`; else on Linux `$XDG_RUNTIME_DIR/superorchestrator.sock`
@@ -167,6 +176,13 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         move |k| m.get(k).cloned()
+    }
+
+    #[test]
+    fn run_tmp_dir_is_under_the_run_dir() {
+        let p = Paths::from_dir(PathBuf::from("/c"));
+        assert_eq!(p.run_tmp_dir("r1"), PathBuf::from("/c/runs/r1/tmp"));
+        assert_eq!(run_tmp_dir(&p.run_dir("r1")), p.run_tmp_dir("r1"));
     }
 
     #[test]

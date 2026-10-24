@@ -24,10 +24,13 @@ A name matches `^[a-z][a-z0-9-]{1,31}$`. The name is also the wrapper command, s
 
 Processes the supervisor launches (run harnesses, usage and model probes, `doctor`
 version checks) start with an empty environment and inherit only `PATH`, `HOME`,
-`USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `COLORTERM`, `TZ`, `TMPDIR`,
+`USER`, `LOGNAME`, `SHELL`, `LANG`, `LC_*`, `TERM`, `COLORTERM`, `TZ`,
 `XDG_*`, proxy variables (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`, `ALL_PROXY`, in any
 case), `SSL_CERT_FILE` and `SSL_CERT_DIR`. The `XDG_*` prefix means the harness also
 sees `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and the other XDG directory variables.
+`TMPDIR` is inherited by those probes, but a run's harness gets its own `TMPDIR` (plus
+`CLAUDE_CODE_TMPDIR` and `BUN_TMPDIR`) under the run directory, removed when the run ends;
+an account variable of the same name still overrides it.
 `DBUS_SESSION_BUS_ADDRESS` is inherited so agy can reach the user's keyring
 (ADR-0003); this exposes your session bus to every harness.
 

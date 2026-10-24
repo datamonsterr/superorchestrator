@@ -536,6 +536,9 @@ impl Supervised {
     }
 }
 
+/// Variables that point a harness at its run's temp dir.
+const RUN_TMP_VARS: &[&str] = &["TMPDIR", "CLAUDE_CODE_TMPDIR", "BUN_TMPDIR"];
+
 /// Spawns `cmd` as a supervised process: piped stdio, `kill_on_drop`, own
 /// process group, transcript in `run_dir`. Events: `Raw` for every line on
 /// stdout, stderr and stdin; parser events after the matching `Raw`; `Exited`
@@ -560,6 +563,15 @@ pub fn spawn_supervised_with(
     stderr_parser: Option<Box<dyn LineParser>>,
     pass_env: &[String],
 ) -> Result<Supervised, DriverError> {
+    let tmp = so_core::paths::run_tmp_dir(run_dir);
+    create_private_dir(&tmp)
+        .map_err(|e| DriverError::Other(format!("create {}: {e}", tmp.display())))?;
+    for name in RUN_TMP_VARS {
+        // An explicit account or driver value for the name wins.
+        if !cmd.as_std().get_envs().any(|(k, _)| k == *name) {
+            cmd.env(name, &tmp);
+        }
+    }
     // Every harness the supervisor launches starts from the isolated baseline
     // plus the account's opted-in names (GHSA-rfwj-83wf-qr2g). Explicit
     // driver and launch variables already set on `cmd` still win.
@@ -678,5 +690,54 @@ mod tests {
             std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
             0o600
         );
+    }
+
+    struct NoParse;
+    impl LineParser for NoParse {
+        fn parse_line(&mut self, _: &str) -> Vec<HarnessEvent> {
+            vec![]
+        }
+    }
+
+    async fn stdout_lines(cmd: Command, run_dir: &Path) -> Vec<String> {
+        let mut s = spawn_supervised(cmd, run_dir, Duration::from_secs(1), NoParse, &[]).unwrap();
+        let mut out = vec![];
+        while let Some(ev) = s.events.recv().await {
+            if let HarnessEvent::Raw {
+                channel: Channel::Stdout,
+                line,
+                ..
+            } = ev
+            {
+                out.push(line);
+            }
+        }
+        out
+    }
+
+    const PROBE: &str =
+        r#"echo "$TMPDIR"; echo "$CLAUDE_CODE_TMPDIR"; echo "$BUN_TMPDIR"; stat -c %a "$TMPDIR""#;
+
+    #[tokio::test]
+    async fn child_gets_a_private_run_tmp_dir() {
+        let d = tempfile::tempdir().unwrap();
+        let run_dir = d.path().join("run");
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", PROBE]);
+        let lines = stdout_lines(cmd, &run_dir).await;
+        let tmp = so_core::paths::run_tmp_dir(&run_dir).display().to_string();
+        assert_eq!(lines, [tmp.clone(), tmp.clone(), tmp, "700".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn explicit_tmpdir_is_kept() {
+        let d = tempfile::tempdir().unwrap();
+        let run_dir = d.path().join("run");
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", r#"echo "$TMPDIR"; echo "$BUN_TMPDIR""#])
+            .env("TMPDIR", "/explicit");
+        let lines = stdout_lines(cmd, &run_dir).await;
+        let tmp = so_core::paths::run_tmp_dir(&run_dir).display().to_string();
+        assert_eq!(lines, ["/explicit".to_string(), tmp]);
     }
 }

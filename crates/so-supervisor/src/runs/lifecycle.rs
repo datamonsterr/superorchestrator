@@ -895,6 +895,7 @@ impl RunManager {
                 }
                 // The run is over (or unreadable); a worktree it left behind is still ours.
                 self.cleanup_worktree(run_id).await;
+                self.cleanup_run_tmp(run_id).await;
                 false
             }
         };
@@ -1020,6 +1021,7 @@ impl RunManager {
             rt.live = None;
         }
         self.cleanup_worktree(run_id).await;
+        self.cleanup_run_tmp(run_id).await;
         self.maybe_end_session(&sid).await;
     }
 
@@ -1058,6 +1060,21 @@ impl RunManager {
             }
             Ok(false) => {}
             Err(e) => tracing::warn!(%session_id, error = %e.message, "could not end session"),
+        }
+    }
+
+    /// Removes the run's private temp dir; the rest of the run dir stays.
+    async fn cleanup_run_tmp(&self, run_id: &str) {
+        let dir = self.inner.paths.run_tmp_dir(run_id);
+        let removed = self.blocking({
+            let dir = dir.clone();
+            move || std::fs::remove_dir_all(dir)
+        });
+        match removed.await {
+            Ok(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => {
+                tracing::warn!(%run_id, dir = %dir.display(), error = %e, "could not remove run temp dir");
+            }
+            _ => {}
         }
     }
 
