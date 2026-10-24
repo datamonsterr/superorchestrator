@@ -148,17 +148,7 @@ fn parse_pins(p: &RouteParams) -> Result<Pins> {
         .transpose()
         .map_err(|e| RouterError::Invalid(e.to_string()))?;
     let blank = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
-    let (mut harness, mut model, mut effort) = (harness, blank(&p.model), blank(&p.effort));
-    // A model that starts with a harness name and `/` is a ref (`harness/model[/effort]`) and
-    // pins all of its parts; a malformed one is an error. Anything else, such as `gpt-6.1-sol`
-    // or `x/y`, is a plain model name. So is `opencode/<one segment>`, because opencode model
-    // ids start with their provider, which can be `opencode`.
-    let is_ref = |m: &str| match m.split_once('/') {
-        Some((h, rest)) if h.parse::<Harness>().is_ok() => {
-            !(h == "opencode" && !rest.is_empty() && !rest.contains('/'))
-        }
-        _ => false,
-    };
+    let (model, effort) = (blank(&p.model), blank(&p.effort));
     let invalid = |reason: String| RouterError::Invalid(reason);
     if let Some(e) = &effort
         && let Some(problem) = so_core::selector_problem("effort", e)
@@ -166,40 +156,15 @@ fn parse_pins(p: &RouteParams) -> Result<Pins> {
         return Err(invalid(problem));
     }
     if let Some(m) = model.as_deref()
-        && !is_ref(m)
+        && !so_core::is_model_ref(m)
         && let Some(problem) = so_core::selector_problem("model", m)
     {
         return Err(invalid(problem));
     }
-    if let Some(r) = model.as_deref().filter(|m| is_ref(m)) {
-        let r = r.parse::<Choice>().map_err(|e| invalid(e.to_string()))?;
-        // Only opencode model ids contain `/`. Elsewhere a `/` left in the model means the
-        // last segment was meant as an effort the harness does not accept.
-        if r.harness != Harness::Opencode && r.model.contains('/') {
-            let list = r.harness.accepted_efforts().unwrap_or_default().join("|");
-            return Err(invalid(format!(
-                "invalid model ref: `{}` is not a {} effort ({list})",
-                r.model.rsplit('/').next().unwrap_or_default(),
-                r.harness
-            )));
-        }
-        if let Some(h) = harness.filter(|h| *h != r.harness) {
-            return Err(RouterError::Invalid(format!(
-                "model ref names {} but harness is {h}",
-                r.harness
-            )));
-        }
-        if let (Some(re), Some(e)) = (&r.effort, &effort)
-            && re != e
-        {
-            return Err(RouterError::Invalid(format!(
-                "model ref has effort {re} but effort is {e}"
-            )));
-        }
-        harness = Some(r.harness);
-        effort = r.effort.or(effort);
-        model = Some(r.model);
-    }
+    // A model ref pins harness, model and effort; see `so_core::resolve_model_ref`.
+    let (harness, model, effort) =
+        so_core::resolve_model_ref(harness, model.as_deref(), effort.as_deref())
+            .map_err(invalid)?;
     Ok(Pins {
         harness,
         account: blank(&p.account),
