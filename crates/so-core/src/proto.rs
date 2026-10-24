@@ -216,8 +216,9 @@ pub struct StatusResult {
 #[serde(deny_unknown_fields)]
 pub struct RouteParams {
     pub prompt: String,
+    /// Agent profile name the work is for; the decider sees it as `agent` (default `worker`).
     #[serde(default)]
-    pub role: Option<String>,
+    pub agent: Option<String>,
     /// Choice ids to drop from the eligible set.
     #[serde(default)]
     pub exclude: Vec<String>,

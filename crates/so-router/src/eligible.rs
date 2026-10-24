@@ -141,30 +141,18 @@ pub fn candidate<'a>(
     })
 }
 
-/// Enabled choices that match `role` (`worker` by default), are not excluded and have at
-/// least one usable account. Task text plays no part in this.
+/// Choices that are not excluded and have at least one usable account. Task text plays no
+/// part in this. `choices` are the distinct refs of `Config::choices()`.
 pub fn eligible<'a>(
     choices: &[Choice],
     catalog: &Catalog,
     snapshot: &'a Snapshot,
-    role: &str,
     exclude: &[String],
 ) -> Vec<Candidate<'a>> {
     choices
         .iter()
-        .filter(|c| c.enabled && c.roles.iter().any(|r| r == role) && !exclude.contains(&c.id))
-        .filter(|c| c.effort_problem().is_none())
+        .filter(|c| !exclude.contains(&c.id()))
         .filter_map(|c| candidate(c, catalog, snapshot))
-        .collect()
-}
-
-/// Enabled `role` choices that routing skips because their effort is not valid for their
-/// harness, each as `choice <id>: <problem>`. The run would fail at launch otherwise.
-pub fn effort_skips(choices: &[Choice], role: &str, exclude: &[String]) -> Vec<String> {
-    choices
-        .iter()
-        .filter(|c| c.enabled && c.roles.iter().any(|r| r == role) && !exclude.contains(&c.id))
-        .filter_map(|c| c.effort_problem().map(|p| format!("choice {}: {p}", c.id)))
         .collect()
 }
 
@@ -184,16 +172,8 @@ pub fn apply_claude_rank(cands: Vec<Candidate<'_>>) -> Vec<Candidate<'_>> {
 pub(crate) mod tests {
     use super::*;
 
-    pub fn choice(id: &str, h: Harness, model: &str, roles: &[&str]) -> Choice {
-        Choice {
-            id: id.into(),
-            harness: h,
-            model: model.into(),
-            effort: None,
-            roles: roles.iter().map(|r| r.to_string()).collect(),
-            description: format!("desc {id}"),
-            enabled: true,
-        }
+    pub fn choice(text: &str) -> Choice {
+        text.parse().unwrap_or_else(|e| panic!("{text}: {e}"))
     }
 
     pub fn account(name: &str, h: Harness, cap: u32, active: u32) -> AccountState {
@@ -213,72 +193,19 @@ pub(crate) mod tests {
     }
 
     fn ids(v: &[Candidate<'_>]) -> Vec<String> {
-        v.iter().map(|c| c.choice.id.clone()).collect()
+        v.iter().map(|c| c.choice.id()).collect()
     }
 
     #[test]
-    fn agy_thinking_variant_model_with_an_effort_override_is_not_eligible() {
-        let mut bad = choice("ag", Harness::Agy, "claude-sonnet-4-6", &["worker"]);
-        bad.effort = Some("high".into());
-        let mut ok = choice("ag2", Harness::Agy, "claude-opus-4-6-thinking", &["worker"]);
-        ok.effort = None;
-        let choices = vec![bad, ok];
+    fn filters_exclude_cap_and_exhausted_and_picks_the_agy_pool() {
         let cat = Catalog::default_catalog();
-        let snap = Snapshot {
-            accounts: vec![account("a1", Harness::Agy, 2, 0)],
-        };
-        let got = eligible(&choices, &cat, &snap, "worker", &[]);
-        assert_eq!(ids(&got), ["ag2"]);
-        assert_eq!(effort_skips(&choices, "worker", &[]).len(), 1);
-    }
-
-    #[test]
-    fn choice_with_an_effort_its_harness_rejects_is_not_eligible() {
-        let mut bad = choice("cl", Harness::Claude, "sonnet", &["worker"]);
-        bad.effort = Some("thinking".into());
-        let mut agy = choice("ag", Harness::Agy, "claude-sonnet-4-6", &["worker"]);
-        agy.effort = Some("thinking".into());
-        let choices = vec![bad, agy];
-        let cat = Catalog::default_catalog();
-        let snap = Snapshot {
-            accounts: vec![
-                account("c1", Harness::Claude, 2, 0),
-                account("a1", Harness::Agy, 2, 0),
-            ],
-        };
-        let got = eligible(&choices, &cat, &snap, "worker", &[]);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].choice.id, "ag");
-        assert_eq!(
-            effort_skips(&choices, "worker", &[]),
-            ["choice cl: effort `thinking` is not valid for claude (low|medium|high|xhigh|max)"]
-        );
-    }
-
-    #[test]
-    fn filters_disabled_role_exclude_cap_and_exhausted() {
-        let cat = Catalog::default_catalog();
-        let mut disabled = choice("off", Harness::Codex, "gpt-6.1-sol", &["worker"]);
-        disabled.enabled = false;
         let choices = vec![
-            choice("ok", Harness::Codex, "gpt-6.1-sol", &["worker"]),
-            disabled,
-            choice("other-role", Harness::Codex, "gpt-6.1-sol", &["reviewer"]),
-            choice("excluded", Harness::Codex, "gpt-6.1-sol", &["worker"]),
-            choice(
-                "full",
-                Harness::Opencode,
-                "opencode/big-pickle",
-                &["worker"],
-            ),
-            choice("flash", Harness::Agy, "gemini-3.8-flash-low", &["worker"]),
-            choice("sonnet", Harness::Agy, "claude-sonnet-4-6", &["worker"]),
-            choice(
-                "no-account",
-                Harness::Claude,
-                "claude-haiku-5-5",
-                &["worker"],
-            ),
+            choice("codex/gpt-6.1-sol/high"),
+            choice("codex/gpt-6.1-sol/medium"),
+            choice("opencode/opencode/big-pickle"),
+            choice("agy/gemini-3.8-flash-low/low"),
+            choice("agy/claude-sonnet-4-6/thinking"),
+            choice("claude/claude-haiku-5-5/medium"),
         ];
         let mut agy = account("agy1", Harness::Agy, 2, 0);
         agy.pools.get_mut("claude").unwrap().available = false;
@@ -290,11 +217,12 @@ pub(crate) mod tests {
                 agy,
             ],
         };
-        let got = eligible(&choices, &cat, &snap, "worker", &["excluded".into()]);
-        assert_eq!(ids(&got), vec!["ok", "flash"]);
+        let got = eligible(&choices, &cat, &snap, &["codex/gpt-6.1-sol/medium".into()]);
+        assert_eq!(
+            ids(&got),
+            ["codex/gpt-6.1-sol/high", "agy/gemini-3.8-flash-low/low"]
+        );
         assert_eq!(got[1].pool, "gemini");
-        let got = eligible(&choices, &cat, &snap, "reviewer", &[]);
-        assert_eq!(ids(&got), vec!["other-role"]);
     }
 
     #[test]
@@ -303,16 +231,16 @@ pub(crate) mod tests {
         let mut a = account("cx", Harness::Codex, 2, 0);
         a.file.enabled = false;
         let snap = Snapshot { accounts: vec![a] };
-        let c = [choice("ok", Harness::Codex, "gpt-6.1-sol", &["worker"])];
-        assert!(eligible(&c, &cat, &snap, "worker", &[]).is_empty());
+        let c = [choice("codex/gpt-6.1-sol/high")];
+        assert!(eligible(&c, &cat, &snap, &[]).is_empty());
     }
 
     #[test]
     fn claude_ranks_last() {
         let cat = Catalog::default_catalog();
         let choices = vec![
-            choice("cl", Harness::Claude, "claude-haiku-5-5", &["worker"]),
-            choice("cx", Harness::Codex, "gpt-6.1-sol", &["worker"]),
+            choice("claude/claude-haiku-5-5/medium"),
+            choice("codex/gpt-6.1-sol/high"),
         ];
         let snap = Snapshot {
             accounts: vec![
@@ -320,10 +248,16 @@ pub(crate) mod tests {
                 account("x1", Harness::Codex, 2, 0),
             ],
         };
-        let all = eligible(&choices, &cat, &snap, "worker", &[]);
-        assert_eq!(ids(&all), vec!["cl", "cx"]);
-        assert_eq!(ids(&apply_claude_rank(all)), vec!["cx"]);
-        let only = eligible(&choices, &cat, &snap, "worker", &["cx".into()]);
-        assert_eq!(ids(&apply_claude_rank(only)), vec!["cl"]);
+        let all = eligible(&choices, &cat, &snap, &[]);
+        assert_eq!(
+            ids(&all),
+            ["claude/claude-haiku-5-5/medium", "codex/gpt-6.1-sol/high"]
+        );
+        assert_eq!(ids(&apply_claude_rank(all)), ["codex/gpt-6.1-sol/high"]);
+        let only = eligible(&choices, &cat, &snap, &["codex/gpt-6.1-sol/high".into()]);
+        assert_eq!(
+            ids(&apply_claude_rank(only)),
+            ["claude/claude-haiku-5-5/medium"]
+        );
     }
 }

@@ -14,14 +14,14 @@ use so_core::{AccountFile, Choice, Config, Harness};
 use so_store::Store;
 
 use crate::catalog::Catalog;
-use crate::eligible::{Candidate, Snapshot, apply_claude_rank, candidate, effort_skips, eligible};
+use crate::eligible::{Candidate, Snapshot, apply_claude_rank, candidate, eligible};
 use crate::error::{Result, RouterError};
 use crate::heuristic::{
     Complexity, ScoreInputs, effort_gap, estimate_complexity_score, harness_priority, score,
 };
 use crate::jev::{EnvFn, JevFailure, JevRequest, decide, process_env, resolve_key};
 use crate::levels;
-use crate::select::{headroom_of, rank_accounts, select_account};
+use crate::select::{headroom_of, rank_accounts, select_account, select_account_with_reason};
 
 pub const MAX_PROMPT_CHARS: usize = 200_000;
 const ALTERNATIVES: usize = 3;
@@ -73,10 +73,9 @@ pub struct RouteOutcome {
     pub fallback_reason: Option<String>,
 }
 
-/// SHA-256 over choices, policy, instruction and levels: changes when routing behaviour would.
+/// SHA-256 over levels (which hold the models), policy and instruction: changes when routing behaviour would.
 pub fn config_fingerprint(config: &Config) -> String {
     let v = json!({
-        "choices": config.choices,
         "policy": config.router.policy,
         "instruction": config.router.instruction,
         "levels": config.router.levels,
@@ -111,17 +110,16 @@ pub async fn route_detailed(
     route_with(&ctx, params).await
 }
 
-/// Ids of the choices the decider would be offered for `role`.
-pub fn eligible_choice_ids(ctx: &RouteCtx<'_>, role: &str, exclude: &[String]) -> Vec<String> {
+/// Ids of the choices the decider would be offered.
+pub fn eligible_choice_ids(ctx: &RouteCtx<'_>, exclude: &[String]) -> Vec<String> {
     apply_claude_rank(eligible(
-        &ctx.config.choices,
+        &ctx.config.choices(),
         ctx.catalog,
         ctx.snapshot,
-        role,
         exclude,
     ))
     .into_iter()
-    .map(|c| c.choice.id)
+    .map(|c| c.choice.id())
     .collect()
 }
 
@@ -149,11 +147,32 @@ fn parse_pins(p: &RouteParams) -> Result<Pins> {
         .transpose()
         .map_err(|e| RouterError::Invalid(e.to_string()))?;
     let blank = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
+    let (mut harness, mut model, mut effort) = (harness, blank(&p.model), blank(&p.effort));
+    // A model that reads as a ref (`harness/model[/effort]`) pins all of its parts; anything
+    // else, such as `gpt-6.1-sol` or `opencode/deepseek-v4.1-flash-free`, is a plain model name.
+    if let Some(r) = model.as_deref().and_then(|m| m.parse::<Choice>().ok()) {
+        if let Some(h) = harness.filter(|h| *h != r.harness) {
+            return Err(RouterError::Invalid(format!(
+                "model ref names {} but harness is {h}",
+                r.harness
+            )));
+        }
+        if let (Some(re), Some(e)) = (&r.effort, &effort)
+            && re != e
+        {
+            return Err(RouterError::Invalid(format!(
+                "model ref has effort {re} but effort is {e}"
+            )));
+        }
+        harness = Some(r.harness);
+        effort = r.effort.or(effort);
+        model = Some(r.model);
+    }
     Ok(Pins {
         harness,
         account: blank(&p.account),
-        model: blank(&p.model),
-        effort: blank(&p.effort),
+        model,
+        effort,
     })
 }
 
@@ -163,13 +182,7 @@ fn pinned_candidates<'a>(
     pins: &Pins,
 ) -> Vec<Candidate<'a>> {
     let matches = |c: &Choice| {
-        c.enabled
-            && !params.exclude.contains(&c.id)
-            && params
-                .role
-                .as_ref()
-                .is_none_or(|r| c.roles.iter().any(|x| x == r))
-            && c.effort_problem().is_none()
+        !params.exclude.contains(&c.id())
             && pins.harness.is_none_or(|h| c.harness == h)
             && pins.model.as_ref().is_none_or(|m| &c.model == m)
             && pins
@@ -179,7 +192,7 @@ fn pinned_candidates<'a>(
     };
     let mut cands: Vec<Candidate<'a>> = ctx
         .config
-        .choices
+        .choices()
         .iter()
         .filter(|c| matches(c))
         .filter_map(|c| candidate(c, ctx.catalog, ctx.snapshot))
@@ -187,14 +200,11 @@ fn pinned_candidates<'a>(
     if cands.is_empty()
         && let (Some(harness), Some(model)) = (pins.harness, pins.model.clone())
     {
+        // No level lists it, but the call named it: it still runs.
         let synthetic = Choice {
-            id: so_core::pinned_choice_id(harness, Some(&model)),
             harness,
             model,
             effort: pins.effort.clone(),
-            roles: params.role.iter().cloned().collect(),
-            description: "named by the call".into(),
-            enabled: true,
         };
         cands.extend(candidate(&synthetic, ctx.catalog, ctx.snapshot));
     }
@@ -243,45 +253,21 @@ fn heuristic_rank<'a>(
 
 fn alternative(cand: &Candidate<'_>, score: Option<f64>) -> RouteAlternative {
     RouteAlternative {
-        choice_id: cand.choice.id.clone(),
+        choice_id: cand.choice.id(),
         account: select_account(&cand.accounts, &cand.pool).map(|a| a.file.name.clone()),
         score,
     }
 }
 
 pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<RouteOutcome> {
-    let role = params.role.clone().unwrap_or_else(|| "worker".to_string());
-    let skips = if parse_pins(params).is_ok_and(|p| p.any()) {
-        Vec::new()
-    } else {
-        effort_skips(&ctx.config.choices, &role, &params.exclude)
-    };
-    let note =
-        (!skips.is_empty()).then(|| format!(" Skipped, invalid effort: {}.", skips.join("; ")));
-    match route_inner(ctx, params).await {
-        Ok(mut out) => {
-            if let Some(n) = &note {
-                out.result.rationale.push_str(n);
-            }
-            Ok(out)
-        }
-        Err(RouterError::NoEligible(m)) => Err(RouterError::NoEligible(match &note {
-            Some(n) => format!("{m}{n}"),
-            None => m,
-        })),
-        Err(e) => Err(e),
-    }
-}
-
-async fn route_inner(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<RouteOutcome> {
     if params.prompt.trim().is_empty() || params.prompt.chars().count() > MAX_PROMPT_CHARS {
         return Err(RouterError::Invalid(format!(
             "prompt must be 1 to {MAX_PROMPT_CHARS} characters"
         )));
     }
-    let role = params.role.clone().unwrap_or_else(|| "worker".to_string());
-    if role.trim().is_empty() {
-        return Err(RouterError::Invalid("role must not be empty".into()));
+    let agent = params.agent.clone().unwrap_or_else(|| "worker".to_string());
+    if agent.trim().is_empty() {
+        return Err(RouterError::Invalid("agent must not be empty".into()));
     }
     let pins = parse_pins(params)?;
     let pinned = pins.any();
@@ -289,10 +275,9 @@ async fn route_inner(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<RouteOu
         pinned_candidates(ctx, params, &pins)
     } else {
         eligible(
-            &ctx.config.choices,
+            &ctx.config.choices(),
             ctx.catalog,
             ctx.snapshot,
-            &role,
             &params.exclude,
         )
     };
@@ -312,9 +297,8 @@ async fn route_inner(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<RouteOu
             "nothing matches the named harness, account, model and effort with an available account"
                 .into()
         } else {
-            format!(
-                "no eligible choice for role `{role}`: every choice is disabled, excluded, over its cap or out of headroom"
-            )
+            "no eligible choice: every model listed on a level is excluded, over its cap or out of headroom (or no level lists a model)"
+                .into()
         }));
     }
     let fingerprint = config_fingerprint(ctx.config);
@@ -365,7 +349,7 @@ async fn route_inner(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<RouteOu
         task: &params.prompt,
         system_instruction: "",
         routing_instruction: &ctx.config.router.instruction,
-        role: &role,
+        agent: &agent,
     };
     let models = ctx.config.router.jev.resolve_models(ctx.env);
     match decide(
@@ -431,7 +415,7 @@ fn finish(
     let ranked = heuristic_rank(ctx, cands, Complexity::from_score(rated.complexity));
     let mut fallback_order: Vec<usize> = ranked
         .iter()
-        .filter_map(|r| cands.iter().position(|c| c.choice.id == r.cand.choice.id))
+        .filter_map(|r| cands.iter().position(|c| c.choice == r.cand.choice))
         .collect();
     let missing: Vec<usize> = (0..cands.len())
         .filter(|i| !fallback_order.contains(i))
@@ -472,7 +456,10 @@ fn finish(
         .iter()
         .map(|a| a.file.name.clone())
         .collect();
-    let account = ranked_accounts.first().cloned().unwrap_or_default();
+    let (account, account_why) = select_account_with_reason(&cand.accounts, &cand.pool)
+        .map(|(a, why)| (a.file.name.clone(), why))
+        .unwrap_or_default();
+    let account_note = format!("account {account}: {account_why}");
     let alternatives = sel
         .order
         .iter()
@@ -489,26 +476,25 @@ fn finish(
         (Some(m), None) => format!("maps to level `{m}`; no level has an eligible choice"),
     };
     let c = rated.complexity;
+    let id = cand.choice.id();
     let rationale = match (rated.source, &rated.note, rated.confidence) {
         (RouteSource::Jev, _, conf) => format!(
-            "Jev rated complexity {c:.1} (confidence {:.2}); {level}; `{}` chosen: {}.",
+            "Jev rated complexity {c:.1} (confidence {:.2}); {level}; `{id}` chosen: {}; {account_note}.",
             conf.unwrap_or(0.0),
-            cand.choice.id,
             sel.why
         ),
         (RouteSource::Pinned, _, _) => format!(
-            "complexity {c:.1} (heuristic estimate); {level}; `{}` chosen: {}.",
-            cand.choice.id, sel.why
+            "complexity {c:.1} (heuristic estimate); {level}; `{id}` chosen: {}; {account_note}.",
+            sel.why
         ),
         (RouteSource::Heuristic, note, _) => format!(
-            "heuristic: {}; complexity {c:.1} (heuristic estimate); {level}; `{}` chosen: {}.",
+            "heuristic: {}; complexity {c:.1} (heuristic estimate); {level}; `{id}` chosen: {}; {account_note}.",
             note.as_deref().unwrap_or("no decider answer"),
-            cand.choice.id,
             sel.why
         ),
     };
     RouteResult {
-        choice_id: cand.choice.id.clone(),
+        choice_id: id,
         harness: cand.choice.harness,
         account,
         model: cand.choice.model.clone(),

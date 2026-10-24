@@ -6,6 +6,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use so_core::Choice;
 use so_core::proto::RouteParams;
 
 use crate::route::{RouteCtx, eligible_choice_ids, route_with};
@@ -14,13 +15,12 @@ const BUNDLED_EN: &str = include_str!("../evals/en.jsonl");
 const BUNDLED_VI: &str = include_str!("../evals/vi.jsonl");
 
 /// One labelled case. `context` is accepted for compatibility with agent-dispatcher's files
-/// and ignored: the decider sees only the task, the role and the routing instruction.
+/// and ignored: the decider sees only the task, the agent profile and the routing instruction.
+/// A `role` key in a case is ignored (roles no longer exist).
 #[derive(Debug, Clone, Deserialize)]
 pub struct Case {
     pub id: String,
     pub task: String,
-    #[serde(default = "worker")]
-    pub role: String,
     pub expected_choices: Vec<String>,
     /// Inclusive complexity range (0 to 100, on the anchor scale) the task should score in.
     #[serde(default)]
@@ -34,10 +34,6 @@ pub struct Case {
     #[serde(default)]
     #[allow(dead_code)]
     pub context: Option<Value>,
-}
-
-fn worker() -> String {
-    "worker".into()
 }
 
 /// The English and Vietnamese cases that ship in the binary.
@@ -165,17 +161,16 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
             .as_ref()
             .map(|avail| {
                 ctx.config
-                    .choices
+                    .choices()
                     .iter()
-                    .filter(|c| !avail.contains(&c.id))
-                    .map(|c| c.id.clone())
+                    .map(Choice::id)
+                    .filter(|id| !avail.contains(id))
                     .collect()
             })
             .unwrap_or_default();
-        let eligible = eligible_choice_ids(ctx, &case.role, &exclude);
+        let eligible = eligible_choice_ids(ctx, &exclude);
         let params = RouteParams {
             prompt: case.task.clone(),
-            role: Some(case.role.clone()),
             exclude,
             ..RouteParams::default()
         };
@@ -281,7 +276,6 @@ mod tests {
     fn holdout_cases_load_and_stay_separate_from_the_bundled_ones() {
         let hold = parse_cases(include_str!("../evals/holdout.jsonl")).unwrap();
         assert!(hold.len() >= 15);
-        assert!(hold.iter().any(|c| c.role == "conductor"));
         assert!(hold.iter().any(|c| c.id.contains("injection")));
         let bundled = bundled_cases();
         assert!(hold.iter().all(|h| bundled.iter().all(|b| b.id != h.id)));
@@ -318,7 +312,10 @@ mod tests {
     #[test]
     fn parses_jsonl_and_array_and_rejects_bad() {
         let line = r#"{"id":"a","task":"t","expected_choices":["x"]}"#;
-        assert_eq!(parse_cases(line).unwrap()[0].role, "worker");
+        assert_eq!(parse_cases(line).unwrap()[0].id, "a");
+        // A `role` key from an older file is ignored.
+        let with_role = r#"{"id":"a","task":"t","role":"conductor","expected_choices":["x"]}"#;
+        assert_eq!(parse_cases(with_role).unwrap().len(), 1);
         assert_eq!(parse_cases(&format!("[{line}]")).unwrap().len(), 1);
         assert!(parse_cases("").is_err());
         let ranged = |r: &str| {
