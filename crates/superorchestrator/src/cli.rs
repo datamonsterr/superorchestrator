@@ -268,6 +268,9 @@ pub enum RouteSub {
         require_live: bool,
         #[arg(long)]
         min_accuracy: Option<f64>,
+        /// Fail when the share of cases scored inside `expected_complexity` is lower (0 to 1)
+        #[arg(long)]
+        min_complexity_accuracy: Option<f64>,
     },
 }
 

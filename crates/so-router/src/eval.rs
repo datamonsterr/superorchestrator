@@ -22,6 +22,9 @@ pub struct Case {
     #[serde(default = "worker")]
     pub role: String,
     pub expected_choices: Vec<String>,
+    /// Inclusive complexity range (0 to 100, on the anchor scale) the task should score in.
+    #[serde(default)]
+    pub expected_complexity: Option<[f64; 2]>,
     #[serde(default)]
     pub available_choice_ids: Option<Vec<String>>,
     /// Why a second expected choice is as correct as the first. Documentation only.
@@ -67,6 +70,14 @@ pub fn parse_cases(text: &str) -> Result<Vec<Case>, String> {
         if c.task.trim().is_empty() || c.expected_choices.is_empty() {
             return Err(format!("case `{}` needs a task and expected_choices", c.id));
         }
+        if let Some([lo, hi]) = c.expected_complexity
+            && !(0.0 <= lo && lo <= hi && hi <= 100.0)
+        {
+            return Err(format!(
+                "case `{}`: expected_complexity must be [min, max] within 0 to 100",
+                c.id
+            ));
+        }
     }
     Ok(cases)
 }
@@ -79,6 +90,11 @@ pub struct CaseRecord {
     pub correct: bool,
     pub eligible: bool,
     pub source: String,
+    /// The complexity the router scored (0 to 100) and the level it fell in.
+    pub complexity: Option<f64>,
+    pub level: Option<String>,
+    /// Whether `complexity` is inside the case's `expected_complexity`; None without both.
+    pub complexity_ok: Option<bool>,
     /// The decider model that answered (also when its answer was rejected).
     pub decider_model: Option<String>,
     pub confidence: Option<f64>,
@@ -103,6 +119,9 @@ pub struct Latency {
 pub struct EvalReport {
     pub case_count: usize,
     pub accuracy: f64,
+    /// Share of cases with an `expected_complexity` and a score whose score is in range;
+    /// None when no case qualifies.
+    pub complexity_accuracy: Option<f64>,
     pub eligible_compliance: f64,
     /// Cases where the decider was wanted but its answer was not used.
     pub fallback_count: usize,
@@ -172,7 +191,14 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
                 let fallback_reason = o.fallback_reason.clone();
                 total_cost += o.result.usage.cost;
                 let r = o.result;
+                let complexity_ok = case
+                    .expected_complexity
+                    .zip(r.complexity)
+                    .map(|([lo, hi], x)| lo <= x && x <= hi);
                 CaseRecord {
+                    complexity: r.complexity,
+                    level: r.level.clone(),
+                    complexity_ok,
                     correct: case.expected_choices.contains(&r.choice_id),
                     eligible: eligible.contains(&r.choice_id),
                     source: source_name(r.source).into(),
@@ -197,6 +223,9 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
                     correct: false,
                     eligible: false,
                     source: "error".into(),
+                    complexity: None,
+                    level: None,
+                    complexity_ok: None,
                     decider_model: None,
                     confidence: None,
                     probabilities: BTreeMap::new(),
@@ -217,9 +246,12 @@ pub async fn evaluate(ctx: &RouteCtx<'_>, cases: &[Case]) -> EvalReport {
     }
     let n = records.len().max(1) as f64;
     latencies.sort_by(f64::total_cmp);
+    let scored: Vec<bool> = records.iter().filter_map(|r| r.complexity_ok).collect();
     EvalReport {
         case_count: records.len(),
         accuracy: records.iter().filter(|r| r.correct).count() as f64 / n,
+        complexity_accuracy: (!scored.is_empty())
+            .then(|| scored.iter().filter(|ok| **ok).count() as f64 / scored.len() as f64),
         eligible_compliance: records.iter().filter(|r| r.eligible).count() as f64 / n,
         fallback_count: fallbacks,
         errors_count: errors,
@@ -262,11 +294,44 @@ mod tests {
     }
 
     #[test]
+    fn every_bundled_and_holdout_case_has_an_anchor_range() {
+        let hold = parse_cases(include_str!("../evals/holdout.jsonl")).unwrap();
+        let anchors = [
+            [0.0, 12.0],
+            [13.0, 37.0],
+            [38.0, 62.0],
+            [63.0, 87.0],
+            [88.0, 100.0],
+        ];
+        for c in bundled_cases().iter().chain(&hold) {
+            let r = c
+                .expected_complexity
+                .unwrap_or_else(|| panic!("{} has no range", c.id));
+            assert!(
+                anchors.contains(&r),
+                "{} range {r:?} is not an anchor range",
+                c.id
+            );
+        }
+    }
+
+    #[test]
     fn parses_jsonl_and_array_and_rejects_bad() {
         let line = r#"{"id":"a","task":"t","expected_choices":["x"]}"#;
         assert_eq!(parse_cases(line).unwrap()[0].role, "worker");
         assert_eq!(parse_cases(&format!("[{line}]")).unwrap().len(), 1);
         assert!(parse_cases("").is_err());
+        let ranged = |r: &str| {
+            parse_cases(&format!(
+                r#"{{"id":"a","task":"t","expected_choices":["x"],"expected_complexity":{r}}}"#
+            ))
+        };
+        assert_eq!(
+            ranged("[13, 37]").unwrap()[0].expected_complexity,
+            Some([13.0, 37.0])
+        );
+        assert!(ranged("[40, 10]").is_err());
+        assert!(ranged("[0, 101]").is_err());
         assert!(parse_cases(&format!("{line}\n{line}")).is_err());
         assert!(parse_cases(r#"{"id":"a","task":" ","expected_choices":["x"]}"#).is_err());
     }

@@ -24,7 +24,14 @@ pub fn run(ctx: &Ctx, args: RouteArgs) -> Result<ExitCode> {
             cases,
             require_live,
             min_accuracy,
-        }) => runtime()?.block_on(run_eval(ctx, cases, require_live, min_accuracy)),
+            min_complexity_accuracy,
+        }) => runtime()?.block_on(run_eval(
+            ctx,
+            cases,
+            require_live,
+            min_accuracy,
+            min_complexity_accuracy,
+        )),
         None => {
             if args.task.is_empty() {
                 return Err(CliError::new(USAGE, "route needs a task: route <task>").into());
@@ -115,11 +122,17 @@ async fn run_eval(
     cases: Option<std::path::PathBuf>,
     require_live: bool,
     min_accuracy: Option<f64>,
+    min_complexity_accuracy: Option<f64>,
 ) -> Result<ExitCode> {
-    if let Some(m) = min_accuracy
-        && !(0.0..=1.0).contains(&m)
-    {
-        return Err(CliError::new(USAGE, "--min-accuracy must be between 0 and 1").into());
+    for (flag, v) in [
+        ("--min-accuracy", min_accuracy),
+        ("--min-complexity-accuracy", min_complexity_accuracy),
+    ] {
+        if let Some(m) = v
+            && !(0.0..=1.0).contains(&m)
+        {
+            return Err(CliError::new(USAGE, format!("{flag} must be between 0 and 1")).into());
+        }
     }
     let config = ctx.config()?;
     if require_live && resolve_key(&config.router.jev, process_env).is_none() {
@@ -169,6 +182,16 @@ async fn run_eval(
     {
         failures.push(format!("accuracy {:.3} is below {m}", report.accuracy));
     }
+    if let Some(m) = min_complexity_accuracy {
+        match report.complexity_accuracy {
+            Some(a) if a >= m => {}
+            Some(a) => failures.push(format!("complexity accuracy {a:.3} is below {m}")),
+            None => failures.push(
+                "no case has both an expected_complexity and a score for --min-complexity-accuracy"
+                    .to_string(),
+            ),
+        }
+    }
     if report.eligible_compliance < 1.0 {
         failures.push("a case was routed outside the eligible set".to_string());
     }
@@ -194,6 +217,10 @@ async fn run_eval(
 fn human_report(w: &mut dyn Write, r: &EvalReport) -> std::io::Result<()> {
     writeln!(w, "cases:               {}", r.case_count)?;
     writeln!(w, "accuracy:            {:.1}%", r.accuracy * 100.0)?;
+    match r.complexity_accuracy {
+        Some(a) => writeln!(w, "complexity accuracy: {:.1}%", a * 100.0)?,
+        None => writeln!(w, "complexity accuracy: n/a (no case has a range)")?,
+    }
     writeln!(
         w,
         "eligible compliance: {:.1}%",
@@ -223,8 +250,15 @@ fn human_report(w: &mut dyn Write, r: &EvalReport) -> std::io::Result<()> {
                 c.choice_id.clone().unwrap_or_else(|| "-".into()),
                 if c.correct { "ok" } else { "MISS" }.into(),
                 c.source.clone(),
+                c.complexity
+                    .map_or_else(|| "-".into(), |x| format!("{x:.1}")),
+                c.level.clone().unwrap_or_else(|| "-".into()),
             ]
         })
         .collect();
-    write_table(w, &["CASE", "CHOICE", "RESULT", "SOURCE"], &rows)
+    write_table(
+        w,
+        &["CASE", "CHOICE", "RESULT", "SOURCE", "CX", "LEVEL"],
+        &rows,
+    )
 }
