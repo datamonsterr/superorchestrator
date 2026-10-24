@@ -101,23 +101,20 @@ export function LevelsPanel() {
   const pending = putLevels.isPending || putChoices.isPending || reset.isPending
 
   /**
-   * Saves the list `update` builds from the latest levels. Saves run one at a time, and each
-   * reads the cache after the previous one refetched it, so quick edits never overwrite each other.
+   * Runs saves and resets one at a time. `save` builds its list from the cache after the previous job
+   * refetched it, so quick edits never overwrite each other. Any new action clears the "Added" notice.
    */
-  const save = (update: (current: LevelView[]) => Level[]) => {
-    const run = queue.current
-      .catch(() => undefined)
-      .then(() => {
-        const current = qc.getQueryData<LevelsView>(qk.levels())?.levels ?? []
-        return putLevels.mutateAsync({ levels: update(current) })
-      })
-    queue.current = run
-    return run
+  const enqueue = <T,>(job: () => Promise<T>) => {
+    setNotice(null)
+    const next = queue.current.catch(() => undefined).then(job)
+    queue.current = next
+    return next
   }
+  const save = (update: (current: LevelView[]) => Level[]) =>
+    enqueue(() => putLevels.mutateAsync({ levels: update(qc.getQueryData<LevelsView>(qk.levels())?.levels ?? []) }))
   /** Row actions have no dialog, so a failure shows above the list. */
   const run = (update: (current: LevelView[]) => Level[], done?: string) => {
     setActionError(null)
-    setNotice(null)
     save(update).then(
       () => done && toast.success(done),
       (e) => setActionError(errorMessage(e)),
@@ -144,6 +141,7 @@ export function LevelsPanel() {
   /** Saves the new choice first, then lists it in the level; the second step never reads refetched choices. */
   const saveNewChoice = async (list: Choice[]) => {
     const level = newModelFor
+    setNotice(null)
     const created = list.find((c) => !choices.some((x) => x.id === c.id))
     await putChoices.mutateAsync({ choices: list, routing_instruction: choicesQuery.data?.routing_instruction ?? '' })
     if (!level || !created) return
@@ -274,7 +272,7 @@ export function LevelsPanel() {
         pending={pending}
         onConfirm={() => {
           setActionError(null)
-          reset.mutateAsync().then(
+          enqueue(() => reset.mutateAsync()).then(
             () => {
               toast.success('Levels reset to defaults')
               setResetting(false)
