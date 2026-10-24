@@ -848,6 +848,7 @@ async fn agy_thinking_hint_stays_routable() {
 }
 
 // ---- levels ----
+// These tests set their own custom levels; none of them relies on the default levels.
 
 use so_core::config::{Level, LevelChoice, LevelTier};
 

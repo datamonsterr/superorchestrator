@@ -33,12 +33,12 @@ impl Complexity {
     }
 
     /// The class a numeric complexity belongs to under the default levels, read as half-open
-    /// spans (low `[0, 40)`, mid `[40, 80)`, high `[80, 100]`). Ranks choices by
+    /// spans (low `[0, 38)`, mid `[38, 63)`, high `[63, 100]`). Ranks choices by
     /// the heuristic scorer when no level yields one.
     pub fn from_score(score: f64) -> Self {
-        if score < 40.0 {
+        if score < 38.0 {
             Self::Low
-        } else if score < 80.0 {
+        } else if score < 63.0 {
             Self::Mid
         } else {
             Self::High
@@ -251,11 +251,10 @@ mod tests {
                 .unwrap();
             assert_eq!(l.name, level);
         }
-        assert_eq!(Complexity::from_score(39.9), Complexity::Low);
-        assert_eq!(Complexity::from_score(39.5), Complexity::Low);
-        assert_eq!(Complexity::from_score(79.9), Complexity::Mid);
-        assert_eq!(Complexity::from_score(40.0), Complexity::Mid);
-        assert_eq!(Complexity::from_score(80.0), Complexity::High);
+        assert_eq!(Complexity::from_score(37.9), Complexity::Low);
+        assert_eq!(Complexity::from_score(38.0), Complexity::Mid);
+        assert_eq!(Complexity::from_score(62.9), Complexity::Mid);
+        assert_eq!(Complexity::from_score(63.0), Complexity::High);
     }
 
     #[test]

@@ -219,7 +219,7 @@ fn human_report(w: &mut dyn Write, r: &EvalReport) -> std::io::Result<()> {
     writeln!(w, "accuracy:            {:.1}%", r.accuracy * 100.0)?;
     match r.complexity_accuracy {
         Some(a) => writeln!(w, "complexity accuracy: {:.1}%", a * 100.0)?,
-        None => writeln!(w, "complexity accuracy: n/a (no case has a range)")?,
+        None => writeln!(w, "complexity accuracy: n/a (no scored case)")?,
     }
     writeln!(
         w,

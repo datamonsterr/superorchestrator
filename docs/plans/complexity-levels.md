@@ -45,6 +45,7 @@ Anchors (`so_core::config::COMPLEXITY_ANCHORS`, in order):
 ## Config shape
 
 ```toml
+# Example shape (not the defaults).
 [[router.levels]]
 name = "low"
 min = 0

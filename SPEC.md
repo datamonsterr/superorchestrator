@@ -634,7 +634,7 @@ weights = { headroom = 1.0, load = 0.5, cost = 0.3 }
 instruction = "Rate the complexity of task_content against the ordered criteria…"
 # [[router.levels]]                 # optional; defaults: low 0-37 (fast), mid 38-62 (mid), high 63-100 (high)
 # name = "high"
-# min = 80
+# min = 63
 # max = 100
 # choices = [{ id = "codex-gpt-high", priority = 1 }]
 
