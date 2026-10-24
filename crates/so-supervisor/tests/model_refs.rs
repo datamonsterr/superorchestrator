@@ -66,6 +66,18 @@ async fn route_pins_each_harness_by_ref() {
     h.shutdown().await;
 }
 
+/// Cancels `run` and waits for it to end, so that nothing is in flight at teardown.
+async fn settle(c: &so_supervisor::SupervisorClient, run: &str) {
+    let _: Value = c
+        .call(
+            so_core::proto::METHOD_CANCEL_AGENT,
+            so_core::proto::RunRef { run: run.into() },
+        )
+        .await
+        .unwrap_or_default();
+    wait_for(c, run).await;
+}
+
 /// Spawns by ref without waiting and returns the stored run's `(choice_id, harness, model,
 /// effort)`.
 async fn spawn_by_ref(
@@ -80,6 +92,7 @@ async fn spawn_by_ref(
     p.isolation = Some(Isolation::None);
     let r = spawn(c, p).await;
     let row = env.store().get_run(&r.run_id).unwrap().unwrap();
+    settle(c, &r.run_id).await;
     (row.choice_id, row.harness, row.model, row.effort)
 }
 
@@ -177,6 +190,7 @@ async fn opencode_with_one_segment_is_a_plain_model_name() {
     p.isolation = Some(Isolation::None);
     let r = spawn(&c, p).await;
     let row = env.store().get_run(&r.run_id).unwrap().unwrap();
+    settle(&c, &r.run_id).await;
     assert_eq!(row.harness, Harness::Opencode);
     assert_eq!(
         row.model.as_deref(),
@@ -204,7 +218,10 @@ async fn an_agent_file_ref_pins_harness_model_and_effort() {
     p.isolation = Some(Isolation::None);
     let r = spawn(&c, p).await;
     let row = env.store().get_run(&r.run_id).unwrap().unwrap();
+    settle(&c, &r.run_id).await;
     assert_eq!(row.choice_id.as_deref(), Some(CODEX));
     assert_eq!(row.harness, Harness::Codex);
+    assert_eq!(row.model.as_deref(), Some("gpt-6.1-sol"));
+    assert_eq!(row.effort.as_deref(), Some("high"));
     h.shutdown().await;
 }

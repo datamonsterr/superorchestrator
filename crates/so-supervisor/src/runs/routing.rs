@@ -23,6 +23,7 @@ use crate::handlers::route::{RouteEnv, decision_data, route_decide};
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct RoutePins {
     /// The agent profile's name, which informs the decider.
+    #[serde(alias = "role")]
     pub agent: Option<String>,
     pub harness: Option<String>,
     pub account: Option<String>,

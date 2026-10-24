@@ -67,9 +67,12 @@ async fn route_previews_and_records_a_route_decision_event() {
     assert_eq!(store.count_active_runs_total().unwrap(), 0);
 
     let bad: Result<Value, _> = c
-        .call("route", json!({"prompt": "x", "role": "nobody"}))
+        .call("route", json!({"prompt": "x", "model": "codex/"}))
         .await;
-    assert!(matches!(bad, Err(ClientError::Rpc(_))));
+    match bad {
+        Err(ClientError::Rpc(e)) => assert_eq!(e.code, so_core::proto::INVALID_PARAMS),
+        other => panic!("{other:?}"),
+    }
     let bad: Result<Value, _> = c.call("route", json!({"nope": 1})).await;
     assert!(matches!(bad, Err(ClientError::Rpc(_))));
     h.shutdown().await;

@@ -190,10 +190,13 @@ fn check_levels(
         }
     }
     if problems.is_empty() {
-        c.ok(
-            "levels",
-            format!("{} level(s) checked", cfg.router.levels.len()),
-        );
+        let n = cfg
+            .router
+            .levels
+            .iter()
+            .filter(|l| !l.models.is_empty())
+            .count();
+        c.ok("levels", format!("{n} level(s) with models checked"));
     } else {
         c.warn("levels", problems.join("; "));
     }

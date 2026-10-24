@@ -976,6 +976,12 @@ mod headroom_wire_tests {
         .unwrap();
         assert_eq!(h, Some(Harness::Opencode));
         assert_eq!(m.as_deref(), Some("opencode/deepseek-v4.1-flash-free"));
+        // A leftover `/` on codex means the last segment was a bad effort.
+        let err = resolve_model_ref(None, Some("codex/gpt-6.1-sol/hgih"), None).unwrap_err();
+        assert!(err.contains("`hgih` is not a codex effort"), "{err}");
+        // A malformed ref is an error, not a plain model.
+        let err = resolve_model_ref(None, Some("codex/"), None).unwrap_err();
+        assert!(err.contains("the model is empty"), "{err}");
         // A plain model keeps an explicit effort.
         let (_, m, e) = resolve_model_ref(None, Some("gpt-6.1-sol"), Some("low")).unwrap();
         assert_eq!(

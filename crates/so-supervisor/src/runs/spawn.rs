@@ -46,6 +46,22 @@ fn default_brief(agent: &AgentDef) -> String {
     )
 }
 
+/// Applies a model ref in `model` (from the call or `defaults.model`; an agent file's is
+/// resolved when it is parsed). A ref pins harness, model and effort. It may not contradict
+/// the harness or effort the call named outright, but it replaces the agent's and the
+/// defaults' harness and effort (`effort` is the resolved one, used when the ref has none).
+/// Returns the ref's harness, if any, with the final model and effort.
+fn apply_model_ref(
+    explicit_harness: Option<Harness>,
+    model: Option<String>,
+    explicit_effort: Option<&str>,
+    effort: Option<String>,
+) -> R<(Option<Harness>, Option<String>, Option<String>)> {
+    so_core::resolve_model_ref(explicit_harness, model.as_deref(), explicit_effort)
+        .map(|(h, m, e)| (h, m, e.or(effort)))
+        .map_err(|e| rpc(INVALID_PARAMS, e))
+}
+
 fn agent_error(e: AgentError) -> RpcError {
     match e {
         AgentError::NotFound(n) => rpc(NOT_FOUND, format!("no agent named `{n}`")),
@@ -202,12 +218,16 @@ impl RunManager {
         let review = p.review || agent.as_ref().is_some_and(|a| a.review);
         validate_checks(review, &p.checks, ctx.run_id.is_some())?;
         let defaults = &self.config().defaults;
-        let harness_pin = match p.harness.as_deref() {
-            Some("auto") => None,
+        let explicit_harness = match p.harness.as_deref() {
+            Some("auto") | None => None,
             Some(h) => Some(
                 h.parse::<Harness>()
                     .map_err(|e| rpc(INVALID_PARAMS, e.to_string()))?,
             ),
+        };
+        let harness_pin = match p.harness.as_deref() {
+            Some("auto") => None,
+            Some(_) => explicit_harness,
             // An account named by the call decides the harness, over the agent's own.
             None if p.account.is_some() => None,
             None => match agent.as_ref().map(|a| a.harness) {
@@ -226,17 +246,8 @@ impl RunManager {
             .clone()
             .or_else(|| agent.as_ref().and_then(|a| a.effort.clone()))
             .or_else(|| defaults.effort.clone());
-        // A model ref (call or `defaults.model`; an agent file's is resolved when it is
-        // parsed) pins harness, model and effort. It may not contradict what the call named
-        // outright; it does replace the agent's and the defaults' harness and effort.
-        let explicit_harness = match p.harness.as_deref() {
-            Some("auto") | None => None,
-            Some(h) => h.parse::<Harness>().ok(),
-        };
         let (ref_harness, model, effort) =
-            so_core::resolve_model_ref(explicit_harness, model.as_deref(), p.effort.as_deref())
-                .map(|(h, m, e)| (h, m, e.or(effort)))
-                .map_err(|e| rpc(INVALID_PARAMS, e))?;
+            apply_model_ref(explicit_harness, model, p.effort.as_deref(), effort)?;
         let harness_pin = ref_harness.or(harness_pin);
         let allow = agent
             .as_ref()
