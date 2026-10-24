@@ -21,7 +21,7 @@ use crate::heuristic::{
 };
 use crate::jev::{EnvFn, JevFailure, JevRequest, decide, process_env, resolve_key};
 use crate::levels;
-use crate::select::{headroom_of, rank_accounts, select_account, select_account_with_reason};
+use crate::select::{headroom_of, rank_accounts, select_account, winner_with_reason};
 
 pub const MAX_PROMPT_CHARS: usize = 200_000;
 const ALTERNATIVES: usize = 3;
@@ -73,7 +73,8 @@ pub struct RouteOutcome {
     pub fallback_reason: Option<String>,
 }
 
-/// SHA-256 over levels (which hold the models), policy and instruction: changes when routing behaviour would.
+/// SHA-256 over levels (which hold the models), policy and instruction: changes when routing
+/// behaviour would.
 pub fn config_fingerprint(config: &Config) -> String {
     let v = json!({
         "policy": config.router.policy,
@@ -148,9 +149,40 @@ fn parse_pins(p: &RouteParams) -> Result<Pins> {
         .map_err(|e| RouterError::Invalid(e.to_string()))?;
     let blank = |s: &Option<String>| s.clone().filter(|s| !s.trim().is_empty());
     let (mut harness, mut model, mut effort) = (harness, blank(&p.model), blank(&p.effort));
-    // A model that reads as a ref (`harness/model[/effort]`) pins all of its parts; anything
-    // else, such as `gpt-6.1-sol` or `opencode/deepseek-v4.1-flash-free`, is a plain model name.
-    if let Some(r) = model.as_deref().and_then(|m| m.parse::<Choice>().ok()) {
+    // A model that starts with a harness name and `/` is a ref (`harness/model[/effort]`) and
+    // pins all of its parts; a malformed one is an error. Anything else, such as `gpt-6.1-sol`
+    // or `x/y`, is a plain model name. So is `opencode/<one segment>`, because opencode model
+    // ids start with their provider, which can be `opencode`.
+    let is_ref = |m: &str| match m.split_once('/') {
+        Some((h, rest)) if h.parse::<Harness>().is_ok() => {
+            !(h == "opencode" && !rest.is_empty() && !rest.contains('/'))
+        }
+        _ => false,
+    };
+    let invalid = |reason: String| RouterError::Invalid(reason);
+    if let Some(e) = &effort
+        && let Some(problem) = so_core::selector_problem("effort", e)
+    {
+        return Err(invalid(problem));
+    }
+    if let Some(m) = model.as_deref()
+        && !is_ref(m)
+        && let Some(problem) = so_core::selector_problem("model", m)
+    {
+        return Err(invalid(problem));
+    }
+    if let Some(r) = model.as_deref().filter(|m| is_ref(m)) {
+        let r = r.parse::<Choice>().map_err(|e| invalid(e.to_string()))?;
+        // Only opencode model ids contain `/`. Elsewhere a `/` left in the model means the
+        // last segment was meant as an effort the harness does not accept.
+        if r.harness != Harness::Opencode && r.model.contains('/') {
+            let list = r.harness.accepted_efforts().unwrap_or_default().join("|");
+            return Err(invalid(format!(
+                "invalid model ref: `{}` is not a {} effort ({list})",
+                r.model.rsplit('/').next().unwrap_or_default(),
+                r.harness
+            )));
+        }
         if let Some(h) = harness.filter(|h| *h != r.harness) {
             return Err(RouterError::Invalid(format!(
                 "model ref names {} but harness is {h}",
@@ -180,7 +212,7 @@ fn pinned_candidates<'a>(
     ctx: &RouteCtx<'a>,
     params: &RouteParams,
     pins: &Pins,
-) -> Vec<Candidate<'a>> {
+) -> Result<Vec<Candidate<'a>>> {
     let matches = |c: &Choice| {
         !params.exclude.contains(&c.id())
             && pins.harness.is_none_or(|h| c.harness == h)
@@ -201,6 +233,11 @@ fn pinned_candidates<'a>(
         && let (Some(harness), Some(model)) = (pins.harness, pins.model.clone())
     {
         // No level lists it, but the call named it: it still runs.
+        if let Some(effort) = &pins.effort
+            && let Some(problem) = harness.model_effort_problem(&model, effort)
+        {
+            return Err(RouterError::Invalid(problem));
+        }
         let synthetic = Choice {
             harness,
             model,
@@ -214,7 +251,7 @@ fn pinned_candidates<'a>(
         }
         cands.retain(|c| !c.accounts.is_empty());
     }
-    cands
+    Ok(cands)
 }
 
 struct Ranked<'a> {
@@ -272,7 +309,7 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
     let pins = parse_pins(params)?;
     let pinned = pins.any();
     let mut cands: Vec<Candidate<'_>> = if pinned {
-        pinned_candidates(ctx, params, &pins)
+        pinned_candidates(ctx, params, &pins)?
     } else {
         eligible(
             &ctx.config.choices(),
@@ -452,11 +489,9 @@ fn finish(
     }
     let pick = sel.order[0];
     let cand = &cands[pick];
-    let ranked_accounts: Vec<String> = rank_accounts(&cand.accounts, &cand.pool)
-        .iter()
-        .map(|a| a.file.name.clone())
-        .collect();
-    let (account, account_why) = select_account_with_reason(&cand.accounts, &cand.pool)
+    let by_account = rank_accounts(&cand.accounts, &cand.pool);
+    let ranked_accounts: Vec<String> = by_account.iter().map(|a| a.file.name.clone()).collect();
+    let (account, account_why) = winner_with_reason(&by_account, &cand.pool)
         .map(|(a, why)| (a.file.name.clone(), why))
         .unwrap_or_default();
     let account_note = format!("account {account}: {account_why}");

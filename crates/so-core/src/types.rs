@@ -227,6 +227,9 @@ str_enum!(SessionKind, |s| CoreError::UnknownValue { kind: "session kind", value
 /// For `codex`, `agy` and `claude` the last `/` segment is the effort when the harness accepts
 /// it as one; otherwise the whole rest is the model. For `opencode` the rest is
 /// `provider/model[/variant]`: two segments are a model, a third is the effort (variant).
+///
+/// `Display` round-trips only for ids minted by `from_str`: a model containing `/` that is
+/// pinned on codex, agy or claude may not parse back to the same choice.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, JsonSchema)]
 #[schemars(
     with = "String",
@@ -256,8 +259,9 @@ impl fmt::Display for Choice {
 }
 
 /// The text rule for model and effort values: nonempty, no leading `-`, ASCII alphanumerics
-/// or `:/_.@-[]`. The same rule `so-harness` applies at launch (GHSA-fh9p).
-fn selector_problem(name: &str, value: &str) -> Option<String> {
+/// or `:/_.@-[]` (GHSA-fh9p). `so-harness` applies it at launch, and refs and route pins
+/// apply it earlier. `name` is `model` or `effort`, for the message.
+pub fn selector_problem(name: &str, value: &str) -> Option<String> {
     let ok = !value.is_empty()
         && !value.starts_with('-')
         && value
@@ -289,9 +293,9 @@ impl FromStr for Choice {
         if segments.iter().any(|seg| seg.is_empty()) {
             return Err(bad("empty segment".into()));
         }
-        let split_last = || {
-            let (model, effort) = rest.rsplit_once('/').expect("two or more segments");
-            (model.to_string(), Some(effort.to_string()))
+        let split_last = || match rest.rsplit_once('/') {
+            Some((model, effort)) => (model.to_string(), Some(effort.to_string())),
+            None => (rest.to_string(), None),
         };
         let (model, effort) = match harness {
             Harness::Opencode => match segments.len() {
@@ -301,9 +305,11 @@ impl FromStr for Choice {
             },
             _ => {
                 let last_is_effort = segments.len() > 1
-                    && harness
-                        .accepted_efforts()
-                        .is_some_and(|ok| ok.contains(segments.last().expect("nonempty")));
+                    && segments.last().is_some_and(|last| {
+                        harness
+                            .accepted_efforts()
+                            .is_some_and(|ok| ok.contains(last))
+                    });
                 if last_is_effort {
                     split_last()
                 } else {
@@ -783,6 +789,13 @@ mod tests {
                 Some("max"),
             ),
             ("opencode/a/b/c/d", Harness::Opencode, "a/b/c", Some("d")),
+            ("codex/high", Harness::Codex, "high", None),
+            (
+                "claude/sonnet/thinking",
+                Harness::Claude,
+                "sonnet/thinking",
+                None,
+            ),
         ];
         for (text, harness, model, effort) in cases {
             let c = choice(text);

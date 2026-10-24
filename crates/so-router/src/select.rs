@@ -15,6 +15,8 @@ pub fn headroom_of(a: &AccountState, pool: &str) -> f64 {
         .unwrap_or(UNKNOWN_HEADROOM)
 }
 
+/// The account order. [`winner_with_reason`] reads its reason off the same criteria in the
+/// same order, so the two must change together.
 fn cmp(a: &AccountState, b: &AccountState, pool: &str) -> Ordering {
     headroom_of(b, pool)
         .total_cmp(&headroom_of(a, pool))
@@ -44,10 +46,17 @@ pub fn select_account_with_reason<'a>(
     accounts: &[&'a AccountState],
     pool: &str,
 ) -> Option<(&'a AccountState, String)> {
-    let ranked = rank_accounts(accounts, pool);
+    winner_with_reason(&rank_accounts(accounts, pool), pool)
+}
+
+/// [`select_account_with_reason`] over accounts already ranked by [`rank_accounts`].
+pub fn winner_with_reason<'a>(
+    ranked: &[&'a AccountState],
+    pool: &str,
+) -> Option<(&'a AccountState, String)> {
     let (win, rest) = ranked.split_first()?;
     let Some(next) = rest.first() else {
-        return Some((win, "the only usable account".into()));
+        return Some((*win, "the only usable account".into()));
     };
     let reason = if headroom_of(win, pool).total_cmp(&headroom_of(next, pool)) != Ordering::Equal {
         format!("most headroom ({:.0}%)", headroom_of(win, pool))
@@ -60,7 +69,7 @@ pub fn select_account_with_reason<'a>(
     } else {
         "name order".into()
     };
-    Some((win, reason))
+    Some((*win, reason))
 }
 
 #[cfg(test)]

@@ -2,8 +2,8 @@
 //! The API key is never logged, printed or placed in an error message.
 //!
 //! The decider rates the complexity of the task against fixed anchors (a `score` question).
-//! Privacy: only the task text, the agent profile name and the routing instruction are sent. Choices,
-//! account names, quota, credentials and tokens are not.
+//! Privacy: only the task text, the agent profile name and the routing instruction are sent.
+//! Choices, account names, quota, credentials and tokens are not.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};

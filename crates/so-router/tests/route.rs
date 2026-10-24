@@ -427,6 +427,68 @@ async fn a_model_ref_that_disagrees_with_harness_or_effort_is_invalid() {
 }
 
 #[tokio::test]
+async fn malformed_pins_are_invalid_and_plain_names_pass() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    w.accounts
+        .push(AccountFile::new("oc-a", Harness::Opencode, "/h/o", "opencode").unwrap());
+    for bad in [
+        "codex/",
+        "codex//high",
+        "codex/gpt-6.1-sol/hgih",
+        "agy/claude-sonnet-4-6/high",
+        "opencode/",
+        "-x",
+        "gpt;rm",
+    ] {
+        let e = route_detailed(&w.inputs(), &pin(bad)).await.unwrap_err();
+        assert!(matches!(e, RouterError::Invalid(_)), "{bad}: {e:?}");
+    }
+    let mut p = pin(CODEX_BIG);
+    p.effort = Some("bad effort".into());
+    assert!(matches!(
+        route_detailed(&w.inputs(), &p).await.unwrap_err(),
+        RouterError::Invalid(_)
+    ));
+    // `/` and `x/y` have no harness prefix: plain model names that match nothing.
+    for plain in ["/", "x/y"] {
+        let e = route_detailed(&w.inputs(), &pin(plain)).await.unwrap_err();
+        assert!(matches!(e, RouterError::NoEligible(_)), "{plain}: {e:?}");
+    }
+    // Plain names: one segment after `opencode/`, and no harness prefix.
+    let mut p = pin("opencode/deepseek-v4.1-flash-free");
+    p.harness = Some("opencode".into());
+    let r = route_detailed(&w.inputs(), &p).await.unwrap().result;
+    assert_eq!(r.model, "opencode/deepseek-v4.1-flash-free");
+    let mut p = pin("gpt-6.1-sol");
+    p.harness = Some("codex".into());
+    assert_eq!(
+        route_detailed(&w.inputs(), &p)
+            .await
+            .unwrap()
+            .result
+            .choice_id,
+        CODEX_BIG
+    );
+}
+
+#[tokio::test]
+async fn a_pinned_harness_model_and_effort_the_harness_refuses_fails_at_route_time() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    w.config = cfg_with_models(&[("all", 0, 100, &[AGY_FAST])]);
+    let mut p = params("x");
+    p.harness = Some("agy".into());
+    p.model = Some("claude-sonnet-4-6".into());
+    p.effort = Some("high".into());
+    let e = route_detailed(&w.inputs(), &p).await.unwrap_err();
+    assert!(
+        matches!(&e, RouterError::Invalid(m) if m.contains("takes no effort")),
+        "{e:?}"
+    );
+    p.effort = Some("thinking".into());
+    assert!(route_detailed(&w.inputs(), &p).await.is_ok());
+}
+
+#[tokio::test]
 async fn a_model_that_does_not_read_as_a_ref_is_a_plain_model_name() {
     let mut w = world("http://127.0.0.1:1/x", false);
     w.accounts

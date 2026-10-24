@@ -260,8 +260,9 @@ pub enum LevelTier {
 }
 
 /// A named range of complexity (`min` to `max`, within 0 to 100) and the models allowed
-/// for it, in preference order. Complexity can be fractional, so the integer range reads as the half-open span
-/// `[min, max + 1)`: 37.5 is in `0..=37`. A level with `max = 100` also includes 100.0.
+/// for it, in preference order. Complexity can be fractional, so the integer range reads as
+/// the half-open span `[min, max + 1)`: 37.5 is in `0..=37`. A level with `max = 100` also
+/// includes 100.0.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Level {
@@ -570,7 +571,14 @@ impl Config {
             path: path.to_path_buf(),
             source,
         };
-        let value: toml::Value = toml::from_str(text).map_err(toml_err)?;
+        // The typed parse goes first so its error keeps the line and column.
+        let first = match toml::from_str::<Config>(text) {
+            Ok(cfg) => return Ok(cfg),
+            Err(e) => e,
+        };
+        let Ok(value) = toml::from_str::<toml::Value>(text) else {
+            return Err(toml_err(first));
+        };
         let old_key = |reason: String| CoreError::InvalidValue {
             key: path.display().to_string(),
             reason,
@@ -592,7 +600,7 @@ impl Config {
                 )));
             }
         }
-        value.try_into().map_err(toml_err)
+        Err(toml_err(first))
     }
 
     /// Parses and validates `config.toml` text; `path` only names it in errors.
@@ -1441,6 +1449,12 @@ mod tests {
         std::fs::write(paths.config_toml(), "[[choices]]\nid = \"a\"\n").unwrap();
         let e = Config::set_in_file(&paths, "limits.global_cap", "2").unwrap_err();
         assert!(e.to_string().contains("no longer read"), "{e}");
+    }
+
+    #[test]
+    fn a_type_error_keeps_its_line_and_column() {
+        let e = levels_err("[limits]\nglobal_cap = \"x\"\n");
+        assert!(e.contains("line 2") && e.contains("column"), "{e}");
     }
 
     #[test]
