@@ -322,6 +322,49 @@ pub struct LevelsView {
     pub restart_required: bool,
 }
 
+impl LevelsView {
+    /// The levels of `cfg` with each listed choice resolved against `cfg.choices`.
+    pub fn resolve(cfg: &Config, default_levels: bool, restart_required: bool) -> Self {
+        let levels = cfg
+            .router
+            .levels
+            .iter()
+            .map(|l| {
+                let mut choices: Vec<LevelChoiceView> = l
+                    .choices
+                    .iter()
+                    .map(|lc| {
+                        let ch = cfg.choices.iter().find(|c| c.id == lc.id);
+                        LevelChoiceView {
+                            id: lc.id.clone(),
+                            priority: lc.priority,
+                            harness: ch.map(|c| c.harness),
+                            model: ch.map(|c| c.model.clone()),
+                            effort: ch.and_then(|c| c.effort.clone()),
+                            enabled: ch.is_some_and(|c| c.enabled),
+                            known: ch.is_some(),
+                        }
+                    })
+                    .collect();
+                // Stable: equal priorities keep their listed order.
+                choices.sort_by_key(|c| c.priority.unwrap_or(u32::MAX));
+                LevelView {
+                    name: l.name.clone(),
+                    min: l.min,
+                    max: l.max,
+                    tier: l.tier,
+                    choices,
+                }
+            })
+            .collect();
+        Self {
+            levels,
+            default_levels,
+            restart_required,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SecretOrigin {

@@ -21,9 +21,9 @@ use crate::extract::{ApiJson, ApiQuery, OptionalJson};
 use crate::page::{clamp_limit, decode_cursor, encode_cursor};
 use crate::state::AppState;
 use crate::types::{
-    Caps, ChoicesView, ConfigView, DailyUsage, DashboardView, LevelChoiceView, LevelView,
-    LevelsPut, LevelsView, Page, PruneRequest, PruneResult, RouteRecord, RunViewPublic,
-    SecretOrigin, SecretSource, StatusView, WorktreeView,
+    Caps, ChoicesView, ConfigView, DailyUsage, DashboardView, LevelsPut, LevelsView, Page,
+    PruneRequest, PruneResult, RouteRecord, RunViewPublic, SecretOrigin, SecretSource, StatusView,
+    WorktreeView,
 };
 
 fn caps(st: &AppState) -> Caps {
@@ -348,43 +348,11 @@ pub async fn choices_put(
 fn levels_view(st: &AppState) -> ApiResult<LevelsView> {
     let disk = Config::load(&st.sup.paths)?;
     let default_levels = !Config::file_sets_key(&st.sup.paths, "router.levels")?;
-    let levels = disk
-        .router
-        .levels
-        .iter()
-        .map(|l| {
-            let mut choices: Vec<LevelChoiceView> = l
-                .choices
-                .iter()
-                .map(|lc| {
-                    let ch = disk.choices.iter().find(|c| c.id == lc.id);
-                    LevelChoiceView {
-                        id: lc.id.clone(),
-                        priority: lc.priority,
-                        harness: ch.map(|c| c.harness),
-                        model: ch.map(|c| c.model.clone()),
-                        effort: ch.and_then(|c| c.effort.clone()),
-                        enabled: ch.is_some_and(|c| c.enabled),
-                        known: ch.is_some(),
-                    }
-                })
-                .collect();
-            // Stable: equal priorities keep their listed order.
-            choices.sort_by_key(|c| c.priority.unwrap_or(u32::MAX));
-            LevelView {
-                name: l.name.clone(),
-                min: l.min,
-                max: l.max,
-                tier: l.tier,
-                choices,
-            }
-        })
-        .collect();
-    Ok(LevelsView {
-        levels,
+    Ok(LevelsView::resolve(
+        &disk,
         default_levels,
-        restart_required: restart_required(st, &disk),
-    })
+        restart_required(st, &disk),
+    ))
 }
 
 /// A rejected level list is a 400 carrying the validation message.
