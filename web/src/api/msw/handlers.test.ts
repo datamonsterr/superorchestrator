@@ -39,6 +39,9 @@ describe('base handlers cover every endpoint in design 2.1', () => {
     ['getLoginStatus', () => endpoints.getLoginStatus('agy-acc1')],
     ['getChoices', () => endpoints.getChoices()],
     ['putChoices', () => endpoints.putChoices({ choices: [], routing_instruction: '' })],
+    ['getLevels', () => endpoints.getLevels()],
+    ['putLevels', () => endpoints.putLevels({ levels: [] })],
+    ['resetLevels', () => endpoints.resetLevels()],
     ['getModels', () => endpoints.getModels()],
     ['refreshModels', () => endpoints.refreshModels()],
     ['listWorktrees', () => endpoints.listWorktrees()],
@@ -73,6 +76,14 @@ describe('behaviour', () => {
   it('returns 404 and 409 error bodies', async () => {
     await expect(endpoints.getRun('missing')).rejects.toMatchObject({ status: 404, code: -32003 })
     await expect(endpoints.createAgent({ name: 'reviewer', source: GOOD })).rejects.toMatchObject({ status: 409 })
+  })
+  it('resolves level choices against the fixture choices', async () => {
+    expect((await endpoints.getLevels()).default_levels).toBe(true)
+    const v = await endpoints.putLevels({
+      levels: [{ name: 'all', min: 0, max: 100, choices: [{ id: 'ghost' }, { id: 'agy-pro', priority: 2 }, { id: 'codex-high', priority: 1 }] }],
+    })
+    expect(v.levels[0]?.choices.map((c) => [c.id, c.known])).toEqual([['codex-high', true], ['agy-pro', true], ['ghost', false]])
+    expect((await endpoints.resetLevels()).default_levels).toBe(true)
   })
   it('clamps and pages with an opaque cursor', () => {
     const all = Array.from({ length: 2500 }, (_, i) => i)

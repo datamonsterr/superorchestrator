@@ -11,6 +11,8 @@ import type {
   EventType,
   Headroom,
   ImportCandidate,
+  Level,
+  LevelsView,
   MessageView,
   ModelCatalog,
   RouteRecord,
@@ -86,6 +88,45 @@ export const choices: ChoicesView = {
   ],
   routing_instruction: 'Prefer codex-high for refactors; use agy-pro for large-context reading.',
   restart_required: false,
+}
+
+/** The defaults in effect when `config.toml` has no `router.levels`. */
+export const levels: LevelsView = {
+  default_levels: true,
+  restart_required: false,
+  levels: [
+    { name: 'low', min: 0, max: 37, tier: 'fast', choices: [] },
+    { name: 'mid', min: 38, max: 62, tier: 'mid', choices: [] },
+    { name: 'high', min: 63, max: 100, tier: 'high', choices: [] },
+  ],
+}
+
+/** Resolves a level list against the fixture choices, as the server does. */
+export function levelsViewOf(list: Level[]): LevelsView {
+  return {
+    default_levels: false,
+    restart_required: true,
+    levels: list.map((l) => ({
+      name: l.name,
+      min: l.min,
+      max: l.max,
+      tier: l.tier ?? null,
+      choices: (l.choices ?? [])
+        .map((lc) => {
+          const c = choices.choices.find((x) => x.id === lc.id)
+          return {
+            id: lc.id,
+            priority: lc.priority ?? null,
+            harness: c?.harness ?? null,
+            model: c?.model ?? null,
+            effort: c?.effort ?? null,
+            enabled: c?.enabled ?? false,
+            known: c !== undefined,
+          }
+        })
+        .sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity)),
+    })),
+  }
 }
 
 export const evt = (id: string, type: EventType, run_id: string | null, min: number, data: unknown = {}, session = 'sess-1'): Event => ({
