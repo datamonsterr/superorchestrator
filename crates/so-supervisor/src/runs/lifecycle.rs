@@ -797,13 +797,14 @@ impl RunManager {
     }
 
     /// A launch whose run was finished meanwhile: stop the process, drop the entry and
-    /// remove a worktree nobody used.
+    /// remove a worktree nobody used and the temp dir the process created.
     async fn abandon_launch(&self, id: &str, control: &RunControl) {
         if let Some(rt) = lock(&self.inner.runs).get_mut(id) {
             rt.live = None;
         }
         let _ = control.shutdown(std::time::Duration::ZERO).await;
         self.cleanup_worktree(id).await;
+        self.cleanup_run_tmp(id).await;
     }
 
     // ---------------------------------------------------------------- finish

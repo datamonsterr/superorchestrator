@@ -789,6 +789,8 @@ async fn cancel_between_launch_and_go_live_leaves_no_process() {
     );
     assert_eq!(runs.live_count(), 0);
     assert_eq!(view(&c, &r.run_id).await.state, RunState::Cancelled);
+    // The temp dir the harness got after the cancel is removed too.
+    assert!(!env.paths.run_tmp_dir(&r.run_id).exists());
     h.shutdown().await;
 }
 
