@@ -35,7 +35,6 @@ export const routes: RouteObject[] = [
       page('sessions/:sessionId/runs/:runId', timeline, 'TimelinePage'),
       page('accounts', () => import('@/features/accounts/AccountsPage'), 'AccountsPage'),
       page('routing', () => import('@/features/routing/RoutingPage'), 'RoutingPage'),
-      { path: 'choices', element: <Navigate to="/routing" replace /> },
       page('agents', () => import('@/features/agents/AgentsPage'), 'AgentsPage'),
       page('agents/:name', () => import('@/features/agents/AgentEditor'), 'AgentEditor'),
       page('workflows', () => import('@/features/workflows/WorkflowsPage'), 'WorkflowsPage'),

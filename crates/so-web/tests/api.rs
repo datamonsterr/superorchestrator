@@ -692,19 +692,23 @@ async fn levels_config_and_worktrees() {
     });
     let (s, v) = send_json(&f.app, "PUT", "/api/v1/levels", overlap).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let message = v["error"]["message"].as_str().unwrap();
     assert!(
-        v["error"]["data"]["levels"]
-            .as_str()
-            .unwrap()
-            .contains("overlaps"),
+        message.contains("overlaps") && message.contains("`b`"),
         "{v}"
     );
+    assert_eq!(std::fs::read_to_string(&config_toml).unwrap(), before);
     let bad_ref = json!({
         "levels": [{"name": "a", "min": 0, "max": 100, "models": ["agy/claude-sonnet-4-6/high"]}],
         "routing_instruction": "x",
     });
     let (s, v) = send_json(&f.app, "PUT", "/api/v1/levels", bad_ref).await;
     assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    let message = v["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("agy/claude-sonnet-4-6/high") || message.contains("effort"),
+        "{v}"
+    );
     assert_eq!(std::fs::read_to_string(&config_toml).unwrap(), before);
 
     let (s, v) = get(&f.app, "/api/v1/config").await;
