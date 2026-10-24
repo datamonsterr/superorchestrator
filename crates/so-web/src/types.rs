@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use so_core::config::{Level, LevelTier};
 use so_core::proto::{
     AccountView, MessageView, RouteResult, RunView, SignInState, StatusResult, UsageTotals,
 };
@@ -277,6 +278,46 @@ pub struct PruneResult {
 pub struct ChoicesView {
     pub choices: Vec<Choice>,
     pub routing_instruction: String,
+    /// The file differs from what the running supervisor loaded.
+    pub restart_required: bool,
+}
+
+/// One choice a level lists, resolved against `choices`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LevelChoiceView {
+    pub id: String,
+    pub priority: Option<u32>,
+    /// `None` when `known` is false.
+    pub harness: Option<Harness>,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    /// False for an unknown choice.
+    pub enabled: bool,
+    /// False when the id names no choice.
+    pub known: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LevelView {
+    pub name: String,
+    pub min: u8,
+    pub max: u8,
+    pub tier: Option<LevelTier>,
+    /// Ordered by priority (lowest first, unset last), then as listed.
+    pub choices: Vec<LevelChoiceView>,
+}
+
+/// Body of `PUT /levels`: the whole `router.levels` list. An empty list disables levels.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LevelsPut {
+    pub levels: Vec<Level>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct LevelsView {
+    pub levels: Vec<LevelView>,
+    /// `config.toml` has no `router.levels`, so the defaults are in effect.
+    pub default_levels: bool,
     /// The file differs from what the running supervisor loaded.
     pub restart_required: bool,
 }

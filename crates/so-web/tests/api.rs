@@ -640,6 +640,101 @@ async fn send_json_empty(app: &Router, method: &str, uri: &str) -> (StatusCode, 
 // ------------------------------------------------------------------ config etc.
 
 #[tokio::test]
+async fn levels_get_put_delete() {
+    let f = fx().await;
+    // Defaults: the file sets no `router.levels`.
+    let (s, v) = get(&f.app, "/api/v1/levels").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["default_levels"], true);
+    let names: Vec<_> = v["levels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|l| l["name"].clone())
+        .collect();
+    assert_eq!(names, [json!("low"), json!("mid"), json!("high")]);
+    assert_eq!(v["levels"][0]["tier"], "fast");
+    assert_eq!(v["levels"][0]["choices"], json!([]));
+
+    // A valid list: ordered by priority, an unknown id is shown with known = false.
+    let body = json!({"levels": [
+        {"name": "all", "min": 0, "max": 100, "choices": [
+            {"id": "ghost"},
+            {"id": "b", "priority": 2},
+            {"id": "a", "priority": 1},
+        ]},
+    ]});
+    let choices = json!({
+        "choices": [
+            {"id": "a", "harness": "codex", "model": "gpt", "effort": "high", "roles": ["worker"], "description": "d", "enabled": true},
+            {"id": "b", "harness": "agy", "model": "flash", "roles": ["worker"], "description": "d", "enabled": false},
+        ],
+        "routing_instruction": "x",
+    });
+    let (s, v) = send_json(&f.app, "PUT", "/api/v1/choices", choices).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v) = send_json(&f.app, "PUT", "/api/v1/levels", body).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["default_levels"], false);
+    assert_eq!(v["restart_required"], true);
+    let ids: Vec<_> = v["levels"][0]["choices"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, ["a", "b", "ghost"]);
+    let a = &v["levels"][0]["choices"][0];
+    assert_eq!(
+        (
+            a["harness"].as_str(),
+            a["model"].as_str(),
+            a["effort"].as_str()
+        ),
+        (Some("codex"), Some("gpt"), Some("high"))
+    );
+    assert_eq!(
+        (a["known"].clone(), a["enabled"].clone()),
+        (json!(true), json!(true))
+    );
+    assert_eq!(v["levels"][0]["choices"][1]["enabled"], false);
+    let ghost = &v["levels"][0]["choices"][2];
+    assert_eq!(ghost["known"], false);
+    assert_eq!(ghost["enabled"], false);
+    assert!(ghost["harness"].is_null() && ghost["model"].is_null());
+    let (_, again) = get(&f.app, "/api/v1/levels").await;
+    assert_eq!(again["levels"], v["levels"]);
+
+    // An overlap is a 400 with the message, and nothing changes.
+    let bad = json!({"levels": [
+        {"name": "x", "min": 0, "max": 50, "tier": "fast"},
+        {"name": "y", "min": 40, "max": 100, "tier": "high"},
+    ]});
+    let (s, v) = send_json(&f.app, "PUT", "/api/v1/levels", bad).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(
+        v["error"]["message"].to_string().contains("overlaps"),
+        "{v}"
+    );
+    let (_, v) = get(&f.app, "/api/v1/levels").await;
+    assert_eq!(v["levels"][0]["name"], "all");
+
+    // An empty list is allowed and keeps the key set.
+    let (s, v) = send_json(&f.app, "PUT", "/api/v1/levels", json!({"levels": []})).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["levels"].clone(), v["default_levels"].clone()),
+        (json!([]), json!(false))
+    );
+
+    // DELETE brings the defaults back.
+    let (s, v) = send_json_empty(&f.app, "DELETE", "/api/v1/levels").await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["default_levels"], true);
+    assert_eq!(v["levels"].as_array().unwrap().len(), 3);
+}
+
+#[tokio::test]
 async fn choices_config_and_worktrees() {
     let f = fx().await;
     let (s, v) = get(&f.app, "/api/v1/choices").await;

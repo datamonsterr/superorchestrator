@@ -21,8 +21,9 @@ use crate::extract::{ApiJson, ApiQuery, OptionalJson};
 use crate::page::{clamp_limit, decode_cursor, encode_cursor};
 use crate::state::AppState;
 use crate::types::{
-    Caps, ChoicesView, ConfigView, DailyUsage, DashboardView, Page, PruneRequest, PruneResult,
-    RouteRecord, RunViewPublic, SecretOrigin, SecretSource, StatusView, WorktreeView,
+    Caps, ChoicesView, ConfigView, DailyUsage, DashboardView, LevelChoiceView, LevelView,
+    LevelsPut, LevelsView, Page, PruneRequest, PruneResult, RouteRecord, RunViewPublic,
+    SecretOrigin, SecretSource, StatusView, WorktreeView,
 };
 
 fn caps(st: &AppState) -> Caps {
@@ -338,6 +339,88 @@ pub async fn choices_put(
         Config::set_in_file(&s.sup.paths, "choices", &choices)?;
         s.refresh_skill();
         Ok(Json(choices_view(&s)?))
+    })
+    .await
+}
+
+// ------------------------------------------------------------------ levels
+
+fn levels_view(st: &AppState) -> ApiResult<LevelsView> {
+    let disk = Config::load(&st.sup.paths)?;
+    let default_levels = !Config::file_sets_key(&st.sup.paths, "router.levels")?;
+    let levels = disk
+        .router
+        .levels
+        .iter()
+        .map(|l| {
+            let mut choices: Vec<LevelChoiceView> = l
+                .choices
+                .iter()
+                .map(|lc| {
+                    let ch = disk.choices.iter().find(|c| c.id == lc.id);
+                    LevelChoiceView {
+                        id: lc.id.clone(),
+                        priority: lc.priority,
+                        harness: ch.map(|c| c.harness),
+                        model: ch.map(|c| c.model.clone()),
+                        effort: ch.and_then(|c| c.effort.clone()),
+                        enabled: ch.is_some_and(|c| c.enabled),
+                        known: ch.is_some(),
+                    }
+                })
+                .collect();
+            // Stable: equal priorities keep their listed order.
+            choices.sort_by_key(|c| c.priority.unwrap_or(u32::MAX));
+            LevelView {
+                name: l.name.clone(),
+                min: l.min,
+                max: l.max,
+                tier: l.tier,
+                choices,
+            }
+        })
+        .collect();
+    Ok(LevelsView {
+        levels,
+        default_levels,
+        restart_required: restart_required(st, &disk),
+    })
+}
+
+/// A rejected level list is a 400 carrying the validation message.
+fn levels_error(e: so_core::CoreError) -> ApiError {
+    match e {
+        so_core::CoreError::InvalidValue { .. } => ApiError::bad_request(e.to_string()),
+        other => other.into(),
+    }
+}
+
+pub async fn levels_get(State(st): State<AppState>) -> ApiResult<Json<LevelsView>> {
+    let s = st.clone();
+    st.blocking(move || Ok(Json(levels_view(&s)?))).await
+}
+
+pub async fn levels_put(
+    State(st): State<AppState>,
+    ApiJson(b): ApiJson<LevelsPut>,
+) -> ApiResult<Json<LevelsView>> {
+    let s = st.clone();
+    st.blocking(move || {
+        let levels = toml::Value::try_from(&b.levels)
+            .map_err(ApiError::internal)?
+            .to_string();
+        Config::set_in_file(&s.sup.paths, "router.levels", &levels).map_err(levels_error)?;
+        Ok(Json(levels_view(&s)?))
+    })
+    .await
+}
+
+/// Removes `router.levels` so the defaults apply again.
+pub async fn levels_delete(State(st): State<AppState>) -> ApiResult<Json<LevelsView>> {
+    let s = st.clone();
+    st.blocking(move || {
+        Config::unset_in_file(&s.sup.paths, "router.levels").map_err(levels_error)?;
+        Ok(Json(levels_view(&s)?))
     })
     .await
 }
