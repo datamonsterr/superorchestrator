@@ -83,6 +83,7 @@ export type {
   Jev,
   JoinView,
   Level,
+  LevelChoice,
   LevelChoiceView,
   LevelTier,
   LevelView,

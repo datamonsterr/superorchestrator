@@ -14,12 +14,13 @@ import { useChoices, usePutChoices } from '@/api/queries'
 import type { Choice } from '@/api/types'
 import { ChoiceDialog } from './ChoiceDialog'
 import { ChoicesTable } from './ChoicesTable'
+import { LevelsPanel } from './LevelsPanel'
 import { InstructionEditor } from './InstructionEditor'
 import { ModelsPanel } from './ModelsPanel'
 import { RouteLog } from './RouteLog'
 import { RoutePreview } from './RoutePreview'
 
-const TABS = ['choices', 'instruction', 'preview', 'log'] as const
+const TABS = ['choices', 'levels', 'instruction', 'preview', 'log'] as const
 type Tab = (typeof TABS)[number]
 
 export function RoutingPage() {
@@ -41,7 +42,7 @@ export function RoutingPage() {
     <>
       <PageHeader
         title="Choices and routing"
-        description="Edit Choices, preview a Route and review the Route log."
+        description="Edit Choices and complexity levels, preview a Route and review the Route log."
         actions={
           tab === 'choices' ? (
             <Button onClick={() => setTarget('new')} disabled={!view}>
@@ -53,6 +54,7 @@ export function RoutingPage() {
       <Tabs value={tab} onValueChange={(t) => setParams(t === 'choices' ? {} : { tab: t }, { replace: true })}>
         <TabsList className="mb-4 max-w-full overflow-x-auto">
           <TabsTrigger value="choices">Choices</TabsTrigger>
+          <TabsTrigger value="levels">Levels</TabsTrigger>
           <TabsTrigger value="instruction">Routing instruction</TabsTrigger>
           <TabsTrigger value="preview">Preview</TabsTrigger>
           <TabsTrigger value="log">Route log</TabsTrigger>
@@ -82,6 +84,10 @@ export function RoutingPage() {
             </ScrollTable>
           )}
           <ModelsPanel />
+        </TabsContent>
+
+        <TabsContent value="levels">
+          <LevelsPanel />
         </TabsContent>
 
         <TabsContent value="instruction">
