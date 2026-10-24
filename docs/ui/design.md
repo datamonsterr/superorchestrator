@@ -259,7 +259,7 @@ Purpose: edit the complexity levels (each with its models in preference order) a
 
 ```
 +-------------------------------------------------------------------------+
-| Levels and routing  [Levels] [Routing instruction] [Preview] [Log]      |
+| Levels and routing  [Levels] [Routing instruction] [Preview] [Route log]|
 | Levels tab:                                                             |
 | complex  63-87                            [Edit level] [Delete level]   |
 |   1  agy/claude-sonnet-4-6/thinking   [Up] [Down] [Remove]             |
@@ -267,13 +267,13 @@ Purpose: edit the complexity levels (each with its models in preference order) a
 |   3  codex/gpt-6.1-sol/high           [Up] [Down] [Remove]             |
 |                                              [+ Add model] [+ Add level]|
 | Preview tab:                                                            |
-| Prompt [textarea]  Agent [text]  Model [name or ref]  Pin: harness/effort|
+| Prompt [textarea]  Model [name or ref]  Harness  Account  Effort         |
 | [Run preview]                                                           |
 |  Result: codex/gpt-6.1-sol/high on codex-acc1  source: jev  confidence 0.82|
 +-------------------------------------------------------------------------+
 ```
 
-Levels tab: a card per level with Edit level and Delete level (the last level cannot be deleted). Each card lists its models in order, with Move up, Move down and Remove. The Add model dialog takes harness, model (with catalog suggestions) and effort, and shows the ref it will write as a live preview. The Add level dialog takes name, min, max and an optional tier. Preview has no Role field: the Agent field names the profile, and Model accepts a name or a ref.
+Levels tab: a card per level with Edit level and Delete level (the last level cannot be deleted). Each card lists its models in order, with Move up, Move down and Remove. The Add model dialog takes harness, model (with catalog suggestions) and effort, and shows the ref it will write as a live preview. The Add level dialog takes name, min, max and an optional tier. The preview has no role or agent field; Model accepts a name or harness/model/effort.
 
 Components: `Tabs`, cards with ordered lists, `Dialog` + `Field` with react-hook-form (`Input`, `Select` for harness and tier, model suggestions from the catalog), `Textarea` (instruction, with a character count and Save/Revert buttons), `Progress`-style probability bars (shared `ProbabilityBars` component), `Badge` (source: jev, heuristic, pinned), `Table` + `Pagination` (log), `sonner` toasts.
 Data: `GET/PUT /levels` (body `{levels, routing_instruction}`), `POST /route`, `GET /routing/records`. Live: `route_decision` invalidates the log. Saving shows validation errors from 422 `data` next to fields.

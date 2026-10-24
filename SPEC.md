@@ -799,9 +799,9 @@ Each milestone is one or more PRs with `cargo test` coverage, and is usable by i
 4. **M4 Communication, nesting, review.**
    - Scope: messages, `send_message` (live and resume), `read_messages`, `report_progress`, `ask_parent`, elicitation, progress notifications, nested spawn with depth 2 and caps, `fork_agent`, review gate and checks, stall nudges and escalation, notifications.
 5. **M5 Routing.**
-   - Scope: catalog and `models refresh`, choices, heuristic, Jev decider with validation and gate, account selection, `route`, `harness: auto`, failover across accounts and choices, `route eval` with the shipped cases.
+   - Scope: catalog and `models refresh`, choices, heuristic, Jev decider with validation and gate, account selection, `route`, `harness: auto`, failover across accounts and levels, `route eval` with the shipped cases.
 6. **M6 Web UI.**
-   - Scope: axum API and SSE, dashboard, sessions list, session timeline Gantt with the run panel, accounts pages with login flows, choices and settings pages, `ui --install-service`.
+   - Scope: axum API and SSE, dashboard, sessions list, session timeline Gantt with the run panel, accounts pages with login flows, levels and settings pages, `ui --install-service`.
 7. **M7 Custom agents.**
    - Scope: `AGENT.md` parsing with Claude Code parity, per-harness materialisation, `.claude/agents` import, `agent` CLI, starter agents, the UI agents page.
 8. **M8 Workflows.**
