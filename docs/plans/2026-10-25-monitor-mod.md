@@ -133,7 +133,8 @@ Headroom bars: 50 % or more `success`, 15 % to 49 % `warning`, under 15 % `error
   - `terminal`: glyph timeline sized to `e.props.bodyColumns`.
   - `desktop`, `vscode`: Box bars whose widths are percentages of the window, `backgroundColor` set to the tone's theme key, labels in `mono` caption text.
   - `mobile`: counts and one line per run with its mark and duration; no bars.
-- Placement: auto-open the pane at `session.start` only where it docks as a sidebar: `e.viewport?.isFullscreen === true` at a render, or `$.session.surfaces()` includes a non-terminal surface. On the terminal's main screen the pane opens inline only through `/so-monitor`.
+- Placement: the surface seats the pane (`e.props.placement`): `dock` beside the transcript (desktop app sidebar, VS Code, the terminal in fullscreen from 110 columns) or `inline` above the prompt (the terminal's bottom block). The mod draws a vertical layout for `dock` (requests `columns: 44`) and a wide, short layout for `inline` (requests `rows: 12`: header, quota cells across the width, counts, full-width timeline). The pane auto-opens at `session.start` on every surface while `userConfig.monitor` is true.
+- No legend is drawn in the pane or the band. Labels say `quota`, never `headroom`.
 
 ## Layout
 
