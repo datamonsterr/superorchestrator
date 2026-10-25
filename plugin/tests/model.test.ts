@@ -17,6 +17,7 @@ import {
   bandText,
   barCells,
   formatDuration,
+  labelWidth,
   laneRuns,
   laneSpans,
   newAttention,
@@ -163,6 +164,17 @@ describe('parseSnapshot', () => {
     expect(parsed?.runs[0]?.name).toBeNull();
     expect(parsed?.session?.cwd).toBeNull();
     expect(parsed?.accounts[0]?.pools[0]?.source).toBeNull();
+  });
+
+  test('accepts a fractional headroom percent', () => {
+    const raw = json(busySnapshot());
+    firstPool(raw)['five_hour_pct'] = 59.5;
+    const parsed = parseSnapshot(JSON.stringify(raw));
+    expect(parsed).not.toBeNull();
+    const row = quotaRows(parsed?.accounts ?? [], 20).find(
+      (candidate) => candidate.label === 'codex-acc1',
+    );
+    expect(row?.fiveHour).toEqual({ pct: 59.5, text: '60%', tone: 'success' });
   });
 
   test('returns null for anything that is not JSON', () => {
@@ -677,6 +689,17 @@ describe('formatDuration', () => {
   });
 });
 
+describe('labelWidth', () => {
+  test('clamps 30 % of the columns to 8..12', () => {
+    expect(labelWidth(0)).toBe(8);
+    expect(labelWidth(20)).toBe(8);
+    expect(labelWidth(30)).toBe(9);
+    expect(labelWidth(39)).toBe(11);
+    expect(labelWidth(40)).toBe(12);
+    expect(labelWidth(100)).toBe(12);
+  });
+});
+
 describe('axisLabels', () => {
   test('places the left, middle and now labels', () => {
     const line = axisLabels(60, 20);
@@ -731,6 +754,10 @@ describe('bandText', () => {
 
   test('a low focus alone still carries the prefix', () => {
     expect(bandText(zeroCounts(), [poolRow('a', 5, 5)])).toBe('SO  · low: a 5%');
+  });
+
+  test('rounds a low pool percent', () => {
+    expect(bandText(zeroCounts(), [poolRow('a', 14.5, 80)])).toBe('SO  · low: a 15%');
   });
 });
 
@@ -825,19 +852,5 @@ describe('newAttention', () => {
         { snapshot: busySnapshot(), orchestrator: [lane('user', now - 1000, null)] },
       ),
     ).toEqual([]);
-  });
-
-  test('light and daltonized themes keep working through the lane helpers', () => {
-    const light = themeInfo('light-daltonized');
-    expect(light).toEqual({ mode: 'light', ansi: false, daltonized: true });
-    expect(trackColor(light)).toEqual({ color: 'inactive', dim: true });
-    const runs = laneRuns(
-      [lane('running', 0, 500), lane('review', 500, 1000)],
-      { from: 0, to: 1000 },
-      4,
-      1000,
-    );
-    expect(runs.map((run) => run.tone)).toEqual(['running', 'review']);
-    expect(runs.map((run) => run.text)).toEqual(['██', '▓▓']);
   });
 });

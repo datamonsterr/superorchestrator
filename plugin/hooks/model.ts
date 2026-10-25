@@ -94,7 +94,7 @@ function oneOf<T extends string>(value: unknown, allowed: readonly T[]): value i
 }
 
 function isPercent(value: unknown): value is number {
-  return isInteger(value) && value <= 100;
+  return isNumber(value) && value >= 0 && value <= 100;
 }
 
 function isWindow(value: unknown): boolean {
@@ -446,7 +446,7 @@ function quotaTone(pct: number | null): QuotaTone {
 function percentCell(pct: number | null): QuotaCell {
   return pct === null
     ? { pct: null, text: '—', tone: 'inactive' }
-    : { pct, text: `${pct}%`, tone: quotaTone(pct) };
+    : { pct, text: `${Math.round(pct)}%`, tone: quotaTone(pct) };
 }
 
 function minPercent(pool: Pool): number {
@@ -564,7 +564,7 @@ export function quotaRows(accounts: readonly Account[], maxRows: number): QuotaR
     (a, b) =>
       a.rank - b.rank ||
       a.minimum - b.minimum ||
-      a.label.localeCompare(b.label),
+      (a.label < b.label ? -1 : a.label > b.label ? 1 : 0),
   );
 
   const limit = Number.isFinite(maxRows) ? Math.floor(maxRows) : entries.length;
@@ -832,6 +832,14 @@ export function formatDuration(ms: number): string {
 }
 
 /**
+ * The width of the timeline's label column: 30 % of the available columns,
+ * clamped between 8 and 12.
+ */
+export function labelWidth(columns: number): number {
+  return Math.max(8, Math.min(12, Math.floor(columns * 0.3)));
+}
+
+/**
  * The axis line: `-<window>m` at the left edge, the midpoint label centered and
  * `now` at the right edge, exactly `width` columns wide. A label that would
  * overlap is left out.
@@ -887,7 +895,7 @@ export function bandText(
   if (counts.stuck > 0) parts.push(`⚠ ${counts.stuck} stuck`);
   if (counts.failed > 0) parts.push(`✗ ${counts.failed} failed`);
   const low = lowestPool(quota);
-  if (low !== null) parts.push(`· low: ${low.label} ${low.pct}%`);
+  if (low !== null) parts.push(`· low: ${low.label} ${Math.round(low.pct)}%`);
   return parts.length === 0 ? null : `SO  ${parts.join('  ')}`;
 }
 
