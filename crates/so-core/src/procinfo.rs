@@ -94,6 +94,42 @@ fn parse_stat_starttime(stat: &str) -> Option<String> {
     rest.split_whitespace().nth(19).map(str::to_string)
 }
 
+/// The parent pid of `pid`. On Linux it reads field 4 (ppid) of `/proc/<pid>/stat`, counting
+/// from the last `)` so a command name with spaces or parentheses is safe. Other systems run
+/// `ps -o ppid= -p <pid>` under a fixed locale. `None` when it cannot be read.
+pub fn parent_pid(pid: i64) -> Option<i64> {
+    if cfg!(target_os = "linux") {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        parse_stat_ppid(&stat)
+    } else {
+        ps_ppid(pid)
+    }
+}
+
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn ps_ppid(pid: i64) -> Option<i64> {
+    let out = Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+/// Field 4 of `/proc/<pid>/stat`. The command name (field 2) may contain spaces and
+/// parentheses, so count from the last `)`.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn parse_stat_ppid(stat: &str) -> Option<i64> {
+    let rest = stat.get(stat.rfind(')')? + 1..)?;
+    // `rest` starts at field 3 (state), so field 4 is index 1.
+    rest.split_whitespace().nth(1)?.parse().ok()
+}
+
 /// True when the process recorded as `(pid, start)` is still the one running under that
 /// pid. Without a recorded or readable start token, liveness alone decides.
 pub fn same_process_alive(pid: i64, recorded_start: Option<&str>) -> bool {
@@ -133,6 +169,34 @@ mod tests {
     fn a_reused_pid_with_another_start_is_not_the_same_process() {
         let me = i64::from(std::process::id());
         assert!(!same_process_alive(me, Some("1")));
+    }
+
+    #[test]
+    fn parent_pid_of_own_process_equals_the_real_parent() {
+        let me = i64::from(std::process::id());
+        let ppid = parent_pid(me).expect("own parent is readable");
+        assert!(ppid > 0, "parent pid should be positive, got {ppid}");
+        // Independent of the implementation: ask the system again.
+        let out = Command::new("ps")
+            .args(["-o", "ppid=", "-p", &me.to_string()])
+            .output()
+            .unwrap();
+        let real: i64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+        assert_eq!(ppid, real);
+    }
+
+    #[test]
+    fn parent_pid_of_a_missing_process_is_none() {
+        assert!(parent_pid(i64::from(i32::MAX)).is_none());
+        assert!(parent_pid(-1).is_none());
+        assert!(parent_pid(0).is_none());
+    }
+
+    #[test]
+    fn ppid_parsing_survives_odd_command_names() {
+        let stat = "123 (a) b (c) S 4242 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15";
+        assert_eq!(parse_stat_ppid(stat), Some(4242));
+        assert_eq!(parse_stat_ppid("not a stat line"), None);
     }
 
     #[test]
