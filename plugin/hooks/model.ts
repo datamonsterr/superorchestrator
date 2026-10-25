@@ -589,15 +589,17 @@ export function quotaRows(accounts: readonly Account[], maxRows: number): QuotaR
       taken += 1;
     } else if (folded === 0) {
       folded = foldable.length - shown;
-      rows.push({
-        label: `+${folded} ok ≥50%`,
-        kind: 'folded',
-        fiveHour: percentCell(null),
-        week: percentCell(null),
-        note: null,
-        noteTone: 'success',
-      });
     }
+  }
+  if (folded > 0) {
+    rows.push({
+      label: `+${folded} ok ≥50%`,
+      kind: 'folded',
+      fiveHour: percentCell(null),
+      week: percentCell(null),
+      note: null,
+      noteTone: 'success',
+    });
   }
   return rows.slice(0, limit);
 }

@@ -386,6 +386,24 @@ describe('quotaRows', () => {
     expect(rows.map((row) => row.label)).toEqual(['+5 ok ≥50%']);
   });
 
+  test('keeps the fold line last after an unknown pool', () => {
+    const unknown = {
+      ...accountWith([
+        poolWith({ status: 'unknown', five_hour_pct: null, weekly_pct: null }),
+      ]),
+      name: 'zz-unknown',
+    };
+    const accounts = [
+      unknown,
+      ...busySnapshot().accounts.filter((account) =>
+        ['ok1', 'ok2', 'ok3'].includes(account.name),
+      ),
+    ];
+    const rows = quotaRows(accounts, 3);
+    expect(rows.map((row) => row.label)).toEqual(['ok3', 'zz-unknown', '+2 ok ≥50%']);
+    expect(rows[2]?.kind).toBe('folded');
+  });
+
   test('uses 50/15 thresholds', () => {
     const pools = [
       poolWith({ pool: 'a', five_hour_pct: 50, weekly_pct: 50 }),
