@@ -1,7 +1,7 @@
 import type { Elements, PluginState, RenderSurface } from 'claude-code';
 import type { Account, LaneSegment, QuotaCell, Tone } from '../types';
 import {
-  TONES, attentionCounts, axisLabels, bandText, barCells, formatDuration,
+  TONES, asksOrchestrator, attentionCounts, axisLabels, bandText, barCells, formatDuration,
   labelWidth, laneRuns, laneSpans, quotaRows, runLabel, runRows,
   supervisorTone, toneOfRunState, trackColor,
 } from './model';
@@ -93,7 +93,7 @@ export function renderPane(ui: UI, state: State, surface: RenderSurface,
   const runBudget = Math.max(0, rows - fixedRows);
   // Select attention first, then restore tree order among the retained rows.
   const needsAttention = (run: typeof snapshot.runs[number]) => run.attention !== null
-    || ['review', 'stuck', 'failed'].includes(toneOfRunState(run.state, run.question !== null));
+    || ['review', 'stuck', 'failed'].includes(toneOfRunState(run.state, asksOrchestrator(run)));
   const ranked = [...allRuns].sort((a, b) => Number(needsAttention(b.run)) - Number(needsAttention(a.run)));
   const selected = new Set<string>();
   let used = 0;
@@ -125,12 +125,12 @@ export function renderPane(ui: UI, state: State, surface: RenderSurface,
     {!mobile && <Box flexDirection="row">{caption('claude'.padEnd(labelCols))}{lane(state.orchestrator)}</Box>}
     {snapshot.session === null && <Text>No superorchestrator runs in this conversation yet.</Text>}
     {allRuns.filter(row => selected.has(row.run.id)).map(({ run, prefix }) => {
-      const tone = TONES[toneOfRunState(run.state, run.question !== null)];
+      const tone = TONES[toneOfRunState(run.state, asksOrchestrator(run))];
       const label = `${prefix}${runLabel(run)}`.slice(0, labelCols).padEnd(labelCols);
       const duration = formatDuration((run.finished_at === null ? now : Date.parse(run.finished_at))
         - Date.parse(run.started_at ?? run.created_at));
       const segments = run.segments.map(s => ({ tone: toneOfRunState(s.state,
-        s.to === null && run.question !== null), from: Date.parse(s.from),
+        s.to === null && asksOrchestrator(run)), from: Date.parse(s.from),
         to: s.to === null ? null : Date.parse(s.to) }));
       return <Box flexDirection="column">
         <Box flexDirection="row">

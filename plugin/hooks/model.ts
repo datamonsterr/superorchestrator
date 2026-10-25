@@ -405,6 +405,11 @@ function openTone(lane: readonly LaneSegment[], now: number): Tone | null {
   return tone;
 }
 
+/** An open question addressed to the orchestrator, rather than a parent run. */
+export function asksOrchestrator(run: Run): boolean {
+  return run.question !== null && run.parent_run === null;
+}
+
 /**
  * What the counts line, the band and the status line share.
  *
@@ -419,7 +424,7 @@ export function attentionCounts(
 ): AttentionCounts {
   const counts: AttentionCounts = { running: 0, claude: 0, user: 0, stuck: 0, failed: 0 };
   for (const run of snapshot.runs) {
-    const tone = toneOfRunState(run.state, run.question !== null);
+    const tone = toneOfRunState(run.state, asksOrchestrator(run));
     if (run.attention === 'claude') counts.claude += 1;
     else if (run.attention === 'stuck') counts.stuck += 1;
     else if (run.attention === 'failed') counts.failed += 1;

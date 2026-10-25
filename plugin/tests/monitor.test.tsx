@@ -53,6 +53,31 @@ const BAND = { plugin: 'superorchestrator', component: 'AbovePrompt',
 const output = (stdout: string, exitCode = 0) => ({ value: { exitCode, stdout, stderr: '',
   isStdoutTruncated: false, isStderrTruncated: false } });
 
+test('nested questions draw waiting lanes and do not notify Claude', async ($, on) => {
+  const { clock, statuses, toasts } = world(on);
+  const data = busySnapshot();
+  const nested = data.runs[2]!;
+  data.runs = [nested];
+  nested.state = 'waiting';
+  nested.segments = [{ state: 'waiting', from: '2026-10-25T14:29:35Z', to: null }];
+  on('process.run', (_, e) => output(e.argv[0] === 'sh' ? '123' : JSON.stringify(data)));
+  await $.session.start(START);
+  nested.question = 'Which?';
+  await clock.advance(2000);
+  expect(statuses.at(-1)).toBe('SO');
+  expect(toasts).toEqual([]);
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface });
+    expect((await ui.find({ key: nested.id }))?.text).not.toContain('◆');
+    if (surface === 'terminal') {
+      expect((await ui.find({ type: 'Text', text: /^░+$/ }))?.props.color).toBe('inactive');
+    } else {
+      expect((await ui.findAll({ type: 'Box' })).some(x => x.props.backgroundColor === 'claude')).toBe(false);
+    }
+    await ui.unmount();
+  }
+});
+
 test('polls with session arguments; status and new attention toasts follow snapshots', async ($, on) => {
   const { clock, statuses, toasts } = world(on);
   let polls = 0;

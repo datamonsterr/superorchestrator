@@ -315,6 +315,15 @@ describe('theme', () => {
 });
 
 describe('attentionCounts', () => {
+  test('only root questions need the orchestrator', () => {
+    const snapshot = emptySnapshot();
+    const nested = runWith({ state: 'waiting', depth: 2, parent_run: 'parent', question: 'Which?' });
+    snapshot.runs = [nested];
+    expect(attentionCounts(snapshot, [], at(snapshot.now))).toEqual(zeroCounts());
+    snapshot.runs = [runWith({ state: 'waiting', question: 'Which?' })];
+    expect(attentionCounts(snapshot, [], at(snapshot.now)).claude).toBe(1);
+  });
+
   test('counts the busy fixture', () => {
     const counts = attentionCounts(busySnapshot(), [], at('2026-10-25T14:32:05Z'));
     expect(counts).toEqual({ running: 1, claude: 1, user: 0, stuck: 1, failed: 1 });
