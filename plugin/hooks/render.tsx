@@ -153,7 +153,7 @@ export function renderPane(ui: UI, state: State, surface: RenderSurface,
           {!terminal && !mobile && <Text mono size="caption" color={tone.theme}>{tone.mark}{duration.padStart(5)}</Text>}
         </Box>
         {state.expanded.includes(run.id) && <Text mono size="caption" dimColor>
-          {[run.model, run.account, ('branch' in run && typeof run.branch === 'string') ? run.branch : null, run.question].filter(Boolean).join(' · ')}
+          {[run.model, run.account, run.branch, run.question].filter(Boolean).join(' · ')}
           {run.marks.map(mark => ` · ${mark.ts.slice(11, 16)} ${MARK_STYLES[mark.kind].glyph} ${mark.kind}`).join('')}
         </Text>}
       </Box>;

@@ -101,6 +101,7 @@ export type Run = {
   harness: string;
   account: string | null;
   model: string | null;
+  branch: string | null;
   state: RunState;
   attention: Attention;
   question: string | null;

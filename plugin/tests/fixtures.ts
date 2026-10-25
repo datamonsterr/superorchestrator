@@ -47,6 +47,7 @@ function run(over: Partial<Run>): Run {
     harness: 'codex',
     account: 'codex-acc1',
     model: 'codex/gpt-6.1-sol/high',
+    branch: null,
     state: 'running',
     attention: null,
     question: null,
@@ -117,6 +118,7 @@ export function busySnapshot(): Snapshot {
     runs: [
       run({
         id: 'e3-core',
+        branch: 'so/e3-core',
         name: 'e3-core',
         state: 'pending_review',
         attention: 'claude',
@@ -150,6 +152,7 @@ export function busySnapshot(): Snapshot {
       }),
       run({
         id: 'fix-ui',
+        branch: 'so/fix-ui',
         name: 'fix-ui',
         parent_run: 'e4-sales',
         depth: 2,

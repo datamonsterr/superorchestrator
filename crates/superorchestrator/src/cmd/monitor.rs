@@ -378,6 +378,7 @@ fn run_json(
         "harness": run.harness.as_str(),
         "account": run.account,
         "model": run.choice_id.as_deref().or(run.model.as_deref()),
+        "branch": run.branch,
         "state": run.state.as_str(),
         "attention": attention(run.state, question.is_some(), run.parent_run_id.as_deref()),
         "question": question,

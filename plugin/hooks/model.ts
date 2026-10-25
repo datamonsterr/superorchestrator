@@ -221,6 +221,7 @@ function isRun(value: unknown): boolean {
     has(value, 'harness') &&
     has(value, 'account') &&
     has(value, 'model') &&
+    has(value, 'branch') &&
     has(value, 'state') &&
     has(value, 'attention') &&
     has(value, 'question') &&
@@ -236,6 +237,7 @@ function isRun(value: unknown): boolean {
     isString(value['harness']) &&
     isNullable(value['account'], isString) &&
     isNullable(value['model'], isString) &&
+    isNullable(value['branch'], isString) &&
     oneOf(value['state'], RUN_STATES) &&
     isNullable(value['attention'], (candidate) => oneOf(candidate, ATTENTIONS)) &&
     isNullable(value['question'], isString) &&

@@ -131,6 +131,7 @@ function runWith(over: Partial<Run>): Run {
     harness: 'codex',
     account: null,
     model: null,
+    branch: null,
     state: 'running',
     attention: null,
     question: null,
@@ -146,6 +147,26 @@ function runWith(over: Partial<Run>): Run {
 // ---------------------------------------------------------------------------
 
 describe('parseSnapshot', () => {
+  test('requires a nullable string branch on every run', () => {
+    const raw = json(busySnapshot());
+    delete firstRun(raw)['branch'];
+    expect(parseSnapshot(JSON.stringify(raw))).toBeNull();
+    firstRun(raw)['branch'] = 42;
+    expect(parseSnapshot(JSON.stringify(raw))).toBeNull();
+    for (const branch of [null, 'so/e3-core']) {
+      firstRun(raw)['branch'] = branch;
+      expect(parseSnapshot(JSON.stringify(raw))?.runs[0]?.branch).toBe(branch);
+    }
+  });
+
+  test('run fixture keys mirror the monitor contract', () => {
+    expect(Object.keys(busySnapshot().runs[0]!).sort()).toEqual([
+      'account', 'attention', 'branch', 'created_at', 'depth', 'finished_at',
+      'harness', 'id', 'marks', 'model', 'name', 'parent_run', 'question',
+      'segments', 'started_at', 'state',
+    ]);
+  });
+
   test('reads the busy fixture unchanged', () => {
     const busy = busySnapshot();
     expect(parseSnapshot(JSON.stringify(busy))).toEqual(busy);

@@ -57,6 +57,7 @@ struct RunSpec<'a> {
     depth: i64,
     state: RunState,
     account: Option<&'a str>,
+    branch: Option<&'a str>,
     created: DateTime<Utc>,
     started: Option<DateTime<Utc>>,
     finished: Option<DateTime<Utc>>,
@@ -71,6 +72,7 @@ impl<'a> RunSpec<'a> {
             depth: 0,
             state,
             account: None,
+            branch: None,
             created,
             started: None,
             finished: None,
@@ -90,6 +92,11 @@ impl<'a> RunSpec<'a> {
 
     fn started(mut self, t: DateTime<Utc>) -> Self {
         self.started = Some(t);
+        self
+    }
+
+    fn branch(mut self, branch: &'a str) -> Self {
+        self.branch = Some(branch);
         self
     }
 
@@ -114,7 +121,7 @@ fn save_run(e: &Env, session: &str, spec: RunSpec<'_>) -> RunRow {
         effort: None,
         cwd: None,
         worktree_path: None,
-        branch: None,
+        branch: spec.branch.map(str::to_string),
         native_session_id: None,
         state: spec.state,
         review: false,
@@ -503,7 +510,9 @@ fn segments_clip_to_the_window_keep_the_last_one_open_and_skip_the_terminal_stat
     save_run(
         &e,
         &s.id,
-        RunSpec::new("live", RunState::Running, at(base, -120)).started(at(base, -119)),
+        RunSpec::new("live", RunState::Running, at(base, -120))
+            .started(at(base, -119))
+            .branch("so/live"),
     );
     append(
         &e,
@@ -557,6 +566,7 @@ fn segments_clip_to_the_window_keep_the_last_one_open_and_skip_the_terminal_stat
         [
             "account",
             "attention",
+            "branch",
             "created_at",
             "depth",
             "finished_at",
@@ -573,6 +583,8 @@ fn segments_clip_to_the_window_keep_the_last_one_open_and_skip_the_terminal_stat
         ]
     );
 
+    assert_eq!(find_run(&v, "live")["branch"], "so/live");
+    assert!(find_run(&v, "done")["branch"].is_null());
     let live = &find_run(&v, "live")["segments"];
     assert_eq!(keys(&live[0]), ["from", "state", "to"]);
     assert_eq!(live.as_array().unwrap().len(), 1);

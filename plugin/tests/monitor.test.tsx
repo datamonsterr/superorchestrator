@@ -41,6 +41,7 @@ test('pane shows quota, counts and every run; rows toggle their details on each 
     for (const run of busySnapshot().runs) expect(await ui.find({ key: run.id })).toBeDefined();
     await ui.press({ key: 'e3-core' });
     expect((await ui.find({ type: 'Text', text: /Ship the parser/ }))?.text).toContain('codex/gpt-6.1-sol/high');
+    expect((await ui.find({ type: 'Text', text: /Ship the parser/ }))?.text).toContain('so/e3-core');
     await ui.press({ key: 'e3-core' });
     expect(await ui.find({ type: 'Text', text: /Ship the parser/ })).toBeUndefined();
     await ui.unmount();
