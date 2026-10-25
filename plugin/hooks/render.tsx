@@ -1,8 +1,8 @@
-import type { Elements, PluginState, RenderSurface } from 'claude-code';
-import type { Account, LaneSegment, QuotaCell, Tone } from '../types';
+import type { Elements, PluginState, RenderSurface, ThemeKey } from 'claude-code';
+import type { Account, LaneSegment, QuotaCell, RunMark, Tone } from '../types';
 import {
-  TONES, asksOrchestrator, attentionCounts, axisLabels, bandText, barCells, formatDuration,
-  labelWidth, laneRuns, laneSpans, quotaRows, runLabel, runRows,
+  MARK_STYLES, TONES, asksOrchestrator, attentionCounts, axisLabels, bandText, barCells, formatDuration,
+  labelWidth, laneRuns, laneSpans, markCells, quotaRows, runLabel, runRows,
   supervisorTone, toneOfRunState, trackColor,
 } from './model';
 
@@ -43,17 +43,27 @@ export function renderPane(ui: UI, state: State, surface: RenderSurface,
   const mobile = surface === 'mobile';
   const inline = placement === 'inline';
   const caption = (text: string) => <Text mono size="caption">{text}</Text>;
-  const lane = (segments: LaneSegment[]) => terminal
-    ? <Text mono>{laneRuns(segments, window, barWidth, now).map(part => {
+  const lane = (segments: LaneSegment[], marks: RunMark[] = []) => {
+    if (terminal) {
+      const cells: { text: string; color: ThemeKey; dim: boolean }[] = [];
+      for (const part of laneRuns(segments, window, barWidth, now)) {
         const tone = TONES[part.tone];
-        return <Text color={part.tone === 'idle' || part.tone === 'queued' ? track.color : tone.theme}
-          dimColor={part.tone === 'idle' || part.tone === 'queued' ? track.dim : tone.dim}>{part.text}</Text>;
-      })}</Text>
-    : <Box flexDirection="row" flexGrow={1} height={1} backgroundColor={track.color}>
+        const empty = part.tone === 'idle' || part.tone === 'queued';
+        for (const text of part.text) cells.push({ text, color: empty ? track.color : tone.theme,
+          dim: empty ? track.dim : tone.dim });
+      }
+      for (const mark of markCells(marks, window, barWidth, now)) {
+        while (cells.length <= mark.cell) cells.push({ text: ' ', color: track.color, dim: track.dim });
+        cells[mark.cell] = { text: mark.glyph, color: mark.tone, dim: false };
+      }
+      return <Text mono>{cells.map(cell => <Text color={cell.color} dimColor={cell.dim}>{cell.text}</Text>)}</Text>;
+    }
+    return <Box flexDirection="row" flexGrow={1} height={1} backgroundColor={track.color}>
         {/* This build accepts whole-number percentage widths. */}
         {laneSpans(segments, window, now).map(span => <Box width={`${Math.round(Math.max(0, span.pct))}%`}
           height={1} backgroundColor={span.tone === null ? track.color : TONES[span.tone].theme} />)}
       </Box>;
+  };
   const quotaCell = (cell: QuotaCell) => {
     if (mobile) return <Text mono size="caption" color={cell.tone}>{cell.text} </Text>;
     const bar = barCells(cell.pct ?? 0, Math.max(1, Math.floor((columns - 25) / 2)));
@@ -136,7 +146,7 @@ export function renderPane(ui: UI, state: State, surface: RenderSurface,
         <Box flexDirection="row">
           <Button key={run.id} plain onPress={() => actions.toggle(run.id)}>
             <Text mono size="caption">{mobile ? `${prefix}${runLabel(run)} ` : label}</Text>
-            {terminal && lane(segments)}
+            {terminal && lane(segments, run.marks)}
             {(terminal || mobile) && <Text color={tone.theme}>{tone.mark}{duration.padStart(5)}</Text>}
           </Button>
           {!terminal && !mobile && lane(segments)}
@@ -144,6 +154,7 @@ export function renderPane(ui: UI, state: State, surface: RenderSurface,
         </Box>
         {state.expanded.includes(run.id) && <Text mono size="caption" dimColor>
           {[run.model, run.account, ('branch' in run && typeof run.branch === 'string') ? run.branch : null, run.question].filter(Boolean).join(' · ')}
+          {run.marks.map(mark => ` · ${mark.ts.slice(11, 16)} ${MARK_STYLES[mark.kind].glyph} ${mark.kind}`).join('')}
         </Text>}
       </Box>;
     })}

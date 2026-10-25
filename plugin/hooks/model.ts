@@ -11,11 +11,13 @@ import type {
   LaneSegment,
   LaneSpan,
   LaneWindow,
+  MarkKind,
   Pool,
   QuotaCell,
   QuotaRow,
   QuotaTone,
   Run,
+  RunMark,
   RunRow,
   RunState,
   Snapshot,
@@ -626,6 +628,33 @@ type ClipSpan = {
   from: number;
   to: number;
 };
+
+export const MARK_STYLES: Record<MarkKind, { glyph: string; tone: ThemeKey }> = {
+  question: { glyph: '?', tone: 'claude' },
+  nudge: { glyph: '!', tone: 'warning' },
+  escalated: { glyph: '!', tone: 'warning' },
+  failover: { glyph: '↯', tone: 'warning' },
+  check_failed: { glyph: '✗', tone: 'error' },
+  review_rejected: { glyph: '↺', tone: 'claude' },
+  review_accepted: { glyph: '✓', tone: 'success' },
+};
+
+/** Marks within the visible time window, with the last input mark winning each cell. */
+export function markCells(
+  marks: readonly RunMark[], window: LaneWindow, width: number, now: number,
+): { cell: number; glyph: string; tone: ThemeKey }[] {
+  const cells = Math.max(0, Math.floor(width));
+  const duration = window.to - window.from;
+  if (cells === 0 || !(duration > 0)) return [];
+  const placed = new Map<number, { cell: number; glyph: string; tone: ThemeKey }>();
+  for (const mark of marks) {
+    const ts = Date.parse(mark.ts);
+    if (!Number.isFinite(ts) || ts < window.from || ts > Math.min(window.to, now)) continue;
+    const cell = Math.min(cells - 1, Math.floor((ts - window.from) / duration * cells));
+    placed.set(cell, { cell, ...MARK_STYLES[mark.kind] });
+  }
+  return [...placed.values()].sort((a, b) => a.cell - b.cell);
+}
 
 function clipSpans(
   segments: readonly LaneSegment[],

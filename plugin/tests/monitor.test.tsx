@@ -78,6 +78,27 @@ test('nested questions draw waiting lanes and do not notify Claude', async ($, o
   }
 });
 
+test('terminal lanes overlay marks and expanded details list mark times on every surface', async ($, on) => {
+  world(on);
+  const data = busySnapshot();
+  const run = data.runs[2]!;
+  data.runs = [run];
+  run.marks = [{ ts: '2026-10-25T14:31:00Z', kind: 'failover' }];
+  on('process.run', (_, e) => output(e.argv[0] === 'sh' ? '123' : JSON.stringify(data)));
+  await $.session.start(START);
+  for (const surface of ['terminal', 'desktop', 'vscode'] as const) {
+    const ui = await $.ui.mount({ ...PANE, surface });
+    if (surface === 'terminal') {
+      expect((await ui.find({ key: run.id }))?.text).toContain('↯');
+      expect((await ui.find({ type: 'Text', text: /^↯$/ }))?.props.color).toBe('warning');
+    }
+    await ui.press({ key: run.id });
+    expect((await ui.find({ type: 'Text', text: /↯ failover/ }))?.text).toContain('14:31 ↯ failover');
+    await ui.press({ key: run.id });
+    await ui.unmount();
+  }
+});
+
 test('polls with session arguments; status and new attention toasts follow snapshots', async ($, on) => {
   const { clock, statuses, toasts } = world(on);
   let polls = 0;

@@ -20,6 +20,7 @@ import {
   labelWidth,
   laneRuns,
   laneSpans,
+  markCells,
   newAttention,
   parseSnapshot,
   quotaRows,
@@ -595,6 +596,34 @@ describe('laneRuns', () => {
     expect(laneRuns([lane('running', 0, 1000)], window, 0, 1000)).toEqual([]);
     expect(laneRuns([lane('running', 0, 1000)], { from: 10, to: 10 }, 10, 1000)).toEqual([]);
     expect(laneRuns([lane('running', -100, 0)], window, 10, 1000)).toEqual([]);
+  });
+});
+
+describe('markCells', () => {
+  test('places marks in cells, clips the window and future, and keeps the last mark in a cell', () => {
+    const stamp = (ms: number) => new Date(ms).toISOString();
+    expect(markCells([
+      { ts: stamp(99), kind: 'nudge' },
+      { ts: stamp(100), kind: 'question' },
+      { ts: stamp(450), kind: 'check_failed' },
+      { ts: stamp(499), kind: 'failover' },
+      { ts: stamp(1000), kind: 'review_accepted' },
+      { ts: stamp(1100), kind: 'escalated' },
+      { ts: stamp(1101), kind: 'nudge' },
+    ], { from: 100, to: 1100 }, 10, 1000)).toEqual([
+      { cell: 0, glyph: '?', tone: 'claude' },
+      { cell: 3, glyph: '↯', tone: 'warning' },
+      { cell: 9, glyph: '✓', tone: 'success' },
+    ]);
+  });
+
+  test('includes the right edge in the last cell and handles empty lanes', () => {
+    const marks = [{ ts: new Date(1000).toISOString(), kind: 'review_rejected' as const }];
+    expect(markCells(marks, { from: 0, to: 1000 }, 10, 1000)).toEqual([
+      { cell: 9, glyph: '↺', tone: 'claude' },
+    ]);
+    expect(markCells(marks, { from: 0, to: 1000 }, 0, 1000)).toEqual([]);
+    expect(markCells(marks, { from: 1000, to: 1000 }, 10, 1000)).toEqual([]);
   });
 });
 
