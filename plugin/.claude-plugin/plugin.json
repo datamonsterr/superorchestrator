@@ -7,5 +7,6 @@
   "homepage": "https://github.com/datamonsterr/superorchestrator",
   "repository": "https://github.com/datamonsterr/superorchestrator",
   "license": "MIT",
-  "keywords": ["delegation", "subagents", "codex", "opencode", "mcp"]
+  "keywords": ["delegation", "subagents", "codex", "opencode", "mcp"],
+  "types": "./types/index.d.ts"
 }
