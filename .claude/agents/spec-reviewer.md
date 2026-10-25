@@ -1,6 +1,6 @@
 ---
 name: spec-reviewer
-description: Read-only review that checks an implementation matches its task spec, with nothing missing and nothing extra. Dispatched by the subagent-driven-development skill after each implementer finishes.
+description: Read-only review that checks an implementation matches its task spec, with nothing missing and nothing extra. Native fallback for the subagent-driven-development skill, after each implementer finishes.
 model: claude-sonnet-5-5
 effort: medium
 disallowedTools: Write, Edit, NotebookEdit

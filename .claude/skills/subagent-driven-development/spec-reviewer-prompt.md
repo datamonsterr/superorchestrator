@@ -1,12 +1,18 @@
 # Spec Compliance Reviewer Prompt Template
 
-Use this template when dispatching a spec compliance reviewer subagent.
+Use this template when dispatching a spec compliance reviewer run.
 
-**Purpose:** Verify implementer built what was requested (nothing more, nothing less)
+**Purpose:** Verify the implementer built what was requested (nothing more, nothing less)
+
+Get `worktree` and `diff.base` from `get_run(implementer_run, diff: true)`. The reviewer's own worktree starts at the implementer's tip.
 
 ```
-Agent tool (subagent_type: spec-reviewer):
-  description: "Review spec compliance for Task N"
+spawn_agent:
+  agent: "spec-reviewer"
+  name: "task-N-spec-review"
+  cwd: [implementer worktree]
+  output_schema: [spec review schema below]
+  wait: false
   prompt: |
     You are reviewing whether an implementation matches its specification.
 
@@ -16,7 +22,21 @@ Agent tool (subagent_type: spec-reviewer):
 
     ## What Implementer Claims They Built
 
-    [From implementer's report]
+    [From the implementer's result]
+
+    ## Git Range to Review
+
+    **Base:** [diff.base]
+    **Head:** HEAD of your worktree (branch [implementer branch])
+
+    ```bash
+    git diff --stat [diff.base]..HEAD
+    git diff [diff.base]..HEAD
+    ```
+
+    ## Earlier Findings
+
+    [Issues from the previous spec review round, or "None: first review."]
 
     ## CRITICAL: Do Not Trust the Report
 
@@ -56,6 +76,34 @@ Agent tool (subagent_type: spec-reviewer):
     **Verify by reading code, not by trusting report.**
 
     Report:
-    - ✅ Spec compliant (if everything matches after code inspection)
-    - ❌ Issues found: [list specifically what's missing or extra, with file:line references]
+    - compliant: true only if everything matches after code inspection
+    - issues: each missing, extra or misunderstood item, with a path:line location
 ```
+
+## Spec review schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["compliant", "issues"],
+  "properties": {
+    "compliant": { "type": "boolean" },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "location", "problem"],
+        "properties": {
+          "kind": { "enum": ["missing", "extra", "misunderstood"] },
+          "location": { "type": "string" },
+          "problem": { "type": "string" }
+        }
+      }
+    }
+  }
+}
+```
+
+**Native fallback:** dispatch the same `prompt` with `Agent(subagent_type: spec-reviewer, description: "Review spec compliance for Task N")`. Use `BASE_SHA..HEAD_SHA` as the git range and ask for `✅ Spec compliant` or `❌ Issues found` with file:line references instead of the schema.

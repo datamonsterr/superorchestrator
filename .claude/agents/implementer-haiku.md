@@ -1,6 +1,6 @@
 ---
 name: implementer-haiku
-description: Implements one mechanical task from a plan (1-2 files, complete spec, isolated functions) with TDD, commits, self-reviews and reports status. Dispatched by the subagent-driven-development skill.
+description: Implements one mechanical task from a plan (1-2 files, complete spec, isolated functions) with TDD, commits, self-reviews and reports status. Native fallback for the subagent-driven-development skill when superorchestrator is unavailable.
 model: claude-haiku-5-5
 effort: medium
 ---

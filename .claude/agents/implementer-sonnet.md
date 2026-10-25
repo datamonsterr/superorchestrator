@@ -1,6 +1,6 @@
 ---
 name: implementer-sonnet
-description: Implements one integration or judgment task from a plan (multi-file coordination, debugging, pattern matching) with TDD, commits, self-reviews and reports status. Dispatched by the subagent-driven-development skill.
+description: Implements one integration or judgment task from a plan (multi-file coordination, debugging, pattern matching) with TDD, commits, self-reviews and reports status. Native fallback for the subagent-driven-development skill when superorchestrator is unavailable.
 model: claude-sonnet-5-5
 effort: medium
 ---

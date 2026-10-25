@@ -1,12 +1,16 @@
 # Code Reviewer Prompt Template
 
-Use this template when dispatching a code reviewer subagent.
+Use this template when dispatching a code reviewer run (per task, and the final review).
 
 **Purpose:** Review completed work against requirements and code quality standards before it cascades into more work.
 
 ```
-Agent tool (subagent_type: code-quality-reviewer):
-  description: "Review code changes"
+spawn_agent:
+  agent: "code-quality-reviewer"
+  name: "review-code-changes"
+  cwd: [implementer worktree, or the feature checkout for the final review]
+  output_schema: [code quality schema below]
+  wait: false
   prompt: |
     You are a Senior Code Reviewer with expertise in software architecture,
     design patterns, and best practices. Your job is to review completed work
@@ -22,13 +26,17 @@ Agent tool (subagent_type: code-quality-reviewer):
 
     ## Git Range to Review
 
-    **Base:** {BASE_SHA}
-    **Head:** {HEAD_SHA}
+    **Base:** {BASE}
+    **Head:** {HEAD}
 
     ```bash
-    git diff --stat {BASE_SHA}..{HEAD_SHA}
-    git diff {BASE_SHA}..{HEAD_SHA}
+    git diff --stat {BASE}..{HEAD}
+    git diff {BASE}..{HEAD}
     ```
+
+    ## Earlier Findings
+
+    {EARLIER_FINDINGS}
 
     ## What to Check
 
@@ -74,6 +82,10 @@ Agent tool (subagent_type: code-quality-reviewer):
     say so.
 
     ## Output Format
+
+    When you were given a result schema, put these sections in its fields:
+    `approved` is the "Ready to merge" verdict, true only with no Critical or
+    Important issue left. Otherwise use this markdown.
 
     ### Strengths
     [What's well done? Be specific.]
@@ -124,10 +136,43 @@ Agent tool (subagent_type: code-quality-reviewer):
 **Placeholders:**
 - `{DESCRIPTION}` — brief summary of what was built
 - `{PLAN_OR_REQUIREMENTS}` — what it should do (plan file path, task text, or requirements)
-- `{BASE_SHA}` — starting commit
-- `{HEAD_SHA}` — ending commit
+- `{BASE}` — starting commit: `diff.base` from `get_run(implementer_run, diff: true)`, or `git merge-base main HEAD` for the final review
+- `{HEAD}` — `HEAD` (the reviewer's worktree starts at the tip under review); `HEAD_SHA` in the native fallback
+- `{EARLIER_FINDINGS}` — issues from the previous review round, or "None: first review."
 
-**Reviewer returns:** Strengths, Issues (Critical / Important / Minor), Recommendations, Assessment
+**Reviewer returns:** approved, Strengths, Issues (Critical / Important / Minor), Recommendations, Assessment
+
+## Code quality schema
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["approved", "strengths", "issues", "recommendations", "assessment"],
+  "properties": {
+    "approved": { "type": "boolean" },
+    "strengths": { "type": "array", "items": { "type": "string" } },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["severity", "location", "problem", "fix"],
+        "properties": {
+          "severity": { "enum": ["critical", "important", "minor"] },
+          "location": { "type": "string" },
+          "problem": { "type": "string" },
+          "fix": { "type": "string" }
+        }
+      }
+    },
+    "recommendations": { "type": "array", "items": { "type": "string" } },
+    "assessment": { "type": "string" }
+  }
+}
+```
+
+**Native fallback:** dispatch with `Agent(subagent_type: code-quality-reviewer, description: "Review code changes")`, use `BASE_SHA..HEAD_SHA`, and drop the schema. The reviewer returns the markdown below.
 
 ## Example Output
 
