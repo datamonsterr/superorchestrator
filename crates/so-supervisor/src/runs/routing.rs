@@ -17,6 +17,7 @@ use so_core::{AccountFile, Config, Harness};
 use so_router::{Catalog, RouteOutcome, Snapshot, route::MAX_PROMPT_CHARS};
 
 use super::{R, RunManager, lock, rpc};
+use crate::catalog::cached_catalog;
 use crate::handlers::route::{RouteEnv, decision_data, route_decide};
 
 /// What fixed a run's route.
@@ -64,6 +65,34 @@ pub(crate) struct ChoiceFilter<'a> {
 const REROUTE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl RunManager {
+    /// The model's usage pool, shared by attempts, usage observations and cooldowns.
+    pub(crate) async fn run_pool(
+        &self,
+        harness: Harness,
+        model: Option<&str>,
+        account: &AccountFile,
+    ) -> String {
+        let Some(model) = model.map(str::to_string) else {
+            // Without a model, preserve the account's default pool; agy has no "default" pool.
+            return account
+                .pools
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "default".into());
+        };
+        let (paths, name) = (self.inner.paths.clone(), model.clone());
+        match self
+            .blocking(move || cached_catalog(&paths).pool_for(harness, &name))
+            .await
+        {
+            Ok(pool) => pool,
+            Err(error) => {
+                tracing::warn!(error = %error.message, "could not read model catalog; using default catalog");
+                Catalog::default_catalog().pool_for(harness, &model)
+            }
+        }
+    }
+
     fn route_env<'a>(&'a self, config: &'a Config, ignore_caps: bool) -> RouteEnv<'a> {
         RouteEnv {
             store: &self.inner.store,
@@ -247,7 +276,7 @@ impl RunManager {
         let ranked = self
             .blocking(move || -> Result<Vec<String>, String> {
                 let accounts = AccountFile::list(&paths).map_err(|e| e.to_string())?;
-                let catalog = Catalog::load(&paths).map_err(|e| e.to_string())?;
+                let catalog = cached_catalog(&paths);
                 let mut snap = Snapshot::collect(&store, &accounts, low, Utc::now())
                     .map_err(|e| e.to_string())?;
                 if queue_over_cap {
@@ -403,10 +432,51 @@ impl RunManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runs::lifecycle::Limit;
     use crate::runs::testutil::insert_run;
     use so_accounts::HostEnv;
     use so_core::{Config, Harness, Paths, Platform, RunState};
     use so_store::Store;
+
+    #[tokio::test]
+    async fn flags_without_an_explicit_pool_use_the_model_even_with_an_invalid_catalog() {
+        let (m, _dir) = crate::runs::testutil::manager();
+        let account = AccountFile::new("agy-t", Harness::Agy, "~/.agy-t", "agy").unwrap();
+        account.save(&m.inner.paths).unwrap();
+        std::fs::write(m.inner.paths.models_toml(), "invalid = [").unwrap();
+        let row = insert_run(&m, RunState::Queued);
+        assert!(
+            m.store()
+                .retarget_queued(
+                    &row.id,
+                    "claude-t",
+                    &so_store::Reassign {
+                        account: account.name.clone(),
+                        harness: Harness::Agy,
+                        model: Some("claude-sonnet-4-6".into()),
+                        choice_id: None,
+                        effort: None,
+                    }
+                )
+                .unwrap()
+        );
+        for limit in [None, Some(Limit::default())] {
+            m.flag_account(&row.id, "quota", limit.as_ref()).await;
+            let flag = m.store().get_flag("agy-t", "claude").unwrap().unwrap();
+            assert!(flag.reason.contains(&row.id));
+            assert!(m.store().get_flag("agy-t", "gemini").unwrap().is_none());
+            m.store().clear_flag("agy-t", "claude").unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_model_preserves_the_account_default_pool() {
+        let (m, _dir) = crate::runs::testutil::manager();
+        let mut account = AccountFile::new("agy-t", Harness::Agy, "~/.agy-t", "agy").unwrap();
+        assert_eq!(m.run_pool(Harness::Agy, None, &account).await, "gemini");
+        account.pools.clear();
+        assert_eq!(m.run_pool(Harness::Agy, None, &account).await, "default");
+    }
 
     /// A manager with a host (so accounts can be launched) and two claude accounts, the
     /// first of which is full.

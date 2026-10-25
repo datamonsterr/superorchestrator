@@ -572,6 +572,214 @@ fn agy_ok_script() -> String {
 }
 
 #[cfg(target_os = "linux")]
+fn agy_quota_script() -> String {
+    script(&[
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"stdout": {"event": "init", "conversation_id": "c1", "init": {}}}),
+        json!({"stdout": {"event": "result", "result": {
+            "conversation_id": "c1", "status": "ERROR",
+            "error": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 134h12m3s.",
+            "usage": {}}}}),
+    ])
+}
+
+#[cfg(target_os = "linux")]
+fn codex_ok_account(env: &Env) {
+    use std::os::unix::fs::PermissionsExt;
+    static BUILD: std::sync::Once = std::sync::Once::new();
+    BUILD.call_once(|| {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+        assert!(
+            std::process::Command::new(cargo)
+                .args([
+                    "build",
+                    "-p",
+                    "so-harness",
+                    "--features",
+                    "test-support",
+                    "--bin",
+                    "fake-codex"
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+    });
+    let steps = script(&[
+        json!({"expect": "initialize", "respond": {"userAgent": "x", "codexHome": "/h",
+            "platformFamily": "unix", "platformOs": "linux"}}),
+        json!({"expect": "initialized"}),
+        json!({"expect": "thread/start", "respond": {"thread": {"id": "01a162ee-5ba3-7400-be98-4eb69d75fead"}}}),
+        json!({"expect": "turn/start", "respond": {"turn": {"id": "t1", "status": "inProgress"}}}),
+        json!({"send": {"method": "item/completed", "params": {"item": {
+            "type": "agentMessage", "id": "m1", "text": "done", "phase": "final_answer"}}}}),
+        json!({"send": {"method": "turn/completed", "params": {
+            "threadId": "01a162ee-5ba3-7400-be98-4eb69d75fead",
+            "turn": {"id": "t1", "status": "completed", "items": []}}}}),
+    ]);
+    let script_path = env.dir.path().join("codex.jsonl");
+    std::fs::write(&script_path, steps).unwrap();
+    let bin = env.dir.path().join("codex.sh");
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\nexport FAKE_CODEX_SCRIPT={}\nexport FAKE_CODEX_LOG={}\nexec {} \"$@\"\n",
+            script_path.display(),
+            env.launch_log("codex-a").display(),
+            sibling_bin("fake-codex").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    env.account_with_binary("codex-a", "codex", 2, &bin);
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn agy_claude_quota_flags_the_model_pool_and_preserves_gemini_cooldown() {
+    let mut env = agy_env();
+    env.config.router.levels =
+        levels(&["agy/claude-sonnet-4-6/thinking", "codex/gpt-6-luna/medium"]);
+    env.agy_account("agy-1", 2, &agy_quota_script());
+    codex_ok_account(&env);
+    let store = env.store();
+    let seeded = so_store::FlagRow {
+        account: "agy-1".into(),
+        pool: "gemini".into(),
+        until: chrono::Utc::now() + chrono::Duration::days(30),
+        reason: "seeded".into(),
+    };
+    store.set_flag(&seeded).unwrap();
+    let seeded = store.get_flag("agy-1", "gemini").unwrap().unwrap();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let flag = store
+        .get_flag("agy-1", "claude")
+        .unwrap()
+        .expect("claude quota must flag claude");
+    assert!(flag.reason.contains(&r.run_id), "{flag:?}");
+    assert_eq!(store.get_flag("agy-1", "gemini").unwrap(), Some(seeded));
+    let attempts = store.list_attempts(&r.run_id, 10).unwrap();
+    let agy = attempts.iter().find(|a| a.account == "agy-1").unwrap();
+    assert_eq!(agy.pool.as_deref(), Some("claude"));
+    let route: RouteResult = c
+        .call(
+            so_core::proto::METHOD_ROUTE,
+            so_core::proto::RouteParams {
+                prompt: PROMPT.into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(route.choice_id, "codex/gpt-6-luna/medium");
+    assert_eq!(route.account, "codex-a");
+    assert!(!route.ranked_accounts.iter().any(|a| a == "agy-1"));
+    h.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn agy_claude_quota_tries_the_next_account_before_the_next_model() {
+    let mut env = agy_env();
+    env.config.router.levels =
+        levels(&["agy/claude-sonnet-4-6/thinking", "codex/gpt-6-luna/medium"]);
+    for name in ["agy-1", "agy-2"] {
+        env.agy_account(name, 2, &agy_quota_script());
+    }
+    codex_ok_account(&env);
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let v = view(&c, &r.run_id).await;
+    assert_eq!(v.account.as_deref(), Some("codex-a"));
+    let moves = events(&v, "failover");
+    assert_eq!(moves.len(), 2, "{:?}", types(&v));
+    assert_eq!(moves[0].data["from"], "agy-1");
+    assert_eq!(moves[0].data["to"], "agy-2");
+    assert_eq!(moves[1].data["from"], "agy-2");
+    assert_eq!(moves[1].data["to"], "codex-a");
+    for name in ["agy-1", "agy-2"] {
+        assert!(
+            env.store().get_flag(name, "claude").unwrap().is_some(),
+            "{name}"
+        );
+        assert!(
+            env.store().get_flag(name, "gemini").unwrap().is_none(),
+            "{name}"
+        );
+    }
+    h.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn agy_gemini_quota_flags_only_gemini() {
+    let mut env = agy_env();
+    env.config.router.levels = levels(&["agy/gemini-3.8-flash-low/low"]);
+    env.agy_account("agy-1", 2, &agy_quota_script());
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Failed, "{r:?}");
+    assert_eq!(r.error_kind, Some(ErrorKind::Quota));
+    assert!(env.store().get_flag("agy-1", "gemini").unwrap().is_some());
+    assert!(env.store().get_flag("agy-1", "claude").unwrap().is_none());
+    let attempts = env.store().list_attempts(&r.run_id, 10).unwrap();
+    assert_eq!(attempts[0].pool.as_deref(), Some("gemini"));
+    h.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn agy_claude_startup_quota_records_and_flags_each_failed_launch_pool() {
+    let mut env = agy_env();
+    env.config.router.levels =
+        levels(&["agy/claude-sonnet-4-6/thinking", "codex/gpt-6-luna/medium"]);
+    let startup_quota = script(&[
+        json!({"expect_stdin_contains": PROMPT}),
+        json!({"stderr": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 134h12m3s."}),
+        json!({"exit": 1}),
+    ]);
+    for name in ["agy-1", "agy-2"] {
+        env.agy_account(name, 2, &startup_quota);
+    }
+    codex_ok_account(&env);
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let r = spawn(&c, auto_params(&env)).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    let attempts = env.store().list_attempts(&r.run_id, 10).unwrap();
+    let pools: Vec<_> = attempts
+        .iter()
+        .map(|a| (a.account.as_str(), a.pool.as_deref()))
+        .collect();
+    assert_eq!(
+        pools,
+        [
+            ("agy-1", Some("claude")),
+            ("agy-2", Some("claude")),
+            ("codex-a", Some("default"))
+        ]
+    );
+    for name in ["agy-1", "agy-2"] {
+        assert!(
+            env.store().get_flag(name, "claude").unwrap().is_some(),
+            "{name}"
+        );
+        assert!(
+            env.store().get_flag(name, "gemini").unwrap().is_none(),
+            "{name}"
+        );
+    }
+    h.shutdown().await;
+}
+
+#[cfg(target_os = "linux")]
 fn agy_env() -> Env {
     let mut env = Env::new();
     env.config.router.levels = levels(&["agy/gemini-3.8-flash-low"]);

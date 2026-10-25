@@ -269,7 +269,7 @@ impl RunManager {
     ) {
         st.done = true;
         // A limit on the account may only mean another account should take over (SPEC 8.5).
-        let limit = Limit::for_account(&pc.account, kind, st.reset);
+        let limit = Limit::for_run(&pc.pool, kind, st.reset);
         if self
             .begin_failover(&pc.run_id, Some(control), kind, text, &limit)
             .await
@@ -428,7 +428,7 @@ impl RunManager {
             // A quota, auth or similar error: resuming would only repeat it, but another
             // account may take the run over.
             Some((kind, text)) => {
-                let limit = Limit::for_account(&pc.account, kind, st.reset);
+                let limit = Limit::for_run(&pc.pool, kind, st.reset);
                 if self
                     .begin_failover(&pc.run_id, Some(control), kind, &text, &limit)
                     .await

@@ -128,6 +128,8 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Fixed
 
+- A quota or rate-limit failure on a multi-pool account (agy) now puts the pool of the model that failed into cooldown. A `claude-sonnet-4-6` run that hit its quota used to flag `gemini` and leave `claude` open, so the router kept sending claude-model runs to exhausted accounts. Attempts now record the pool of the run's model.
+
 - `send_message` to a run that failed with a config error is refused instead of resuming a run
   that cannot succeed (#7).
 - agy live messages need `"queuedMessages": "send-immediately"` in the account's

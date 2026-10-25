@@ -8,9 +8,10 @@ use serde_json::{Map, Value, json};
 use so_accounts::{HostEnv, SignIn, sign_in_state};
 use so_core::proto::{AccountFlag, AccountView, HarnessesView, METHOD_LIST_HARNESSES, SignInState};
 use so_core::{AccountFile, Choice, Harness, Headroom, HeadroomSource, HeadroomStatus};
-use so_router::{Catalog, Snapshot, eligible::candidate};
+use so_router::{Snapshot, eligible::candidate};
 use so_usage::effective_with;
 
+use crate::catalog::cached_catalog;
 use crate::dispatch::internal;
 use crate::server::SupervisorState;
 
@@ -39,28 +40,6 @@ pub(super) fn register_harnesses(state: &Arc<SupervisorState>) {
                 .map_err(internal)
             }
         });
-}
-
-/// The catalog, re-read only when `models.toml` changes on disk.
-fn cached_catalog(paths: &so_core::Paths) -> Result<Arc<Catalog>, String> {
-    type Slot = Option<(
-        std::path::PathBuf,
-        Option<std::time::SystemTime>,
-        Arc<Catalog>,
-    )>;
-    static CACHE: std::sync::Mutex<Slot> = std::sync::Mutex::new(None);
-    let file = paths.models_toml();
-    let mtime = std::fs::metadata(&file).and_then(|m| m.modified()).ok();
-    let mut slot = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((path, seen, catalog)) = slot.as_ref()
-        && *path == file
-        && *seen == mtime
-    {
-        return Ok(catalog.clone());
-    }
-    let catalog = Arc::new(Catalog::load(paths).map_err(|e| e.to_string())?);
-    *slot = Some((file, mtime, catalog.clone()));
-    Ok(catalog)
 }
 
 fn seconds(t: DateTime<Utc>) -> String {
@@ -148,7 +127,7 @@ fn why_ineligible(
 pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
     let view = harnesses_view(state)?;
     let accounts = AccountFile::list(&state.paths).map_err(|e| e.to_string())?;
-    let catalog = cached_catalog(&state.paths)?;
+    let catalog = cached_catalog(&state.paths);
     let mut snapshot = Snapshot::collect(
         &state.store,
         &accounts,
