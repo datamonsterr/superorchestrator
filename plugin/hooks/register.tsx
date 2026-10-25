@@ -57,6 +57,29 @@ async function readTheme($: EngineInterface) {
   const value = (await $.config.list()).find(row => row.key === 'theme')?.value;
   await update($, theme, () => themeInfo(typeof value === 'string' ? value : null));
 }
+// process.run documents both startup and timeout rejections without a stable
+// discriminator. Only the shell's explicit command lookup proves absence.
+async function checkBinary($: EngineInterface, runtime: Runtime): Promise<boolean> {
+  const at = await $.clock.now();
+  runtime.lastPoll = at;
+  try {
+    const result = await $.process.run(['sh', '-c', 'command -v superorchestrator'], { timeoutMs: 10000 });
+    if (result.exitCode === 0) return true;
+    if (result.exitCode === 1) {
+      runtime.stopped = true;
+      runtime.timer?.cancel();
+      runtime.timer = undefined;
+      await update($, fetch, (): FetchState => ({ status: 'missing', at, error: 'superorchestrator is not on PATH' }));
+    } else {
+      await update($, fetch, (): FetchState => ({ status: 'error', at,
+        error: result.stderr || `PATH check failed (exit ${result.exitCode})` }));
+    }
+  } catch (error) {
+    await update($, fetch, (): FetchState => ({ status: 'error', at,
+      error: error instanceof Error ? error.message : String(error) }));
+  }
+  return false;
+}
 async function poll($: EngineInterface, runtime: Runtime) {
   if (runtime.inFlight || runtime.stopped) return;
   runtime.inFlight = true;
@@ -69,9 +92,9 @@ async function poll($: EngineInterface, runtime: Runtime) {
     try {
       result = await $.process.run(['superorchestrator', 'monitor', '--json', '--client-pid',
         String(pid), '--cwd', runtime.cwd, '--window', String(minutes)], { timeoutMs: 10000 });
-    } catch {
-      runtime.stopped = true; runtime.timer?.cancel(); runtime.timer = undefined;
-      await update($, fetch, (): FetchState => ({ status: 'missing', at, error: 'superorchestrator is not on PATH' }));
+    } catch (error) {
+      await update($, fetch, (): FetchState => ({ status: 'error', at,
+        error: error instanceof Error ? error.message : String(error) }));
     }
     if (result) {
       const parsed = result.exitCode === 0 ? parseSnapshot(result.stdout) : null;
@@ -113,14 +136,14 @@ export const register: Register = (on, options) => {
     await readTheme($);
     await $.command.register({ name: PANE, description: 'Open the superorchestrator monitor' });
     if (options.monitor !== false) await open($);
-    await poll($, runtime);
+    if (await checkBinary($, runtime)) await poll($, runtime);
     startTimer($, runtime);
     return await next(e);
   });
   on('command.run', { command: PANE }, async $ => {
     await open($, true);
     runtime.stopped = false;
-    await poll($, runtime);
+    if (await checkBinary($, runtime)) await poll($, runtime);
     startTimer($, runtime);
     return { text: 'Superorchestrator monitor opened.' };
   });

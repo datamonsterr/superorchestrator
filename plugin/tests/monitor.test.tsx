@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing';
 import type { On } from 'claude-code';
-import type { LaneSegment } from '../types';
+import type { FetchState, LaneSegment } from '../types';
 import { busySnapshot, emptySnapshot, downSnapshot } from './fixtures';
 
 const PANE = {
@@ -106,24 +106,33 @@ test('band option disables the attention band', { options: { band: false } }, as
   }
 });
 
-test('cannot-start stops polling; the command restarts it', async ($, on) => {
+test('absent binary stops polling; the command checks PATH again and restarts it', async ($, on) => {
   const { clock } = world(on);
   let missing = true;
+  let checks = 0;
   let polls = 0;
+  let fetchState: FetchState | undefined;
+  on('state.set', async (_, e, next) => {
+    if (e.key === 'fetch') fetchState = e.value;
+    return next(e);
+  });
   on('process.run', (_, e) => {
+    if (e.argv[2] === 'command -v superorchestrator') {
+      checks++; return output(missing ? '' : '/usr/bin/superorchestrator', missing ? 1 : 0);
+    }
     if (e.argv[0] === 'sh') return output('123');
     polls++;
-    if (missing) throw new Error('ENOENT');
     return output(JSON.stringify(busySnapshot()));
   });
   await $.session.start(START);
   const ui = await $.ui.mount({ ...PANE, surface: 'terminal' });
   expect((await ui.find({ type: 'Text', text: /not on PATH/ }))?.text).toBe('superorchestrator is not on PATH');
-  await clock.advance(20000); expect(polls).toBe(1);
+  expect(fetchState?.status).toBe('missing');
+  await clock.advance(20000); expect(polls).toBe(0); expect(checks).toBe(1);
   missing = false;
   expect(await $.command.run({ command: 'so-monitor', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 80 } })).toEqual({ text: 'Superorchestrator monitor opened.' });
   expect(await ui.find({ key: 'e3-core' })).toBeDefined();
-  await clock.advance(2000); expect(polls).toBe(3);
+  await clock.advance(2000); expect(polls).toBe(2); expect(checks).toBe(2);
   await ui.unmount();
 });
 
@@ -375,4 +384,38 @@ test('terminal run states use the idle poll cadence even without a finish timest
   await $.session.start(START);
   await clock.advance(9999); expect(polls).toBe(1);
   await clock.advance(1); expect(polls).toBe(2);
+});
+
+test('timeout and transient process rejections preserve data and keep polling', async ($, on) => {
+  const { clock } = world(on);
+  let polls = 0;
+  let checks = 0;
+  let fetchState: FetchState | undefined;
+  on('state.set', async (_, e, next) => {
+    if (e.key === 'fetch') fetchState = e.value;
+    return next(e);
+  });
+  on('process.run', (_, e) => {
+    if (e.argv[2] === 'command -v superorchestrator') { checks++; return output('/usr/bin/superorchestrator'); }
+    if (e.argv[0] === 'sh') return output('123');
+    polls++;
+    if (polls === 2) return { deny: 'process.run timed out after 10000ms' };
+    if (polls === 3) return { deny: 'temporary process transport failure' };
+    return output(JSON.stringify(busySnapshot()));
+  });
+  await $.session.start(START);
+  const ui = await $.ui.mount({ ...PANE, surface: 'terminal' });
+  await clock.advance(2000);
+  expect(fetchState?.status).toBe('error');
+  expect(fetchState?.error).toContain('timed out after 10000ms');
+  expect(await ui.find({ key: 'e3-core' })).toBeDefined();
+  await clock.advance(2000);
+  expect(polls).toBe(3);
+  expect(fetchState?.status).toBe('error');
+  expect(fetchState?.error).toContain('temporary process transport failure');
+  await clock.advance(2000);
+  expect(polls).toBe(4);
+  expect(fetchState?.status).toBe('ok');
+  expect(checks).toBe(1);
+  await ui.unmount();
 });
