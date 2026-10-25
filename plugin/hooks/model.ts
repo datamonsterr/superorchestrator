@@ -392,7 +392,7 @@ export function trackColor(theme: ThemeInfo): { color: ThemeKey; dim: boolean } 
 /** The supervisor lane's tone for one poll: down, stale or up. */
 export function supervisorTone(supervisor: Supervisor): SupervisorTone {
   if (!supervisor.running) return 'down';
-  return supervisor.stale === true ? 'stale' : 'up';
+  return supervisor.stale === true || supervisor.warning !== null ? 'stale' : 'up';
 }
 
 function openTone(lane: readonly LaneSegment[], now: number): Tone | null {

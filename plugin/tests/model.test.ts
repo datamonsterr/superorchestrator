@@ -284,6 +284,12 @@ describe('tones', () => {
   });
 });
 
+test('a supervisor warning uses the stale tone even without the stale flag', () => {
+  const health = busySnapshot().supervisor;
+  health.warning = 'build differs from the running supervisor';
+  expect(supervisorTone(health)).toBe('stale');
+});
+
 describe('theme', () => {
   test('reads the six named themes', () => {
     expect(themeInfo('dark')).toEqual({ mode: 'dark', ansi: false, daltonized: false });
