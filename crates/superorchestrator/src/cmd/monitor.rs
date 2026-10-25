@@ -15,7 +15,7 @@ use serde_json::{Value, json};
 use so_core::procinfo::parent_pid;
 use so_core::proto::StatusResult;
 use so_core::{Event, EventType, Headroom, RunState, SessionKind};
-use so_store::{RunRow, SessionFilter, SessionRow, Store};
+use so_store::{FlagRow, RunRow, SessionFilter, SessionRow, Store};
 
 use crate::cli::MonitorArgs;
 use crate::cmd::status::{daemon_warning, supervisor_line, supervisor_status};
@@ -255,7 +255,11 @@ fn by_pid(store: &Store, pid: i64) -> Option<MatchedSession> {
             // mod runs in a child worker of the coding harness.
             bridge_parent == pid || Some(bridge_parent) == parent
         })
-        .max_by_key(|s| s.started_at)
+        .max_by(|a, b| {
+            a.started_at
+                .cmp(&b.started_at)
+                .then_with(|| a.id.cmp(&b.id))
+        })
         .map(|row| MatchedSession {
             row,
             matched_by: "pid",
@@ -269,7 +273,11 @@ fn by_cwd(store: &Store, cwd: &str) -> Option<MatchedSession> {
         .into_iter()
         .filter(is_mcp_session)
         .filter(|s| s.cwd.as_deref() == Some(cwd))
-        .max_by_key(|s| s.started_at)
+        .max_by(|a, b| {
+            a.started_at
+                .cmp(&b.started_at)
+                .then_with(|| a.id.cmp(&b.id))
+        })
         .map(|row| MatchedSession {
             row,
             matched_by: "cwd",
@@ -415,6 +423,16 @@ fn unknown_pool(cooldown: Option<DateTime<Utc>>) -> Value {
     })
 }
 
+/// The latest cooldown flag of one (account, pool), which is how flags are keyed in the
+/// store and everywhere else that reads them.
+fn cooldown(flags: &[FlagRow], account: &str, pool: &str) -> Option<DateTime<Utc>> {
+    flags
+        .iter()
+        .filter(|f| f.account == account && f.pool == pool)
+        .map(|f| f.until)
+        .max()
+}
+
 fn accounts_json(views: &[AccountView], store: Option<&Store>, now: DateTime<Utc>) -> Vec<Value> {
     let (headroom, flags) = match store {
         Some(s) => (
@@ -427,16 +445,13 @@ fn accounts_json(views: &[AccountView], store: Option<&Store>, now: DateTime<Utc
         .iter()
         .map(|view| {
             let name = view.account.name.as_str();
-            let cooldown = flags
-                .iter()
-                .filter(|f| f.account == name)
-                .map(|f| f.until)
-                .max();
             let rows: Vec<&Headroom> = headroom.iter().filter(|h| h.account == name).collect();
             let pools: Vec<Value> = if rows.is_empty() {
-                vec![unknown_pool(cooldown)]
+                vec![unknown_pool(cooldown(&flags, name, "default"))]
             } else {
-                rows.iter().map(|h| pool_json(h, cooldown)).collect()
+                rows.iter()
+                    .map(|h| pool_json(h, cooldown(&flags, name, &h.pool)))
+                    .collect()
             };
             json!({
                 "name": name,
@@ -540,14 +555,30 @@ fn write_text(
 
 // ── entry point ──────────────────────────────────────────────────────────────
 
+/// Account views, or none with one warning: a two-second poll must always print a snapshot,
+/// so an unreadable account file or a host that cannot be detected degrades the accounts
+/// block instead of failing the command.
+fn account_views(ctx: &Ctx) -> (Vec<AccountView>, Option<String>) {
+    let host = match ctx.host() {
+        Ok(host) => host,
+        Err(e) => return (Vec::new(), Some(format!("{e:#}"))),
+    };
+    match collect_views_with(ctx, &host) {
+        Ok(views) => (views, None),
+        Err(e) => (Vec::new(), Some(format!("{e:#}"))),
+    }
+}
+
 pub fn run(ctx: &Ctx, args: MonitorArgs) -> Result<ExitCode> {
     let now = Utc::now();
     let window_from = now - Duration::minutes(i64::from(args.window));
 
     let sup = supervisor_status();
     let store = open_existing_store(&ctx.paths);
-    let host = ctx.host()?;
-    let views = collect_views_with(ctx, &host)?;
+    let (views, warning) = account_views(ctx);
+    if let Some(warning) = warning {
+        eprintln!("warning: {warning}");
+    }
     let matched = store.as_ref().and_then(|s| match_session(s, &args));
 
     let mut runs: Vec<(RunRow, Vec<Event>)> = Vec::new();

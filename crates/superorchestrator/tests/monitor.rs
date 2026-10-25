@@ -340,6 +340,75 @@ fn session_matches_the_bridge_child_of_the_client_pid() {
     child.wait().unwrap();
 }
 
+#[test]
+fn session_matches_the_bridge_under_the_parent_of_the_client_pid() {
+    let e = env();
+    let base = Utc::now();
+    // Bridge and client are siblings, both children of this test process: the bridge's
+    // parent is not the client, but the client's parent, which is the second leg of the rule.
+    let mut bridge = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let mut client = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let mut row = session("sess-sibling", "claude-code", at(base, -5));
+    row.pid = Some(i64::from(bridge.id()));
+    save_session(&e, &row);
+
+    let v = monitor(&e, &["--client-pid", &client.id().to_string()]);
+    assert_eq!(v["session"]["id"], "sess-sibling");
+    assert_eq!(v["session"]["matched_by"], "pid");
+
+    bridge.kill().unwrap();
+    bridge.wait().unwrap();
+    client.kill().unwrap();
+    client.wait().unwrap();
+}
+
+#[test]
+fn session_filter_wins_over_pid_which_wins_over_cwd() {
+    let e = env();
+    let base = Utc::now();
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let mut by_id = session("sess-a", "claude-code", at(base, -20));
+    by_id.cwd = Some("/work/a".into());
+    save_session(&e, &by_id);
+    let mut by_pid = session("sess-b", "claude-code", at(base, -10));
+    by_pid.cwd = Some("/work/b".into());
+    by_pid.pid = Some(i64::from(child.id()));
+    save_session(&e, &by_pid);
+
+    let client = i64::from(std::process::id()).to_string();
+    // The pid and the cwd both name `sess-b`; the id wins.
+    let v = monitor(
+        &e,
+        &[
+            "--session",
+            "sess-a",
+            "--client-pid",
+            &client,
+            "--cwd",
+            "/work/b",
+        ],
+    );
+    assert_eq!(v["session"]["id"], "sess-a");
+    assert_eq!(v["session"]["matched_by"], "id");
+
+    // The pid wins over the cwd.
+    let v = monitor(&e, &["--client-pid", &client, "--cwd", "/work/a"]);
+    assert_eq!(v["session"]["id"], "sess-b");
+    assert_eq!(v["session"]["matched_by"], "pid");
+
+    child.kill().unwrap();
+    child.wait().unwrap();
+}
+
 // ── runs, windows and the tree ───────────────────────────────────────────────
 
 #[test]
@@ -674,6 +743,14 @@ fn accounts_carry_rounded_headroom_and_an_unknown_default_pool() {
     store
         .set_flag(&FlagRow {
             account: "codex-a".into(),
+            pool: "weekly".into(),
+            until: at(base, 45),
+            reason: "cooldown".into(),
+        })
+        .unwrap();
+    store
+        .set_flag(&FlagRow {
+            account: "claude-b".into(),
             pool: "default".into(),
             until: at(base, 30),
             reason: "cooldown".into(),
@@ -724,7 +801,8 @@ fn accounts_carry_rounded_headroom_and_an_unknown_default_pool() {
     assert_eq!(pools[0]["weekly_pct"], 13);
     assert_eq!(pools[0]["five_hour_resets_at"], ts(at(base, 120)));
     assert!(pools[0]["weekly_resets_at"].is_null());
-    assert_eq!(pools[0]["cooldown_until"], ts(at(base, 30)));
+    // The flag names the weekly pool, so the default pool is not in cooldown.
+    assert!(pools[0]["cooldown_until"].is_null());
     assert_eq!(pools[0]["source"], "probe");
     assert_eq!(pools[0]["observed_at"], ts(at(base, -1)));
 
@@ -733,6 +811,7 @@ fn accounts_carry_rounded_headroom_and_an_unknown_default_pool() {
     assert_eq!(pools[1]["weekly_pct"], 3);
     assert_eq!(pools[1]["source"], "ledger");
     assert!(pools[1]["observed_at"].is_null());
+    assert_eq!(pools[1]["cooldown_until"], ts(at(base, 45)));
 
     // No headroom rows: one `default` pool that knows nothing.
     let other = accounts.iter().find(|a| a["name"] == "claude-b").unwrap();
@@ -744,7 +823,36 @@ fn accounts_carry_rounded_headroom_and_an_unknown_default_pool() {
     assert!(own[0]["weekly_pct"].is_null());
     assert!(own[0]["source"].is_null());
     assert!(own[0]["observed_at"].is_null());
-    assert!(own[0]["cooldown_until"].is_null());
+    // The synthetic default pool takes the account's default-pool flag.
+    assert_eq!(own[0]["cooldown_until"], ts(at(base, 30)));
+}
+
+#[test]
+fn a_broken_account_file_degrades_to_no_accounts_with_one_warning() {
+    let e = env();
+    std::fs::create_dir_all(e.cfg.join("accounts")).unwrap();
+    std::fs::write(e.cfg.join("accounts/broken.toml"), "name = [not toml").unwrap();
+
+    let mut cmd = e.cmd();
+    cmd.args(["monitor", "--json"]);
+    let out = cmd.output().unwrap();
+    assert!(
+        out.status.success(),
+        "the poll must still succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["accounts"], serde_json::json!([]));
+    // The rest of the snapshot is complete.
+    assert!(v["session"].is_null());
+    assert!(v["runs"].as_array().unwrap().is_empty());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let warnings: Vec<&str> = stderr
+        .lines()
+        .filter(|l| l.starts_with("warning: "))
+        .collect();
+    assert_eq!(warnings.len(), 1, "{stderr}");
+    assert!(warnings[0].contains("broken.toml"), "{stderr}");
 }
 
 #[test]
