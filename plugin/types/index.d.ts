@@ -127,6 +127,8 @@ export type Snapshot = {
  * than the orchestrator's own `█`. Keeping it a tone of its own lets a lane
  * merge cells and lets the renderer pick the glyph without a per-segment
  * override.
+ *
+ * `up`, `stale` and `down` belong to the supervisor lane alone.
  */
 export type Tone =
   | 'running'
@@ -139,7 +141,13 @@ export type Tone =
   | 'waiting'
   | 'queued'
   | 'idle'
-  | 'cancelled';
+  | 'cancelled'
+  | 'up'
+  | 'stale'
+  | 'down';
+
+/** The supervisor lane's three tones. */
+export type SupervisorTone = 'up' | 'stale' | 'down';
 
 /** One stretch of a lane, epoch milliseconds; `to` null means still open. */
 export type LaneSegment = {

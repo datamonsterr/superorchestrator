@@ -19,6 +19,8 @@ import type {
   RunRow,
   RunState,
   Snapshot,
+  Supervisor,
+  SupervisorTone,
   ThemeInfo,
   Tone,
 } from '../types';
@@ -313,6 +315,10 @@ export const TONES: Record<Tone, ToneStyle> = {
   queued: { theme: 'inactive', bar: '·', mark: '○', dim: true },
   idle: { theme: 'subtle', bar: '░', mark: null, dim: false },
   cancelled: { theme: 'inactive', bar: null, mark: '■', dim: false },
+  // supervisor tones: the supervisor lane's own three styles
+  up: { theme: 'success', bar: '█', mark: null, dim: false },
+  stale: { theme: 'warning', bar: '▒', mark: null, dim: false },
+  down: { theme: 'error', bar: '·', mark: null, dim: false },
 };
 
 const STATE_TONES: Record<RunState, Tone> = {
@@ -382,6 +388,12 @@ export function trackColor(theme: ThemeInfo): { color: ThemeKey; dim: boolean } 
 // ---------------------------------------------------------------------------
 // Counts
 // ---------------------------------------------------------------------------
+
+/** The supervisor lane's tone for one poll: down, stale or up. */
+export function supervisorTone(supervisor: Supervisor): SupervisorTone {
+  if (!supervisor.running) return 'down';
+  return supervisor.stale === true ? 'stale' : 'up';
+}
 
 function openTone(lane: readonly LaneSegment[], now: number): Tone | null {
   let tone: Tone | null = null;

@@ -24,6 +24,7 @@ import {
   quotaRows,
   runRows,
   statusText,
+  supervisorTone,
   themeInfo,
   toneOfRunState,
   trackColor,
@@ -247,6 +248,17 @@ describe('tones', () => {
     expect(TONES.queued).toEqual({ theme: 'inactive', bar: '·', mark: '○', dim: true });
     expect(TONES.idle).toEqual({ theme: 'subtle', bar: '░', mark: null, dim: false });
     expect(TONES.cancelled).toEqual({ theme: 'inactive', bar: null, mark: '■', dim: false });
+    expect(TONES.up).toEqual({ theme: 'success', bar: '█', mark: null, dim: false });
+    expect(TONES.stale).toEqual({ theme: 'warning', bar: '▒', mark: null, dim: false });
+    expect(TONES.down).toEqual({ theme: 'error', bar: '·', mark: null, dim: false });
+  });
+
+  test('reads the supervisor lane tone from its health', () => {
+    expect(supervisorTone(busySnapshot().supervisor)).toBe('up');
+    expect(supervisorTone(downSnapshot().supervisor)).toBe('down');
+    const stale = busySnapshot().supervisor;
+    stale.stale = true;
+    expect(supervisorTone(stale)).toBe('stale');
   });
 });
 
