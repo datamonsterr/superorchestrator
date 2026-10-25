@@ -146,7 +146,7 @@ function isPool(value: unknown): boolean {
     isNullable(value['weekly_pct'], isPercent) &&
     isNullable(value['weekly_resets_at'], isTime) &&
     isNullable(value['cooldown_until'], isTime) &&
-    oneOf(value['source'], POOL_SOURCES) &&
+    isNullable(value['source'], (candidate) => oneOf(candidate, POOL_SOURCES)) &&
     isNullable(value['observed_at'], isTime)
   );
 }
@@ -181,7 +181,7 @@ function isSession(value: unknown): boolean {
       has(value, 'started_at') &&
       has(value, 'matched_by') &&
       isString(value['id']) &&
-      isString(value['cwd']) &&
+      isNullable(value['cwd'], isString) &&
       isTime(value['started_at']) &&
       isString(value['matched_by']))
   );
@@ -228,7 +228,7 @@ function isRun(value: unknown): boolean {
     has(value, 'segments') &&
     has(value, 'marks') &&
     isString(value['id']) &&
-    isString(value['name']) &&
+    isNullable(value['name'], isString) &&
     isNullable(value['parent_run'], isString) &&
     isInteger(value['depth']) &&
     isString(value['harness']) &&
@@ -769,6 +769,11 @@ export function laneSpans(
 // Rows, labels and messages
 // ---------------------------------------------------------------------------
 
+/** The name to draw for a run; an unnamed run uses the first 8 characters of its id. */
+export function runLabel(run: Run): string {
+  return run.name ?? run.id.slice(0, 8);
+}
+
 /**
  * Runs in tree order, each with the prefix its depth draws (`├ `, `└ `, and
  * `│ ` for an ancestor with later siblings). Siblings keep the snapshot's
@@ -805,7 +810,7 @@ export function runRows(runs: readonly Run[]): RunRow[] {
     const prefix =
       ancestors.map((hasLater) => (hasLater ? '│ ' : '  ')).join('') +
       (isLast ? '└ ' : '├ ');
-    rows.push({ run, prefix, depth: ancestors.length + 1 });
+    rows.push({ run, label: runLabel(run), prefix, depth: ancestors.length + 1 });
     const nextAncestors = [...ancestors, !isLast];
     for (const child of children.get(run.id) ?? []) visit(child, nextAncestors);
   };
@@ -923,9 +928,9 @@ export function newAttention(prev: AttentionView | null, next: AttentionView): s
     if (run.attention === null) continue;
     const was = before.get(run.id) ?? null;
     if (run.attention === was) continue;
-    if (run.attention === 'claude') messages.push(`SO: ${run.name} needs review`);
-    else if (run.attention === 'stuck') messages.push(`SO: ${run.name} is stuck`);
-    else if (run.attention === 'failed') messages.push(`SO: ${run.name} failed`);
+    if (run.attention === 'claude') messages.push(`SO: ${runLabel(run)} needs review`);
+    else if (run.attention === 'stuck') messages.push(`SO: ${runLabel(run)} is stuck`);
+    else if (run.attention === 'failed') messages.push(`SO: ${runLabel(run)} failed`);
   }
 
   const previousTone = openTone(prev.orchestrator, Date.parse(prev.snapshot.now));

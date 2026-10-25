@@ -22,6 +22,7 @@ import {
   newAttention,
   parseSnapshot,
   quotaRows,
+  runLabel,
   runRows,
   statusText,
   supervisorTone,
@@ -153,6 +154,15 @@ describe('parseSnapshot', () => {
     expect(parseSnapshot(JSON.stringify(empty))).toEqual(empty);
     const down = downSnapshot();
     expect(parseSnapshot(JSON.stringify(down))).toEqual(down);
+  });
+
+  test('accepts a null run name, session cwd and pool source', () => {
+    const down = downSnapshot();
+    const parsed = parseSnapshot(JSON.stringify(down));
+    expect(parsed).not.toBeNull();
+    expect(parsed?.runs[0]?.name).toBeNull();
+    expect(parsed?.session?.cwd).toBeNull();
+    expect(parsed?.accounts[0]?.pools[0]?.source).toBeNull();
   });
 
   test('returns null for anything that is not JSON', () => {
@@ -454,6 +464,20 @@ describe('quotaRows', () => {
     expect(rows[0]?.fiveHour).toEqual({ pct: null, text: '—', tone: 'inactive' });
     expect(rows[0]?.week).toEqual({ pct: null, text: '—', tone: 'inactive' });
   });
+
+  test('a null-source unknown pool shows dashes, not ledger', () => {
+    const rows = quotaRows(
+      [
+        accountWith([
+          poolWith({ status: 'unknown', five_hour_pct: null, weekly_pct: null, source: null }),
+        ]),
+      ],
+      10,
+    );
+    expect(rows[0]?.kind).toBe('pool');
+    expect(rows[0]?.fiveHour).toEqual({ pct: null, text: '—', tone: 'inactive' });
+    expect(rows[0]?.week).toEqual({ pct: null, text: '—', tone: 'inactive' });
+  });
 });
 
 describe('barCells', () => {
@@ -614,6 +638,12 @@ describe('runRows', () => {
     expect(rows[0]?.prefix).toBe('└ ');
   });
 
+  test('labels an unnamed run with the first 8 characters of its id', () => {
+    const rows = runRows([runWith({ id: 'abcdefghijk', name: null })]);
+    expect(rows[0]?.label).toBe('abcdefgh');
+    expect(runLabel(runWith({ id: 'abcdefghijk', name: null }))).toBe('abcdefgh');
+  });
+
   test('visits a cycle once', () => {
     const rows = runRows([
       runWith({ id: 'a', parent_run: 'b' }),
@@ -765,6 +795,19 @@ describe('newAttention', () => {
       'SO: e4-sales is stuck',
       'SO: e4-e2e failed',
     ]);
+  });
+
+  test('labels an unnamed run in its toast with the first 8 characters of its id', () => {
+    const before = emptySnapshot();
+    before.runs = [runWith({ id: 'abcdefghijk', name: null, attention: null })];
+    const after = emptySnapshot();
+    after.runs = [runWith({ id: 'abcdefghijk', name: null, attention: 'failed' })];
+    expect(
+      newAttention(
+        { snapshot: before, orchestrator: [] },
+        { snapshot: after, orchestrator: [] },
+      ),
+    ).toEqual(['SO: abcdefgh failed']);
   });
 
   test('announces Claude needing the person when the lane turns user', () => {

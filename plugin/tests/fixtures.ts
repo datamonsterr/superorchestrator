@@ -228,17 +228,32 @@ export function downSnapshot(): Snapshot {
       active_runs: null,
       sessions: null,
     },
-    accounts: [],
+    accounts: [
+      account({
+        name: 'codex-acc3',
+        pools: [
+          pool({
+            status: 'unknown',
+            five_hour_pct: null,
+            five_hour_resets_at: null,
+            weekly_pct: null,
+            weekly_resets_at: null,
+            source: null,
+            observed_at: null,
+          }),
+        ],
+      }),
+    ],
     session: {
       id: '01a17271-f94f-7677-9d0d-75b33c4b82f8',
-      cwd: '/home/dat/dev/app',
+      cwd: null,
       started_at: '2026-10-25T13:00:00Z',
       matched_by: 'pid',
     },
     runs: [
       run({
         id: 'still-running',
-        name: 'still-running',
+        name: null,
         state: 'running',
         started_at: '2026-10-25T14:30:00Z',
         segments: [segment('running', '2026-10-25T14:30:00Z', null)],

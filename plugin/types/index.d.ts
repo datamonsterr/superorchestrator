@@ -34,7 +34,8 @@ export type Pool = {
   weekly_pct: number | null;
   weekly_resets_at: string | null;
   cooldown_until: string | null;
-  source: PoolSource;
+  /** Null for the synthetic default pool of an account with no headroom row. */
+  source: PoolSource | null;
   observed_at: string | null;
 };
 
@@ -51,7 +52,7 @@ export type Account = {
 /** Where this Claude Code session stands, or null when none matched. */
 export type Session = {
   id: string;
-  cwd: string;
+  cwd: string | null;
   started_at: string;
   matched_by: string;
 } | null;
@@ -93,7 +94,8 @@ export type RunMark = {
 
 export type Run = {
   id: string;
-  name: string;
+  /** Null when the run has no name; label it with the first 8 characters of its id. */
+  name: string | null;
   parent_run: string | null;
   depth: number;
   harness: string;
@@ -228,6 +230,8 @@ export type LaneSpan = {
 /** One run's place in the tree the timeline draws. */
 export type RunRow = {
   run: Run;
+  /** The name to draw: the run's name, or the first 8 characters of its id. */
+  label: string;
   /** The tree prefix, connector included, ending in a space (`│ └ `). */
   prefix: string;
   /** Tree depth, roots at 1. */
