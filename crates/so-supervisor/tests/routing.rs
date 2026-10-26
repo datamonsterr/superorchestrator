@@ -727,7 +727,16 @@ async fn agy_gemini_quota_flags_only_gemini() {
     let r = spawn(&c, auto_params(&env)).await;
     assert_eq!(r.state, RunState::Failed, "{r:?}");
     assert_eq!(r.error_kind, Some(ErrorKind::Quota));
-    assert!(env.store().get_flag("agy-1", "gemini").unwrap().is_some());
+    let flag = env
+        .store()
+        .get_flag("agy-1", "gemini")
+        .unwrap()
+        .expect("gemini quota must flag gemini");
+    let expected = chrono::Utc::now() + chrono::Duration::seconds(134 * 3_600 + 12 * 60 + 3);
+    assert!(
+        (flag.until - expected).num_seconds().abs() < 60,
+        "{flag:?} not within 60 s of {expected:?}"
+    );
     assert!(env.store().get_flag("agy-1", "claude").unwrap().is_none());
     let attempts = env.store().list_attempts(&r.run_id, 10).unwrap();
     assert_eq!(attempts[0].pool.as_deref(), Some("gemini"));
