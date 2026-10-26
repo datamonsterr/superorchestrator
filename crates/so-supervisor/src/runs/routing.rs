@@ -72,7 +72,7 @@ impl RunManager {
         model: Option<&str>,
         account: &AccountFile,
     ) -> String {
-        let Some(model) = model.map(str::to_string) else {
+        let Some(model) = model.filter(|m| !m.is_empty()).map(str::to_string) else {
             // Without a model, preserve the account's default pool; agy has no "default" pool.
             return account
                 .pools
@@ -474,6 +474,7 @@ mod tests {
         let (m, _dir) = crate::runs::testutil::manager();
         let mut account = AccountFile::new("agy-t", Harness::Agy, "~/.agy-t", "agy").unwrap();
         assert_eq!(m.run_pool(Harness::Agy, None, &account).await, "gemini");
+        assert_eq!(m.run_pool(Harness::Agy, Some(""), &account).await, "gemini");
         account.pools.clear();
         assert_eq!(m.run_pool(Harness::Agy, None, &account).await, "default");
     }

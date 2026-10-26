@@ -21,10 +21,14 @@ pub(crate) fn cached_catalog(paths: &so_core::Paths) -> Arc<Catalog> {
     {
         return catalog.clone();
     }
-    let catalog = Arc::new(Catalog::load(paths).unwrap_or_else(|error| {
-        tracing::warn!(%error, path = %file.display(), "could not load model catalog; using default catalog");
-        Catalog::default_catalog()
-    }));
+    let catalog = match Catalog::load(paths) {
+        Ok(catalog) => Arc::new(catalog),
+        Err(error) => {
+            // Not cached: a failed load leaves the mtime unchanged, so the next call must retry.
+            tracing::warn!(%error, path = %file.display(), "could not load model catalog; using default catalog");
+            return Arc::new(Catalog::default_catalog());
+        }
+    };
     *slot = Some((file, mtime, catalog.clone()));
     catalog
 }
@@ -35,7 +39,7 @@ mod tests {
     use so_core::{Harness, Paths};
 
     #[test]
-    fn catalog_recovers_when_a_bad_file_is_removed_and_then_replaced() {
+    fn catalog_recovers_when_a_bad_file_is_replaced() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::from_dir(dir.path().to_path_buf());
         std::fs::write(paths.models_toml(), "invalid = [").unwrap();
@@ -47,8 +51,6 @@ mod tests {
             cached_catalog(&paths).pool_for(Harness::Codex, "gpt-6-luna"),
             "default"
         );
-        std::fs::remove_file(paths.models_toml()).unwrap();
-        assert_eq!(*cached_catalog(&paths), Catalog::default_catalog());
         std::fs::write(
             paths.models_toml(),
             r#"[[agy.models]]

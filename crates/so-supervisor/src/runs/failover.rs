@@ -405,7 +405,7 @@ impl RunManager {
         let pool = self
             .run_pool(
                 routed.result.harness,
-                Some(routed.result.model.as_str()).filter(|m| !m.is_empty()),
+                Some(routed.result.model.as_str()),
                 &account,
             )
             .await;
