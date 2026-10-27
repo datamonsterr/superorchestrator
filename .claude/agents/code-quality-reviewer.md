@@ -1,6 +1,6 @@
 ---
 name: code-quality-reviewer
-description: Read-only code quality review of a git range (per task, and once for the whole implementation). Dispatched by the subagent-driven-development skill only after spec review passes.
+description: Read-only code quality review of a git range (per task, and once for the whole implementation). Native fallback for the subagent-driven-development skill, only after spec review passes.
 model: claude-sonnet-5-5
 effort: medium
 disallowedTools: Write, Edit, NotebookEdit

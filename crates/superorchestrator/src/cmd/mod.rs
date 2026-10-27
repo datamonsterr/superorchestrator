@@ -11,6 +11,7 @@ pub mod install;
 pub mod mcp;
 pub mod migrate;
 pub mod models;
+pub mod monitor;
 pub mod route;
 pub mod runs;
 pub mod setup;

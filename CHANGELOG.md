@@ -69,6 +69,7 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 - Starter agents `worker` and `conductor`. `worker` is the profile used when a call names none. Any profile can run on any model.
 - `doctor` reports a `levels` check: a level whose models have no enabled account, and a listed model the catalog does not know. `models refresh` reports listed models missing from the catalog and catalog models that no level lists.
 - `docs/adr/0007-levels-list-model-refs.md` records the decision.
+- `monitor [--session ID] [--client-pid PID] [--cwd DIR] [--window MINUTES]`: one snapshot for the Claude Code monitor mod, with the supervisor's health (without starting it), the headroom of every account and pool, and the state timeline of the matched session's runs. `--json` is complete: unknown values are `null`.
 
 - Complexity levels: `[[router.levels]]` with `name`, `min`, `max`, and `models` (model refs in preference order), or an optional `tier` when `models` is empty. With no levels set, low 0-37, mid 38-62 and high 63-100 apply. Overlaps and duplicate refs are refused at load. A listed model that the catalog does not know is reported by `doctor`.
 - `init` writes five seeded levels (trivial 0-12, simple 13-37, moderate 38-62, complex 63-87, expert 88-100) to a new `config.toml`; an existing file is never changed. The default tier levels moved to the anchor centres: low 0-37, mid 38-62, high 63-100. Anchor 1 now names read-only search, listing and summarising tool output as simple work.

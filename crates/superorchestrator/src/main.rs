@@ -65,6 +65,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Exec(e) => match cmd::exec::run(&ctx, &e.account, &e.args)? {},
         Command::Daemon(d) => ok(cmd::daemon::run(&ctx, d.foreground)),
         Command::Status => ok(cmd::status::run(&ctx)),
+        Command::Monitor(a) => cmd::monitor::run(&ctx, a),
         Command::Install(a) => ok(cmd::install::install(
             &ctx,
             a.force,

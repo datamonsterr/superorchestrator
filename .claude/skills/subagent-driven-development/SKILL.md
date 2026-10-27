@@ -1,43 +1,24 @@
 ---
 name: subagent-driven-development
-description: Use when executing implementation plans with independent tasks in the current session
+description: Use when executing implementation plans with independent tasks in the current session. Dispatches each task through the superorchestrator MCP tools with a review gate, spec review and code quality review.
 ---
 
 # Subagent-Driven Development
 
-Execute plan by dispatching fresh subagent per task, with two-stage review after each: spec compliance review first, then code quality review.
+Execute a plan one task at a time. Each task gets a fresh `implementer` run through superorchestrator, held at the review gate. Two review runs follow: spec compliance first, then code quality. Fixes go back to the same implementer run with `reject_run`. `accept_run(merge: true)` lands the task on the feature branch.
 
-**Why subagents:** You delegate tasks to specialized agents with isolated context. By precisely crafting their instructions and context, you ensure they stay focused and succeed at their task. They should never inherit your session's context or history — you construct exactly what they need. This also preserves your own context for coordination work.
+**Why subagents:** You delegate tasks to agents with isolated context. You write exactly the brief they need, so they stay focused and succeed. They never inherit your session's context or history. This also preserves your own context for coordination.
 
-**Core principle:** Fresh subagent per task + two-stage review (spec then quality) = high quality, fast iteration
+**Core principle:** Fresh run per task + review gate + two-stage review (spec then quality) = high quality, fast iteration.
 
-**Continuous execution:** Do not pause to check in with your human partner between tasks. Execute all tasks from the plan without stopping. The only reasons to stop are: BLOCKED status you cannot resolve, ambiguity that genuinely prevents progress, or all tasks complete. "Should I continue?" prompts and progress summaries waste their time — they asked you to execute the plan, so execute it.
+**Continuous execution:** Do not pause to check in with your human partner between tasks. Execute all tasks from the plan without stopping. The only reasons to stop are: BLOCKED status you cannot resolve, ambiguity that genuinely prevents progress, or all tasks complete. "Should I continue?" prompts and progress summaries waste their time. They asked you to execute the plan, so execute it.
 
-## When to Use
+## Before the First Task
 
-```dot
-digraph when_to_use {
-    "Have implementation plan?" [shape=diamond];
-    "Tasks mostly independent?" [shape=diamond];
-    "Stay in this session?" [shape=diamond];
-    "subagent-driven-development" [shape=box];
-    "executing-plans" [shape=box];
-    "Manual execution or brainstorm first" [shape=box];
-
-    "Have implementation plan?" -> "Tasks mostly independent?" [label="yes"];
-    "Have implementation plan?" -> "Manual execution or brainstorm first" [label="no"];
-    "Tasks mostly independent?" -> "Stay in this session?" [label="yes"];
-    "Tasks mostly independent?" -> "Manual execution or brainstorm first" [label="no - tightly coupled"];
-    "Stay in this session?" -> "subagent-driven-development" [label="yes"];
-    "Stay in this session?" -> "executing-plans" [label="no - parallel session"];
-}
-```
-
-**vs. Executing Plans (parallel session):**
-- Same session (no context switch)
-- Fresh subagent per task (no context pollution)
-- Two-stage review after each task: spec compliance first, then code quality
-- Faster iteration (no human-in-loop between tasks)
+1. Load the `use-superorchestrator-mcp` skill and call `list_harnesses`. If the tools fail, or no non-Claude account is signed in with headroom, use the [native fallback](#native-fallback).
+2. Have a plan with the goal, acceptance criteria (the commands that must pass) and out-of-scope items for each task. Commit it.
+3. Work in a feature branch checkout, never `main` without explicit user consent. Keep its tracked files clean while runs are open: `accept_run(merge: true)` refuses to merge into a dirty checkout or one that changed branch. Untracked files are fine.
+4. Read the plan once. Extract every task with its full text and context, and create the task list.
 
 ## The Process
 
@@ -47,238 +28,203 @@ digraph process {
 
     subgraph cluster_per_task {
         label="Per Task";
-        "Dispatch implementer subagent (./implementer-prompt.md)" [shape=box];
-        "Implementer subagent asks questions?" [shape=diamond];
-        "Answer questions, provide context" [shape=box];
-        "Implementer subagent implements, tests, commits, self-reviews" [shape=box];
-        "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)" [shape=box];
-        "Spec reviewer subagent confirms code matches spec?" [shape=diamond];
-        "Implementer subagent fixes spec gaps" [shape=box];
-        "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [shape=box];
-        "Code quality reviewer subagent approves?" [shape=diamond];
-        "Implementer subagent fixes quality issues" [shape=box];
-        "Mark task complete in TodoWrite" [shape=box];
+        "spawn_agent implementer (./implementer-prompt.md)" [shape=box];
+        "wait_agent: question?" [shape=diamond];
+        "send_message(kind: answer)" [shape=box];
+        "Run at pending_review; read status" [shape=box];
+        "get_run(diff: true): worktree, branch, base" [shape=box];
+        "spawn_agent spec-reviewer (./spec-reviewer-prompt.md)" [shape=box];
+        "compliant?" [shape=diamond];
+        "reject_run(implementer, spec issues)" [shape=box];
+        "spawn_agent code-quality-reviewer (./code-quality-reviewer-prompt.md)" [shape=box];
+        "approved?" [shape=diamond];
+        "reject_run(implementer, quality issues)" [shape=box];
+        "accept_run(merge: true); mark task complete" [shape=box];
     }
 
-    "Read plan, extract all tasks with full text, note context, create TodoWrite" [shape=box];
+    "Read plan, extract all tasks with full text, note context, create task list" [shape=box];
     "More tasks remain?" [shape=diamond];
-    "Dispatch final code-quality-reviewer subagent for entire implementation" [shape=box];
-    "Use superpowers:finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
+    "Final code-quality-reviewer run for the whole branch" [shape=box];
+    "cargo test --workspace, then finish the branch" [shape=box style=filled fillcolor=lightgreen];
 
-    "Read plan, extract all tasks with full text, note context, create TodoWrite" -> "Dispatch implementer subagent (./implementer-prompt.md)";
-    "Dispatch implementer subagent (./implementer-prompt.md)" -> "Implementer subagent asks questions?";
-    "Implementer subagent asks questions?" -> "Answer questions, provide context" [label="yes"];
-    "Answer questions, provide context" -> "Dispatch implementer subagent (./implementer-prompt.md)";
-    "Implementer subagent asks questions?" -> "Implementer subagent implements, tests, commits, self-reviews" [label="no"];
-    "Implementer subagent implements, tests, commits, self-reviews" -> "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)";
-    "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)" -> "Spec reviewer subagent confirms code matches spec?";
-    "Spec reviewer subagent confirms code matches spec?" -> "Implementer subagent fixes spec gaps" [label="no"];
-    "Implementer subagent fixes spec gaps" -> "Dispatch spec reviewer subagent (./spec-reviewer-prompt.md)" [label="re-review"];
-    "Spec reviewer subagent confirms code matches spec?" -> "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [label="yes"];
-    "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" -> "Code quality reviewer subagent approves?";
-    "Code quality reviewer subagent approves?" -> "Implementer subagent fixes quality issues" [label="no"];
-    "Implementer subagent fixes quality issues" -> "Dispatch code quality reviewer subagent (./code-quality-reviewer-prompt.md)" [label="re-review"];
-    "Code quality reviewer subagent approves?" -> "Mark task complete in TodoWrite" [label="yes"];
-    "Mark task complete in TodoWrite" -> "More tasks remain?";
-    "More tasks remain?" -> "Dispatch implementer subagent (./implementer-prompt.md)" [label="yes"];
-    "More tasks remain?" -> "Dispatch final code-quality-reviewer subagent for entire implementation" [label="no"];
-    "Dispatch final code-quality-reviewer subagent for entire implementation" -> "Use superpowers:finishing-a-development-branch";
+    "Read plan, extract all tasks with full text, note context, create task list" -> "spawn_agent implementer (./implementer-prompt.md)";
+    "spawn_agent implementer (./implementer-prompt.md)" -> "wait_agent: question?";
+    "wait_agent: question?" -> "send_message(kind: answer)" [label="yes"];
+    "send_message(kind: answer)" -> "wait_agent: question?";
+    "wait_agent: question?" -> "Run at pending_review; read status" [label="finished"];
+    "Run at pending_review; read status" -> "get_run(diff: true): worktree, branch, base";
+    "get_run(diff: true): worktree, branch, base" -> "spawn_agent spec-reviewer (./spec-reviewer-prompt.md)";
+    "spawn_agent spec-reviewer (./spec-reviewer-prompt.md)" -> "compliant?";
+    "compliant?" -> "reject_run(implementer, spec issues)" [label="no"];
+    "reject_run(implementer, spec issues)" -> "wait_agent: question?" [label="fresh spec review after"];
+    "compliant?" -> "spawn_agent code-quality-reviewer (./code-quality-reviewer-prompt.md)" [label="yes"];
+    "spawn_agent code-quality-reviewer (./code-quality-reviewer-prompt.md)" -> "approved?";
+    "approved?" -> "reject_run(implementer, quality issues)" [label="no"];
+    "reject_run(implementer, quality issues)" -> "wait_agent: question?" [label="fresh quality review after"];
+    "approved?" -> "accept_run(merge: true); mark task complete" [label="yes"];
+    "accept_run(merge: true); mark task complete" -> "More tasks remain?";
+    "More tasks remain?" -> "spawn_agent implementer (./implementer-prompt.md)" [label="yes"];
+    "More tasks remain?" -> "Final code-quality-reviewer run for the whole branch" [label="no"];
+    "Final code-quality-reviewer run for the whole branch" -> "cargo test --workspace, then finish the branch";
 }
 ```
 
+### Per task
+
+1. **Dispatch the implementer** with `./implementer-prompt.md`: `spawn_agent(agent: "implementer", review: true, checks, output_schema, wait: false)` from the feature checkout. The run gets its own worktree at the feature branch's `HEAD`.
+2. **Wait** with `wait_agent([run], timeout_ms)`. Answer each `question` update with `send_message(run, text, kind: "answer")`. Progress updates need no action. Keep waiting until the run is in `finished`.
+3. **Read the result.** The run stops at `pending_review` with a result that matches the schema. Handle its status (below). When `failed_checks` is set, the checks failed twice: reject the run with the check output, or treat it as BLOCKED.
+4. **Look at the change** with `get_run(run, diff: true)`. Note `worktree`, `branch` and `diff.base`. Skim the patch yourself. Review with the diff, not by reading files.
+5. **Spec review.** Spawn `spec-reviewer` with `cwd: <worktree>` (`./spec-reviewer-prompt.md`). Its own worktree starts at the implementer's tip. When it is not compliant, `reject_run(run, feedback)` with the issues. The implementer fixes them on the same native session, the checks run again, and the run returns to `pending_review`. Spawn a fresh spec reviewer with the earlier issues listed. Repeat until compliant.
+6. **Code quality review.** Only after spec compliance passes. Spawn `code-quality-reviewer` the same way (`./code-quality-reviewer-prompt.md`). Reject with Critical and Important issues and review again until approved. Decide on Minor issues yourself.
+7. **Land it** with `accept_run(run, merge: true)`. A refusal names its cause (dirty checkout, other branch, dirty worktree, conflict). Fix the cause and accept again. Mark the task complete.
+
+### After all tasks
+
+1. Spawn a final `code-quality-reviewer` with `cwd` set to the feature checkout and `base` set to `git merge-base main HEAD`. Send fixes through a new implementer run with the same flow.
+2. Run `cargo test --workspace` once in the feature checkout, in the background.
+3. Finish the branch (superpowers:finishing-a-development-branch).
+
 ## Model Selection
 
-This project allows exactly two models for subagents, both at **medium** effort. No other model may be used, and you never pass a `model` or `effort` override on an Agent call: the agent files below pin both.
+The router picks the harness, account and model from the task's complexity. On the first dispatch:
 
-| Role | `subagent_type` | Model | Effort |
-|---|---|---|---|
-| Mechanical implementation: 1-2 files, complete spec, isolated functions | `implementer-haiku` | `claude-haiku-5-5` | medium |
-| Integration and judgment implementation: multi-file, debugging, pattern matching | `implementer-sonnet` | `claude-sonnet-5-5` | medium |
-| Spec compliance review | `spec-reviewer` | `claude-sonnet-5-5` | medium |
-| Code quality review, and the final review of the whole implementation | `code-quality-reviewer` | `claude-sonnet-5-5` | medium |
+- Leave `harness` at `auto`. Pass no `model`, `effort` or `account`.
+- Never pass `harness: "claude"` or a Claude account. Claude accounts belong to the orchestrator.
+- Never use the `implementer-haiku` or `implementer-sonnet` profiles through superorchestrator. They pin Claude models and exist for the native fallback.
+- `route(prompt, agent)` previews the pick without running anything.
 
-**Task complexity signals:**
-- Touches 1-2 files with a complete spec: `implementer-haiku`
-- Touches several files, has integration concerns, or needs design judgment: `implementer-sonnet`
-
-There is no stronger model to escalate to. If `implementer-sonnet` is blocked, split the task or take it to the human.
+**Escalation:** re-dispatch with a `model` ref from a higher level, such as `codex/gpt-6.1-sol/high`. Take it from the `choices` that `list_harnesses` marks eligible. The ref also sets harness and effort.
 
 ## Handling Implementer Status
 
-Implementer subagents report one of four statuses. Handle each appropriately:
+**DONE:** Proceed to spec review.
 
-**DONE:** Proceed to spec compliance review.
+**DONE_WITH_CONCERNS:** The implementer finished but flagged doubts. Read the concerns. When they concern correctness or scope, address them before review. When they are observations (for example "this file is getting large"), note them and proceed to review.
 
-**DONE_WITH_CONCERNS:** The implementer completed the work but flagged doubts. Read the concerns before proceeding. If the concerns are about correctness or scope, address them before review. If they're observations (e.g., "this file is getting large"), note them and proceed to review.
+**NEEDS_CONTEXT:** Most questions arrive during the run through `ask_parent`. When the final status is NEEDS_CONTEXT, send the missing context with `send_message`. At the gate this counts as a rejection, so the run resumes with it.
 
-**NEEDS_CONTEXT:** The implementer needs information that wasn't provided. Provide the missing context and re-dispatch.
+**BLOCKED:** Assess the blocker:
+1. A context problem: send more context with `send_message`.
+2. The task needs more reasoning: `cancel_agent` the run and re-dispatch with a higher-level model ref.
+3. The task is too large: cancel it and split it into smaller tasks.
+4. The plan itself is wrong: escalate to the human.
 
-**BLOCKED:** The implementer cannot complete the task. Assess the blocker:
-1. If it's a context problem, provide more context and re-dispatch with the same model
-2. If `implementer-haiku` needed more reasoning, re-dispatch the task to `implementer-sonnet`
-3. If `implementer-sonnet` is blocked, or the task is too large, break it into smaller pieces
-4. If the plan itself is wrong, escalate to the human
+**Never** ignore an escalation or force the same model to retry without changes. If the implementer said it is stuck, something needs to change.
 
-Never use any model other than `claude-haiku-5-5` and `claude-sonnet-5-5`.
+## Parallel Tasks
 
-**Never** ignore an escalation or force the same model to retry without changes. If the implementer said it's stuck, something needs to change.
+Default to one task at a time. Tasks with no dependency on each other and no shared files may run together, because each run has its own worktree:
+
+- Spawn each implementer with `wait: false`, then `wait_agent` on all of them.
+- Review each run as above.
+- Land them one at a time with `accept_run(merge: true)`. On a conflict, reject the run and tell the implementer to merge the feature branch into its branch, resolve the conflict and commit.
+
+Account caps still apply: runs over the cap wait in `queued`.
+
+## Native Fallback
+
+When superorchestrator is unavailable, run the same process with the Agent tool and the project agents in `.claude/agents/`:
+
+| Role | `subagent_type` |
+|---|---|
+| Mechanical implementation: 1-2 files, complete spec, isolated functions | `implementer-haiku` |
+| Integration and judgment implementation: multi-file, debugging, pattern matching | `implementer-sonnet` |
+| Spec compliance review | `spec-reviewer` |
+| Code quality review, and the final review | `code-quality-reviewer` |
+
+- Use the same briefs from the templates, without the `spawn_agent` fields and the result schema.
+- Do not pass `model` or `effort`. The agent files pin `claude-haiku-5-5` and `claude-sonnet-5-5` at medium effort, and `.claude/hooks/enforce-subagent-models.py` denies anything else.
+- Native subagents share this checkout. Run one implementer at a time, on the feature branch. Reviewers review the git range `BASE_SHA..HEAD_SHA`.
+- Send fixes to the same implementer with SendMessage. If `implementer-haiku` is blocked on reasoning, re-dispatch to `implementer-sonnet`. If `implementer-sonnet` is blocked, split the task or take it to the human.
 
 ## Prompt Templates
 
-- `./implementer-prompt.md` - Dispatch implementer subagent
-- `./spec-reviewer-prompt.md` - Dispatch spec compliance reviewer subagent
-- `./code-quality-reviewer-prompt.md` - Dispatch code quality reviewer subagent
-- `./code-reviewer-template.md` - Full review prompt used by the code quality reviewer and the final review
+- `./implementer-prompt.md`: dispatch the implementer
+- `./spec-reviewer-prompt.md`: dispatch the spec compliance reviewer
+- `./code-quality-reviewer-prompt.md`: dispatch the code quality reviewer
+- `./code-reviewer-template.md`: full review brief used by the code quality reviewer and the final review
 
 ## Example Workflow
 
 ```
 You: I'm using Subagent-Driven Development to execute this plan.
 
-[Read plan file once: docs/superpowers/plans/feature-plan.md]
-[Extract all 5 tasks with full text and context]
-[Create TodoWrite with all tasks]
+[Read plan file once: docs/plans/feature-plan.md]
+[Extract all 5 tasks with full text and context, create the task list]
+[list_harnesses: agy and opencode accounts have headroom]
 
 Task 1: Hook installation script
 
-[Get Task 1 text and context (already extracted)]
-[Dispatch implementation subagent with full task text + context]
+[spawn_agent(agent: "implementer", review: true, checks: [...], output_schema, wait: false)]
+[wait_agent: update {type: "question", question: "User or system level hooks?"}]
+[send_message(kind: "answer", text: "User level (~/.config/superpowers/hooks/)")]
+[wait_agent: finished, state pending_review]
+  status DONE: install-hook command, 5/5 tests passing, self-review added --force
 
-Implementer: "Before I begin - should the hook be installed at user or system level?"
-
-You: "User level (~/.config/superpowers/hooks/)"
-
-Implementer: "Got it. Implementing now..."
-[Later] Implementer:
-  - Implemented install-hook command
-  - Added tests, 5/5 passing
-  - Self-review: Found I missed --force flag, added it
-  - Committed
-
-[Dispatch spec compliance reviewer]
-Spec reviewer: ✅ Spec compliant - all requirements met, nothing extra
-
-[Get git SHAs, dispatch code quality reviewer]
-Code reviewer: Strengths: Good test coverage, clean. Issues: None. Approved.
-
+[get_run(diff: true): worktree, branch so/task-1-..., base]
+[spawn_agent(agent: "spec-reviewer", cwd: worktree) -> compliant: true]
+[spawn_agent(agent: "code-quality-reviewer", cwd: worktree) -> approved: true]
+[accept_run(merge: true): fast-forward]
 [Mark Task 1 complete]
 
 Task 2: Recovery modes
 
-[Get Task 2 text and context (already extracted)]
-[Dispatch implementation subagent with full task text + context]
-
-Implementer: [No questions, proceeds]
-Implementer:
-  - Added verify/repair modes
-  - 8/8 tests passing
-  - Self-review: All good
-  - Committed
-
-[Dispatch spec compliance reviewer]
-Spec reviewer: ❌ Issues:
-  - Missing: Progress reporting (spec says "report every 100 items")
-  - Extra: Added --json flag (not requested)
-
-[Implementer fixes issues]
-Implementer: Removed --json flag, added progress reporting
-
-[Spec reviewer reviews again]
-Spec reviewer: ✅ Spec compliant now
-
-[Dispatch code quality reviewer]
-Code reviewer: Strengths: Solid. Issues (Important): Magic number (100)
-
-[Implementer fixes]
-Implementer: Extracted PROGRESS_INTERVAL constant
-
-[Code reviewer reviews again]
-Code reviewer: ✅ Approved
-
+[spawn implementer, wait: finished, status DONE, 8/8 tests passing]
+[spec-reviewer -> compliant: false
+   missing: progress reporting ("report every 100 items")
+   extra: --json flag (not requested)]
+[reject_run(run, "Remove --json; add progress reporting every 100 items")]
+[wait_agent: finished again at pending_review]
+[fresh spec-reviewer with the earlier issues -> compliant: true]
+[code-quality-reviewer -> approved: false, important: magic number 100]
+[reject_run(run, "Extract PROGRESS_INTERVAL")]
+[fresh code-quality-reviewer -> approved: true]
+[accept_run(merge: true)]
 [Mark Task 2 complete]
 
 ...
 
 [After all tasks]
-[Dispatch final code-quality-reviewer]
-Final reviewer: All requirements met, ready to merge
+[Final code-quality-reviewer on the feature checkout -> approved: true]
+[cargo test --workspace passes]
 
 Done!
 ```
 
-## Advantages
-
-**vs. Manual execution:**
-- Subagents follow TDD naturally
-- Fresh context per task (no confusion)
-- Parallel-safe (subagents don't interfere)
-- Subagent can ask questions (before AND during work)
-
-**vs. Executing Plans:**
-- Same session (no handoff)
-- Continuous progress (no waiting)
-- Review checkpoints automatic
-
-**Efficiency gains:**
-- No file reading overhead (controller provides full text)
-- Controller curates exactly what context is needed
-- Subagent gets complete information upfront
-- Questions surfaced before work begins (not after)
-
-**Quality gates:**
-- Self-review catches issues before handoff
-- Two-stage review: spec compliance, then code quality
-- Review loops ensure fixes actually work
-- Spec compliance prevents over/under-building
-- Code quality ensures implementation is well-built
-
-**Cost:**
-- More subagent invocations (implementer + 2 reviewers per task)
-- Controller does more prep work (extracting all tasks upfront)
-- Review loops add iterations
-- But catches issues early (cheaper than debugging later)
-
 ## Red Flags
 
 **Never:**
-- Start implementation on main/master branch without explicit user consent
+- Start implementation on main/master without explicit user consent
+- Edit tracked files in the feature checkout while runs are open
 - Skip reviews (spec compliance OR code quality)
 - Proceed with unfixed issues
-- Dispatch multiple implementation subagents in parallel (conflicts)
-- Make subagent read plan file (provide full text instead)
-- Skip scene-setting context (subagent needs to understand where task fits)
-- Ignore subagent questions (answer before letting them proceed)
+- Run parallel implementers on tasks that share files or depend on each other
+- Make the subagent read the plan file (provide the full text instead)
+- Skip scene-setting context (the subagent needs to understand where the task fits)
+- Leave a `question` update unanswered
 - Accept "close enough" on spec compliance (spec reviewer found issues = not done)
 - Skip review loops (reviewer found issues = implementer fixes = review again)
 - Let implementer self-review replace actual review (both are needed)
-- **Start code quality review before spec compliance is ✅** (wrong order)
-- Move to next task while either review has open issues
+- **Start code quality review before spec compliance passes** (wrong order)
+- Move to the next task while either review has open issues, or before `accept_run` landed it
+- Pin the claude harness or a Claude account for a subagent
 
-**If subagent asks questions:**
-- Answer clearly and completely
-- Provide additional context if needed
-- Don't rush them into implementation
-
-**If reviewer finds issues:**
-- Implementer (same subagent) fixes them
-- Reviewer reviews again
+**If a reviewer finds issues:**
+- `reject_run` sends them to the same implementer run
+- A fresh reviewer reviews again, with the earlier issues listed
 - Repeat until approved
-- Don't skip the re-review
 
-**If subagent fails task:**
-- Dispatch fix subagent with specific instructions
-- Don't try to fix manually (context pollution)
+**If the implementer fails the task:**
+- Send specific instructions with `reject_run`, or cancel and re-dispatch
+- Don't fix it yourself (context pollution)
 
 ## Integration
 
 **Required workflow skills:**
-- **superpowers:using-git-worktrees** - Ensures isolated workspace (creates one or verifies existing)
-- **superpowers:writing-plans** - Creates the plan this skill executes
-- `./code-reviewer-template.md` - Code review template for reviewer subagents
-- **superpowers:finishing-a-development-branch** - Complete development after all tasks
+- **use-superorchestrator-mcp**: the MCP tools this skill dispatches through
+- **superpowers:writing-plans**: creates the plan this skill executes
+- **superpowers:finishing-a-development-branch**: completes the branch after all tasks
 
 **Subagents should use:**
-- **superpowers:test-driven-development** - Subagents follow TDD for each task
-
-**Alternative workflow:**
-- **superpowers:executing-plans** - Use for parallel session instead of same-session execution
+- **superpowers:test-driven-development**: implementers follow TDD for each task

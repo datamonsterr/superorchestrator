@@ -34,6 +34,8 @@ pub enum Command {
     Init,
     /// Show accounts, headroom and supervisor state
     Status,
+    /// One snapshot for the monitor mod: supervisor, headroom and the session's runs
+    Monitor(MonitorArgs),
     /// Manage accounts
     #[command(subcommand)]
     Account(AccountCmd),
@@ -105,6 +107,27 @@ pub struct SetupArgs {
     /// Do not add the delegation block to ~/.claude/CLAUDE.md
     #[arg(long)]
     pub no_claude_md: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct MonitorArgs {
+    /// Session id; a unique prefix matches too
+    #[arg(long, value_name = "ID")]
+    pub session: Option<String>,
+    /// Claude Code process id; matches the MCP bridge it opened
+    #[arg(long, value_name = "PID")]
+    pub client_pid: Option<i64>,
+    /// Working directory of the session to match
+    #[arg(long, value_name = "DIR")]
+    pub cwd: Option<String>,
+    /// Minutes of history to draw
+    #[arg(
+        long,
+        value_name = "MINUTES",
+        default_value_t = 60,
+        value_parser = clap::value_parser!(u32).range(5..=1440)
+    )]
+    pub window: u32,
 }
 
 #[derive(Args, Debug)]

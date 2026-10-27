@@ -7,5 +7,20 @@
   "homepage": "https://github.com/datamonsterr/superorchestrator",
   "repository": "https://github.com/datamonsterr/superorchestrator",
   "license": "MIT",
-  "keywords": ["delegation", "subagents", "codex", "opencode", "mcp"]
+  "keywords": ["delegation", "subagents", "codex", "opencode", "mcp"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "monitor": {
+      "type": "boolean",
+      "default": true,
+      "title": "Monitor pane",
+      "description": "Open the superorchestrator monitor pane where it docks beside the chat"
+    },
+    "band": {
+      "type": "boolean",
+      "default": true,
+      "title": "Attention band",
+      "description": "Show a line above the prompt while a run needs attention"
+    }
+  }
 }
