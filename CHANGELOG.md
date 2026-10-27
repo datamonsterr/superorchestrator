@@ -67,6 +67,7 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 - Levels editor on the `/routing` page (nav label Levels): a card per level, with ordered model rows (move up, move down, remove), add model with a live ref preview, and add and edit level. The last level cannot be deleted.
 - TUI Overview shows a Levels block (`name  min-max  ref, ref`).
 - Starter agents `worker` and `conductor`. `worker` is the profile used when a call names none. Any profile can run on any model.
+- `superorchestrator levels list|add|edit|remove|reset` and `levels model add|move|remove` edit `router.levels` in `config.toml`. Model refs are checked like at load, each command is one validated write, and the output says to restart the supervisor.
 - `doctor` reports a `levels` check: a level whose models have no enabled account, and a listed model the catalog does not know. `models refresh` reports listed models missing from the catalog and catalog models that no level lists.
 - `docs/adr/0007-levels-list-model-refs.md` records the decision.
 

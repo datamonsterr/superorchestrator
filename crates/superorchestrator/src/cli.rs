@@ -60,6 +60,9 @@ pub enum Command {
     /// Read and write config.toml
     #[command(subcommand)]
     Config(ConfigCmd),
+    /// Manage complexity levels and the models they allow
+    #[command(subcommand)]
+    Levels(LevelsCmd),
     /// Check binaries, config, database, socket, UI port and sign-ins
     Doctor,
     /// Register the MCP server with harnesses and ship the skills
@@ -370,6 +373,81 @@ pub enum ConfigCmd {
     Set { key: String, value: String },
     /// Open config.toml in $EDITOR and validate it afterwards
     Edit,
+}
+
+/// Edits `router.levels` in config.toml; restart the supervisor to apply.
+#[derive(Subcommand, Debug)]
+pub enum LevelsCmd {
+    /// List levels, their ranges and the models each allows
+    List,
+    /// Add a level
+    Add(LevelAdd),
+    /// Change a level's name, range or tier
+    Edit(LevelEdit),
+    /// Remove a level
+    Remove { name: String },
+    /// Remove router.levels so the defaults apply again
+    Reset,
+    /// Manage the model refs a level lists, most preferred first
+    #[command(subcommand)]
+    Model(LevelModelCmd),
+}
+
+#[derive(Args, Debug)]
+pub struct LevelAdd {
+    pub name: String,
+    /// Lowest complexity in the level (0 to 100)
+    #[arg(long)]
+    pub min: u8,
+    /// Highest complexity in the level (0 to 100)
+    #[arg(long)]
+    pub max: u8,
+    /// Model class used while the level lists no models
+    #[arg(long, value_parser = ["high", "mid", "fast"])]
+    pub tier: Option<String>,
+    /// Model ref `harness/model[/effort]`, repeatable, most preferred first
+    #[arg(long = "model", value_name = "REF")]
+    pub models: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct LevelEdit {
+    pub name: String,
+    /// New name
+    #[arg(long = "name", value_name = "NEW")]
+    pub new_name: Option<String>,
+    #[arg(long)]
+    pub min: Option<u8>,
+    #[arg(long)]
+    pub max: Option<u8>,
+    #[arg(long, value_parser = ["high", "mid", "fast"], conflicts_with = "no_tier")]
+    pub tier: Option<String>,
+    /// Remove the tier (the level then needs models)
+    #[arg(long)]
+    pub no_tier: bool,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum LevelModelCmd {
+    /// Add a model ref to a level (default: last, the least preferred)
+    Add {
+        level: String,
+        /// Model ref `harness/model[/effort]`
+        model: String,
+        /// Place it at this position, 1 being the most preferred
+        #[arg(long)]
+        position: Option<usize>,
+    },
+    /// Move a listed model ref to another position
+    Move {
+        level: String,
+        model: String,
+        /// New position, 1 being the most preferred
+        #[arg(long)]
+        position: usize,
+    },
+    /// Remove a model ref from a level
+    Remove { level: String, model: String },
 }
 
 #[derive(Args, Debug)]

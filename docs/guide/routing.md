@@ -59,6 +59,25 @@ Claude is not seeded. To allow a Claude model, list it on a level, for example `
 
 `init` writes levels only when it creates the file. An existing config is never changed, so edit the levels yourself with `superorchestrator config edit` or on the Levels tab of the web UI.
 
+### Managing levels from the command line
+
+`superorchestrator levels` edits `router.levels` without opening the file. These commands change `config.toml` only, so restart the supervisor to apply:
+
+```sh
+superorchestrator levels list [--json]
+superorchestrator levels add <name> --min N --max N [--tier high|mid|fast] [--model REF]...
+superorchestrator levels edit <name> [--name NEW] [--min N] [--max N] [--tier T | --no-tier]
+superorchestrator levels remove <name>
+superorchestrator levels reset                  # remove router.levels; the defaults apply again
+superorchestrator levels model add <level> <harness/model[/effort]> [--position N]
+superorchestrator levels model move <level> <harness/model[/effort]> --position N
+superorchestrator levels model remove <level> <harness/model[/effort]>
+```
+
+`levels list` shows each level's range and its models in preference order: position (1 is the most preferred), model ref, harness, model, effort and state. The state is `on` when the catalog lists the model and an enabled account serves its harness, `off` when the catalog lists it but no enabled account serves its harness, and `unknown` when the catalog does not list it. A level that lists no models shows its tier instead. With no levels in the file it says `(defaults)`.
+
+`add` needs `--tier` or at least one `--model`. `model add` appends unless you pass `--position`, and `levels model add` on a level that has a tier makes the level use its listed models. Positions run from 1 to the number of models (one more for `add`). Refs are parsed with the same rules as the config, so a malformed ref or an effort the harness does not accept is refused. When the file has no `router.levels`, the current defaults are written first, so your edit is relative to what was in effect. Every command is one validated write, like a load: an overlap, a duplicate ref or a level left with neither models nor tier is refused and nothing is written. Rewriting `router.levels` drops any comments inside that block (comments elsewhere are kept). `levels reset` asks for confirmation; pass `--yes` in a script.
+
 ### Level ranges
 
 - `min` and `max` are integers from 0 to 100. The range covers complexity from `min` up to, but not including, `max + 1`, so a complexity of 37.5 is in a level `0-37`. A level with `max = 100` also includes 100.

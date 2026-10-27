@@ -110,6 +110,8 @@ models = ["agy/claude-sonnet-4-6/thinking", "opencode/opencode/muse-spark-1.3", 
 
 A level needs `models`, `tier`, or both. With no `[[router.levels]]` in the file, the defaults are `low` 0-37 (tier `fast`), `mid` 38-62 (tier `mid`) and `high` 63-100 (tier `high`), with no models. The default levels list no models, so nothing routes until some level lists models; `superorchestrator init` seeds five levels that do. `superorchestrator init` writes the five seeded levels (`trivial`, `simple`, `moderate`, `complex`, `expert`) into a new config file; the list is in [routing](routing.md#seeded-levels). Gaps between levels are allowed. A complexity that falls in a gap goes to the nearest level, and a tie goes to the higher one. An explicit empty list, `router.levels = []`, loads and turns levels off: `level` is null and every eligible model is ranked by the heuristic scorer.
 
+`superorchestrator levels` edits this list from the command line (see [routing](routing.md#managing-levels-from-the-command-line)).
+
 The file is refused at load when:
 
 - a name is empty or repeated

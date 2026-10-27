@@ -3470,6 +3470,7 @@ dependencies = [
  "so-workflow",
  "tempfile",
  "tokio",
+ "toml",
  "toml_edit",
  "tracing",
  "tracing-subscriber",
