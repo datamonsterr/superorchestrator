@@ -198,6 +198,7 @@ fn help_hides_internal_commands_orders_the_rest_and_points_at_setup() {
             "agent",
             "models",
             "config",
+            "levels",
             "doctor",
             "install",
             "uninstall",

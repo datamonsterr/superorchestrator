@@ -8,6 +8,7 @@ pub mod doctor;
 pub mod exec;
 pub mod init;
 pub mod install;
+pub mod levels;
 pub mod mcp;
 pub mod migrate;
 pub mod models;

@@ -58,6 +58,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         Command::Tui => ok(tui::run(&ctx)),
         Command::Init => ok(cmd::init::run(&ctx)),
         Command::Config(c) => cmd::config::run(&ctx, c),
+        Command::Levels(l) => ok(cmd::levels::run(&ctx, l)),
         Command::Account(a) => cmd::account::run(&ctx, a),
         Command::Agent(a) => ok(cmd::agent::run(&ctx, a)),
         // `exec::run` only returns on error: success replaces the process, and
