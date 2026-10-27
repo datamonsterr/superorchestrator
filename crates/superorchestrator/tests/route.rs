@@ -299,10 +299,21 @@ async fn route_after_adding_codex(drop_codex_refs: bool, args: &[&str]) -> std::
     if drop_codex_refs {
         let path = e.cfg.join("config.toml");
         let text = std::fs::read_to_string(&path).unwrap();
-        let mut dropped = text.clone();
-        for r in ["codex/gpt-6.1-sol/medium", "codex/gpt-6.1-sol/high"] {
-            dropped = dropped.replace(&format!(", \"{r}\""), "");
-        }
+        let dropped: String = text
+            .lines()
+            .map(|line| match line.strip_prefix("models = [") {
+                Some(rest) => {
+                    let kept: Vec<&str> = rest
+                        .trim_end_matches(']')
+                        .split(", ")
+                        .filter(|r| !r.contains("codex/"))
+                        .collect();
+                    format!("models = [{}]", kept.join(", "))
+                }
+                None => line.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(!dropped.contains("codex/"), "{dropped}");
         std::fs::write(&path, dropped).unwrap();
     }

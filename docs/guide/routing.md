@@ -50,12 +50,12 @@ There is no compatibility mode. To move, write each approved combination as a re
 | Level | Range | Models |
 |---|---|---|
 | `trivial` | 0-12 | `agy/gemini-3.8-flash-low/low`, `agy/gemini-3.8-flash-medium/medium` |
-| `simple` | 13-37 | `agy/gemini-3.8-flash-medium/medium`, `opencode/opencode/deepseek-v4.1-flash-free` |
-| `moderate` | 38-62 | `agy/gemini-3.8-flash-high/high`, `codex/gpt-6.1-sol/medium` |
-| `complex` | 63-87 | `agy/claude-sonnet-4-6/thinking`, `opencode/opencode/muse-spark-1.3`, `codex/gpt-6.1-sol/high` |
-| `expert` | 88-100 | `opencode/opencode/muse-spark-1.3`, `codex/gpt-6.1-sol/high`, `agy/claude-sonnet-4-6/thinking` |
+| `simple` | 13-37 | `agy/gemini-3.8-flash-medium/medium`, `codex/gpt-6-luna/medium`, `opencode/opencode/deepseek-v4.1-flash-free` |
+| `moderate` | 38-62 | `codex/gpt-6-luna/medium`, `agy/gemini-3.8-flash-high/high`, `codex/gpt-6.1-sol/medium` |
+| `complex` | 63-87 | `codex/gpt-6.1-sol/high`, `agy/claude-sonnet-4-6/thinking` |
+| `expert` | 88-100 | `codex/gpt-6.1-sol/xhigh`, `codex/gpt-6.1-sol/high`, `agy/claude-sonnet-4-6/thinking` |
 
-Claude is not seeded. To allow a Claude model, list it on a level, for example `claude/claude-sonnet-5-5/medium`. Claude still ranks last unless a call names it (see [Claude rank](#claude-rank)).
+Codex leads from `moderate` up, so a signed-in Codex account is used once a task needs more than a Flash worker. `gpt-6-luna` is seeded only for `moderate` and below. Claude is not seeded. To allow a Claude model, list it on a level, for example `claude/claude-sonnet-5-5/medium`. Claude still ranks last unless a call names it (see [Claude rank](#claude-rank)).
 
 `init` writes levels only when it creates the file. An existing config is never changed, so edit the levels yourself with `superorchestrator config edit` or on the Levels tab of the web UI.
 
