@@ -58,9 +58,9 @@ More in [accounts](accounts.md#logging-in-per-harness). To add more accounts lat
 `setup` runs `install` for you. You can run it alone with `superorchestrator install` (`--dry-run` previews it). Every file it changes is backed up first. It does four things:
 
 - **Registers the MCP server.** It runs `claude mcp add` for Claude Code and adds an entry to the Codex, agy and OpenCode configs.
-- **Writes two skills**, to `~/.claude/skills/` and `~/.agents/skills/`:
+- **Writes three skills**, to `~/.claude/skills/` and `~/.agents/skills/`:
   - `use-superorchestrator-mcp` teaches the agent to delegate through the MCP tools. It lists your accounts, levels and agents, and refreshes when they change.
-  - `superorchestrator-cli` teaches the agent the command line: accounts, status and runs.
+  - `superorchestrator-cli` teaches the agent the command line: accounts, status and runs. `superorchestrator-config` covers workflows, accounts, agent profiles, routing and levels.
 - **Adds a block to `~/.claude/CLAUDE.md`**, between `<!-- superorchestrator:begin -->` and `<!-- superorchestrator:end -->`. It says:
   - delegate implementation through superorchestrator, and load the `use-superorchestrator-mcp` skill before the first delegation;
   - use the `superorchestrator-cli` skill for accounts, status and runs from the shell;

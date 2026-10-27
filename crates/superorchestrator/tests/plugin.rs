@@ -29,7 +29,7 @@ fn mcp_config_starts_the_mcp_server() {
     );
 }
 
-/// The shipped skills are `render_plugin_mcp_skill()` and `render_plugin_cli_skill()`. Set
+/// The shipped skills match their embedded templates. Set
 /// `UPDATE_PLUGIN_SKILL=1` to rewrite them.
 #[test]
 fn skills_are_the_generated_plugin_skills() {
@@ -41,6 +41,10 @@ fn skills_are_the_generated_plugin_skills() {
         (
             "superorchestrator-cli",
             so_agents::skill::render_plugin_cli_skill(),
+        ),
+        (
+            "superorchestrator-config",
+            so_agents::skill::render_plugin_config_skill(),
         ),
     ];
     for (name, want) in skills {

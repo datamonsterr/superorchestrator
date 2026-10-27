@@ -1,50 +1,57 @@
 ---
 name: superorchestrator-cli
-description: Use the superorchestrator command line: manage accounts (add, sign in, enable, disable), check status and headroom, list, watch and join runs from a shell.
+description: Drive the superorchestrator CLI for accounts, levels, config, models, agent profiles, workflows and runs.
 ---
 
 # superorchestrator CLI
 
-Delegation = MCP tools (skill `use-superorchestrator-mcp`).
-Global: `--json`, `-y`/`--yes`, `--config-dir DIR`. `<cmd> --help` lists flags.
+Prefix commands below with `superorchestrator`. Use `--help` for flags; globals: `--json`, `--yes`, `--config-dir DIR`.
+If the shell lacks it, export `XDG_RUNTIME_DIR=/run/user/$(id -u)` so the CLI finds the supervisor socket.
+Delegate through `use-superorchestrator-mcp`; edit setup through `superorchestrator-config`.
 
-## Set up
+| Status / setup | Command |
+|---|---|
+| Headroom / diagnose | `status`; `doctor` |
+| First setup / seed config | `setup`; `init` |
+| Ship MCP + three skills | `install --dry-run`; `install`; `uninstall --dry-run` |
+| Interfaces | `ui --no-open`; `tui` (also the default command) |
 
-- `superorchestrator setup`: first command. Config, detect harnesses, import logins, add accounts, `install`. Re-run safe. Flags: `--yes`, `--codex N --claude N --opencode N --agy N` (accounts per harness; claude default 0), `--no-login`, `--no-install`, `--no-claude-md`. No terminal, no `--yes`: prints plan only.
-- `superorchestrator` or `superorchestrator tui`: terminal UI, tabs Overview/Accounts/Runs/Setup. `j`/`k` move, Enter detail, `a` accept+merge, `r` reject, `o` join, `?` help.
-- `init`: config dir, `config.toml`, model catalog.
-- `install [--force] [--dry-run] [--no-claude-md]`: MCP server per harness, both skills, managed block in `~/.claude/CLAUDE.md`. `uninstall [--dry-run]` reverses.
+| Accounts | Command |
+|---|---|
+| Add / sign in | `account add HARNESS --name NAME --login`; `account login NAME` |
+| Discover / import | `account list`; `account import NAME --harness H --home DIR`; `account import --scan` |
+| Availability | `account enable NAME`; `account disable NAME`; `account flag NAME --hours N`; `account flag NAME --clear` |
+| Remove | `account remove NAME` (`--purge` deletes its credential home) |
 
-## Accounts
+| Levels (model refs are `harness/model[/effort]`) | Command |
+|---|---|
+| Inspect / add | `levels list`; `levels add NAME --min N --max N --model REF` |
+| Change / remove | `levels edit NAME --min N --max N`; `levels remove NAME`; `levels reset` |
+| Add / order models | `levels model add LEVEL REF --position N`; `levels model move LEVEL REF --position N` |
+| Remove model | `levels model remove LEVEL REF` |
 
-Account = one signed-in credential home, one harness (codex, agy, opencode, claude).
+| Config | Command |
+|---|---|
+| Read / write / edit | `config get KEY`; `config set KEY VALUE`; `config edit` |
+| Preview routing | `route "TASK" --agent NAME --explain` |
 
-- `account add <harness> [--name NAME] [--count K] [--login]`. Default name `<harness>-<n>`.
-- `account import NAME --harness H --home DIR`: link existing home. `account import --scan`: find, offer.
-- `account login NAME`, `account list`, `account enable NAME`, `account disable NAME`.
-- `account flag NAME (--hours N | --until RFC3339 | --clear) [--pool POOL]`: manual cooldown.
-- `account remove NAME [--purge]`: `--purge` deletes home.
+| Models | Command |
+|---|---|
+| Catalog | `models list`; `models refresh` |
 
-## Check
+| Agent profiles | Command |
+|---|---|
+| Inspect | `agent list`; `agent show NAME` |
+| Configure | `agent create NAME --description TEXT`; `agent edit NAME`; `agent remove NAME` |
 
-- `status`: accounts, headroom, supervisor.
-- `doctor`: binaries, config, db, socket, UI port, sign-ins. Run first when broken.
-- `route "<task>" [--model REF] [--agent NAME] [--explain]`: preview pick, runs nothing.
+| Workflows | Command |
+|---|---|
+| Start saved / file | `workflow run NAME --args JSON --detach`; `workflow run --file FILE --fresh` |
+| Inspect / stop | `workflow list`; `workflow status ID`; `workflow cancel ID` |
 
-## Runs
-
-- `runs list [--all]`, `runs show RUN`, `runs cancel RUN`.
-- `runs watch RUN`, `runs watch --workflow ID`: follow.
-- `join RUN [--exec]`: print or run command attaching to native session.
-- `worktrees list`, `worktrees prune`.
-
-## Workflows
-
-- `workflow run NAME` or `--file FILE`; `--args JSON`, `--detach`, `--fresh`.
-- `workflow list`, `workflow status ID`, `workflow cancel ID`.
-
-## UI and config
-
-- `superorchestrator ui [--port N] [--bind ADDR] [--token T] [--no-open]`; `--install-service`.
-- `config get KEY`, `config set KEY VALUE`, `config edit`.
-- `agent list`, `agent show NAME`, `agent create NAME`, `models list`.
+| Runs | Command |
+|---|---|
+| Inspect / cancel | `runs list --all`; `runs show RUN --diff`; `runs cancel RUN` |
+| Follow | `runs watch RUN`; `runs watch --workflow ID` |
+| Attach to native session | `join RUN`; `join RUN --exec` |
+| Worktrees | `worktrees list`; `worktrees prune` |
