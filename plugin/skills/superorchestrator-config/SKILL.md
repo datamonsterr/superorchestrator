@@ -9,7 +9,7 @@ Use the selected config directory (`--config-dir DIR`, otherwise `$SUPERORCHESTR
 
 ## Workflow
 
-Save `workflows/review.js` under the config directory. This uses the API in `docs/guide/workflows.md`:
+Save `workflows/review.js` under the config directory. This uses the API in [workflows guide](https://github.com/datamonsterr/superorchestrator/blob/main/docs/guide/workflows.md):
 
 ```js
 const reviews = await parallel([
@@ -45,7 +45,7 @@ maxTurns: 40
 Review the requested diff and report concrete bugs with file references.
 ```
 
-Per `docs/guide/agents.md`, other fields: `accounts`, `model`, `effort`, `tools`, `disallowedTools`, `skills`, `mcpServers`, `hooks`, `memory` (`user`, `project`, `local`). `description` is required. Model refs in `model` set harness and effort too; explicit fields must agree. Call arguments override the agent profile, then config defaults, then routing.
+Per [agents guide](https://github.com/datamonsterr/superorchestrator/blob/main/docs/guide/agents.md), other fields: `accounts`, `model`, `effort`, `tools`, `disallowedTools`, `skills`, `mcpServers`, `hooks`, `memory` (`user`, `project`, `local`). `description` is required. Model refs in `model` set harness and effort too; explicit fields must agree. Call arguments override the agent profile, then config defaults, then routing.
 Project `.superorchestrator/agents/` shadows user profiles, then `.claude/agents/` imports. Project profiles reject `hooks`, command-capable inline `mcpServers`, `isolation: none`, and `extra_args`; review definitions before moving them into user config. `superorchestrator agent show reviewer` reports harness gaps.
 
 ## Routing and levels
