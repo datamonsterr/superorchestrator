@@ -1,6 +1,6 @@
 # The terminal UI
 
-`superorchestrator` with no command, or `superorchestrator tui`, opens a full-screen terminal UI. It is the quickest way to see what is set up, manage accounts, watch runs and finish a first-run setup without leaving the terminal. Without a terminal (a pipe, a script, CI) the bare command prints the help instead, and `tui` exits with a usage error.
+`superorchestrator` with no command, or `superorchestrator tui`, opens a full-screen terminal UI. It is the quickest way to see what is set up, manage accounts and level routing, watch runs and finish a first-run setup without leaving the terminal. Without a terminal (a pipe, a script, CI) the bare command prints the help instead, and `tui` exits with a usage error.
 
 It needs a terminal of at least 60x16 and works best at 80x24 or larger. It reads the same files and database as the CLI, so everything it shows is also available from `status`, `account list` and `runs list`. It does not need the supervisor to be running for most things.
 
@@ -10,7 +10,7 @@ A header (version, supervisor state, config directory), the tabs, the body for t
 
 | Key | Action |
 | --- | --- |
-| `Tab` / `Shift-Tab`, `1` to `4` | Switch tab |
+| `Tab` / `Shift-Tab`, `1` to `5` | Switch tab |
 | `j` / `k` or `Down` / `Up`, `g` / `G` or `Home` / `End`, `PgUp` / `PgDn` | Move the selection, jump to the top or bottom (or scroll an open run). Same in every list. |
 | `R`, `F5` | Reload now |
 | `?` | Help for the current tab |
@@ -18,6 +18,14 @@ A header (version, supervisor state, config directory), the tabs, the body for t
 | `Ctrl-C` | Quit |
 
 ## Tabs
+
+| Key | Tab | Purpose |
+| --- | --- | --- |
+| `1` | Overview | Setup checklist, recent runs and routing levels |
+| `2` | Accounts | Accounts, sign-ins and headroom |
+| `3` | Runs | Run details and review |
+| `4` | Setup | First-run setup steps |
+| `5` | Levels | Level ranges and model refs in preference order |
 
 **1 Overview.** Four counters (accounts, active runs, runs waiting for review, checklist progress), the setup checklist, the latest runs and a Levels block. The Levels block lists each level as `name  min-max  ref, ref` (the model refs in order). It is shown when rows remain after the recent runs, so at 80x24 with runs listed it may be out of view. When no level lists models, the block shows one line: no levels list models (nothing routes until one does). The checklist covers the config, the harnesses found on `PATH`, accounts, sign-ins, whether superorchestrator is registered with Claude Code, and the OpenRouter router key. Each missing item shows the fix beside it.
 
@@ -45,6 +53,22 @@ A header (version, supervisor state, config directory), the tabs, the body for t
 The list is read from the store. The diff, cancel, join, accept and reject go through the supervisor and never start it: when it is not running they say "supervisor not running — start with any delegation or `superorchestrator daemon`".
 
 **4 Setup.** The first-run steps one by one with live status: `init`, `harnesses`, `import`, `add accounts`, `sign in`, `install` and `doctor`. `Enter` runs the selected step, `a` runs them all in order (it stops at the first failure), and `i` and `d` jump to `install` and `doctor`. Steps do only what is missing, so running them again is safe. `sign in` lists the accounts that are signed out and how to sign in; use the Accounts tab for that.
+
+**5 Levels.** Lists every level from `config.toml`, including levels that use a tier, with its name, min-max complexity and model refs in preference order. `Enter` opens the selected level's model refs. Changes use the same validation and config editing path as the `levels` CLI command; errors appear in the status line. The catalog picker offers model refs from `models.toml`, including their efforts. Existing refs remain visible even when they are absent from the catalog.
+
+| Key | Action |
+| --- | --- |
+| `Enter` | Open a level's model refs. |
+| `a` | Add a model ref from the catalog to the selected or open level. Already listed refs are omitted. |
+| `x` | Remove the selected model ref in an open level. A level must retain models or a tier. |
+| `J` / `K` | Move the selected model ref down / up in preference order. |
+| `r` | Edit the selected or open level's min and max complexity. Use `Tab` / `Shift-Tab` to move between fields, `Enter` to save. Ranges must be within 0-100 and must not overlap. |
+| `n` | Create a level: enter its name, min and max, then pick its first model ref. |
+| `D` | Delete the selected or open level by typing its exact name. The last level cannot be deleted. |
+| `u` | Reset to the default levels after a `y` confirmation. |
+| `Esc` / `q` | Return from the model-ref pane to the level list, or quit from the list. |
+
+Edits are saved locally. **Restart the supervisor to apply them**; the UI displays this reminder after a change and never restarts the supervisor. The Overview Levels block remains a summary; use this tab to edit levels.
 
 ## Colour and fallbacks
 

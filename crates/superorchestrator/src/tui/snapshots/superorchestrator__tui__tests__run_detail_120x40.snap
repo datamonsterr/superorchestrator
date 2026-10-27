@@ -3,7 +3,7 @@ source: crates/superorchestrator/src/tui/tests.rs
 expression: "shot(& mut a, w, h)"
 ---
  superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
-   1 Overview     2 Accounts     3 Runs !1     4 Setup
+   1 Overview     2 Accounts     3 Runs !1     4 Setup     5 Levels
  ╭ run 0190bbbb ──────────────────────────────────────────────────────────────────────────────────────────────────────╮
  │ ! pending_review  started 6m ago                                                                                   │
  │ runs on   codex / codex-2 / gpt-5                                                                                  │

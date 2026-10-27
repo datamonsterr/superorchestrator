@@ -399,7 +399,7 @@ pub enum ConfigCmd {
 }
 
 /// Edits `router.levels` in config.toml; restart the supervisor to apply.
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum LevelsCmd {
     /// List levels, their ranges and the models each allows
     List,
@@ -416,7 +416,7 @@ pub enum LevelsCmd {
     Model(LevelModelCmd),
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct LevelAdd {
     pub name: String,
     /// Lowest complexity in the level (0 to 100)
@@ -433,7 +433,7 @@ pub struct LevelAdd {
     pub models: Vec<String>,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 pub struct LevelEdit {
     pub name: String,
     /// New name
@@ -450,7 +450,7 @@ pub struct LevelEdit {
     pub no_tier: bool,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum LevelModelCmd {
     /// Add a model ref to a level (default: last, the least preferred)
     Add {

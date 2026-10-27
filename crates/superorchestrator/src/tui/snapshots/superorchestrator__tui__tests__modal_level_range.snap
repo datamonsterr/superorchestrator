@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 80, 24)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs !1     4 Setup     5 Levels
+  Config edits need a supervisor restart to apply.
+
+  ╭ simple  13-37 · model refs (most preferred first) ───────────────────────╮
+  │  POSITION MODEL REF                                                      │
+  │▸ 1        agy/gemini-3.8-flash-medium/medium                             │
+  │  2  ╭ Edit level range ────────────────────────────────────────────╮     │
+  │     │                                                              │     │
+  │     │   Name   simple                                              │     │
+  │     │ ▸ Min    13                                                  │     │
+  │     │   Max    37                                                  │     │
+  │     │                                                              │     │
+  │     │ Tab next field   Enter save   Esc cancel                     │     │
+  │     │                                                              │     │
+  │     ╰──────────────────────────────────────────────────────────────╯     │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+ updated 3s ago
+ Esc close

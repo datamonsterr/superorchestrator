@@ -51,6 +51,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Tab::Accounts => draw_accounts(f, app, body),
         Tab::Runs => draw_runs(f, app, body),
         Tab::Setup => draw_setup(f, app, body),
+        Tab::Levels => draw_levels(f, app, body),
     }
     draw_status(f, app, status);
     draw_hints(f, app, hints);
@@ -256,7 +257,7 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
     if app.modal.is_some() {
         return (vec![("Esc", "close")], "");
     }
-    let nav = ("1-4", "tabs");
+    let nav = ("1-5", "tabs");
     match app.tab {
         Tab::Overview => (vec![nav, ("R", "refresh")], "quit"),
         Tab::Accounts => (
@@ -292,6 +293,23 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
                 ("c", "cancel"),
             ],
             "quit",
+        ),
+        Tab::Levels => (
+            vec![
+                ("j/k", "move"),
+                ("Enter", "open"),
+                ("a/x", "model refs"),
+                ("J/K", "reorder"),
+                ("r", "range"),
+                ("n", "new"),
+                ("D", "delete"),
+                ("u", "reset"),
+            ],
+            if app.level_open.is_some() {
+                "back"
+            } else {
+                "quit"
+            },
         ),
         Tab::Setup => (
             vec![
@@ -469,14 +487,20 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
     if levels.height >= 3 {
         let levels = levels.inner(Margin::new(1, 0));
         let mut lines = vec![Line::raw(""), Line::styled("Levels", t.bold())];
-        if s.levels.is_empty() {
+        if s.levels.iter().all(|l| l.models.is_empty()) {
             lines.push(Line::styled(
                 "no levels list models (nothing routes until one does)",
                 t.muted(),
             ));
         }
-        let name_w = s.levels.iter().map(|l| l.name.width()).max().unwrap_or(0);
-        for l in &s.levels {
+        let name_w = s
+            .levels
+            .iter()
+            .filter(|l| !l.models.is_empty())
+            .map(|l| l.name.width())
+            .max()
+            .unwrap_or(0);
+        for l in s.levels.iter().filter(|l| !l.models.is_empty()) {
             let text = format!(
                 "{:<name_w$}  {:>3}-{:<3}  {}",
                 l.name,
@@ -642,6 +666,105 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
         .row_highlight_style(t.selected());
     app.accounts_state.select(Some(app.accounts_sel));
     f.render_stateful_widget(table, inner, &mut app.accounts_state);
+}
+
+// ---------------------------------------------------------------------- levels
+
+fn draw_levels(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.snap.is_none() {
+        return loading(f, app, area);
+    }
+    let t = app.theme.clone();
+    let Some(s) = &app.snap else { return };
+    if let Some(e) = &s.levels_error {
+        return placeholder(
+            f,
+            &t,
+            area,
+            vec![Line::styled(super::data::clean(e), t.bad())],
+        );
+    }
+    let [intro, body] = Layout::vertical([Constraint::Length(2), Constraint::Min(0)])
+        .areas(area.inner(Margin::new(1, 0)));
+    f.render_widget(
+        Paragraph::new("Config edits need a supervisor restart to apply.").style(t.muted()),
+        intro,
+    );
+    if let Some(l) = app.focused_level().filter(|_| app.level_open.is_some()) {
+        let title = format!(
+            " {}  {}-{} · model refs (most preferred first) ",
+            super::data::clean(&l.name),
+            l.min,
+            l.max
+        );
+        let rows = l
+            .models
+            .iter()
+            .enumerate()
+            .map(|(i, r)| Row::new([format!("{}", i + 1), super::data::clean(r)]))
+            .collect::<Vec<_>>();
+        let b = block(&t, Span::styled(title, t.bold()));
+        let inner = b.inner(body);
+        f.render_widget(b, body);
+        if rows.is_empty() {
+            f.render_widget(
+                Paragraph::new("No model refs listed; press a to add from the catalog.")
+                    .style(t.muted())
+                    .wrap(Wrap { trim: false }),
+                inner,
+            );
+        } else {
+            let table = Table::new(rows, [Constraint::Length(8), Constraint::Min(0)])
+                .header(Row::new(["POSITION", "MODEL REF"]).style(t.header()))
+                .highlight_symbol(format!("{} ", t.pointer()))
+                .row_highlight_style(t.selected());
+            app.models_state.select(Some(app.models_sel));
+            f.render_stateful_widget(table, inner, &mut app.models_state);
+        }
+    } else if s.levels.is_empty() {
+        placeholder(
+            f,
+            &t,
+            body,
+            vec![Line::raw(
+                "No levels. Press n to create one, or u to reset to defaults.",
+            )],
+        );
+    } else {
+        let rows = s
+            .levels
+            .iter()
+            .map(|l| {
+                Row::new([
+                    truncate(&super::data::clean(&l.name), 16, t.ellipsis()),
+                    format!("{}-{}", l.min, l.max),
+                    truncate(
+                        &if l.models.is_empty() {
+                            "(tier: no model refs listed)".into()
+                        } else {
+                            super::data::clean(&l.models.join(", "))
+                        },
+                        usize::from(body.width.saturating_sub(28)),
+                        t.ellipsis(),
+                    ),
+                ])
+            })
+            .collect::<Vec<_>>();
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(16),
+                Constraint::Length(8),
+                Constraint::Min(0),
+            ],
+        )
+        .header(Row::new(["LEVEL", "MIN-MAX", "MODELS"]).style(t.header()))
+        .column_spacing(1)
+        .highlight_symbol(format!("{} ", t.pointer()))
+        .row_highlight_style(t.selected());
+        app.levels_state.select(Some(app.levels_sel));
+        f.render_stateful_widget(table, body, &mut app.levels_state);
+    }
 }
 
 // ------------------------------------------------------------------------ runs
@@ -996,7 +1119,7 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
     let mut out = vec![
         Line::styled("Everywhere", t.accent()),
         row("Tab  S-Tab", "next / previous tab"),
-        row("1 2 3 4", "Overview, Accounts, Runs, Setup"),
+        row("1 2 3 4 5", "Overview, Accounts, Runs, Setup, Levels"),
         row("R  F5", "refresh now (the screen refreshes every 2 s)"),
         row("?", "this help"),
         row("q  Esc", "close a pane, or quit at the top level"),
@@ -1038,6 +1161,20 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
                 row("r", "reject with feedback"),
             ]);
         }
+        Tab::Levels => {
+            out.push(Line::styled("Levels", t.accent()));
+            out.extend([
+                row("j k  g G", "move (arrows, PgUp/PgDn, Home/End too)"),
+                row("Enter", "open a level's model refs"),
+                row("a / x", "add from the catalog / remove the selected ref"),
+                row("J / K", "move the selected ref down / up"),
+                row("r", "edit min and max complexity (0-100)"),
+                row("n", "new level (name, range, first catalog ref)"),
+                row("D", "delete level (type its name to confirm)"),
+                row("u", "reset to defaults (asks first)"),
+                row("", "Restart the supervisor after config edits to apply."),
+            ]);
+        }
         Tab::Setup => {
             out.push(Line::styled("Setup", t.accent()));
             out.extend([
@@ -1062,6 +1199,104 @@ fn draw_modal(f: &mut Frame, app: &App, modal: &Modal, full: Rect) {
     let muted = |s: &str| Line::styled(s.to_string(), t.muted());
     let mut cursor: Option<(u16, u16)> = None;
     let (title, lines, width): (String, Vec<Line>, u16) = match modal {
+        Modal::LevelForm {
+            target,
+            fields,
+            field,
+        } => {
+            cursor = Some((9 + fields[*field].width() as u16, *field as u16));
+            let mut lines = Vec::new();
+            for (i, label) in ["Name", "Min", "Max"].iter().enumerate() {
+                lines.push(Line::styled(
+                    format!(
+                        "{} {label:<6} {}",
+                        if *field == i { t.pointer() } else { " " },
+                        super::data::clean(&fields[i])
+                    ),
+                    if *field == i { t.selected() } else { t.base() },
+                ));
+            }
+            lines.push(Line::raw(""));
+            lines.push(muted(if target.is_some() {
+                "Tab next field   Enter save   Esc cancel"
+            } else {
+                "Tab next field   Enter continue   Esc cancel"
+            }));
+            (
+                if target.is_some() {
+                    "Edit level range"
+                } else {
+                    "New level"
+                }
+                .into(),
+                lines,
+                64,
+            )
+        }
+        Modal::CatalogPicker {
+            level,
+            new_level,
+            refs,
+            selected,
+        } => {
+            let width = full.width.saturating_sub(4).min(100);
+            let count = usize::from(full.height.saturating_sub(10)).max(1);
+            let start = selected
+                .saturating_sub(count / 2)
+                .min(refs.len().saturating_sub(count));
+            let mut lines = vec![
+                Line::raw(format!(
+                    "{}: choose {} of {} model refs",
+                    super::data::clean(level),
+                    selected + 1,
+                    refs.len()
+                )),
+                Line::raw(""),
+            ];
+            for (i, r) in refs.iter().enumerate().skip(start).take(count) {
+                lines.push(Line::styled(
+                    format!(
+                        "{} {}",
+                        if i == *selected { t.pointer() } else { " " },
+                        truncate(r, usize::from(width.saturating_sub(8)), t.ellipsis())
+                    ),
+                    if i == *selected {
+                        t.selected()
+                    } else {
+                        t.base()
+                    },
+                ));
+            }
+            lines.push(Line::raw(""));
+            lines.push(muted("j/k move   Enter add   Esc cancel"));
+            (
+                if new_level.is_some() {
+                    "First model ref"
+                } else {
+                    "Add model ref"
+                }
+                .into(),
+                lines,
+                width,
+            )
+        }
+        Modal::DeleteLevel { name, typed } => {
+            cursor = Some((2 + typed.width() as u16, 2));
+            (
+                "Delete level".into(),
+                vec![
+                    Line::raw(format!(
+                        "Type the level name `{}` to confirm:",
+                        super::data::clean(name)
+                    )),
+                    Line::raw(""),
+                    input_line(t, typed),
+                    Line::raw(""),
+                    muted("Enter confirm   Esc cancel"),
+                ],
+                64,
+            )
+        }
         Modal::Help => ("Help".into(), help_lines(app), 76),
         Modal::Message { title, lines } => (
             title.clone(),

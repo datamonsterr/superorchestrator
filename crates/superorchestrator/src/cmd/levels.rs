@@ -16,8 +16,40 @@ const LEVELS_KEY: &str = "router.levels";
 const RESTART: &str = "restart the supervisor to apply";
 
 pub fn run(ctx: &Ctx, cmd: LevelsCmd) -> Result<()> {
+    if matches!(cmd, LevelsCmd::List) {
+        return list(ctx);
+    }
+    if matches!(cmd, LevelsCmd::Reset) && Config::file_sets_key(&ctx.paths, LEVELS_KEY)? && !ctx.yes
+    {
+        if !interactive() {
+            bail!("refusing to reset levels without confirmation; pass --yes");
+        }
+        if !Confirm::new()
+            .with_prompt("remove router.levels and go back to the default levels?")
+            .default(false)
+            .interact()?
+        {
+            bail!("nothing changed");
+        }
+    }
+    let result = apply(ctx, cmd)?;
+    if result.changed {
+        ctx.refresh_skill();
+    }
+    ctx.emit_ok(result.value, &result.text)
+}
+
+/// Silent editing path shared with the TUI. Callers confirm destructive actions first.
+/// Config writes validate the entire draft before replacing the file.
+pub(crate) struct EditResult {
+    pub value: serde_json::Value,
+    pub text: String,
+    pub changed: bool,
+}
+
+pub(crate) fn apply(ctx: &Ctx, cmd: LevelsCmd) -> Result<EditResult> {
     match cmd {
-        LevelsCmd::List => list(ctx),
+        LevelsCmd::List => bail!("list is not a level edit"),
         LevelsCmd::Add(a) => add(ctx, a),
         LevelsCmd::Edit(a) => edit(ctx, a),
         LevelsCmd::Remove { name } => remove(ctx, &name),
@@ -173,23 +205,23 @@ impl Draft {
     }
 
     /// Validates and writes `router.levels` in one write.
-    fn save(self, ctx: &Ctx, done: &str) -> Result<()> {
+    fn save(self, ctx: &Ctx, done: &str) -> Result<EditResult> {
         let levels = toml::Value::try_from(&self.levels)?.to_string();
         Config::set_many_in_file(&ctx.paths, &[(LEVELS_KEY, levels.as_str())])?;
-        ctx.refresh_skill();
         let mut line = String::new();
         if self.materialised {
             line.push_str("config.toml had no router.levels; wrote the current defaults first\n");
         }
         line.push_str(&format!("{done}\n{RESTART}"));
-        ctx.emit_ok(
-            json!({
+        Ok(EditResult {
+            value: json!({
                 "levels": self.levels,
                 "materialised_defaults": self.materialised,
                 "restart_required": true,
             }),
-            &line,
-        )
+            text: line,
+            changed: true,
+        })
     }
 }
 
@@ -202,7 +234,7 @@ fn clean_name(s: &str) -> Result<String> {
     Ok(name.to_string())
 }
 
-fn add(ctx: &Ctx, a: LevelAdd) -> Result<()> {
+fn add(ctx: &Ctx, a: LevelAdd) -> Result<EditResult> {
     let name = clean_name(&a.name)?;
     let mut d = Draft::load(ctx)?;
     let tier = a
@@ -229,7 +261,7 @@ fn add(ctx: &Ctx, a: LevelAdd) -> Result<()> {
     d.save(ctx, &format!("added level {name} ({}-{})", a.min, a.max))
 }
 
-fn edit(ctx: &Ctx, a: LevelEdit) -> Result<()> {
+fn edit(ctx: &Ctx, a: LevelEdit) -> Result<EditResult> {
     let mut d = Draft::load(ctx)?;
     let tier = a
         .tier
@@ -261,7 +293,7 @@ fn edit(ctx: &Ctx, a: LevelEdit) -> Result<()> {
     d.save(ctx, &format!("updated level {new} ({min}-{max})"))
 }
 
-fn remove(ctx: &Ctx, name: &str) -> Result<()> {
+fn remove(ctx: &Ctx, name: &str) -> Result<EditResult> {
     let mut d = Draft::load(ctx)?;
     d.level(name)?;
     if d.levels.len() == 1 {
@@ -273,30 +305,20 @@ fn remove(ctx: &Ctx, name: &str) -> Result<()> {
     d.save(ctx, &format!("removed level {name}"))
 }
 
-fn reset(ctx: &Ctx) -> Result<()> {
+fn reset(ctx: &Ctx) -> Result<EditResult> {
     if !Config::file_sets_key(&ctx.paths, LEVELS_KEY)? {
-        return ctx.emit_ok(
-            json!({ "changed": false }),
-            "config.toml has no router.levels; the defaults are already in effect",
-        );
-    }
-    if !ctx.yes {
-        if !interactive() {
-            bail!("refusing to reset levels without confirmation; pass --yes");
-        }
-        if !Confirm::new()
-            .with_prompt("remove router.levels and go back to the default levels?")
-            .default(false)
-            .interact()?
-        {
-            bail!("nothing changed");
-        }
+        return Ok(EditResult {
+            value: json!({ "changed": false }),
+            text: "config.toml has no router.levels; the defaults are already in effect".into(),
+            changed: false,
+        });
     }
     Config::unset_in_file(&ctx.paths, LEVELS_KEY)?;
-    ctx.emit_ok(
-        json!({ "changed": true, "restart_required": true }),
-        &format!("removed router.levels; the default levels apply again\n{RESTART}"),
-    )
+    Ok(EditResult {
+        value: json!({ "changed": true, "restart_required": true }),
+        text: format!("removed router.levels; the default levels apply again\n{RESTART}"),
+        changed: true,
+    })
 }
 
 // ------------------------------------------------------------------ models
@@ -318,7 +340,7 @@ fn slot(position: usize, max: usize) -> Result<usize> {
     Ok(position - 1)
 }
 
-fn model_add(ctx: &Ctx, level: &str, model: &str, position: Option<usize>) -> Result<()> {
+fn model_add(ctx: &Ctx, level: &str, model: &str, position: Option<usize>) -> Result<EditResult> {
     let choice: Choice = model.parse()?;
     let mut d = Draft::load(ctx)?;
     let l = d.level(level)?;
@@ -342,7 +364,7 @@ fn model_add(ctx: &Ctx, level: &str, model: &str, position: Option<usize>) -> Re
     d.save(ctx, &msg)
 }
 
-fn model_move(ctx: &Ctx, level: &str, model: &str, position: usize) -> Result<()> {
+fn model_move(ctx: &Ctx, level: &str, model: &str, position: usize) -> Result<EditResult> {
     let choice: Choice = model.parse()?;
     let mut d = Draft::load(ctx)?;
     let l = d.level(level)?;
@@ -360,7 +382,7 @@ fn model_move(ctx: &Ctx, level: &str, model: &str, position: usize) -> Result<()
     )
 }
 
-fn model_remove(ctx: &Ctx, level: &str, model: &str) -> Result<()> {
+fn model_remove(ctx: &Ctx, level: &str, model: &str) -> Result<EditResult> {
     let choice: Choice = model.parse()?;
     let mut d = Draft::load(ctx)?;
     let l = d.level(level)?;
@@ -370,4 +392,88 @@ fn model_remove(ctx: &Ctx, level: &str, model: &str) -> Result<()> {
         ctx,
         &format!("removed model {} from level {level}", choice.id()),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_edits_persist_order_validate_atomically_and_reset() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(Some(dir.path().to_path_buf()), false, false).unwrap();
+        let original = "# keep this setting\n[limits]\nglobal_cap = 7\n\n[[router.levels]]\nname = 'one'\nmin = 0\nmax = 20\nmodels = ['codex/gpt-6.1-sol/high']\n\n[[router.levels]]\nname = 'two'\nmin = 50\nmax = 100\ntier = 'fast'\n";
+        std::fs::write(ctx.paths.config_toml(), original).unwrap();
+        let result = apply(
+            &ctx,
+            LevelsCmd::Add(LevelAdd {
+                name: "gap".into(),
+                min: 21,
+                max: 49,
+                tier: None,
+                models: vec!["agy/claude-sonnet-4-6/thinking".into()],
+            }),
+        )
+        .unwrap();
+        assert!(result.changed && result.text.contains(RESTART));
+        let model = "codex/gpt-6.1-sol/medium";
+        apply(
+            &ctx,
+            LevelsCmd::Model(LevelModelCmd::Add {
+                level: "gap".into(),
+                model: model.into(),
+                position: None,
+            }),
+        )
+        .unwrap();
+        apply(
+            &ctx,
+            LevelsCmd::Model(LevelModelCmd::Move {
+                level: "gap".into(),
+                model: model.into(),
+                position: 1,
+            }),
+        )
+        .unwrap();
+        let config = ctx.config().unwrap();
+        assert_eq!(config.router.levels[2].models[0].id(), model);
+        let before = std::fs::read_to_string(ctx.paths.config_toml()).unwrap();
+        for (min, max) in [(20, 49), (21, 101), (49, 21)] {
+            let err = apply(
+                &ctx,
+                LevelsCmd::Edit(LevelEdit {
+                    name: "gap".into(),
+                    new_name: None,
+                    min: Some(min),
+                    max: Some(max),
+                    tier: None,
+                    no_tier: false,
+                }),
+            );
+            assert!(err.is_err());
+            assert_eq!(
+                std::fs::read_to_string(ctx.paths.config_toml()).unwrap(),
+                before
+            );
+        }
+        apply(
+            &ctx,
+            LevelsCmd::Model(LevelModelCmd::Remove {
+                level: "gap".into(),
+                model: model.into(),
+            }),
+        )
+        .unwrap();
+        apply(&ctx, LevelsCmd::Remove { name: "gap".into() }).unwrap();
+        let result = apply(&ctx, LevelsCmd::Reset).unwrap();
+        assert!(result.changed && result.text.contains(RESTART));
+        assert!(!Config::file_sets_key(&ctx.paths, LEVELS_KEY).unwrap());
+        assert_eq!(ctx.config().unwrap().limits.global_cap, 7);
+        assert!(
+            std::fs::read_to_string(ctx.paths.config_toml())
+                .unwrap()
+                .contains("# keep this setting")
+        );
+        assert!(!apply(&ctx, LevelsCmd::Reset).unwrap().changed);
+    }
 }
