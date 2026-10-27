@@ -779,6 +779,20 @@ impl Config {
         Self::edit_file(paths, key_path, |cfg| cfg.unset(key_path).map(|_| None))
     }
 
+    /// Whether `config.toml` itself sets a dotted key (a missing file sets none). Unlike
+    /// [`Config::get`], this tells an explicit value from a default.
+    pub fn file_sets_key(paths: &Paths, key_path: &str) -> Result<bool> {
+        let (_, doc) = Self::read_for_edit(&paths.config_toml())?;
+        let mut item = doc.as_item();
+        for part in key_path.split('.') {
+            match item.get(part) {
+                Some(next) => item = next,
+                None => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
+
     /// Sets several keys in `config.toml` with one atomic write, keeping comments. All values
     /// are validated first; on any error nothing is written.
     pub fn set_many_in_file(paths: &Paths, entries: &[(&str, &str)]) -> Result<Config> {
@@ -1345,6 +1359,19 @@ mod tests {
         Config::parse(toml, std::path::Path::new("c.toml"))
             .unwrap_err()
             .to_string()
+    }
+
+    #[test]
+    fn file_sets_key_tells_defaults_from_explicit_values() {
+        let (_d, p) = tmp();
+        assert!(!Config::file_sets_key(&p, "router.levels").unwrap());
+        Config::set_in_file(&p, "limits.global_cap", "4").unwrap();
+        assert!(Config::file_sets_key(&p, "limits.global_cap").unwrap());
+        assert!(!Config::file_sets_key(&p, "router.levels").unwrap());
+        Config::set_in_file(&p, "router.levels", "[]").unwrap();
+        assert!(Config::file_sets_key(&p, "router.levels").unwrap());
+        Config::unset_in_file(&p, "router.levels").unwrap();
+        assert!(!Config::file_sets_key(&p, "router.levels").unwrap());
     }
 
     #[test]
