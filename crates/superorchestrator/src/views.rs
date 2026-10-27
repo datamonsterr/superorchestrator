@@ -38,7 +38,36 @@ pub fn open_existing_store(paths: &Paths) -> Option<Store> {
 }
 
 pub fn collect_views(ctx: &Ctx) -> Result<Vec<AccountView>> {
-    collect_views_with(ctx, &ctx.host()?)
+    let host = ctx.host()?;
+    let refresh = || -> Result<Vec<String>> {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let refresher = usage_refresher(ctx, &host)?;
+        Ok(rt.block_on(refresher.refresh(&ctx.paths)))
+    };
+    match refresh() {
+        Ok(errors) => {
+            for error in errors {
+                eprintln!("warning: {error}");
+            }
+        }
+        Err(e) => eprintln!("warning: could not refresh usage: {e}"),
+    }
+    collect_views_with(ctx, &host)
+}
+
+/// Uses the same probes with or without a running supervisor. Store timestamps enforce
+/// the TTL across CLI invocations; the long-lived UI also caches failed attempts.
+pub fn usage_refresher(
+    ctx: &Ctx,
+    host: &so_accounts::HostEnv,
+) -> Result<std::sync::Arc<so_usage::UsageRefresher>> {
+    Ok(so_usage::active_refresher(
+        Store::open(ctx.paths.state_db())?,
+        ctx.config()?,
+        host.clone(),
+    ))
 }
 
 /// The `HEADROOM` cell for one pool. An active flag wins. Otherwise the stored record is read
@@ -55,9 +84,13 @@ fn headroom_text(
     match stored {
         Some(h) => {
             let h = so_usage::effective_with(h, low_pct, false, now);
-            match h.five_hour_remaining_pct {
-                Some(p) => format!("{} {p:.0}%", h.status.as_str()),
-                None => h.status.as_str().to_string(),
+            match (h.five_hour_remaining_pct, h.weekly_remaining_pct) {
+                (Some(five), Some(week)) => {
+                    format!("{} 5h {five:.0}% wk {week:.0}%", h.status.as_str())
+                }
+                (Some(p), None) => format!("{} {p:.0}%", h.status.as_str()),
+                (None, Some(p)) => format!("{} wk {p:.0}%", h.status.as_str()),
+                (None, None) => h.status.as_str().to_string(),
             }
         }
         None => "unknown".to_string(),

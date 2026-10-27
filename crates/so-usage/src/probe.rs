@@ -264,8 +264,11 @@ impl UsageService {
             }
             let fresh = !existing.is_empty()
                 && existing.iter().all(|h| {
-                    h.as_ref()
-                        .is_some_and(|h| h.observed_at <= now && now - h.observed_at < ttl)
+                    h.as_ref().is_some_and(|h| {
+                        h.source != HeadroomSource::Ledger
+                            && h.observed_at <= now
+                            && now - h.observed_at < ttl
+                    })
                 });
             if fresh {
                 return Ok(existing
