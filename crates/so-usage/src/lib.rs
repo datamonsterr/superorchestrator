@@ -8,6 +8,9 @@ pub mod headroom;
 pub mod ledger;
 pub mod parse;
 pub mod probe;
+pub mod refresh;
+
+pub use refresh::{UsageRefresher, active_refresher};
 
 pub use availability::{Availability, availability};
 pub use error::{Result, UsageError};

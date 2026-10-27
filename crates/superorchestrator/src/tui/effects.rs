@@ -56,6 +56,8 @@ pub struct Link {
     socket: Option<std::path::PathBuf>,
     client: Option<SupervisorClient>,
     timeout: std::time::Duration,
+    usage: Option<std::sync::Arc<so_usage::UsageRefresher>>,
+    usage_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 enum Fail {
@@ -108,6 +110,8 @@ impl Link {
             socket,
             client: None,
             timeout,
+            usage: None,
+            usage_task: None,
         })
     }
 
@@ -158,6 +162,23 @@ pub fn read_loop(ctx: Ctx, host: HostEnv, rx: Receiver<Effect>, tx: Sender<Updat
 fn read_one(ctx: &Ctx, host: &HostEnv, link: &mut Link, effect: Effect, tx: &Sender<Update>) {
     match effect {
         Effect::Refresh => {
+            // Quota subprocesses may take seconds. Keep the snapshot reader and draw loop
+            // responsive, and let the next snapshot pick up each completed store update.
+            if link
+                .usage_task
+                .as_ref()
+                .is_none_or(|task| task.is_finished())
+            {
+                if link.usage.is_none() {
+                    link.usage = crate::views::usage_refresher(ctx, host).ok();
+                }
+                if let Some(usage) = link.usage.clone() {
+                    let paths = ctx.paths.clone();
+                    link.usage_task = Some(link.rt.spawn(async move {
+                        let _ = usage.refresh(&paths).await;
+                    }));
+                }
+            }
             let sup = link
                 .call::<_, StatusResult>(METHOD_STATUS, serde_json::json!({}))
                 .ok()
@@ -830,6 +851,44 @@ mod tests {
             l.call::<_, serde_json::Value>("status", serde_json::json!({}))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn refresh_probes_accounts_off_the_snapshot_reader_without_a_supervisor() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let (ctx, host) = (ctx(d.path()), fake_host(d.path()));
+        let home = host.home.join("agy-1");
+        std::fs::create_dir_all(home.join(".gemini")).unwrap();
+        std::fs::write(home.join(".gemini/oauth_creds.json"), "never print").unwrap();
+        std::fs::create_dir_all(d.path().join("bin")).unwrap();
+        let binary = d.path().join("bin/agy");
+        std::fs::write(&binary, "#!/bin/sh\n/bin/sleep 0.2\nprintf 'Gemini Models\\tFive Hour Limit Remaining\\t74%%\\t\\nClaude and GPT models\\tWeekly Limit Remaining\\t36%%\\t\\n'\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        AccountFile::new("agy-1", Harness::Agy, home.to_str().unwrap(), "agy")
+            .unwrap()
+            .save(&ctx.paths)
+            .unwrap();
+        let (tx, rx) = channel();
+        let mut link = Link::new(None, SUP_TIMEOUT).unwrap();
+        read_one(&ctx, &host, &mut link, Effect::Refresh, &tx);
+        assert!(matches!(rx.try_recv().unwrap(), Update::Snapshot(_)));
+        let task = link.usage_task.take().unwrap();
+        link.rt.block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap();
+        });
+        read_one(&ctx, &host, &mut link, Effect::Refresh, &tx);
+        let Update::Snapshot(snapshot) = rx.try_recv().unwrap() else {
+            panic!("expected snapshot")
+        };
+        assert_eq!(
+            snapshot.accounts[0].headroom,
+            "gemini: ok 74%, claude: ok wk 36%"
+        );
+        assert!(snapshot.supervisor.is_none());
     }
 
     #[test]
