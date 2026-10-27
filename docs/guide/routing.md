@@ -78,6 +78,8 @@ superorchestrator levels model remove <level> <harness/model[/effort]>
 
 `add` needs `--tier` or at least one `--model`. `model add` appends unless you pass `--position`, and `levels model add` on a level that has a tier makes the level use its listed models. Positions run from 1 to the number of models (one more for `add`). Refs are parsed with the same rules as the config, so a malformed ref or an effort the harness does not accept is refused. When the file has no `router.levels`, the current defaults are written first, so your edit is relative to what was in effect. Every command is one validated write, like a load: an overlap, a duplicate ref or a level left with neither models nor tier is refused and nothing is written. Rewriting `router.levels` drops any comments inside that block (comments elsewhere are kept). `levels reset` asks for confirmation; pass `--yes` in a script.
 
+`levels remove` refuses to remove the last level, because nothing would be routable; use `levels reset`. With `--json`, `levels list` prints the resolved view above, while the other commands print `{ok, levels, materialised_defaults, restart_required}`, where `levels` has the config shape (`name`, `min`, `max`, `tier`, `models` as ref strings).
+
 ### Level ranges
 
 - `min` and `max` are integers from 0 to 100. The range covers complexity from `min` up to, but not including, `max + 1`, so a complexity of 37.5 is in a level `0-37`. A level with `max = 100` also includes 100.

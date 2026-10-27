@@ -38,28 +38,6 @@ pub fn run(ctx: &Ctx, cmd: LevelsCmd) -> Result<()> {
     }
 }
 
-fn tier_of(s: &str) -> Result<LevelTier> {
-    Ok(match s {
-        "high" => LevelTier::High,
-        "mid" => LevelTier::Mid,
-        "fast" => LevelTier::Fast,
-        other => bail!("unknown tier `{other}` (high|mid|fast)"),
-    })
-}
-
-fn tier_name(t: LevelTier) -> &'static str {
-    match t {
-        LevelTier::High => "high",
-        LevelTier::Mid => "mid",
-        LevelTier::Fast => "fast",
-    }
-}
-
-/// Parses a model ref with the shared rules (harness, model and effort checks).
-fn parse_ref(s: &str) -> Result<Choice> {
-    Ok(s.parse::<Choice>()?)
-}
-
 /// `on` when the catalog lists the model and an enabled account serves its harness, `off`
 /// when it is listed but no enabled account serves the harness, `unknown` when the catalog
 /// does not list it (or could not be read).
@@ -98,7 +76,7 @@ fn list(ctx: &Ctx) -> Result<()> {
                 "name": l.name,
                 "min": l.min,
                 "max": l.max,
-                "tier": l.tier.map(tier_name),
+                "tier": l.tier.map(LevelTier::as_str),
                 "models": l.models.iter().enumerate().map(|(i, c)| json!({
                     "position": i + 1,
                     "ref": c.id(),
@@ -125,7 +103,7 @@ fn list(ctx: &Ctx) -> Result<()> {
             for l in &cfg.router.levels {
                 let range = format!("{}-{}", l.min, l.max);
                 if l.models.is_empty() {
-                    let tier = l.tier.map_or("-", tier_name);
+                    let tier = l.tier.map_or("-", LevelTier::as_str);
                     rows.push(vec![
                         l.name.clone(),
                         range,
@@ -215,38 +193,56 @@ impl Draft {
     }
 }
 
+/// A level name without surrounding whitespace; an empty one is an error.
+fn clean_name(s: &str) -> Result<String> {
+    let name = s.trim();
+    if name.is_empty() {
+        bail!("level name must not be empty");
+    }
+    Ok(name.to_string())
+}
+
 fn add(ctx: &Ctx, a: LevelAdd) -> Result<()> {
+    let name = clean_name(&a.name)?;
     let mut d = Draft::load(ctx)?;
-    let tier = a.tier.as_deref().map(tier_of).transpose()?;
+    let tier = a
+        .tier
+        .as_deref()
+        .map(str::parse::<LevelTier>)
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
     let models = a
         .models
         .iter()
-        .map(|m| parse_ref(m))
+        .map(|m| m.parse::<Choice>().map_err(anyhow::Error::from))
         .collect::<Result<Vec<_>>>()?;
     if tier.is_none() && models.is_empty() {
         bail!("a new level needs --tier or at least one --model");
     }
     d.levels.push(Level {
-        name: a.name.clone(),
+        name: name.clone(),
         min: a.min,
         max: a.max,
         tier,
         models,
     });
-    d.save(
-        ctx,
-        &format!("added level {} ({}-{})", a.name, a.min, a.max),
-    )
+    d.save(ctx, &format!("added level {name} ({}-{})", a.min, a.max))
 }
 
 fn edit(ctx: &Ctx, a: LevelEdit) -> Result<()> {
     let mut d = Draft::load(ctx)?;
-    let tier = a.tier.as_deref().map(tier_of).transpose()?;
+    let tier = a
+        .tier
+        .as_deref()
+        .map(str::parse::<LevelTier>)
+        .transpose()
+        .map_err(anyhow::Error::msg)?;
     if a.new_name.is_none() && a.min.is_none() && a.max.is_none() && tier.is_none() && !a.no_tier {
         bail!("nothing to change; pass --name, --min, --max, --tier or --no-tier");
     }
+    let new_name = a.new_name.as_deref().map(clean_name).transpose()?;
     let l = d.level(&a.name)?;
-    if let Some(n) = a.new_name {
+    if let Some(n) = new_name {
         l.name = n;
     }
     if let Some(v) = a.min {
@@ -268,15 +264,13 @@ fn edit(ctx: &Ctx, a: LevelEdit) -> Result<()> {
 fn remove(ctx: &Ctx, name: &str) -> Result<()> {
     let mut d = Draft::load(ctx)?;
     d.level(name)?;
+    if d.levels.len() == 1 {
+        bail!(
+            "refusing to remove the last level: nothing would be routable; use `levels reset` for the defaults"
+        );
+    }
     d.levels.retain(|l| l.name != name);
-    let msg = if d.levels.is_empty() {
-        format!(
-            "removed level {name}\nno levels left; levels are off, use `levels reset` for the defaults"
-        )
-    } else {
-        format!("removed level {name}")
-    };
-    d.save(ctx, &msg)
+    d.save(ctx, &format!("removed level {name}"))
 }
 
 fn reset(ctx: &Ctx) -> Result<()> {
@@ -325,7 +319,7 @@ fn slot(position: usize, max: usize) -> Result<usize> {
 }
 
 fn model_add(ctx: &Ctx, level: &str, model: &str, position: Option<usize>) -> Result<()> {
-    let choice = parse_ref(model)?;
+    let choice: Choice = model.parse()?;
     let mut d = Draft::load(ctx)?;
     let l = d.level(level)?;
     if l.models.contains(&choice) {
@@ -342,14 +336,14 @@ fn model_add(ctx: &Ctx, level: &str, model: &str, position: Option<usize>) -> Re
     if let Some(t) = was_tier {
         msg.push_str(&format!(
             "\nlevel {level} now uses its listed models; tier {} no longer applies",
-            tier_name(t)
+            LevelTier::as_str(t)
         ));
     }
     d.save(ctx, &msg)
 }
 
 fn model_move(ctx: &Ctx, level: &str, model: &str, position: usize) -> Result<()> {
-    let choice = parse_ref(model)?;
+    let choice: Choice = model.parse()?;
     let mut d = Draft::load(ctx)?;
     let l = d.level(level)?;
     let from = index_of(l, &choice)?;
@@ -367,7 +361,7 @@ fn model_move(ctx: &Ctx, level: &str, model: &str, position: usize) -> Result<()
 }
 
 fn model_remove(ctx: &Ctx, level: &str, model: &str) -> Result<()> {
-    let choice = parse_ref(model)?;
+    let choice: Choice = model.parse()?;
     let mut d = Draft::load(ctx)?;
     let l = d.level(level)?;
     let at = index_of(l, &choice)?;

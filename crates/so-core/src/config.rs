@@ -279,6 +279,29 @@ pub struct Level {
     pub models: Vec<Choice>,
 }
 
+impl LevelTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LevelTier::High => "high",
+            LevelTier::Mid => "mid",
+            LevelTier::Fast => "fast",
+        }
+    }
+}
+
+impl std::str::FromStr for LevelTier {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "high" => Ok(LevelTier::High),
+            "mid" => Ok(LevelTier::Mid),
+            "fast" => Ok(LevelTier::Fast),
+            other => Err(format!("unknown tier `{other}` (high|mid|fast)")),
+        }
+    }
+}
+
 fn default_levels() -> Vec<Level> {
     let level = |name: &str, min, max, tier| Level {
         name: name.to_string(),

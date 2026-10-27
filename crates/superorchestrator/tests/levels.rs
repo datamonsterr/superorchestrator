@@ -263,13 +263,19 @@ fn remove_and_reset() {
         .assert()
         .failure();
     e.cmd().args(["levels", "remove", "low"]).assert().success();
-    let out = stdout(
-        &e.cmd()
-            .args(["levels", "remove", "high"])
-            .assert()
-            .success(),
-    );
-    assert!(out.contains("no levels left"), "{out}");
+    let before = file(&e);
+    e.cmd()
+        .args(["levels", "remove", "high"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("levels reset"));
+    assert_eq!(file(&e), before);
+    // An explicitly empty list is a state the file may already be in.
+    e.cmd()
+        .args(["--yes", "levels", "reset"])
+        .assert()
+        .success();
+    Config::set_in_file(&e.paths(), "router.levels", "[]").unwrap();
     assert!(cfg(&e).router.levels.is_empty());
 
     // Not a terminal and no --yes: refuse, change nothing.
@@ -401,4 +407,59 @@ fn removing_the_last_model_of_a_tierless_level_is_refused() {
         .failure()
         .stderr(predicate::str::contains("needs `models` or `tier`"));
     assert_eq!(file(&e), mid);
+}
+
+#[test]
+fn names_are_trimmed_and_must_not_be_empty() {
+    let e = env_with(TWO_LEVELS);
+    let before = file(&e);
+    e.cmd()
+        .args(["levels", "edit", "low", "--name", "  "])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("must not be empty"));
+    e.cmd()
+        .args(["levels", "edit", "low", "--name", "high"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("duplicate"));
+    e.cmd()
+        .args(["levels", "edit", "low", "--name", " low "])
+        .assert()
+        .success();
+    assert_eq!(cfg(&e).router.levels[0].name, "low");
+    e.cmd()
+        .args(["levels", "edit", "low", "--name", " tiny "])
+        .assert()
+        .success();
+    assert_eq!(cfg(&e).router.levels[0].name, "tiny");
+    let kept = file(&e);
+    e.cmd()
+        .args([
+            "levels", "add", " ", "--min", "0", "--max", "0", "--tier", "fast",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("must not be empty"));
+    assert_eq!(file(&e), kept);
+    assert_ne!(kept, before);
+
+    let e = env_with("[router]\nlevels = []\n");
+    e.cmd()
+        .args([
+            "levels", "add", "  big ", "--min", "0", "--max", "9", "--tier", "high",
+        ])
+        .assert()
+        .success();
+    assert_eq!(cfg(&e).router.levels[0].name, "big");
+}
+
+#[test]
+fn list_json_for_a_tier_only_level_has_no_models() {
+    let e = env_with(TWO_LEVELS);
+    let v = json_of(&e, &["levels", "list"]);
+    let low = &v["levels"][0];
+    assert_eq!(low["name"], "low");
+    assert_eq!(low["tier"], "fast");
+    assert_eq!(low["models"], serde_json::json!([]));
 }
