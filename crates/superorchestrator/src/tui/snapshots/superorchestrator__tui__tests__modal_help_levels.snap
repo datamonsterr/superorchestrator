@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 80, 24)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+  ╭ Help ────────────────────────────────────────────────────────────────────╮
+  │                                                                          │
+  │ Everywhere                                                               │
+  │ Tab  S-Tab  next / previous tab                                          │
+  │ 1 2 3 4 5   Overview, Accounts, Runs, Setup, Levels                      │
+  │ R  F5       refresh now (the screen refreshes every 2 s)                 │
+  │ ?           this help                                                    │
+  │ q  Esc      close a pane, or quit at the top level                       │
+  │ Ctrl-C      quit                                                         │
+  │                                                                          │
+  │ Levels                                                                   │
+  │ j k  g G    move (arrows, PgUp/PgDn, Home/End too)                       │
+  │ Enter       open a level's model refs                                    │
+  │ a / x       add from the catalog / remove the selected ref               │
+  │ J / K       move the selected ref down / up                              │
+  │ r           edit min and max complexity (0-100)                          │
+  │ n           new level (name, range, first catalog ref)                   │
+  │ D           delete level (type its name to confirm)                      │
+  │ u           reset to defaults (asks first)                               │
+  │             Restart the supervisor after config edits to apply.          │
+  │                                                                          │
+ u╰──────────────────────────────────────────────────────────────────────────╯
+ Esc close

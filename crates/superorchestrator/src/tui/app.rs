@@ -2,6 +2,8 @@
 //! `on_update` turn input into state changes and, for work, an [`Effect`] that the event
 //! loop hands to a background thread.
 
+use crate::cli::{LevelAdd, LevelEdit, LevelModelCmd, LevelsCmd};
+
 use chrono::{DateTime, Duration, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
@@ -30,10 +32,17 @@ pub enum Tab {
     Accounts,
     Runs,
     Setup,
+    Levels,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Overview, Tab::Accounts, Tab::Runs, Tab::Setup];
+    pub const ALL: [Tab; 5] = [
+        Tab::Overview,
+        Tab::Accounts,
+        Tab::Runs,
+        Tab::Setup,
+        Tab::Levels,
+    ];
 
     pub fn index(self) -> usize {
         Self::ALL.iter().position(|t| *t == self).unwrap_or(0)
@@ -44,6 +53,7 @@ impl Tab {
             Tab::Accounts => "Accounts",
             Tab::Runs => "Runs",
             Tab::Setup => "Setup",
+            Tab::Levels => "Levels",
         }
     }
     fn step(self, by: isize) -> Tab {
@@ -156,6 +166,7 @@ pub enum Effect {
     Join(String),
     Setup(SetupStep),
     SetupAll,
+    Levels(LevelsCmd),
 }
 
 impl Effect {
@@ -175,6 +186,7 @@ impl Effect {
             Effect::Reject { .. } => "rejecting run",
             Effect::Join(_) => "preparing join",
             Effect::Setup(_) | Effect::SetupAll => "running setup",
+            Effect::Levels(_) => "updating levels",
         })
     }
 }
@@ -264,6 +276,22 @@ pub enum Modal {
         count: String,
         field: AddField,
     },
+    LevelForm {
+        /// None creates a level; Some edits that level's range.
+        target: Option<String>,
+        fields: [String; 3],
+        field: usize,
+    },
+    CatalogPicker {
+        level: String,
+        new_level: Option<LevelAdd>,
+        refs: Vec<String>,
+        selected: usize,
+    },
+    DeleteLevel {
+        name: String,
+        typed: String,
+    },
     Import(Vec<ImportCandidate>),
 }
 
@@ -304,6 +332,11 @@ pub struct App {
     pub accounts_sel: usize,
     pub runs_sel: usize,
     pub setup_sel: usize,
+    pub levels_sel: usize,
+    pub models_sel: usize,
+    pub level_open: Option<String>,
+    pub levels_state: TableState,
+    pub models_state: TableState,
     /// Scroll state of the two tables; the draw step keeps it on the selection.
     pub accounts_state: TableState,
     pub runs_state: TableState,
@@ -326,6 +359,11 @@ impl App {
             accounts_sel: 0,
             runs_sel: 0,
             setup_sel: 0,
+            levels_sel: 0,
+            models_sel: 0,
+            level_open: None,
+            levels_state: TableState::default(),
+            models_state: TableState::default(),
             accounts_state: TableState::default(),
             runs_state: TableState::default(),
             detail: None,
@@ -419,7 +457,7 @@ impl App {
         match key.code {
             KeyCode::Tab => self.switch(self.tab.step(1)),
             KeyCode::BackTab => self.switch(self.tab.step(-1)),
-            KeyCode::Char(c @ '1'..='4') if plain => {
+            KeyCode::Char(c @ '1'..='5') if plain => {
                 self.switch(Tab::ALL[usize::from(c as u8 - b'1')]);
             }
             KeyCode::F(5) => return self.refresh(),
@@ -431,6 +469,7 @@ impl App {
                     Tab::Accounts => self.accounts_key(key),
                     Tab::Runs => self.runs_key(key),
                     Tab::Setup => self.setup_key(key),
+                    Tab::Levels => self.levels_key(key),
                 };
             }
         }
@@ -464,6 +503,8 @@ impl App {
     fn back_or_quit(&mut self) {
         if self.tab == Tab::Runs && self.detail.is_some() {
             self.detail = None;
+        } else if self.tab == Tab::Levels && self.level_open.is_some() {
+            self.level_open = None;
         } else {
             self.quit = true;
         }
@@ -638,6 +679,137 @@ impl App {
         Some((id.to_string(), state, worktree))
     }
 
+    pub fn levels(&self) -> &[super::data::LevelRow] {
+        self.snap.as_ref().map_or(&[], |s| s.levels.as_slice())
+    }
+
+    pub fn focused_level(&self) -> Option<&super::data::LevelRow> {
+        match &self.level_open {
+            Some(name) => self.levels().iter().find(|l| &l.name == name),
+            None => self.levels().get(self.levels_sel),
+        }
+    }
+
+    fn catalog_picker(&mut self, level: String, new_level: Option<LevelAdd>) {
+        let Some(s) = &self.snap else { return };
+        if let Some(e) = &s.catalog_error {
+            self.say(ToastKind::Err, e.clone());
+            return;
+        }
+        let refs = s
+            .catalog_refs
+            .iter()
+            .filter(|r| {
+                new_level.is_some() || !self.focused_level().is_some_and(|l| l.models.contains(r))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if refs.is_empty() {
+            self.say(ToastKind::Err, "no catalog model refs available to add");
+            return;
+        }
+        self.modal = Some(Modal::CatalogPicker {
+            level,
+            new_level,
+            refs,
+            selected: 0,
+        });
+    }
+
+    fn levels_key(&mut self, key: KeyEvent) -> Option<Effect> {
+        if let Some(e) = self.snap.as_ref().and_then(|s| s.levels_error.clone()) {
+            self.say(ToastKind::Err, e);
+        }
+        if self.busy.is_some() {
+            return None;
+        }
+        let open = self.level_open.is_some();
+        let len = if open {
+            self.focused_level().map_or(0, |l| l.models.len())
+        } else {
+            self.levels().len()
+        };
+        let sel = if open {
+            self.models_sel
+        } else {
+            self.levels_sel
+        };
+        if let Some(next) = Self::movement(key.code, sel, len) {
+            if open {
+                self.models_sel = next;
+            } else {
+                self.levels_sel = next;
+            }
+            return None;
+        }
+        match key.code {
+            KeyCode::Char('n') => {
+                self.modal = Some(Modal::LevelForm {
+                    target: None,
+                    fields: [String::new(), "0".into(), "100".into()],
+                    field: 0,
+                });
+                return None;
+            }
+            KeyCode::Char('u') => {
+                self.modal = Some(Modal::Confirm {
+                    prompt: "Reset levels to defaults? (y/n)".into(),
+                    effect: Effect::Levels(LevelsCmd::Reset),
+                });
+                return None;
+            }
+            _ => {}
+        }
+        let l = self.focused_level()?.clone();
+        let cmd = match key.code {
+            KeyCode::Enter if !open => {
+                self.level_open = Some(l.name);
+                self.models_sel = 0;
+                return None;
+            }
+            KeyCode::Char('a') => {
+                self.catalog_picker(l.name, None);
+                return None;
+            }
+            KeyCode::Char('r') => {
+                self.modal = Some(Modal::LevelForm {
+                    target: Some(l.name.clone()),
+                    fields: [l.name, l.min.to_string(), l.max.to_string()],
+                    field: 1,
+                });
+                return None;
+            }
+            KeyCode::Char('D') => {
+                self.modal = Some(Modal::DeleteLevel {
+                    name: l.name,
+                    typed: String::new(),
+                });
+                return None;
+            }
+            KeyCode::Char('x') if open => LevelsCmd::Model(LevelModelCmd::Remove {
+                level: l.name,
+                model: l.models.get(sel)?.clone(),
+            }),
+            KeyCode::Char(c @ ('J' | 'K')) if open => {
+                let to = if c == 'J' {
+                    (sel + 1).min(len.saturating_sub(1))
+                } else {
+                    sel.saturating_sub(1)
+                };
+                if to == sel {
+                    return None;
+                }
+                LevelsCmd::Model(LevelModelCmd::Move {
+                    level: l.name,
+                    model: l.models.get(sel)?.clone(),
+                    position: to + 1,
+                })
+            }
+            _ => return None,
+        };
+        self.start(Effect::Levels(cmd))
+    }
+
     fn setup_key(&mut self, key: KeyEvent) -> Option<Effect> {
         if let Some(s) = Self::movement(key.code, self.setup_sel, SetupStep::ALL.len()) {
             self.setup_sel = s;
@@ -677,6 +849,115 @@ impl App {
     fn modal_key(&mut self, mut modal: Modal, key: KeyEvent) -> Option<Effect> {
         let code = key.code;
         match &mut modal {
+            Modal::LevelForm {
+                target,
+                fields,
+                field,
+            } => {
+                match code {
+                    KeyCode::Esc => return None,
+                    KeyCode::Tab | KeyCode::Down => {
+                        *field = if *field == 2 {
+                            usize::from(target.is_some())
+                        } else {
+                            *field + 1
+                        }
+                    }
+                    KeyCode::BackTab | KeyCode::Up => {
+                        *field = if *field == usize::from(target.is_some()) {
+                            2
+                        } else {
+                            *field - 1
+                        }
+                    }
+                    KeyCode::Enter => {
+                        let range = fields[1]
+                            .parse::<u8>()
+                            .ok()
+                            .zip(fields[2].parse::<u8>().ok());
+                        if let Some((min, max)) =
+                            range.filter(|(min, max)| min <= max && *max <= 100)
+                        {
+                            if let Some(name) = target {
+                                return self.start(Effect::Levels(LevelsCmd::Edit(LevelEdit {
+                                    name: name.clone(),
+                                    new_name: None,
+                                    min: Some(min),
+                                    max: Some(max),
+                                    tier: None,
+                                    no_tier: false,
+                                })));
+                            }
+                            let name = fields[0].trim().to_string();
+                            if !name.is_empty() {
+                                self.toast = None;
+                                self.catalog_picker(
+                                    name.clone(),
+                                    Some(LevelAdd {
+                                        name,
+                                        min,
+                                        max,
+                                        tier: None,
+                                        models: Vec::new(),
+                                    }),
+                                );
+                                return None;
+                            }
+                            self.say(ToastKind::Err, "level name must not be empty");
+                        } else {
+                            self.say(ToastKind::Err, "range needs min <= max <= 100");
+                        }
+                    }
+                    _ => edit(&mut fields[*field], code, if *field == 0 { 64 } else { 3 }),
+                }
+                self.modal = Some(modal);
+                None
+            }
+            Modal::CatalogPicker {
+                level,
+                new_level,
+                refs,
+                selected,
+            } => {
+                if code == KeyCode::Esc {
+                    return None;
+                }
+                if let Some(next) = Self::movement(code, *selected, refs.len()) {
+                    *selected = next;
+                }
+                if code == KeyCode::Enter {
+                    let model = refs.get(*selected)?.clone();
+                    let cmd = if let Some(mut a) = new_level.take() {
+                        a.models.push(model);
+                        LevelsCmd::Add(a)
+                    } else {
+                        LevelsCmd::Model(LevelModelCmd::Add {
+                            level: level.clone(),
+                            model,
+                            position: None,
+                        })
+                    };
+                    return self.start(Effect::Levels(cmd));
+                }
+                self.modal = Some(modal);
+                None
+            }
+            Modal::DeleteLevel { name, typed } => match code {
+                KeyCode::Esc => None,
+                KeyCode::Enter if typed == name => {
+                    let name = name.clone();
+                    self.start(Effect::Levels(LevelsCmd::Remove { name }))
+                }
+                KeyCode::Enter => {
+                    self.say(ToastKind::Err, "name did not match; nothing removed");
+                    None
+                }
+                _ => {
+                    edit(typed, code, name.chars().count().max(64));
+                    self.modal = Some(modal);
+                    None
+                }
+            },
             Modal::Help | Modal::Message { .. } => {
                 if !matches!(
                     code,
@@ -912,6 +1193,26 @@ impl App {
             .and_then(|id| snap.runs.iter().position(|r| r.id == id))
             .unwrap_or(self.runs_sel)
             .min(snap.runs.len().saturating_sub(1));
+        let level = self.levels().get(self.levels_sel).map(|l| l.name.clone());
+        self.levels_sel = level
+            .and_then(|n| snap.levels.iter().position(|l| l.name == n))
+            .unwrap_or(self.levels_sel)
+            .min(snap.levels.len().saturating_sub(1));
+        if let Some(name) = &self.level_open {
+            if let Some(l) = snap.levels.iter().find(|l| &l.name == name) {
+                // Follow the selected ref through reorders and refreshes.
+                let model = self
+                    .focused_level()
+                    .and_then(|l| l.models.get(self.models_sel));
+                self.models_sel = model
+                    .and_then(|r| l.models.iter().position(|m| m == r))
+                    .unwrap_or(self.models_sel)
+                    .min(l.models.len().saturating_sub(1));
+            } else {
+                self.level_open = None;
+                self.models_sel = 0;
+            }
+        }
         self.snap = Some(snap);
     }
 }

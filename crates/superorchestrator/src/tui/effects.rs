@@ -236,6 +236,14 @@ fn perform(
     };
     Ok(Some(match effect {
         Effect::Refresh | Effect::Detail { .. } => return Ok(None),
+        Effect::Levels(cmd) => {
+            let result = crate::cmd::levels::apply(ctx, cmd)?;
+            if result.changed {
+                skill_warnings("levels saved; restart the supervisor to apply".into())
+            } else {
+                result.text
+            }
+        }
         Effect::AddAccounts { harness, count } => {
             let cfg = ctx.config()?;
             let batch = manage::add_numbered(&ctx.paths, &cfg, host, harness, count);
@@ -694,6 +702,39 @@ mod tests {
 
     fn ctx(dir: &std::path::Path) -> Ctx {
         Ctx::new(Some(dir.join("cfg")), false, true).unwrap()
+    }
+
+    #[test]
+    fn levels_validation_errors_reach_the_status_line_without_writing() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = ctx(d.path());
+        std::fs::create_dir_all(&ctx.paths.config_dir).unwrap();
+        let original = "[[router.levels]]\nname = 'one'\nmin = 0\nmax = 40\ntier = 'fast'\n[[router.levels]]\nname = 'two'\nmin = 50\nmax = 100\ntier = 'mid'\n";
+        std::fs::write(ctx.paths.config_toml(), original).unwrap();
+        let (etx, erx) = channel();
+        let (utx, urx) = channel();
+        etx.send(Effect::Levels(crate::cli::LevelsCmd::Edit(
+            crate::cli::LevelEdit {
+                name: "one".into(),
+                new_name: None,
+                min: None,
+                max: Some(60),
+                tier: None,
+                no_tier: false,
+            },
+        )))
+        .unwrap();
+        drop(etx);
+        action_loop(ctx.clone(), fake_host(d.path()), erx, utx);
+        let update = urx.recv().unwrap();
+        assert!(matches!(&update, Update::Done { ok: false, text } if text.contains("overlaps")));
+        let mut app = super::super::app::App::new(super::super::theme::Theme::plain(), Utc::now());
+        app.on_update(update);
+        assert!(app.toast.unwrap().text.contains("overlaps"));
+        assert_eq!(
+            std::fs::read_to_string(ctx.paths.config_toml()).unwrap(),
+            original
+        );
     }
 
     #[test]

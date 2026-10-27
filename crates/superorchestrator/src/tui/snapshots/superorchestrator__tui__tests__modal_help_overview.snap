@@ -3,7 +3,7 @@ source: crates/superorchestrator/src/tui/tests.rs
 expression: "shot(&mut a, 80, 24)"
 ---
  superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
-   1 Overview     2 Accounts     3 Runs !1     4 Setup
+   1 Overview     2 Accounts     3 Runs !1     4 Setup     5 Levels
  ╭ Accounts ───────╮ ╭ Active runs ────╮ ╭ To review ─────╮ ╭ Setup ──────────╮
  │ 4               │ │ 2               │ │ 1              │ │ 3 of 6          │
  │ 2 signed in     │ │ supervisor up   │ │ open Runs (3)  │ │ see below       │
@@ -11,7 +11,7 @@ expression: "shot(&mut a, 80, 24)"
   │                                                                          │
   │ Everywhere                                                               │
   │ Tab  S-Tab  next / previous tab                                          │
-  │ 1 2 3 4     Overview, Accounts, Runs, Setup                              │
+  │ 1 2 3 4 5   Overview, Accounts, Runs, Setup, Levels                      │
   │ R  F5       refresh now (the screen refreshes every 2 s)                 │
   │ ?           this help                                                    │
   │ q  Esc      close a pane, or quit at the top level                       │
