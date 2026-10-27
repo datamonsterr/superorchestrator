@@ -45,6 +45,8 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Changed
 
+- Seeded complexity levels route harder work to Codex first: `moderate` leads with `codex/gpt-6-luna/medium`, `complex` with `codex/gpt-6.1-sol/high` and `expert` with `codex/gpt-6.1-sol/xhigh`. `simple` also lists `gpt-6-luna`, which is seeded only for `moderate` and below. The seed no longer lists `opencode/opencode/muse-spark-1.3`. `gpt-6-luna` is added to the bundled catalog and the bundled eval labels follow the new seed. Existing configs are not changed; copy the levels from `seed/` to adopt them.
+
 - The seeded choice `opencode-muse-long` uses `opencode/muse-spark-1.3`; the old model id
   (`opencode/muse-spark-1.3-contributor-free`) is gone from opencode and runs on it failed
   with "Model not found". Existing `config.toml` files keep the old id: edit the choice, and

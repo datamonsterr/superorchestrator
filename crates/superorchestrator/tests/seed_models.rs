@@ -24,3 +24,25 @@ fn seeded_opencode_models_are_listed() {
     }
     assert!(checked > 0);
 }
+
+#[test]
+fn seeded_models_are_in_the_default_catalog() {
+    let cfg = so_core::Config::parse(SEED_LEVELS, std::path::Path::new("levels.toml")).unwrap();
+    let catalog = so_router::Catalog::default_catalog();
+    for c in cfg.choices() {
+        assert!(
+            catalog.contains(c.harness, &c.model),
+            "{} is not in the default catalog",
+            c.id()
+        );
+    }
+}
+
+#[test]
+fn gpt_6_luna_is_seeded_only_for_moderate_and_below() {
+    let cfg = so_core::Config::parse(SEED_LEVELS, std::path::Path::new("levels.toml")).unwrap();
+    for lv in &cfg.router.levels {
+        let luna = lv.models.iter().any(|m| m.model == "gpt-6-luna");
+        assert!(!luna || lv.max <= 62, "{} seeds gpt-6-luna", lv.name);
+    }
+}
