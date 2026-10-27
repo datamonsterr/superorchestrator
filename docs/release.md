@@ -26,6 +26,63 @@ The gates run in parallel after every target's archive is built, before `host`:
   copy (verifying its sha256) and runs `scripts/smoke-ci.sh` on it. A binary that embeds the
   placeholder UI fails here.
 
+## Cut a release
+
+1. Choose the next [Semantic Version](https://semver.org/) (`MAJOR.MINOR.PATCH`). At the time
+   this flow was added, the workspace is `0.1.0`, tag `v0.1.0` exists, `main` is 149 commits
+   ahead of that tag, and there is no GitHub Release yet. Check the current branch, tags and
+   releases before choosing a version; do not reuse an existing version or tag.
+2. Add a `## [X.Y.Z] - YYYY-MM-DD` section near the top of `CHANGELOG.md`, above
+   `## [Unreleased]`, with the user-facing changes for this release.
+3. Set `version = "X.Y.Z"` under `[workspace.package]` in `Cargo.toml` and update the lockfile.
+   Prefer `cargo update --workspace --offline`; if that cannot update only the workspace package
+   versions from the local lockfile, edit those package version entries in `Cargo.lock` without
+   changing dependency resolutions. Keep `plugin/.claude-plugin/plugin.json` at the same version:
+   the release gate checks it too.
+4. Run `scripts/check.sh`, then open a pull request to `main`. Wait for its checks and merge it.
+   Cut the tag only after the merge, from the updated `main` commit:
+
+   ```sh
+   git switch main
+   git pull --ff-only
+   git status --short
+   scripts/check-release-tag.sh vX.Y.Z
+   git tag -a vX.Y.Z -m "Release vX.Y.Z"
+   git push origin vX.Y.Z
+   ```
+
+   Confirm the working tree is clean and `HEAD` is the intended merged `main` commit before
+   tagging. The tag push starts the release workflow and allows it to create a draft GitHub
+   Release. Get explicit user consent before pushing a tag; the push triggers that publication.
+5. Find the run for the pushed tag with `gh run list --workflow release.yml` and monitor it with
+   `gh run watch RUN_ID`. Wait for all build and release gates to pass. Check the published
+   release and install the pinned version:
+
+   ```sh
+   gh release view vX.Y.Z
+   ./install.sh X.Y.Z
+   superorchestrator --version
+   ```
+
+   The installer verifies the downloaded archive checksum. After upgrading, compare the
+   installed executable's SHA-256 with the matching platform archive's binary (or otherwise
+   verify its build hash) to confirm the installed build is the one from this release. Also run
+   `superorchestrator status` and check the CLI and supervisor build IDs; restart the supervisor
+   after active runs finish if they differ.
+6. To roll back a bad tag, delete it locally and remotely, then delete or mark the associated
+   draft/release as appropriate. For example, after confirming the tag is the bad release:
+
+   ```sh
+   git tag -d vX.Y.Z
+   git push origin :refs/tags/vX.Y.Z
+   gh release delete vX.Y.Z --yes
+   ```
+
+   If it is only a draft, deleting it removes the draft as well. If a release has already been
+   published, communicate the rollback and publish a corrected higher patch version; do not
+   silently reuse the deleted version. Deleting a tag does not cancel a workflow run already in
+   progress.
+
 ## What is built
 
 - Targets: `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-apple-darwin`,
