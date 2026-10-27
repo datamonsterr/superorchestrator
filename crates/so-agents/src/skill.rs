@@ -1,6 +1,6 @@
 //! The shipped skills (SPEC 19.1): `use-superorchestrator-mcp`, generated from the current
 //! accounts, levels and agents and regenerated whenever they change, and the static
-//! `superorchestrator-cli`.
+//! `superorchestrator-cli` and `superorchestrator-config`.
 //!
 //! They live in this crate so the CLI and the web API can both refresh them.
 
@@ -18,17 +18,22 @@ pub const MCP_NAME: &str = "use-superorchestrator-mcp";
 /// Directory name of the CLI skill.
 pub const CLI_NAME: &str = "superorchestrator-cli";
 
+/// Directory name of the configuration skill.
+pub const CONFIG_NAME: &str = "superorchestrator-config";
+
 /// Directory name of the single skill that earlier versions shipped. `install` removes it
 /// when its `SKILL.md` carries [`MARKER`].
 pub const OLD_NAME: &str = "superorchestrator";
 
-const MCP_FRONT_MATTER: &str = "---\nname: use-superorchestrator-mcp\ndescription: Delegate coding \
-work to agents on other harnesses and accounts via superorchestrator MCP tools: route, spawn, \
-wait, review.\n---\n";
+const MCP_FRONT_MATTER: &str = r#"---
+name: use-superorchestrator-mcp
+description: "Delegate coding work to agents on other harnesses and accounts via superorchestrator MCP tools: route, spawn, wait, review."
+---
+"#;
 
-const CLI_FRONT_MATTER: &str = "---\nname: superorchestrator-cli\ndescription: Use the \
-superorchestrator command line: manage accounts (add, sign in, enable, disable), check status \
-and headroom, list, watch and join runs from a shell.\n---\n";
+const CLI_FRONT_MATTER: &str = "---\nname: superorchestrator-cli\ndescription: Drive the superorchestrator CLI for accounts, levels, config, models, agent profiles, workflows and runs.\n---\n";
+
+const CONFIG_FRONT_MATTER: &str = "---\nname: superorchestrator-config\ndescription: Configure superorchestrator workflows, accounts, agent profiles, routing and levels.\n---\n";
 
 /// Environment variable that disables [`refresh`].
 pub const SKIP_ENV: &str = "SUPERORCHESTRATOR_SKIP_SKILL_REFRESH";
@@ -122,6 +127,16 @@ pub fn render_cli_skill() -> String {
     out
 }
 
+/// The configuration skill installed alongside the CLI and MCP skills.
+pub fn render_config_skill() -> String {
+    format!("{CONFIG_FRONT_MATTER}{MARKER}\n\n{CONFIG_BODY}")
+}
+
+/// The plugin copy of the configuration skill, without the managed marker.
+pub fn render_plugin_config_skill() -> String {
+    format!("{CONFIG_FRONT_MATTER}\n{CONFIG_BODY}")
+}
+
 /// The CLI skill shipped in the Claude Code plugin (`plugin/`): [`render_cli_skill`] without
 /// [`MARKER`], so `refresh` never touches it.
 pub fn render_plugin_cli_skill() -> String {
@@ -173,6 +188,11 @@ pub fn cli_skill_files(home: &Path) -> Vec<PathBuf> {
     files_for(home, CLI_NAME)
 }
 
+/// The configuration skill's `SKILL.md` paths under `home`.
+pub fn config_skill_files(home: &Path) -> Vec<PathBuf> {
+    files_for(home, CONFIG_NAME)
+}
+
 /// The old single skill's `SKILL.md` paths under `home`.
 pub fn old_skill_files(home: &Path) -> Vec<PathBuf> {
     files_for(home, OLD_NAME)
@@ -207,8 +227,8 @@ pub struct Refresh {
 /// Regenerates the installed skills. The MCP skill is rewritten only when it exists, carries
 /// [`MARKER`] and differs from the new text, so nothing happens before `install` ran and a
 /// hand-written skill of the same name is never replaced. Next to a managed MCP skill, the
-/// CLI skill is written when missing and brought up to date when it carries [`MARKER`]. No
-/// backup is made: the files are generated.
+/// CLI and configuration skills are written when missing and updated when managed.
+/// No backup is made: the files are generated.
 ///
 /// Setting `SUPERORCHESTRATOR_SKIP_SKILL_REFRESH` (to any non-empty value) turns this off, for
 /// runs that use a throwaway config dir against a real `HOME`, such as `scripts/smoke.sh`.
@@ -217,8 +237,8 @@ pub fn refresh(paths: &Paths, home: &Path) -> Refresh {
     if std::env::var_os(SKIP_ENV).is_some_and(|v| !v.is_empty()) {
         return out;
     }
-    let mut existing: Vec<(PathBuf, String, PathBuf)> = Vec::new();
-    for (p, cli) in skill_files(home).into_iter().zip(cli_skill_files(home)) {
+    let mut existing: Vec<(PathBuf, String)> = Vec::new();
+    for p in skill_files(home) {
         if is_symlink(&p) {
             out.errors
                 .push(format!("not updating {}: it is a symlink", p.display()));
@@ -228,7 +248,7 @@ pub fn refresh(paths: &Paths, home: &Path) -> Refresh {
             continue;
         };
         if is_managed(&text) {
-            existing.push((p, text, cli));
+            existing.push((p, text));
         }
     }
     if existing.is_empty() {
@@ -241,25 +261,31 @@ pub fn refresh(paths: &Paths, home: &Path) -> Refresh {
             return out;
         }
     };
-    let cli_new = render_cli_skill();
-    for (p, old, cli) in existing {
+    for (p, old) in existing {
         if old != new {
             sync(&mut out, &p, &new);
         }
-        if is_symlink(&cli) {
-            out.errors
-                .push(format!("not updating {}: it is a symlink", cli.display()));
+        let Some(skills_dir) = p.parent().and_then(Path::parent) else {
             continue;
-        }
-        match std::fs::read_to_string(&cli) {
-            Ok(text) if !is_managed(&text) || text == cli_new => {}
-            Ok(_) => sync(&mut out, &cli, &cli_new),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                sync(&mut out, &cli, &cli_new);
+        };
+        for (name, text) in [
+            (CLI_NAME, render_cli_skill()),
+            (CONFIG_NAME, render_config_skill()),
+        ] {
+            let path = skills_dir.join(name).join("SKILL.md");
+            if is_symlink(&path) {
+                out.errors
+                    .push(format!("not updating {}: it is a symlink", path.display()));
+                continue;
             }
-            Err(e) => out
-                .errors
-                .push(format!("could not read {}: {e}", cli.display())),
+            match std::fs::read_to_string(&path) {
+                Ok(old) if !is_managed(&old) || old == text => {}
+                Ok(_) => sync(&mut out, &path, &text),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => sync(&mut out, &path, &text),
+                Err(e) => out
+                    .errors
+                    .push(format!("could not read {}: {e}", path.display())),
+            }
         }
     }
     out
@@ -283,83 +309,155 @@ fn write_replace(path: &Path, text: &str) -> std::io::Result<()> {
     so_core::fsutil::write_file_atomic(path, text.as_bytes())
 }
 
-const WORKFLOW: &str = "\
-# Delegate via superorchestrator
+const WORKFLOW: &str = r#"# Delegate via superorchestrator
 
 ## Workflow
 
-1. `list_harnesses` first: signed_in, headroom, cooldown, load, eligible, free_models.
-2. Pick. `harness` auto unless reason. Simple task: free opencode `model` or low `effort`. Keep Claude for orchestrator.
-3. `prompt` = goal / acceptance (commands that must pass) / out-of-scope / pointers. Subagent has no context.
-4. `spawn_agent`. Parallel: `wait: false`, then `wait_agent(runs, timeout_ms)`.
-5. Review `get_run(run, diff: true)`, not file reads. Then `accept_run(run, merge: true)` or `reject_run(run, feedback)`.
+1. `list_harnesses` first; inspect signed-in accounts, headroom and eligible choices. `list_agents` discovers agent profiles.
+2. Leave `harness: "auto"` and model/effort unset initially; keep Claude accounts for the orchestrator. `route` previews a route.
+3. Brief each subagent with goal, acceptance commands, out-of-scope items and file pointers; it has no conversation context.
+4. `spawn_agent(prompt, agent: "implementer", cwd: "/repo", review: true, wait: false)`; use an existing agent profile. Default isolation is `worktree`.
+5. `wait_agent(runs: [id], timeout_ms: 30000)` until finish or `pending_review`. Answer question updates with `send_message(run: id, text: "...", kind: "answer")`, then wait again.
+6. At the review gate, inspect `get_run(run: id, diff: true)`; `accept_run(run: id, merge: true)` lands the branch, or `reject_run(run: id, feedback: "...")` continues fixes. Wait and review again.
 
-";
+"#;
 
-const BODY: &str = "\
-## Tools
+const BODY: &str = r#"## Controls
 
-- `route`: preview pick, runs nothing.
-- `spawn_agent`: `wait: true` blocks to finish or review gate. `review: true` holds at `pending_review`. `output_schema`, `checks` (ci, pr_threads, cmd:<shell>).
-- `wait_agent`: finished (state, result), updates, timed_out. Question: `send_message(run, text, kind: answer)`.
-- `get_run`: short; `verbose: true` full.
-- `send_message` resumes finished run. `read_messages` unread. `cancel_agent` run + subtree. `fork_agent` finished run, new prompt.
-- `accept_run` merge refused (run stays at gate): checkout dirty or on other branch, worktree dirty, conflict. Error names it. No merge: branch + merge_command.
-- `run_workflow`, `workflow_status`: JS workflows.
-- Shell: `superorchestrator status`.
+| Tool / option | Use |
+|---|---|
+| `spawn_agent` | `agent` selects instructions/defaults; `cwd` selects the checkout. Subagent callers must stay inside their run worktree/cwd. |
+| `review: true`, `checks: ["ci", "pr_threads"]` | Hold at the review gate after checks. `"cmd:<shell>"` checks require depth 0. Commit changes and leave a clean tree for merging. |
+| `output_schema` | JSON Schema for the final result; include its required fields in the brief. |
+| `wait: true` | Block until finish or review gate; `false` returns a run id for `wait_agent`. Progress or timeout means wait again. |
+| `send_message(run, text)` | Steer an active run or resume a finished run. `read_messages` reads unread messages. |
+| `fork_agent(run, prompt)` | Start a new run from a finished run's context. |
+| Escalation | Use a new `spawn_agent` with a `model` ref from a higher level, e.g. `codex/gpt-6.1-sol/high`; use choices from `list_harnesses` and include prior findings. |
+| `cancel_agent(run)` | Cancel the run and its subtree. |
+| `get_run(run, verbose: true)` | Full record; `diff: true` adds the patch (cut at 64 KiB). |
+| `accept_run` | Merge requires the original checkout on its original branch and both trees clean; conflicts leave the run at the gate. Without `merge`, returns branch and merge command. |
+| `run_workflow(name: "review", args: {}, wait: false)` | Start saved JS; poll `workflow_status(id)`. Inline `script` requires depth 0; subagents may use saved names from the user config directory only. |
 
-## Subagent
+## Subagents
 
-No person to wait for. `report_progress(step, status)` each step. `ask_parent(question, options?)` blocks for answer. Final result matches schema. `spawn_agent` only if depth < 2.
-";
+Orchestrator depth is 0; deepest run is depth 2. Spawn or start workflow steps only while depth < 2.
+Subagents use `report_progress(step, status)` each step and `ask_parent(question, options?)` for decisions; never wait for a person. Finish with the requested result schema.
+"#;
 
-const CLI_BODY: &str = "\
-# superorchestrator CLI
+const CLI_BODY: &str = r#"# superorchestrator CLI
 
-Delegation = MCP tools (skill `use-superorchestrator-mcp`).
-Global: `--json`, `-y`/`--yes`, `--config-dir DIR`. `<cmd> --help` lists flags.
+Prefix commands below with `superorchestrator`. Use `--help` for flags; globals: `--json`, `--yes`, `--config-dir DIR`.
+If the shell lacks it, export `XDG_RUNTIME_DIR=/run/user/$(id -u)` so the CLI finds the supervisor socket.
+Delegate through `use-superorchestrator-mcp`; edit setup through `superorchestrator-config`.
 
-## Set up
+| Status / setup | Command |
+|---|---|
+| Headroom / diagnose | `status`; `doctor` |
+| First setup / seed config | `setup`; `init` |
+| Ship MCP + three skills | `install --dry-run`; `install`; `uninstall --dry-run` |
+| Interfaces | `ui --no-open`; `tui` (also the default command) |
 
-- `superorchestrator setup`: first command. Config, detect harnesses, import logins, add accounts, `install`. Re-run safe. Flags: `--yes`, `--codex N --claude N --opencode N --agy N` (accounts per harness; claude default 0), `--no-login`, `--no-install`, `--no-claude-md`. No terminal, no `--yes`: prints plan only.
-- `superorchestrator` or `superorchestrator tui`: terminal UI, tabs Overview/Accounts/Runs/Setup. `j`/`k` move, Enter detail, `a` accept+merge, `r` reject, `o` join, `?` help.
-- `init`: config dir, `config.toml`, model catalog.
-- `install [--force] [--dry-run] [--no-claude-md]`: MCP server per harness, both skills, managed block in `~/.claude/CLAUDE.md`. `uninstall [--dry-run]` reverses.
+| Accounts | Command |
+|---|---|
+| Add / sign in | `account add HARNESS --name NAME --login`; `account login NAME` |
+| Discover / import | `account list`; `account import NAME --harness H --home DIR`; `account import --scan` |
+| Availability | `account enable NAME`; `account disable NAME`; `account flag NAME --hours N`; `account flag NAME --clear` |
+| Remove | `account remove NAME` (`--purge` deletes its credential home) |
 
-## Accounts
+| Levels (model refs are `harness/model[/effort]`) | Command |
+|---|---|
+| Inspect / add | `levels list`; `levels add NAME --min N --max N --model REF` |
+| Change / remove | `levels edit NAME --min N --max N`; `levels remove NAME`; `levels reset` |
+| Add / order models | `levels model add LEVEL REF --position N`; `levels model move LEVEL REF --position N` |
+| Remove model | `levels model remove LEVEL REF` |
 
-Account = one signed-in credential home, one harness (codex, agy, opencode, claude).
+| Config | Command |
+|---|---|
+| Read / write / edit | `config get KEY`; `config set KEY VALUE`; `config edit` |
+| Preview routing | `route "TASK" --agent NAME --explain` |
 
-- `account add <harness> [--name NAME] [--count K] [--login]`. Default name `<harness>-<n>`.
-- `account import NAME --harness H --home DIR`: link existing home. `account import --scan`: find, offer.
-- `account login NAME`, `account list`, `account enable NAME`, `account disable NAME`.
-- `account flag NAME (--hours N | --until RFC3339 | --clear) [--pool POOL]`: manual cooldown.
-- `account remove NAME [--purge]`: `--purge` deletes home.
+| Models | Command |
+|---|---|
+| Catalog | `models list`; `models refresh` |
 
-## Check
+| Agent profiles | Command |
+|---|---|
+| Inspect | `agent list`; `agent show NAME` |
+| Configure | `agent create NAME --description TEXT`; `agent edit NAME`; `agent remove NAME` |
 
-- `status`: accounts, headroom, supervisor.
-- `doctor`: binaries, config, db, socket, UI port, sign-ins. Run first when broken.
-- `route \"<task>\" [--model REF] [--agent NAME] [--explain]`: preview pick, runs nothing.
+| Workflows | Command |
+|---|---|
+| Start saved / file | `workflow run NAME --args JSON --detach`; `workflow run --file FILE --fresh` |
+| Inspect / stop | `workflow list`; `workflow status ID`; `workflow cancel ID` |
 
-## Runs
+| Runs | Command |
+|---|---|
+| Inspect / cancel | `runs list --all`; `runs show RUN --diff`; `runs cancel RUN` |
+| Follow | `runs watch RUN`; `runs watch --workflow ID` |
+| Attach to native session | `join RUN`; `join RUN --exec` |
+| Worktrees | `worktrees list`; `worktrees prune` |
+"#;
 
-- `runs list [--all]`, `runs show RUN`, `runs cancel RUN`.
-- `runs watch RUN`, `runs watch --workflow ID`: follow.
-- `join RUN [--exec]`: print or run command attaching to native session.
-- `worktrees list`, `worktrees prune`.
+const CONFIG_BODY: &str = r#"# Configure superorchestrator
 
-## Workflows
+Use the selected config directory (`--config-dir DIR`, otherwise `$SUPERORCHESTRATOR_CONFIG_DIR` or `~/.config/superorchestrator`). Run `superorchestrator init` if new. Commands below use that same directory.
 
-- `workflow run NAME` or `--file FILE`; `--args JSON`, `--detach`, `--fresh`.
-- `workflow list`, `workflow status ID`, `workflow cancel ID`.
+## Workflow
 
-## UI and config
+Save `workflows/review.js` under the config directory. This uses the API in `docs/guide/workflows.md`:
 
-- `superorchestrator ui [--port N] [--bind ADDR] [--token T] [--no-open]`; `--install-service`.
-- `config get KEY`, `config set KEY VALUE`, `config edit`.
-- `agent list`, `agent show NAME`, `agent create NAME`, `models list`.
-";
+```js
+const reviews = await parallel([
+  (agent) => agent("Review parser correctness"),
+  (agent) => agent("Review lexer correctness"),
+]);
+return await pipeline([
+  () => agent("Summarize these reviews: " + JSON.stringify(reviews)),
+  (summary) => { log(JSON.stringify(summary)); return summary; },
+]);
+```
+
+Run `superorchestrator workflow run review --args '{}'`; `--fresh` bypasses cached steps.
+`parallel` supplies an agent that defaults to worktree isolation. Sequential `pipeline([fn, ...])` passes each result to the next stage. Handle `null` for failed parallel items. Keep scripts deterministic; pass variable inputs through `args`. Step `cwd` must resolve inside the workflow base. Workflow steps cannot use `review: true`.
+
+## Account
+
+`superorchestrator account add codex --name codex-review --login` creates an account and signs in. For an existing credential home, use `superorchestrator account import codex-review --harness codex --home /path/to/credentials`. Inspect with `superorchestrator status`.
+
+## Agent profile
+
+`superorchestrator agent create reviewer --description "Review correctness"`, then edit `agents/reviewer/AGENT.md` in the config directory (or use `superorchestrator agent edit reviewer`):
+
+```yaml
+---
+name: reviewer
+description: Review correctness
+harness: auto
+isolation: worktree
+review: true
+maxTurns: 40
+---
+Review the requested diff and report concrete bugs with file references.
+```
+
+Per `docs/guide/agents.md`, other fields: `accounts`, `model`, `effort`, `tools`, `disallowedTools`, `skills`, `mcpServers`, `hooks`, `memory` (`user`, `project`, `local`). `description` is required. Model refs in `model` set harness and effort too; explicit fields must agree. Call arguments override the agent profile, then config defaults, then routing.
+Project `.superorchestrator/agents/` shadows user profiles, then `.claude/agents/` imports. Project profiles reject `hooks`, command-capable inline `mcpServers`, `isolation: none`, and `extra_args`; review definitions before moving them into user config. `superorchestrator agent show reviewer` reports harness gaps.
+
+## Routing and levels
+
+Inspect `superorchestrator levels list` and `superorchestrator config get router.levels`. List model refs in preference order; each level needs models or a tier (`fast`, `mid`, `high`). Complexity ranges are 0–100 and cannot overlap.
+
+| Change | Command |
+|---|---|
+| Prefer a model | `superorchestrator levels model add complex codex/gpt-6.1-sol/high --position 1` (use `levels model move` if already listed) |
+| Remove a model | `superorchestrator levels model remove complex codex/gpt-6.1-sol/high` |
+| Adjust a range | `superorchestrator levels edit complex --min 63 --max 87` |
+| Replace levels | `superorchestrator config set router.levels '[{name="all", min=0, max=100, models=["codex/gpt-6.1-sol/high"]}]'` |
+| Edit routing | `superorchestrator config edit` (the `[router]` settings in `config.toml`) |
+| Verify selection | `superorchestrator route "Review parser correctness" --agent reviewer --explain` |
+
+Level edits take effect after the supervisor restarts; do not restart it while runs are open. Preserve unrelated config and check ranges/models before applying changes.
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -415,7 +513,6 @@ mod tests {
         assert!(s.contains("- low (0-37): `agy/gemini-3.8-flash-low/low`\n"));
         assert!(s.contains("- high (63-100): `codex/gpt/high`, `claude/opus`\n"));
         assert!(!s.contains("- empty"));
-        assert!(s.contains("superorchestrator status"));
     }
 
     #[test]
@@ -454,10 +551,11 @@ mod tests {
         assert!(s.contains("`list_harnesses`") && s.contains("## Workflow"));
         // The workflow comes first, right after the title.
         assert!(s.contains(
-            "# Delegate via superorchestrator\n\n## Workflow\n\n1. `list_harnesses` first:"
+            "# Delegate via superorchestrator\n\n## Workflow\n\n1. `list_harnesses` first;"
         ));
         assert!(
-            s.contains("accept_run(run, merge: true)") && s.contains("reject_run(run, feedback)")
+            s.contains("accept_run(run: id, merge: true)")
+                && s.contains("reject_run(run: id, feedback:")
         );
         let c = render_plugin_cli_skill();
         assert!(c.starts_with("---\nname: superorchestrator-cli\n"));
@@ -466,17 +564,21 @@ mod tests {
 
     #[test]
     fn skills_stay_terse() {
-        // Tokens matter: the static MCP skill (plugin copy) and the CLI skill have budgets.
-        assert!(
-            render_plugin_mcp_skill().len() <= 1_800,
-            "{}",
-            render_plugin_mcp_skill().len()
-        );
-        assert!(
-            render_plugin_cli_skill().len() <= 2_500,
-            "{}",
-            render_plugin_cli_skill().len()
-        );
+        for skill in [
+            render_plugin_mcp_skill(),
+            render_plugin_cli_skill(),
+            render_plugin_config_skill(),
+            render_cli_skill(),
+            render_config_skill(),
+            // Dynamic inventories may grow; the static template stays short.
+            render_skill(&[], &[], &[]),
+        ] {
+            assert!(
+                skill.lines().count() < 70,
+                "{} lines",
+                skill.lines().count()
+            );
+        }
     }
 
     #[test]
@@ -504,7 +606,7 @@ mod tests {
         assert!(s.starts_with("---\nname: superorchestrator-cli\n"));
         assert!(is_managed(&s));
         for w in [
-            "superorchestrator setup",
+            "`setup`",
             "account add",
             "account import",
             "account login",
@@ -566,7 +668,7 @@ mod tests {
             .save(&f.paths)
             .unwrap();
         let r = refresh(&f.paths, &f.home);
-        assert_eq!(r.updated.len(), 4, "{r:?}");
+        assert_eq!(r.updated.len(), 6, "{r:?}");
         assert!(r.errors.is_empty());
         for p in skill_files(&f.home) {
             let s = std::fs::read_to_string(p).unwrap();
@@ -577,19 +679,25 @@ mod tests {
     }
 
     #[test]
-    fn refresh_writes_a_missing_cli_skill_next_to_a_managed_mcp_skill() {
+    fn refresh_writes_missing_static_skills_next_to_a_managed_mcp_skill() {
         let f = fixture();
         install_marked(&f);
         let r = refresh(&f.paths, &f.home);
-        assert_eq!(r.updated.len(), 4, "{r:?}");
+        assert_eq!(r.updated.len(), 6, "{r:?}");
         for p in cli_skill_files(&f.home) {
             assert_eq!(std::fs::read_to_string(p).unwrap(), render_cli_skill());
         }
+        for p in config_skill_files(&f.home) {
+            assert_eq!(std::fs::read_to_string(p).unwrap(), render_config_skill());
+        }
+        let config = &config_skill_files(&f.home)[0];
+        std::fs::write(config, "mine").unwrap();
         // A hand-written CLI skill of the same name stays.
         let c = &cli_skill_files(&f.home)[0];
         std::fs::write(c, "mine").unwrap();
         refresh(&f.paths, &f.home);
         assert_eq!(std::fs::read_to_string(c).unwrap(), "mine");
+        assert_eq!(std::fs::read_to_string(config).unwrap(), "mine");
     }
 
     #[test]
