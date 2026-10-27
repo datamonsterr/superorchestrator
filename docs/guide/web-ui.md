@@ -25,6 +25,14 @@ The browser's global history may still record the original fragment. A history e
 - **Workflows.** Saved workflows, runs and step status.
 - **Settings.** `config.toml` fields, notifications, worktree defaults and the key source for Jev. The key value is never shown.
 
+![Dashboard](../img/web-dashboard.png)
+
+![Sessions](../img/web-sessions.png)
+
+![Accounts](../img/web-accounts.png)
+
+![Levels at `/routing`](../img/web-levels.png)
+
 ## Hosting and the token
 
 The UI binds to loopback by default. Every bind requires a token, including loopback: other users on the same machine can reach loopback TCP. Requests without a valid session cookie or bearer token receive 401.
@@ -46,6 +54,28 @@ Opening the CLI URL exchanges its single-use code through `POST /api/v1/token` (
 The supervisor keeps at most 64 pending login codes, removes expired codes, and evicts the oldest pending code when full. Redemption compares code values in constant time and consumes a successful match atomically. Login codes do not work as API bearer credentials.
 
 The UI checks the `Host` and `Origin` headers against DNS rebinding and cross-site requests. Its CSP uses `style-src 'self'` and permits inline style attributes for dynamic bars, timeline positions and library layout. Inline style elements require a fresh document nonce (charts and Radix) or Sonner's exact stylesheet and empty-element hashes. Credential homes and auth files are never served.
+
+## Reach it over a tailnet
+
+To make the UI reachable from other devices on your tailnet, set a wildcard bind and restart the supervisor:
+
+```sh
+superorchestrator config set ui.bind 0.0.0.0
+```
+
+A wildcard bind skips the `Host` check because the server can be reached under any hostname; the UI token remains the guard. Do not restart the supervisor while runs are active. After the change, restart it (for a systemd user service, run `systemctl --user restart superorchestrator.service`). The `superorchestrator ui` command prints a URL using `127.0.0.1`; replace that host with this device's Tailscale MagicDNS name or Tailscale IP, for example `http://my-laptop:7878`. Sign in with the token stored in the `ui-token` file in the config directory. The login code in the printed URL is single-use and lasts 60 seconds.
+
+`0.0.0.0` also listens on the LAN. With UFW's default deny incoming policy and no broader allow rule for port 7878, this allows it on `tailscale0`:
+
+```sh
+sudo ufw allow in on tailscale0 to any port 7878 proto tcp
+```
+
+For nftables, add this accept rule to the input chain (ensure your chain policy/rules reject other interfaces to this port):
+
+```sh
+sudo nft add rule inet filter input iifname "tailscale0" tcp dport 7878 accept
+```
 
 ## Run it as a service
 

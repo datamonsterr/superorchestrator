@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 80, 24)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs !1     4 Setup     5 Levels
+  Config edits need a supervisor restart to apply.
+
+  ╭ simple  13-37 · model refs (most preferred first) ───────────────────────╮
+  │  POSITION MODEL REF                                                      │
+  │▸ 1        agy/gemini-3.8-flash-medium/medium                             │
+  │  2        opencode/opencode/deepseek-v4.1-flash-free                     │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  │                                                                          │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+ updated 3s ago
+ j/k move  Enter open  a/x model refs  J/K reorder  r range  ? help  q back

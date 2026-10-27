@@ -186,6 +186,8 @@ fn install_registers_everywhere_and_is_idempotent_then_uninstall_reverses() {
         assert!(mcp.contains("codex-acc2"));
         let cli = read(&skills.join("superorchestrator-cli/SKILL.md"));
         assert!(cli.starts_with("---\nname: superorchestrator-cli\n"));
+        let config = read(&skills.join("superorchestrator-config/SKILL.md"));
+        assert_eq!(config, so_agents::skill::render_config_skill());
         assert!(!skills.join("superorchestrator").exists());
     }
     assert!(read(&e.home.join(".claude/CLAUDE.md")).contains("<!-- superorchestrator:begin -->"));
@@ -237,6 +239,7 @@ fn install_registers_everywhere_and_is_idempotent_then_uninstall_reverses() {
             "superorchestrator",
             "use-superorchestrator-mcp",
             "superorchestrator-cli",
+            "superorchestrator-config",
         ] {
             assert!(!e.home.join(d).join("skills").join(n).exists());
         }

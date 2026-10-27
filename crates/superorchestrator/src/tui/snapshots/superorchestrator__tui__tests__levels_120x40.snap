@@ -1,0 +1,44 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 120, 40)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs !1     4 Setup     5 Levels
+  Config edits need a supervisor restart to apply.
+
+    LEVEL            MIN-MAX  MODELS
+  ▸ simple           13-37    agy/gemini-3.8-flash-medium/medium, opencode/opencode/deepseek-v4.1-flash-free
+    complex          63-87    agy/claude-sonnet-4-6/thinking, codex/gpt-6.1-sol/high
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ updated 3s ago
+ j/k move  Enter open  a/x model refs  J/K reorder  r range  n new  D delete  u reset  ? help  q quit

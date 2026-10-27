@@ -3,7 +3,7 @@ source: crates/superorchestrator/src/tui/tests.rs
 expression: "shot(&mut a, 80, 24)"
 ---
  superorchestrator 0.1.0  ○ supervisor not running  ~/.config/superorchestrator
-   1 Overview     2 Accounts     3 Runs     4 Setup
+   1 Overview     2 Accounts     3 Runs     4 Setup     5 Levels
 
 
 

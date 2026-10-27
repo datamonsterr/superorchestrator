@@ -63,7 +63,7 @@ pub struct Check {
     pub fix: Option<String>,
 }
 
-/// One routing level of `config.toml`, for the Overview.
+/// One routing level of `config.toml`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LevelRow {
     pub name: String,
@@ -85,6 +85,9 @@ pub struct Snapshot {
     pub pending_review: usize,
     pub checks: Vec<Check>,
     pub levels: Vec<LevelRow>,
+    pub levels_error: Option<String>,
+    pub catalog_refs: Vec<String>,
+    pub catalog_error: Option<String>,
 }
 
 impl Snapshot {
@@ -331,6 +334,17 @@ pub fn load_snapshot(
         .iter()
         .filter(|r| r.state == RunState::PendingReview)
         .count();
+    let (levels, levels_error) = match level_rows(ctx) {
+        Ok(rows) => (rows, None),
+        Err(e) => (Vec::new(), Some(format!("{e:#}"))),
+    };
+    let (catalog_refs, catalog_error) = match catalog_refs(ctx) {
+        Ok(refs) => (refs, None),
+        Err(e) => (
+            Vec::new(),
+            Some(format!("model catalog unavailable: {e:#}")),
+        ),
+    };
     Snapshot {
         at: now,
         config_dir: host.tildify(&ctx.paths.config_dir),
@@ -341,28 +355,58 @@ pub fn load_snapshot(
         runs: rows.iter().map(run_item).collect(),
         active_runs: active,
         pending_review,
-        levels: level_rows(ctx),
+        levels,
+        levels_error,
+        catalog_refs,
+        catalog_error,
     }
 }
 
-/// The levels as `config.toml` lists them; none when the config is missing or invalid (the
-/// checklist already reports that).
-fn level_rows(ctx: &Ctx) -> Vec<LevelRow> {
-    let Ok(config) = ctx.config() else {
-        return Vec::new();
-    };
-    config
+/// All levels in config order, including those that currently use a tier.
+fn level_rows(ctx: &Ctx) -> anyhow::Result<Vec<LevelRow>> {
+    let config = ctx.config()?;
+    Ok(config
         .router
         .levels
         .iter()
-        .filter(|l| !l.models.is_empty())
         .map(|l| LevelRow {
             name: l.name.clone(),
             min: l.min,
             max: l.max,
             models: l.models.iter().map(|m| m.id()).collect(),
         })
-        .collect()
+        .collect())
+}
+
+/// Expand each catalog model into the model refs the picker can offer.
+fn catalog_refs(ctx: &Ctx) -> anyhow::Result<Vec<String>> {
+    let catalog = so_router::Catalog::load(&ctx.paths)?;
+    let mut refs = Vec::new();
+    for (harness, m) in catalog.entries() {
+        let efforts: Vec<Option<String>> = if m.efforts.is_empty() {
+            vec![None]
+        } else {
+            m.efforts.iter().cloned().map(Some).collect()
+        };
+        for effort in efforts {
+            let choice = so_core::Choice {
+                harness,
+                model: m.id.clone(),
+                effort,
+            };
+            // Ignore catalog entries that cannot be represented by a model ref.
+            let id = choice.id();
+            if id
+                .parse::<so_core::Choice>()
+                .is_ok_and(|parsed| parsed == choice)
+            {
+                refs.push(id);
+            }
+        }
+    }
+    refs.sort();
+    refs.dedup();
+    Ok(refs)
 }
 
 /// The detail pane of one run, from the store (no supervisor needed).
@@ -458,6 +502,28 @@ fn event_line(e: &so_core::Event) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn levels_include_tier_only_rows_and_catalog_refs_round_trip() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(Some(d.path().to_path_buf()), false, true).unwrap();
+        std::fs::write(
+            ctx.paths.config_toml(),
+            "[[router.levels]]\nname = 'tier level'\nmin = 0\nmax = 100\ntier = 'fast'\n",
+        )
+        .unwrap();
+        let rows = level_rows(&ctx).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].models.is_empty());
+        std::fs::write(ctx.paths.models_toml(), "[[codex.models]]\nid = 'custom'\ntier = 'mid'\ncost = 'paid'\nefforts = ['not-an-effort']\n").unwrap();
+        let refs = catalog_refs(&ctx).unwrap();
+        let catalog = so_router::Catalog::load(&ctx.paths).unwrap();
+        assert!(!refs.is_empty());
+        for r in refs {
+            let c: so_core::Choice = r.parse().unwrap();
+            assert!(catalog.contains(c.harness, &c.model), "{r}");
+        }
+    }
 
     #[test]
     fn control_characters_never_reach_the_screen() {

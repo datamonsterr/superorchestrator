@@ -14,7 +14,7 @@ use so_core::{AccountFile, Harness, Paths};
 
 use crate::ctx::Ctx;
 use crate::register::{self, JsonKind, NAME};
-use crate::skill::{render_cli_skill, render_skill};
+use crate::skill::{render_cli_skill, render_config_skill, render_skill};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct Outcome {
@@ -133,8 +133,7 @@ fn xdg_config_home(host: &HostEnv) -> PathBuf {
         .map_or_else(|| host.home.join(".config"), PathBuf::from)
 }
 
-/// The `SKILL.md` files `install` manages, with their content: the MCP skill and the CLI
-/// skill in `~/.claude/skills` and `~/.agents/skills`.
+/// The `SKILL.md` files `install` manages: the MCP, CLI and configuration skills in `~/.claude/skills` and `~/.agents/skills`.
 fn skill_targets(host: &HostEnv, mcp: &str) -> Vec<(PathBuf, String)> {
     let cli = render_cli_skill();
     let mut out: Vec<(PathBuf, String)> = so_agents::skill::skill_files(&host.home)
@@ -145,6 +144,11 @@ fn skill_targets(host: &HostEnv, mcp: &str) -> Vec<(PathBuf, String)> {
         so_agents::skill::cli_skill_files(&host.home)
             .into_iter()
             .map(|p| (p, cli.clone())),
+    );
+    out.extend(
+        so_agents::skill::config_skill_files(&host.home)
+            .into_iter()
+            .map(|p| (p, render_config_skill())),
     );
     out
 }

@@ -66,6 +66,12 @@ fn snapshot() -> Snapshot {
             account("claude-1", Harness::Claude, SignIn::Unknown, false),
         ],
         accounts_error: None,
+        levels_error: None,
+        catalog_refs: vec![
+            "codex/gpt-6.1-sol/high".into(),
+            "agy/claude-sonnet-4-6/thinking".into(),
+        ],
+        catalog_error: None,
         levels: vec![
             LevelRow {
                 name: "simple".into(),
@@ -313,13 +319,14 @@ fn tab_keys_cycle_and_digits_jump() {
     press(&mut a, &[key(KeyCode::Tab)]);
     assert_eq!(a.tab, Tab::Accounts);
     press(&mut a, &[key(KeyCode::BackTab), key(KeyCode::BackTab)]);
-    assert_eq!(a.tab, Tab::Setup, "shift-tab wraps backwards");
+    assert_eq!(a.tab, Tab::Levels, "shift-tab wraps backwards");
     press(&mut a, &[key(KeyCode::Tab)]);
     assert_eq!(a.tab, Tab::Overview, "tab wraps forwards");
     for (c, tab) in [
         ('2', Tab::Accounts),
         ('3', Tab::Runs),
         ('4', Tab::Setup),
+        ('5', Tab::Levels),
         ('1', Tab::Overview),
     ] {
         press(&mut a, &[ch(c)]);
@@ -1087,7 +1094,7 @@ fn too_small_terminals_get_a_message_not_a_broken_layout() {
 #[test]
 fn every_tab_survives_awkward_sizes() {
     for (w, h) in [(60, 16), (61, 17), (80, 16), (200, 60), (60, 60)] {
-        for k in ['1', '2', '3', '4'] {
+        for k in ['1', '2', '3', '4', '5'] {
             let mut a = app();
             a.on_key(ch(k));
             let _ = shot(&mut a, w, h);
@@ -1187,7 +1194,7 @@ fn ascii_terminals_get_no_unicode_symbols() {
     };
     let mut a = App::new(theme, now());
     a.snap = Some(snapshot());
-    for k in ['1', '2', '3', '4'] {
+    for k in ['1', '2', '3', '4', '5'] {
         a.on_key(ch(k));
         let s = shot(&mut a, 80, 24);
         // Hint keys use arrows; everything else must be ASCII.
@@ -1514,10 +1521,190 @@ fn overview_lists_levels_and_says_so_when_none_list_models() {
         full.contains("simple") && full.contains("13-37   agy/gemini-3.8-flash-medium/medium"),
         "{full}"
     );
+    a.snap.as_mut().unwrap().levels.push(LevelRow {
+        name: "a tier-only level with a much longer name".into(),
+        min: 0,
+        max: 5,
+        models: Vec::new(),
+    });
+    assert_eq!(
+        shot(&mut a, 120, 40),
+        full,
+        "tier-only rows do not change the Overview summary"
+    );
     a.snap.as_mut().unwrap().levels.clear();
     let empty = shot(&mut a, 120, 40);
     assert!(
         empty.contains("no levels list models (nothing routes until one does)"),
         "{empty}"
     );
+}
+
+#[test]
+fn levels_editing_keys_and_confirmations() {
+    let mut a = app();
+    a.on_key(ch('5'));
+    assert_eq!(a.tab, Tab::Levels);
+    a.on_key(key(KeyCode::Enter));
+    assert_eq!(a.level_open.as_deref(), Some("simple"));
+    a.on_key(ch('j'));
+    assert_eq!(a.models_sel, 1);
+    assert!(matches!(
+        a.on_key(ch('K')),
+        Some(Effect::Levels(crate::cli::LevelsCmd::Model(
+            crate::cli::LevelModelCmd::Move { position: 1, .. }
+        )))
+    ));
+    a.on_update(Update::Done {
+        ok: true,
+        text: "saved".into(),
+    });
+    assert!(matches!(
+        a.on_key(ch('x')),
+        Some(Effect::Levels(crate::cli::LevelsCmd::Model(
+            crate::cli::LevelModelCmd::Remove { .. }
+        )))
+    ));
+    a.on_update(Update::Done {
+        ok: true,
+        text: "saved".into(),
+    });
+    a.on_key(ch('D'));
+    type_text(&mut a, "wrong");
+    assert!(a.on_key(key(KeyCode::Enter)).is_none());
+    assert!(
+        a.toast
+            .as_ref()
+            .unwrap()
+            .text
+            .contains("name did not match")
+    );
+    a.on_key(ch('D'));
+    type_text(&mut a, "simple");
+    assert!(
+        matches!(a.on_key(key(KeyCode::Enter)), Some(Effect::Levels(crate::cli::LevelsCmd::Remove { name })) if name == "simple")
+    );
+    a.on_update(Update::Done {
+        ok: true,
+        text: "saved".into(),
+    });
+    a.on_key(ch('u'));
+    assert!(a.on_key(ch('n')).is_none());
+    a.on_key(ch('u'));
+    assert!(matches!(
+        a.on_key(ch('y')),
+        Some(Effect::Levels(crate::cli::LevelsCmd::Reset))
+    ));
+    a.on_key(key(KeyCode::Esc));
+    assert!(a.level_open.is_none());
+    assert!(!a.quit);
+}
+
+#[test]
+fn levels_render_snapshots() {
+    let mut a = app();
+    a.on_key(ch('5'));
+    insta::assert_snapshot!("levels_80x24", shot(&mut a, 80, 24));
+    insta::assert_snapshot!("levels_120x40", shot(&mut a, 120, 40));
+    a.on_key(key(KeyCode::Enter));
+    insta::assert_snapshot!("level_models_80x24", shot(&mut a, 80, 24));
+    a.on_key(ch('r'));
+    insta::assert_snapshot!("modal_level_range", shot(&mut a, 80, 24));
+    a.on_key(key(KeyCode::Esc));
+    a.on_key(ch('?'));
+    insta::assert_snapshot!("modal_help_levels", shot(&mut a, 80, 24));
+}
+
+#[test]
+fn levels_forms_picker_and_refresh_preserve_the_focused_ref() {
+    let mut a = app();
+    a.on_key(ch('5'));
+    a.on_key(ch('n'));
+    type_text(&mut a, "gap");
+    a.on_key(key(KeyCode::Tab));
+    a.on_key(key(KeyCode::Backspace));
+    type_text(&mut a, "40");
+    a.on_key(key(KeyCode::Tab));
+    for _ in 0..3 {
+        a.on_key(key(KeyCode::Backspace));
+    }
+    type_text(&mut a, "101");
+    assert!(a.on_key(key(KeyCode::Enter)).is_none());
+    assert!(a.toast.as_ref().unwrap().text.contains("100"));
+    assert!(matches!(a.modal, Some(Modal::LevelForm { .. })));
+    for _ in 0..3 {
+        a.on_key(key(KeyCode::Backspace));
+    }
+    type_text(&mut a, "50");
+    a.on_key(key(KeyCode::Enter));
+    assert!(matches!(
+        a.modal,
+        Some(Modal::CatalogPicker {
+            new_level: Some(_),
+            ..
+        })
+    ));
+    insta::assert_snapshot!("modal_new_level_picker", shot(&mut a, 80, 24));
+    let effect = a.on_key(key(KeyCode::Enter));
+    assert!(
+        matches!(effect, Some(Effect::Levels(crate::cli::LevelsCmd::Add(ref l))) if l.name == "gap" && l.min == 40 && l.max == 50 && l.models.len() == 1)
+    );
+    a.on_update(Update::Done {
+        ok: true,
+        text: "levels saved; restart the supervisor to apply".into(),
+    });
+    assert!(shot(&mut a, 80, 24).contains("restart the supervisor to apply"));
+    a.on_key(key(KeyCode::Enter));
+    a.on_key(ch('j'));
+    let mut s = a.snap.clone().unwrap();
+    s.levels[0].models.swap(0, 1);
+    a.on_update(Update::Snapshot(Box::new(s)));
+    assert_eq!(a.models_sel, 0);
+    a.on_key(ch('a'));
+    let Some(Modal::CatalogPicker { refs, .. }) = &a.modal else {
+        panic!("expected catalog picker")
+    };
+    assert!(
+        refs.iter()
+            .all(|r| !a.focused_level().unwrap().models.contains(r))
+    );
+    a.on_key(key(KeyCode::Esc));
+    let mut s = a.snap.clone().unwrap();
+    s.levels.remove(0);
+    a.on_update(Update::Snapshot(Box::new(s)));
+    assert!(a.level_open.is_none());
+    assert_eq!(a.levels_sel, 0);
+}
+
+#[test]
+fn levels_empty_errors_and_cancelled_dialogs_are_safe() {
+    let mut a = app();
+    a.on_key(ch('5'));
+    a.snap.as_mut().unwrap().levels.clear();
+    a.on_key(ch('a'));
+    assert!(a.modal.is_none());
+    assert!(a.on_key(ch('D')).is_none());
+    insta::assert_snapshot!("empty_levels_80x24", shot(&mut a, 80, 24));
+    a.on_key(ch('n'));
+    insta::assert_snapshot!("modal_new_level", shot(&mut a, 80, 24));
+    a.on_key(key(KeyCode::Esc));
+    assert!(a.modal.is_none());
+    a.on_key(ch('u'));
+    insta::assert_snapshot!("modal_reset_levels", shot(&mut a, 80, 24));
+    assert!(a.on_key(key(KeyCode::Esc)).is_none());
+    assert!(!a.quit);
+    a.snap.as_mut().unwrap().levels_error = Some("could not load config.toml: bad range".into());
+    assert!(shot(&mut a, 80, 24).contains("bad range"));
+    a.on_key(ch('r'));
+    assert!(a.toast.as_ref().unwrap().text.contains("bad range"));
+    let mut a = app();
+    a.on_key(ch('5'));
+    a.snap.as_mut().unwrap().catalog_error = Some("bad catalog".into());
+    a.on_key(ch('a'));
+    assert!(a.modal.is_none());
+    assert_eq!(a.toast.as_ref().unwrap().text, "bad catalog");
+    a.snap.as_mut().unwrap().catalog_error = None;
+    a.on_key(ch('D'));
+    insta::assert_snapshot!("modal_delete_level", shot(&mut a, 80, 24));
+    assert!(a.on_key(key(KeyCode::Esc)).is_none());
 }

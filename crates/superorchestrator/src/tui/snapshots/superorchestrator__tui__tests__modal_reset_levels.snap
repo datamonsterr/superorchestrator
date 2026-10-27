@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 80, 24)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs !1     4 Setup     5 Levels
+  Config edits need a supervisor restart to apply.
+
+
+
+
+
+            ╭ Confirm ─────────────────────────────────────────────╮
+            │                                                      │
+            │ Reset levels to defaults? (y/n)                      │
+            │                                                      │
+          No│ y yes   n no (default)                               │s.
+            │                                                      │
+            ╰──────────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+ updated 3s ago
+ Esc close

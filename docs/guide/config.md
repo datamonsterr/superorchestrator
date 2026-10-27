@@ -146,7 +146,7 @@ The file is refused at load when:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `bind` | `"127.0.0.1"` | Address to bind. Every bind needs authentication; a private token is generated when unset. |
+| `bind` | `"127.0.0.1"` | Address to bind. Every bind needs authentication; a private token is generated when unset. A wildcard such as `0.0.0.0` skips the UI Host check and listens on the LAN; restrict it with a firewall. See [reaching the UI over a tailnet](web-ui.md#reach-it-over-a-tailnet). |
 | `port` | `7878` | Port |
 | `token` | unset | Shared-secret override for the UI (plain text). When unset, the supervisor reuses or creates the private `ui-token` file. The API cannot set it. |
 | `enabled` | `false` | Start the UI whenever the supervisor starts. `ui --install-service` sets it. |

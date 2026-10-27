@@ -354,6 +354,10 @@ impl Supervisor {
         }
         tokio::spawn(idle_monitor(state.clone(), idle_exit, shutdown_rx.clone()));
         tokio::spawn(reap_loop(state.clone(), reap_interval, shutdown_rx.clone()));
+        tokio::spawn(crate::services::usage::refresh_loop(
+            state.clone(),
+            shutdown_rx.clone(),
+        ));
         let join = tokio::spawn(accept_loop(
             state.clone(),
             listener,

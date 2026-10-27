@@ -3,7 +3,7 @@ source: crates/superorchestrator/src/tui/tests.rs
 expression: "shot(&mut a, 80, 24)"
 ---
  superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
-   1 Overview     2 Accounts     3 Runs !1     4 Setup
+   1 Overview     2 Accounts     3 Runs !1     4 Setup     5 Levels
     NAME               HARNESS   SIGNED IN  ACTIVE HEADROOM
   ▸ codex-1            codex     ✓ yes      1      codex: ok 82%
     codex-2            codex     ✓ yes      0      codex: cooldown 3h

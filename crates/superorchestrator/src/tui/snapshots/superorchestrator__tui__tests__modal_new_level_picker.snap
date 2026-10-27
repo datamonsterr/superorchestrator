@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 80, 24)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+   1 Overview     2 Accounts     3 Runs !1     4 Setup     5 Levels
+  Config edits need a supervisor restart to apply.
+
+    LEVEL            MIN-MAX  MODELS
+  ▸ simple           13-37    agy/gemini-3.8-flash-medium/medium, opencode/op…
+    complex          63-87    agy/claude-sonnet-4-6/thinking, codex/gpt-6.1-s…
+  ╭ First model ref ─────────────────────────────────────────────────────────╮
+  │                                                                          │
+  │ gap: choose 1 of 2 model refs                                            │
+  │                                                                          │
+  │ ▸ codex/gpt-6.1-sol/high                                                 │
+  │   agy/claude-sonnet-4-6/thinking                                         │
+  │                                                                          │
+  │ j/k move   Enter add   Esc cancel                                        │
+  │                                                                          │
+  ╰──────────────────────────────────────────────────────────────────────────╯
+
+
+
+
+
+ updated 3s ago
+ Esc close
