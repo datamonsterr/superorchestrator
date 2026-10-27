@@ -25,9 +25,39 @@ The browser's global history may still record the original fragment. A history e
 - **Workflows.** Saved workflows, runs and step status.
 - **Settings.** `config.toml` fields, notifications, worktree defaults and the key source for Jev. The key value is never shown.
 
+![Dashboard](../img/web-dashboard.png)
+
+![Sessions](../img/web-sessions.png)
+
+![Accounts](../img/web-accounts.png)
+
+![Levels at `/routing`](../img/web-levels.png)
+
 ## Hosting and the token
 
 The UI binds to loopback by default. Every bind requires a token, including loopback: other users on the same machine can reach loopback TCP. Requests without a valid session cookie or bearer token receive 401.
+
+## Reach it over a tailnet
+
+To make the UI reachable from other devices on your tailnet, set a wildcard bind and restart the supervisor:
+
+```sh
+superorchestrator config set ui.bind 0.0.0.0
+```
+
+A wildcard bind skips the `Host` check because the server can be reached under any hostname; the UI token remains the guard. Restart the supervisor to apply the change (for a systemd user service, run `systemctl --user restart superorchestrator.service`). The `superorchestrator ui` command prints a URL using `127.0.0.1`; replace that host with this device's Tailscale hostname, for example `http://my-laptop:7878`. Sign in with the token stored in the `ui-token` file in the config directory. The login code in the printed URL is single-use and lasts 60 seconds.
+
+`0.0.0.0` also listens on the LAN. With UFW's default deny incoming policy and no broader allow rule for port 7878, this allows it on `tailscale0`:
+
+```sh
+sudo ufw allow in on tailscale0 to any port 7878 proto tcp
+```
+
+For nftables, add this accept rule to the input chain (ensure your chain policy/rules reject other interfaces to this port):
+
+```sh
+sudo nft add rule inet filter input iifname "tailscale0" tcp dport 7878 accept
+```
 
 If neither `--token` nor `ui.token` is set (or the configured value is empty), startup generates a 256-bit token from the OS CSPRNG and saves it as `ui-token` in the config directory, with mode 0600. Restarts reuse that token, and subsequent `superorchestrator ui` calls return fresh single-use sign-in URLs for the running supervisor. Missing files are created atomically; malformed files, symlinks, files owned by another user, and files with broader permissions stop startup. The `ui_start` error (and `superorchestrator ui`) names the file, the reason (not 0600, a symlink, malformed or owned by another user) and the hint `remove <path> to regenerate it`. To recover, remove that file; the next start generates a new token and invalidates old cookies.
 
