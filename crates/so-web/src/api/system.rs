@@ -184,22 +184,15 @@ fn secret_sources(cfg: &Config) -> (SecretSource, SecretSource) {
         },
         name: None,
     };
-    let jev = &cfg.router.jev;
-    let key = if std::env::var_os(&jev.key_env).is_some_and(|v| !v.is_empty()) {
-        SecretSource {
-            source: SecretOrigin::Env,
-            name: Some(jev.key_env.clone()),
-        }
-    } else if let Some(f) = &jev.key_file {
-        SecretSource {
-            source: SecretOrigin::File,
-            name: Some(f.clone()),
-        }
-    } else {
-        SecretSource {
-            source: SecretOrigin::Unset,
-            name: Some(jev.key_env.clone()),
-        }
+    let decider_key =
+        so_supervisor::services::decider::key_view(&cfg.router.jev, &so_router::jev::process_env);
+    let key = SecretSource {
+        source: match decider_key.source.as_str() {
+            "env" => SecretOrigin::Env,
+            "file" => SecretOrigin::File,
+            _ => SecretOrigin::Unset,
+        },
+        name: decider_key.name,
     };
     (ui, key)
 }

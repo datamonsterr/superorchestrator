@@ -10,10 +10,10 @@ use serde_json::Value;
 use so_core::SessionKind;
 use so_core::proto::{
     HelloParams, HelloResult, INTERNAL_ERROR, INVALID_PARAMS, INVALID_REQUEST, METHOD_CANCEL_AGENT,
-    METHOD_CANCEL_WORKFLOW, METHOD_GET_RUN, METHOD_JOIN_RUN, METHOD_LIST_AGENTS,
-    METHOD_LIST_HARNESSES, METHOD_NOT_FOUND, METHOD_READ_MESSAGES, METHOD_ROUTE, METHOD_STATUS,
-    METHOD_UI_START, METHOD_WAIT_AGENT, METHOD_WORKFLOW_STATUS, NOT_FOUND, Notification, Request,
-    Response, RpcError, StatusResult,
+    METHOD_CANCEL_WORKFLOW, METHOD_DECIDER_GET, METHOD_DECIDER_SET, METHOD_DECIDER_TEST,
+    METHOD_GET_RUN, METHOD_JOIN_RUN, METHOD_LIST_AGENTS, METHOD_LIST_HARNESSES, METHOD_NOT_FOUND,
+    METHOD_READ_MESSAGES, METHOD_ROUTE, METHOD_STATUS, METHOD_UI_START, METHOD_WAIT_AGENT,
+    METHOD_WORKFLOW_STATUS, NOT_FOUND, Notification, Request, Response, RpcError, StatusResult,
 };
 use so_store::SessionRow;
 use subtle::ConstantTimeEq;
@@ -231,6 +231,9 @@ const INSPECT_METHODS: &[&str] = &[
     METHOD_CANCEL_WORKFLOW,
     METHOD_JOIN_RUN,
     METHOD_UI_START,
+    METHOD_DECIDER_GET,
+    METHOD_DECIDER_SET,
+    METHOD_DECIDER_TEST,
 ];
 
 /// Every other method, run on a clone of the context.
@@ -242,11 +245,22 @@ pub(crate) async fn handle_other(
     // `hello` never gets here: the connection loop runs it through `handle_hello`.
     let r = if !ctx.greeted {
         Err(RpcError::new(INVALID_REQUEST, "hello required"))
-    } else if req.method == METHOD_UI_START && (ctx.session_id.is_some() || ctx.run_id.is_some()) {
-        // Login-code minting is reserved for sessionless, runless operator connections.
+    } else if [
+        METHOD_UI_START,
+        METHOD_DECIDER_GET,
+        METHOD_DECIDER_SET,
+        METHOD_DECIDER_TEST,
+    ]
+    .contains(&req.method.as_str())
+        && !ctx.is_inspect()
+    {
+        // Operator-only operations require a sessionless, runless inspect connection.
         Err(RpcError::new(
             INVALID_REQUEST,
-            "ui_start requires a sessionless, runless inspect/operator connection",
+            format!(
+                "{} requires a sessionless, runless inspect/operator connection",
+                req.method
+            ),
         ))
     } else if ctx.session_id.is_none() && !INSPECT_METHODS.contains(&req.method.as_str()) {
         Err(RpcError::new(
@@ -256,6 +270,10 @@ pub(crate) async fn handle_other(
                 req.method
             ),
         ))
+    } else if [METHOD_DECIDER_GET, METHOD_DECIDER_SET, METHOD_DECIDER_TEST]
+        .contains(&req.method.as_str())
+    {
+        handle_decider(state, &req.method, req.params).await
     } else if req.method == METHOD_STATUS {
         status_result(state)
             .await
@@ -369,4 +387,70 @@ pub async fn status_result(state: &Arc<SupervisorState>) -> Result<StatusResult,
         sessions: u32::try_from(sessions).unwrap_or(u32::MAX),
         active_runs: u32::try_from(runs).unwrap_or(u32::MAX),
     })
+}
+
+async fn handle_decider(
+    state: &Arc<SupervisorState>,
+    method: &str,
+    params: Value,
+) -> Result<Value, RpcError> {
+    use crate::services::decider;
+    match method {
+        METHOD_DECIDER_GET => {
+            let state = Arc::clone(state);
+            let view =
+                tokio::task::spawn_blocking(move || decider::view(&state.paths, &state.config))
+                    .await
+                    .map_err(internal)?
+                    .map_err(internal)?;
+            serde_json::to_value(view).map_err(internal)
+        }
+        METHOD_DECIDER_SET => {
+            // Deserialize each known field separately so malformed types identify the field
+            // without ever placing a pasted secret in the error message.
+            if let Some(fields) = params.as_object() {
+                for (name, value) in fields {
+                    if ![
+                        "endpoint",
+                        "model",
+                        "fallback_model",
+                        "on_unreachable",
+                        "timeout",
+                        "min_confidence",
+                        "min_margin",
+                        "key",
+                    ]
+                    .contains(&name.as_str())
+                    {
+                        return Err(RpcError::new(INVALID_PARAMS, "unknown decider patch field"));
+                    }
+                    let mut one = serde_json::Map::new();
+                    one.insert(name.clone(), value.clone());
+                    if serde_json::from_value::<decider::DeciderPatch>(Value::Object(one)).is_err()
+                    {
+                        return Err(RpcError::new(INVALID_PARAMS, format!("invalid {name}")));
+                    }
+                }
+            }
+            let patch: decider::DeciderPatch = serde_json::from_value(params)
+                .map_err(|_| RpcError::new(INVALID_PARAMS, "invalid decider patch"))?;
+            let state = Arc::clone(state);
+            let view = tokio::task::spawn_blocking(move || {
+                decider::set(&state.paths, &state.config, patch)
+            })
+            .await
+            .map_err(internal)?
+            .map_err(|e| RpcError::new(INVALID_PARAMS, e))?;
+            serde_json::to_value(view).map_err(internal)
+        }
+        METHOD_DECIDER_TEST => {
+            let request: decider::DeciderTestRequest = serde_json::from_value(params)
+                .map_err(|_| RpcError::new(INVALID_PARAMS, "invalid decider test request"))?;
+            let result = decider::test_decider(&state.paths, &state.http, request.prompt)
+                .await
+                .map_err(internal)?;
+            serde_json::to_value(result).map_err(internal)
+        }
+        _ => Err(RpcError::new(METHOD_NOT_FOUND, "unknown decider method")),
+    }
 }

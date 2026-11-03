@@ -1817,3 +1817,47 @@ async fn replaced_executable_marks_status_hello_and_list_harnesses_stale() {
     assert!(hello(&c2).await.stale);
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn decider_rpc_is_inspect_only() {
+    let env = Env::new();
+    let session = session_row();
+    env.store().insert_session(&session).unwrap();
+    let run = run_row(&session.id, RunState::Running, 0);
+    env.store().insert_run(&run).unwrap();
+    let h = env.start().await;
+    let inspect = connect(&h).await;
+    inspect.hello_inspect("cli", "/w", None).await.unwrap();
+    let view: Value = inspect.call("decider_get", json!({})).await.unwrap();
+    assert!(view["endpoint"].is_string());
+    let error = inspect
+        .call::<_, Value>("decider_set", json!({"model": 7}))
+        .await
+        .unwrap_err();
+    match error {
+        ClientError::Rpc(error) => assert!(error.message.contains("model"), "{}", error.message),
+        other => panic!("expected invalid patch error, got {other:?}"),
+    }
+    let updated: Value = inspect
+        .call(
+            "decider_set",
+            json!({"model":"example/decider", "key":{"env":"SO_E5_RPC_UNSET_KEY"}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated["model"], "example/decider");
+    let tested: Value = inspect.call("decider_test", json!({})).await.unwrap();
+    assert_eq!(tested["ok"], false);
+    assert!(tested["error"].is_string());
+    let client = connect(&h).await;
+    hello_run(&client, &env.store(), &run.id, true).await;
+    for method in ["decider_get", "decider_set", "decider_test"] {
+        assert_operator_required(
+            client
+                .call::<_, Value>(method, json!({}))
+                .await
+                .unwrap_err(),
+        );
+    }
+    h.shutdown().await;
+}

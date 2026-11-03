@@ -157,6 +157,46 @@ export interface DashboardView {
   status: StatusView;
 }
 
+export interface DeciderPatch {
+  endpoint?: string | null;
+  fallback_model?: string | null;
+  key?: KeyPatch | null;
+  min_confidence?: number | null;
+  min_margin?: number | null;
+  model?: string | null;
+  on_unreachable?: string | null;
+  timeout?: string | null;
+}
+
+export interface DeciderTestRequest {
+  prompt?: string | null;
+}
+
+export interface DeciderTestResult {
+  complexity?: number | null;
+  confidence?: number | null;
+  error?: string | null;
+  latency_ms: number;
+  level?: string | null;
+  model?: string | null;
+  ok: boolean;
+}
+
+export interface DeciderView {
+  effective: JevModels;
+  endpoint: string;
+  env_overrides: EnvOverride[];
+  fallback_model?: string | null;
+  key: KeyView;
+  min_confidence: number;
+  min_margin: number;
+  model: string;
+  on_unreachable: OnUnreachable;
+  restart_required: boolean;
+  suggestions: Suggestions;
+  timeout: string;
+}
+
 /** Default harness, model and effort used when a spawn does not name them. */
 export interface Defaults {
   effort?: string | null;
@@ -167,6 +207,12 @@ export interface Defaults {
 export interface DoctorReport {
   checks: Check[];
   ok: boolean;
+}
+
+export interface EnvOverride {
+  field: string;
+  name: string;
+  value?: string | null;
 }
 
 /** Classification of a failed run's error. */
@@ -274,6 +320,14 @@ export interface JoinView {
   cwd: string;
   /** Names (never values) of the environment variables the command needs. */
   env_names: string[];
+}
+
+export type KeyPatch = { env: string } | { file: string } | { paste: string };
+
+export interface KeyView {
+  masked?: string | null;
+  name?: string | null;
+  source: string;
 }
 
 /** A named range of complexity (`min` to `max`, within 0 to 100) and the models allowed for it, in preference order. Complexity can be fractional, so the integer range reads as the half-open span `[min, max + 1)`: 37.5 is in `0..=37`. A level with `max = 100` also includes 100.0. */
@@ -604,6 +658,11 @@ export interface StreamHello {
   boot_id: string;
   seq: number;
   server_time: string;
+}
+
+export interface Suggestions {
+  fallback_model?: string | null;
+  model: string;
 }
 
 export interface Supervisor {

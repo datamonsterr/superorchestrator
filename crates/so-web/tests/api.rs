@@ -2541,3 +2541,57 @@ async fn mutations_refresh_an_installed_skill_and_only_an_installed_one() {
     // Both files follow.
     assert_eq!(skill(), std::fs::read_to_string(&files[1]).unwrap());
 }
+
+#[tokio::test]
+async fn decider_api_paste_and_config_never_return_secret() {
+    let f = fx().await;
+    let secret = "sk-or-api-test-secret-1234";
+    let (status, v) = send_json(
+        &f.app,
+        "PATCH",
+        "/api/v1/decider",
+        json!({"key":{"paste":secret}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(!v.to_string().contains(secret));
+    for path in ["/api/v1/decider", "/api/v1/config"] {
+        let (status, v) = get(&f.app, path).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert!(!v.to_string().contains(secret));
+    }
+    let events = f
+        .handle
+        .state()
+        .store
+        .query_events(&so_store::EventQuery {
+            limit: 1000,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(!serde_json::to_string(&events).unwrap().contains(secret));
+    f.handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn decider_test_http_uses_disk_settings() {
+    let f = fx().await;
+    let (status, body) = send_json(
+        &f.app,
+        "PATCH",
+        "/api/v1/decider",
+        json!({"key":{"env":"SO_E5_WEB_KEY_UNSET"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post(
+        &f.app,
+        "/api/v1/decider/test",
+        Some(json!({"prompt":"small task"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["ok"], false);
+    assert!(body["error"].as_str().unwrap().contains("key"));
+    f.handle.shutdown().await;
+}

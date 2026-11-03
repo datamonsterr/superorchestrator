@@ -51,6 +51,9 @@ pub const METHOD_ASK_PARENT: &str = "ask_parent";
 /// Returns the command a person runs to join a run (CLI `join`).
 pub const METHOD_JOIN_RUN: &str = "join_run";
 /// Starts the web UI inside the supervisor (CLI `ui`).
+pub const METHOD_DECIDER_GET: &str = "decider_get";
+pub const METHOD_DECIDER_SET: &str = "decider_set";
+pub const METHOD_DECIDER_TEST: &str = "decider_test";
 pub const METHOD_UI_START: &str = "ui_start";
 
 fn jsonrpc() -> String {
