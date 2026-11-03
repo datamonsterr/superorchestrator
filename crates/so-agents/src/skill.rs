@@ -317,7 +317,7 @@ const WORKFLOW: &str = r#"# Delegate via superorchestrator
 2. Leave `harness: "auto"` and model/effort unset initially; keep accounts in `orchestrator.reserved_accounts` out of subagent pins. `route` previews a route.
 3. Brief each subagent with goal, acceptance commands, out-of-scope items and file pointers; it has no conversation context.
 4. `spawn_agent(prompt, agent: "implementer", cwd: "/repo", review: true, wait: false)`; use an existing agent profile. Default isolation is `worktree`.
-5. `wait_agent(runs: [id], timeout_ms: 30000)` until finish or `pending_review`. Answer question updates with `send_message(run: id, text: "...", kind: "answer")`, then wait again. Codex orchestrator: prefer `spawn_agent(wait: false)`, then wait with `timeout_ms` ≤ `1800000` (30 min); install writes `startup_timeout_sec = 30` and `tool_timeout_sec = 1860` in `~/.codex/config.toml` or `$CODEX_HOME/config.toml` (rerun `superorchestrator install` if missing); resume with `codex resume <id>`.
+5. `wait_agent(runs: [id], timeout_ms: 30000)` until finish or `pending_review`. Answer question updates with `send_message(run: id, text: "...", kind: "answer")`, then wait again. Codex orchestrator: prefer `spawn_agent(wait: false)`, then wait with `timeout_ms` ≤ `1800000` (30 min); install writes `startup_timeout_sec = 30` and `tool_timeout_sec = 1860` in `~/.codex/config.toml` or `$CODEX_HOME/config.toml` (rerun `superorchestrator install` if missing); resume with `superorchestrator join <run>` (or the `join_command` from `get_run`).
 6. At the review gate, inspect `get_run(run: id, diff: true)`; `accept_run(run: id, merge: true)` lands the branch, or `reject_run(run: id, feedback: "...")` continues fixes. Wait and review again.
 
 "#;
@@ -352,7 +352,7 @@ Delegate through `use-superorchestrator-mcp`; edit setup through `superorchestra
 
 ## Codex orchestrator
 
-`superorchestrator install` manages `~/.codex/AGENTS.md`. Set `orchestrator.reserved_accounts` for the orchestrator (or run `superorchestrator setup --orchestrator codex`); never pin a reserved account for a subagent. Resume a native session with `codex resume <id>`.
+`superorchestrator install` manages `~/.codex/AGENTS.md`. Set `orchestrator.reserved_accounts` for the orchestrator (or run `superorchestrator setup --orchestrator codex`); never pin a reserved account for a subagent. Resume a native session with `superorchestrator join <run>` (or the `join_command` from `get_run`).
 
 | Status / setup | Command |
 |---|---|
@@ -408,7 +408,7 @@ Use the selected config directory (`--config-dir DIR`, otherwise `$SUPERORCHESTR
 
 Orchestrator accounts: `orchestrator.reserved_accounts` keeps accounts for the orchestrator: automatic routing never selects them, and subagents must never pin them. Set it with `superorchestrator config set orchestrator.reserved_accounts '["name"]'`; `setup --orchestrator claude|codex` reserves one.
 
-Codex orchestrator: `superorchestrator install` writes `startup_timeout_sec = 30` and `tool_timeout_sec = 1860` in the MCP entry at `~/.codex/config.toml` or `$CODEX_HOME/config.toml` (rerun `superorchestrator install` if missing). Prefer `spawn_agent(wait: false)`, then `wait_agent` with `timeout_ms` at most `1800000`. Resume with `codex resume <id>`.
+Codex orchestrator: `superorchestrator install` writes `startup_timeout_sec = 30` and `tool_timeout_sec = 1860` in the MCP entry at `~/.codex/config.toml` or `$CODEX_HOME/config.toml` (rerun `superorchestrator install` if missing). Prefer `spawn_agent(wait: false)`, then `wait_agent` with `timeout_ms` at most `1800000`. Resume with `superorchestrator join <run>` (or the `join_command` from `get_run`).
 
 ## Workflow
 
@@ -601,6 +601,21 @@ mod tests {
         ] {
             assert!(!skill.contains("Claude accounts for the orchestrator"));
             assert!(skill.contains("reserved_accounts"));
+        }
+    }
+
+    #[test]
+    fn rendered_skills_resume_through_join_not_codex_resume() {
+        for skill in [
+            render_plugin_mcp_skill(),
+            render_plugin_cli_skill(),
+            render_plugin_config_skill(),
+            render_skill(&[], &[], &[]),
+            render_cli_skill(),
+            render_config_skill(),
+        ] {
+            assert!(!skill.contains("codex resume"), "{skill}");
+            assert!(skill.contains("superorchestrator join <run>"));
         }
     }
 

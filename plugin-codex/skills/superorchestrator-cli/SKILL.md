@@ -11,7 +11,7 @@ Delegate through `use-superorchestrator-mcp`; edit setup through `superorchestra
 
 ## Codex orchestrator
 
-`superorchestrator install` manages `~/.codex/AGENTS.md`. Set `orchestrator.reserved_accounts` for the orchestrator (or run `superorchestrator setup --orchestrator codex`); never pin a reserved account for a subagent. Resume a native session with `codex resume <id>`.
+`superorchestrator install` manages `~/.codex/AGENTS.md`. Set `orchestrator.reserved_accounts` for the orchestrator (or run `superorchestrator setup --orchestrator codex`); never pin a reserved account for a subagent. Resume a native session with `superorchestrator join <run>` (or the `join_command` from `get_run`).
 
 | Status / setup | Command |
 |---|---|
