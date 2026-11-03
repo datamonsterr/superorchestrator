@@ -1295,14 +1295,14 @@ impl App {
             .and_then(|id| snap.sessions.iter().position(|s| &s.id == id))
             .unwrap_or(self.sessions_tab.sel)
             .min(snap.sessions.len().saturating_sub(1));
-        if let Some(id) = &self.sessions_tab.open {
-            if !snap.sessions.iter().any(|s| &s.id == id) {
-                self.sessions_tab.open = None;
-                self.sessions_tab.runs = None;
-                self.sessions_tab.run_sel = 0;
-                if self.tab == Tab::Sessions {
-                    self.detail = None;
-                }
+        if let Some(id) = &self.sessions_tab.open
+            && !snap.sessions.iter().any(|s| &s.id == id)
+        {
+            self.sessions_tab.open = None;
+            self.sessions_tab.runs = None;
+            self.sessions_tab.run_sel = 0;
+            if self.tab == Tab::Sessions {
+                self.detail = None;
             }
         }
         let level = self.levels().get(self.levels_sel).map(|l| l.name.clone());
