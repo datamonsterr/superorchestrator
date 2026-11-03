@@ -4,10 +4,13 @@
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Map, Value, json};
-use toml_edit::{Array, DocumentMut, Item, Table, value};
+use toml_edit::{Array, DocumentMut, Item, Table};
 
 /// Key of our entry in every harness config.
 pub const NAME: &str = "superorchestrator";
+
+const CODEX_STARTUP_TIMEOUT_SECS: i64 = 30;
+const CODEX_TOOL_TIMEOUT_MARGIN_SECS: u64 = 60;
 
 /// Codex `config.toml`: `[mcp_servers.superorchestrator]` with `command` and `args`.
 pub fn codex_add(old: &str, exe: &str) -> Result<Option<String>> {
@@ -31,14 +34,42 @@ pub fn codex_add(old: &str, exe: &str) -> Result<Option<String>> {
         .get("args")
         .and_then(Item::as_array)
         .is_some_and(|a| a.len() == 1 && a.get(0).and_then(|v| v.as_str()) == Some("mcp"));
-    if same_command && same_args {
+    let startup = CODEX_STARTUP_TIMEOUT_SECS;
+    let timeout = i64::try_from(so_core::MAX_WAIT.as_secs() + CODEX_TOOL_TIMEOUT_MARGIN_SECS)
+        .context("Codex tool timeout exceeds TOML integer range")?;
+    let same_startup = entry.get("startup_timeout_sec").and_then(Item::as_integer) == Some(startup);
+    let same_timeout = entry.get("tool_timeout_sec").and_then(Item::as_integer) == Some(timeout);
+    if same_command && same_args && same_startup && same_timeout {
         return Ok(None);
     }
-    entry["command"] = value(exe);
+    if !same_command {
+        set_codex_value(entry, "command", toml_edit::Value::from(exe));
+    }
     let mut args = Array::new();
     args.push("mcp");
-    entry["args"] = value(args);
+    if !same_args {
+        set_codex_value(entry, "args", toml_edit::Value::Array(args));
+    }
+    for (key, number) in [
+        ("startup_timeout_sec", startup),
+        ("tool_timeout_sec", timeout),
+    ] {
+        if entry.get(key).and_then(Item::as_integer) != Some(number) {
+            set_codex_value(entry, key, toml_edit::Value::from(number));
+        }
+    }
     Ok(Some(doc.to_string()))
+}
+
+fn set_codex_value(entry: &mut Table, key: &str, mut replacement: toml_edit::Value) {
+    if let Some(decor) = entry
+        .get(key)
+        .and_then(Item::as_value)
+        .map(|v| v.decor().clone())
+    {
+        *replacement.decor_mut() = decor;
+    }
+    entry[key] = Item::Value(replacement);
 }
 
 pub fn codex_remove(old: &str) -> Result<Option<String>> {

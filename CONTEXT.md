@@ -48,6 +48,10 @@ _Avoid_: Provider, backend, tool, CLI
 One named login for one harness, backed by its own credential home, such as `codex-acc2`. An account is the unit that is routed, capped and metered.
 _Avoid_: Profile, login, credential, worker
 
+**Reserved account**:
+An account kept for the orchestrator; auto routing never picks it, but a spawn that pins it may.
+_Avoid_: Orchestrator account, held account
+
 **Credential home**:
 The folder that holds one account's login and harness state, selected through the harness's own environment variable.
 _Avoid_: Home dir, config dir, profile folder

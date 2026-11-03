@@ -720,3 +720,100 @@ fn a_crlf_claude_md_keeps_its_line_endings_and_reinstall_changes_nothing() {
     cmd(&e).arg("uninstall").assert().success();
     assert_eq!(read(&claude_md(&e)), "# Mine\r\n- keep\r\n");
 }
+
+#[test]
+fn codex_timeouts_and_agents_blocks_are_managed() {
+    let e = Env::new();
+    let s = seed(&e);
+    let paths = [
+        s.codex_default.parent().unwrap().join("AGENTS.md"),
+        s.codex_acc.parent().unwrap().join("AGENTS.md"),
+    ];
+    std::fs::write(&s.codex_acc, "[mcp_servers.superorchestrator]\nstartup_timeout_sec = 1 # keep\ntool_timeout_sec = 2\nextra = true\n").unwrap();
+    std::fs::write(
+        &paths[0],
+        format!("before\n\n{BEGIN}\nstale\n{END}\nafter\n"),
+    )
+    .unwrap();
+    cmd(&e).arg("install").assert().success();
+    for p in [&s.codex_default, &s.codex_acc] {
+        let c = read(p);
+        assert!(c.contains("startup_timeout_sec = 30"), "{c}");
+        assert!(c.contains("tool_timeout_sec = 1860"), "{c}");
+    }
+    assert!(read(&s.codex_acc).contains("startup_timeout_sec = 30 # keep"));
+    assert!(read(&s.codex_acc).contains("extra = true"));
+    for p in &paths {
+        let body = read(p);
+        assert!(body.contains("spawn_agent(wait: false)"));
+        assert!(body.contains("orchestrator.reserved_accounts"));
+    }
+    assert!(read(&paths[0]).starts_with("before\n\n"));
+    assert!(read(&paths[0]).ends_with("after\n"));
+    let before: Vec<_> = paths.iter().map(|p| read(p)).collect();
+    cmd(&e).arg("install").assert().success();
+    assert_eq!(before, paths.iter().map(|p| read(p)).collect::<Vec<_>>());
+    cmd(&e).arg("uninstall").assert().success();
+    assert_eq!(read(&paths[0]), "before\nafter\n");
+    assert!(!paths[1].exists());
+}
+
+#[test]
+fn codex_agents_opt_out_and_symlink() {
+    let e = Env::new();
+    e.init();
+    let home = e.home.join("custom-codex");
+    std::fs::create_dir_all(&home).unwrap();
+    let link = home.join("AGENTS.md");
+    let target = e.home.join("instructions.md");
+    std::fs::write(&target, "").unwrap();
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    cmd(&e)
+        .env("CODEX_HOME", &home)
+        .args(["install", "--no-agents-md"])
+        .assert()
+        .success();
+    assert_eq!(read(&target), "");
+    cmd(&e)
+        .env("CODEX_HOME", &home)
+        .arg("install")
+        .assert()
+        .success();
+    assert!(link.is_symlink());
+    assert!(read(&target).contains(BEGIN));
+    cmd(&e)
+        .env("CODEX_HOME", &home)
+        .arg("uninstall")
+        .assert()
+        .success();
+    assert!(link.is_symlink());
+    assert_eq!(read(&target), "");
+}
+
+#[test]
+fn dangling_codex_agents_symlink_chains_are_deduplicated_and_written_through() {
+    let e = Env::new();
+    e.init();
+    let global = e.home.join(".codex");
+    let account_home = e.home.join("codex-account");
+    std::fs::create_dir_all(&global).unwrap();
+    account(&e, "codex-account", Harness::Codex, &account_home, "codex");
+    let target = e.home.join("instructions.md");
+    let intermediate1 = e.home.join("first-link");
+    let intermediate2 = e.home.join("second-link");
+    std::os::unix::fs::symlink(&target, &intermediate1).unwrap();
+    std::os::unix::fs::symlink(&intermediate1, &intermediate2).unwrap();
+    let global_link = global.join("AGENTS.md");
+    let account_link = account_home.join("AGENTS.md");
+    std::os::unix::fs::symlink(&intermediate2, &global_link).unwrap();
+    std::os::unix::fs::symlink(&intermediate1, &account_link).unwrap();
+    let result = cmd(&e).args(["install", "--dry-run"]).assert().success();
+    assert_eq!(stdout(&result).matches("agents.md").count(), 1);
+    cmd(&e).arg("install").assert().success();
+    assert!(global_link.is_symlink() && account_link.is_symlink());
+    assert!(intermediate1.is_symlink() && intermediate2.is_symlink());
+    assert!(read(&target).contains(BEGIN));
+    cmd(&e).arg("uninstall").assert().success();
+    assert!(global_link.is_symlink() && account_link.is_symlink());
+    assert_eq!(read(&target), "");
+}

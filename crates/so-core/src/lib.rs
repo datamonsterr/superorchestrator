@@ -20,3 +20,6 @@ pub use duration::HumanDuration;
 pub use error::{CoreError, Result};
 pub use paths::{Paths, Platform, expand_tilde};
 pub use types::*;
+
+/// Maximum time a single agent wait may block; the run continues after this limit.
+pub const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
