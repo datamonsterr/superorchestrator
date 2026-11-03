@@ -72,6 +72,8 @@ Supervisor spawns that are not harnesses are intentionally not isolated: review
 `cmd:` and `gh` checks, git worktree commands, notifications and process inspection
 keep the supervisor's environment.
 
+A `claude` account can also run against a coding-plan API (Z.ai GLM, Kimi Code, MiniMax or a custom URL) instead of an Anthropic subscription. See [endpoint accounts](endpoints.md).
+
 ## Credential homes
 
 The credential home holds the login and the harness state. It lives under `$HOME`, so you can sign in with the harness's own CLI. Superorchestrator links to it and never copies credentials.
