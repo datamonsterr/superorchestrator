@@ -65,6 +65,7 @@ async fn refresh_merges_reports_and_caches_models_dev() {
         stub(d.path(), b);
     }
     let host = HostEnv {
+        vars: Default::default(),
         home: home.clone(),
         path_var: Some(d.path().join("bin").to_string_lossy().into_owned()),
         platform: Platform::Linux,
