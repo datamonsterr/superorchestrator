@@ -10,15 +10,16 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use so_core::config::{JevModels, OnUnreachable};
 use so_core::proto::{RouteAlternative, RouteParams, RouteResult, RouteSource, RouteUsage};
-use so_core::{AccountFile, Choice, Config, Harness, Slot};
+use so_core::{AccountFile, Choice, Config, Harness};
 use so_store::Store;
 
 use crate::catalog::Catalog;
-use crate::eligible::{Candidate, Snapshot, apply_claude_rank, candidate, eligible, serves};
+use crate::eligible::{
+    Candidate, Snapshot, apply_claude_rank, candidate, eligible, pinned_account_model, serves,
+};
 use crate::error::{Result, RouterError};
 use crate::heuristic::{
-    Complexity, PRIORITY_STEP, ScoreInputs, effort_gap, estimate_complexity_score,
-    harness_priority, score,
+    Complexity, ScoreInputs, choice_priority, effort_gap, estimate_complexity_score, score,
 };
 use crate::jev::{EnvFn, JevFailure, JevRequest, decide, process_env, resolve_key};
 use crate::levels;
@@ -238,19 +239,7 @@ fn heuristic_rank<'a>(
                 headroom: (headroom_of(account, &cand.pool) / 100.0).clamp(0.0, 1.0),
                 active_runs: account.active,
                 cost: cand.cost,
-                priority: harness_priority(&ctx.config.router.priority, cand.choice.harness)
-                    + if cand.choice.harness == Harness::Claude
-                        && ctx
-                            .catalog
-                            .endpoint(cand.choice.harness, &cand.choice.model)
-                            .is_some()
-                        && ctx.config.router.priority.contains(&Harness::Claude)
-                    {
-                        // Place endpoint choices between Claude and the preceding harness.
-                        PRIORITY_STEP / 2.0
-                    } else {
-                        0.0
-                    },
+                priority: choice_priority(&ctx.config.router.priority, ctx.catalog, &cand.choice),
                 effort_gap: effort_gap(complexity, cand.choice.effort.as_deref()),
             };
             Some(Ranked {
@@ -288,11 +277,17 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
         .as_ref()
         .and_then(|name| ctx.snapshot.accounts.iter().find(|a| &a.file.name == name))
     {
-        if pins.model.is_none()
-            && let Some(endpoint) = &account.file.endpoint
+        if let Some(pinned) = pins.harness
+            && pinned != account.file.harness
         {
-            pins.harness = pins.harness.or(Some(account.file.harness));
-            pins.model = Some(endpoint.slot(Slot::Opus).to_string());
+            return Err(RouterError::Invalid(format!(
+                "account {} is a {} account; harness pin is {pinned}",
+                account.file.name, account.file.harness
+            )));
+        }
+        if let Some(model) = pinned_account_model(&account.file, pins.model.as_deref()) {
+            pins.harness = Some(account.file.harness);
+            pins.model = Some(model);
         }
         if let Some(model) = &pins.model {
             let harness = pins.harness.unwrap_or(account.file.harness);

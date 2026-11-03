@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use so_core::{AccountFile, Choice, Harness, HeadroomStatus};
+use so_core::{AccountFile, Choice, Harness, HeadroomStatus, Slot};
 use so_store::Store;
 
 use crate::catalog::{Catalog, Cost, Tier};
@@ -115,6 +115,22 @@ pub fn serves(account: &AccountFile, harness: Harness, model: &str, catalog: &Ca
         None => catalog.endpoint(harness, model).is_none(),
         Some(endpoint) if !endpoint.models.is_empty() => endpoint.models.iter().any(|m| m == model),
         Some(endpoint) => catalog.endpoint(harness, model) == Some(endpoint.preset),
+    }
+}
+
+/// The model a pinned account runs when the caller pinned none: an endpoint account's opus
+/// slot, or the first of its `models` when a custom list leaves that slot out. `None` when a
+/// model is pinned or the account is not an endpoint account.
+pub fn pinned_account_model(account: &AccountFile, pinned_model: Option<&str>) -> Option<String> {
+    if pinned_model.is_some() {
+        return None;
+    }
+    let endpoint = account.endpoint.as_ref()?;
+    let opus = endpoint.slot(Slot::Opus);
+    if endpoint.models.is_empty() || endpoint.models.iter().any(|m| m == opus) {
+        Some(opus.to_string())
+    } else {
+        endpoint.models.first().cloned()
     }
 }
 
@@ -281,6 +297,30 @@ pub(crate) mod tests {
         assert_eq!(
             ids(&apply_claude_rank(only, &cat)),
             ["claude/claude-haiku-5-5/medium"]
+        );
+    }
+
+    #[test]
+    fn pinned_account_model_uses_opus_slot_or_first_listed_model() {
+        let mk = |v: serde_json::Value| {
+            let mut a = account("claude-e", Harness::Claude, 1, 0).file;
+            a.endpoint = Some(serde_json::from_value(v).unwrap());
+            a
+        };
+        let plain = account("claude-p", Harness::Claude, 1, 0).file;
+        assert_eq!(pinned_account_model(&plain, None), None);
+        let zai = mk(serde_json::json!({"preset": "zai", "token_env": "T"}));
+        assert_eq!(pinned_account_model(&zai, None).as_deref(), Some("glm-5.3"));
+        assert_eq!(pinned_account_model(&zai, Some("glm-5.3")), None);
+        let custom =
+            mk(serde_json::json!({"preset": "zai", "token_env": "T", "models": ["x-1", "x-2"]}));
+        assert_eq!(pinned_account_model(&custom, None).as_deref(), Some("x-1"));
+        let with_opus = mk(
+            serde_json::json!({"preset": "zai", "token_env": "T", "models": ["x-1", "glm-5.3"]}),
+        );
+        assert_eq!(
+            pinned_account_model(&with_opus, None).as_deref(),
+            Some("glm-5.3")
         );
     }
 }

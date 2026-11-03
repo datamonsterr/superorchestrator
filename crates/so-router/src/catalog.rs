@@ -66,6 +66,7 @@ pub struct ModelEntry {
     /// agy only: the usage pool (`gemini` or `claude`) the model draws on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
+    /// claude only: the endpoint preset serving this model; only endpoint accounts of that preset can run it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<EndpointPreset>,
     pub cost: Cost,

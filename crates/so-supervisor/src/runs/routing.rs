@@ -242,14 +242,14 @@ impl RunManager {
                 let (_, model, _) =
                     so_core::resolve_model_ref(harness.into(), model.as_deref(), None)
                         .map_err(|e| e.to_string())?;
-                let model = model.unwrap_or_else(|| {
-                    pin_account
-                        .as_ref()
-                        .and_then(|name| snap.accounts.iter().find(|a| &a.file.name == name))
-                        .and_then(|a| a.file.endpoint.as_ref())
-                        .map_or("", |endpoint| endpoint.slot(so_core::Slot::Opus))
-                        .to_string()
-                });
+                let model = model
+                    .or_else(|| {
+                        let account = pin_account
+                            .as_ref()
+                            .and_then(|name| snap.accounts.iter().find(|a| &a.file.name == name))?;
+                        so_router::eligible::pinned_account_model(&account.file, None)
+                    })
+                    .unwrap_or_default();
                 let pool = catalog.pool_for(harness, &model);
                 let usable: Vec<_> =
                     so_router::eligible::usable_accounts(&snap, harness, &pool, &model, &catalog)
@@ -469,8 +469,10 @@ mod tests {
             (result.account.as_str(), result.model.as_str()),
             ("claude-a", "glm-5.3")
         );
-        params.account = Some("claude-t".into());
         params.model = Some("claude/glm-5.3".into());
+        let result = m.fallback_route(&params, &why, false).await.unwrap().result;
+        assert_eq!(result.model, "glm-5.3");
+        params.account = Some("claude-t".into());
         assert!(m.fallback_route(&params, &why, false).await.is_err());
     }
 
