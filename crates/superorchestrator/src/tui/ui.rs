@@ -5,7 +5,9 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, Clear, Padding, Paragraph, Row, Table, Tabs, Wrap};
+use ratatui::widgets::{
+    Block, Cell, Clear, Padding, Paragraph, Row, Table, TableState, Tabs, Wrap,
+};
 use so_accounts::SignIn;
 use so_core::RunState;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -48,6 +50,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_tabs(f, app, tabs);
     match app.tab {
         Tab::Dashboard => draw_overview(f, app, body),
+        Tab::Sessions if app.detail.is_some() => draw_run_detail(f, app, body),
         Tab::Sessions => super::tabs::sessions::draw(f, app, body),
         Tab::Usage => super::tabs::usage::draw(f, app, body),
         Tab::Models => super::tabs::models::draw(f, app, body),
@@ -272,9 +275,19 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
     }
     let nav = ("1-9", "tabs");
     match app.tab {
-        Tab::Dashboard | Tab::Sessions | Tab::Models | Tab::Settings => {
-            (vec![nav, ("R", "refresh")], "quit")
-        }
+        Tab::Sessions => (
+            vec![("j/k", "move"), ("Enter", "open"), ("Esc", "back")],
+            if app.sessions_tab.open.is_some() {
+                "back"
+            } else {
+                "quit"
+            },
+        ),
+        Tab::Models => (
+            vec![("j/k", "scroll"), ("r", "refresh models"), nav],
+            "quit",
+        ),
+        Tab::Dashboard | Tab::Settings => (vec![nav, ("R", "refresh")], "quit"),
         Tab::Usage => (vec![("j/k", "scroll"), nav, ("R", "refresh")], "quit"),
         Tab::Accounts => (
             vec![
@@ -842,6 +855,26 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
         }
         return placeholder(f, &t, area, lines);
     }
+    draw_run_table(
+        f,
+        &s.runs,
+        app.now,
+        &t,
+        app.runs_sel,
+        &mut app.runs_state,
+        area,
+    );
+}
+
+pub(super) fn draw_run_table(
+    f: &mut Frame,
+    runs: &[RunItem],
+    now: DateTime<Utc>,
+    t: &Theme,
+    selected: usize,
+    state: &mut TableState,
+    area: Rect,
+) {
     let widths = [
         Constraint::Length(8),
         Constraint::Length(16),
@@ -856,16 +889,15 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
         inner.width.saturating_sub(2),
         1,
     ));
-    let rows: Vec<Row> = s
-        .runs
+    let rows: Vec<Row> = runs
         .iter()
         .map(|r| {
-            let (mark, style) = state_mark(&t, r.state);
+            let (mark, style) = state_mark(t, r.state);
             Row::new(vec![
                 Cell::new(short(&r.id)),
                 Cell::new(format!("{mark} {}", r.state)).style(style),
                 Cell::new(truncate(&who(r), cols[2].width as usize, t.ellipsis())),
-                Cell::new(age(app.now, r.created_at)),
+                Cell::new(age(now, r.created_at)),
                 Cell::new(truncate(&r.title, cols[4].width as usize, t.ellipsis())),
             ])
         })
@@ -876,8 +908,8 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
         .column_spacing(1)
         .highlight_symbol(format!("{} ", t.pointer()))
         .row_highlight_style(t.selected());
-    app.runs_state.select(Some(app.runs_sel));
-    f.render_stateful_widget(table, inner, &mut app.runs_state);
+    state.select(Some(selected));
+    f.render_stateful_widget(table, inner, state);
 }
 
 const BRIEF_LINES: usize = 10;
@@ -1149,7 +1181,13 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
             t.muted(),
         )),
         Tab::Usage => out.push(row("j k  g", "scroll headroom / top")),
-        Tab::Sessions | Tab::Models | Tab::Settings => {}
+        Tab::Sessions => out.extend([
+            row("j k", "move / scroll"),
+            row("Enter", "open Session or Run"),
+            row("Esc", "back one level"),
+        ]),
+        Tab::Models => out.extend([row("j k", "scroll"), row("r", "refresh models")]),
+        Tab::Settings => {}
         Tab::Accounts => {
             out.push(Line::styled("Accounts", t.accent()));
             out.extend([

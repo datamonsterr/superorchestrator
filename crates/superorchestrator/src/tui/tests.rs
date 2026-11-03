@@ -53,6 +53,10 @@ fn snapshot() -> Snapshot {
     cool.headroom = "codex: cooldown 3h".into();
     cool.cooling = true;
     Snapshot {
+        sessions: Vec::new(),
+        sessions_error: None,
+        models: Vec::new(),
+        models_refreshed_at: None,
         at: now() - chrono::Duration::seconds(3),
         config_dir: "~/.config/superorchestrator".into(),
         supervisor: Some(SupInfo {
@@ -1753,4 +1757,77 @@ fn usage_snapshots_and_tab_bar_fit() {
     s.accounts.clear();
     s.daily_usage.clear();
     insta::assert_snapshot!("empty_usage_80x24", shot(&mut a, 80, 24));
+}
+
+#[test]
+fn models_refresh_is_a_background_effect() {
+    let mut a = app();
+    a.on_key(ch('7'));
+    assert!(matches!(a.on_key(ch('r')), Some(Effect::RefreshModels)));
+    assert!(a.busy.is_some());
+    a.on_update(Update::Done {
+        ok: true,
+        text: "refreshed".into(),
+    });
+    assert!(a.busy.is_none());
+    assert!(matches!(a.on_key(ch('r')), Some(Effect::RefreshModels)));
+    a.on_update(Update::Done {
+        ok: false,
+        text: "refresh failed".into(),
+    });
+    assert!(a.busy.is_none());
+    assert_eq!(a.toast.as_ref().unwrap().kind, ToastKind::Err);
+}
+
+#[test]
+fn sessions_navigation_and_snapshots() {
+    let mut a = app();
+    let runs = a.snap.as_ref().unwrap().runs.clone();
+    a.snap.as_mut().unwrap().sessions = vec![SessionItem {
+        id: "session-123".into(),
+        started_at: now() - chrono::Duration::hours(2),
+        title: "/work/project".into(),
+        run_count: runs.len() as i64,
+        runs,
+    }];
+    let mut older = a.snap.as_ref().unwrap().sessions[0].clone();
+    older.id = "older-session".into();
+    older.started_at -= chrono::Duration::hours(1);
+    a.snap.as_mut().unwrap().sessions.push(older);
+    a.on_key(ch('2'));
+    insta::assert_snapshot!("sessions_80x24", shot(&mut a, 80, 24));
+    insta::assert_snapshot!("sessions_120x40", shot(&mut a, 120, 40));
+    a.on_key(ch('j'));
+    a.on_key(key(KeyCode::Enter));
+    assert_eq!(a.sessions_tab.open.as_deref(), Some("older-session"));
+    insta::assert_snapshot!("session_runs_80x24", shot(&mut a, 80, 24));
+    insta::assert_snapshot!("session_runs_120x40", shot(&mut a, 120, 40));
+    a.on_key(ch('j'));
+    let expected = a.snap.as_ref().unwrap().sessions[1].runs[1].id.clone();
+    assert!(
+        matches!(a.on_key(key(KeyCode::Enter)), Some(Effect::Detail { id, .. }) if id == expected)
+    );
+    a.on_key(key(KeyCode::Esc));
+    assert!(a.detail.is_none());
+    a.on_key(key(KeyCode::Esc));
+    assert!(a.sessions_tab.open.is_none() && !a.quit);
+    a.snap.as_mut().unwrap().sessions.clear();
+    insta::assert_snapshot!("empty_sessions_80x24", shot(&mut a, 80, 24));
+}
+
+#[test]
+fn models_snapshots() {
+    let mut a = app();
+    a.snap.as_mut().unwrap().models = vec![ModelItem {
+        harness: Harness::Codex,
+        model: "gpt-example".into(),
+        efforts: vec!["low".into(), "high".into()],
+        free: false,
+    }];
+    a.snap.as_mut().unwrap().models_refreshed_at = Some(now());
+    a.on_key(ch('7'));
+    insta::assert_snapshot!("models_80x24", shot(&mut a, 80, 24));
+    insta::assert_snapshot!("models_120x40", shot(&mut a, 120, 40));
+    a.snap.as_mut().unwrap().models.clear();
+    insta::assert_snapshot!("empty_models_80x24", shot(&mut a, 80, 24));
 }

@@ -236,6 +236,25 @@ fn perform(
     };
     Ok(Some(match effect {
         Effect::Refresh | Effect::Detail { .. } => return Ok(None),
+        Effect::RefreshModels => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    so_supervisor::services::models::refresh_and_save(
+                        &ctx.paths,
+                        host,
+                        &reqwest::Client::new(),
+                        None,
+                    ),
+                )
+                .await??;
+                anyhow::Ok(())
+            })?;
+            "models refreshed".into()
+        }
         Effect::Levels(cmd) => {
             let result = crate::cmd::levels::apply(ctx, cmd)?;
             if result.changed {
