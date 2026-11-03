@@ -1,7 +1,7 @@
+import { HARNESSES } from '@/api/types'
 import type {
   Event,
   EventType,
-  Harness,
   RunState,
   RunViewPublic,
   SessionDetail,
@@ -36,7 +36,6 @@ export function prng(seed: number): () => number {
 
 export const LARGE_SESSION_ID = 'sess-large'
 const BASE_MS = Date.UTC(2026, 0, 1, 12, 0, 0)
-const HARNESSES: Harness[] = ['codex', 'agy', 'opencode', 'claude', 'copilot', 'gemini', 'kimi', 'cursor', 'qwen']
 const TOOLS = ['read_file', 'write_file', 'bash', 'grep', 'edit', 'web_search']
 const ROLES: TranscriptLine['role'][] = ['user', 'assistant', 'tool', 'system']
 const pad = (n: number, w: number) => String(n).padStart(w, '0')
@@ -54,7 +53,7 @@ export function makeLargeSession({
 }: LargeSessionOptions = {}): LargeSession {
   const rnd = prng(seed)
   const int = (lo: number, hi: number) => lo + Math.floor(rnd() * (hi - lo + 1))
-  const pick = <T,>(xs: T[]) => xs[int(0, xs.length - 1)]
+  const pick = <T,>(xs: readonly T[]) => xs[int(0, xs.length - 1)]
   const iso = (ms: number) => new Date(ms).toISOString()
   const sessionMs = 3 * 60 * 60 * 1000
 

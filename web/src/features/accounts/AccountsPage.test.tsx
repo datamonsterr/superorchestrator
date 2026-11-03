@@ -94,6 +94,18 @@ describe('AccountsPage', () => {
       }
     })
 
+    it('shows the Copilot sign-in hint and describes the harness selector', async () => {
+      renderWithProviders(<AccountsPage />)
+      await userEvent.click(await screen.findByRole('button', { name: /Add account/ }))
+      const harnessSelect = await screen.findByRole('combobox', { name: 'Harness' })
+      await userEvent.click(harnessSelect)
+      await userEvent.click(await screen.findByRole('option', { name: 'GitHub Copilot CLI' }))
+      const hint = await screen.findByText(/Signs in with/)
+      expect(hint).toHaveTextContent('copilot login')
+      expect(hint).toHaveAttribute('id', 'add-harness-hint')
+      expect(harnessSelect).toHaveAttribute('aria-describedby', 'add-harness-hint')
+    })
+
     it('validates the name, creates the account and opens sign-in', async () => {
       let created: unknown
       server.use(

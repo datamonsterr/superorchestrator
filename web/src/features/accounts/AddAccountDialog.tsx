@@ -82,7 +82,7 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
                 name="harness"
                 render={({ field }) => (
                   <Select value={field.value} onValueChange={field.onChange}>
-                    <SelectTrigger id="add-harness" className="w-full">
+                    <SelectTrigger id="add-harness" aria-describedby={SIGN_IN_HINT[harness] ? 'add-harness-hint' : undefined} className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -96,7 +96,7 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
                   </Select>
                 )}
               />
-              {SIGN_IN_HINT[harness] && <FieldDescription>{SIGN_IN_HINT[harness]}</FieldDescription>}
+              {SIGN_IN_HINT[harness] && <FieldDescription id="add-harness-hint">{SIGN_IN_HINT[harness]}</FieldDescription>}
               <FieldError errors={[formState.errors.harness]} />
             </Field>
             <Field data-invalid={!!formState.errors.name}>

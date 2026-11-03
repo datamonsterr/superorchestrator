@@ -1,7 +1,8 @@
 import '@/lib/zod-setup'
 import { z } from 'zod'
+import { HARNESSES } from '@/api/types'
 
-export const HARNESSES = ['codex', 'agy', 'opencode', 'claude', 'copilot', 'gemini', 'kimi', 'cursor', 'qwen'] as const
+export { HARNESSES }
 export const AGY_POOLS = ['gemini', 'claude'] as const
 
 /** Account names double as directory and wrapper names (design 5). */

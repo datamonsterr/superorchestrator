@@ -1,10 +1,12 @@
 import '@/lib/zod-setup'
 import { z } from 'zod'
-import type { Harness, Level, RouteParams } from '@/api/types'
+import { HARNESSES, type Harness, type Level, type RouteParams } from '@/api/types'
 
-export const HARNESSES = ['codex', 'agy', 'opencode', 'claude', 'copilot', 'gemini', 'kimi', 'cursor', 'qwen'] as const
-const COPILOT_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-const NO_EFFORT_HARNESSES = ['gemini', 'kimi', 'cursor', 'qwen']
+export { HARNESSES }
+
+// These lists mirror Harness::accepted_efforts in crates/so-core/src/types.rs.
+const COPILOT_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+const NO_EFFORT_HARNESSES = ['gemini', 'kimi', 'cursor', 'qwen'] as const satisfies readonly Harness[]
 export const TIERS = ['high', 'mid', 'fast'] as const
 
 /** `harness/model[/effort]`: the ref a Choice is written as in `config.toml` and on the wire. */
@@ -41,9 +43,9 @@ export function modelRefSchema(existing: readonly string[]) {
     .superRefine((v, ctx) => {
       if (v.model && v.harness === 'opencode' && !v.model.includes('/')) {
         ctx.addIssue({ code: 'custom', path: ['model'], message: 'OpenCode models are provider/model, for example opencode/muse-spark-1.3' })
-      } else if (v.effort && v.harness === 'copilot' && !COPILOT_EFFORTS.includes(v.effort)) {
+      } else if (v.effort && v.harness === 'copilot' && !(COPILOT_EFFORTS as readonly string[]).includes(v.effort)) {
         ctx.addIssue({ code: 'custom', path: ['effort'], message: 'Choose a supported Copilot effort' })
-      } else if (v.effort && NO_EFFORT_HARNESSES.includes(v.harness)) {
+      } else if (v.effort && NO_EFFORT_HARNESSES.some((harness) => harness === v.harness)) {
         ctx.addIssue({ code: 'custom', path: ['effort'], message: `${v.harness} does not accept an effort` })
       } else if (v.model && existing.includes(buildRef(v.harness, v.model, v.effort))) {
         ctx.addIssue({ code: 'custom', path: ['model'], message: 'This level already lists this model' })
