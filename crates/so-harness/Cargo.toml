@@ -26,6 +26,7 @@ path = "src/bin/fake-codex.rs"
 required-features = ["test-support"]
 
 [dependencies]
+jsonschema = { version = "0.60", default-features = false }
 so-core = { path = "../so-core" }
 so-agents = { path = "../so-agents" }
 so-accounts = { path = "../so-accounts" }
@@ -47,3 +48,8 @@ futures-core = "0.3"
 # Self dev-dependency enables the feature (and so the fake-harness binary) for tests.
 so-harness = { path = ".", features = ["test-support"] }
 tempfile.workspace = true
+
+[[bin]]
+name = "fake-acp"
+path = "src/bin/fake-acp.rs"
+required-features = ["test-support"]

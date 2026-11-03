@@ -3203,6 +3203,7 @@ dependencies = [
  "chrono",
  "futures-core",
  "futures-util",
+ "jsonschema",
  "reqwest",
  "rustix",
  "serde",
