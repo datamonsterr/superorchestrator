@@ -59,27 +59,28 @@ export function valuesFromConfig(view: ConfigView): SettingsValues {
   }
 }
 
-type Tree = { [k: string]: Tree | string | number | boolean | string[] }
+/** The reserved-accounts field is edited as one comma-separated string. */
+const splitNames = (s: string) => s.split(',').map((name) => name.trim()).filter(Boolean)
+
+type Tree = { [k: string]: Tree | string | number | boolean }
 
 /**
  * Only the leaves that changed, as a nested partial config. An optional string that was cleared
  * (`key_file`) is not sent: the API has no way to unset a key, so it keeps its value.
  */
 export function diffToPatch(before: SettingsValues, after: SettingsValues): ConfigPatch {
-  const walk = (a: Tree, b: Tree, path: string): Tree => {
-    const out: Tree = {}
+  const walk = (a: Tree, b: Tree, path: string): Record<string, unknown> => {
+    const out: Record<string, unknown> = {}
     for (const k of Object.keys(b)) {
       const x = a[k]
       const y = b[k]
       const here = path ? `${path}.${k}` : k
-      if (Array.isArray(y)) {
-        if (JSON.stringify(x) !== JSON.stringify(y)) out[k] = y
-      } else if (typeof y === 'object') {
+      if (typeof y === 'object') {
         const sub = walk(x as Tree, y, here)
         if (Object.keys(sub).length > 0) out[k] = sub
       } else if (here === 'orchestrator.reserved_accounts' && typeof x === 'string' && typeof y === 'string') {
-        const names = (s: string) => s.split(',').map((name) => name.trim()).filter(Boolean)
-        if (JSON.stringify(names(x)) !== JSON.stringify(names(y))) out[k] = names(y)
+        const names = splitNames(y)
+        if (JSON.stringify(splitNames(x)) !== JSON.stringify(names)) out[k] = names
       } else if (x !== y && !(here === 'router.jev.key_file' && y === '')) {
         out[k] = y
       }

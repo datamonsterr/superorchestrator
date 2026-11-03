@@ -438,7 +438,27 @@ fn reserved_account_is_marked_in_accounts_view() {
     let mut a = app();
     a.tab = Tab::Accounts;
     a.snap.as_mut().unwrap().accounts[0].reserved = true;
-    assert!(shot(&mut a, 120, 40).contains("reserved"));
+    assert!(shot(&mut a, 120, 40).contains("RSV"));
+}
+
+#[test]
+fn reserved_marker_keeps_similar_names_distinguishable() {
+    for (w, h) in [(80, 24), (120, 40)] {
+        let mut a = app();
+        a.tab = Tab::Accounts;
+        let snap = a.snap.as_mut().unwrap();
+        let mut one = account("codex-acc1", Harness::Codex, SignIn::SignedIn, false);
+        one.reserved = true;
+        let two = account("codex-acc2", Harness::Codex, SignIn::SignedIn, true);
+        snap.accounts = vec![one, two];
+        let out = shot(&mut a, w, h);
+        let line = |name: &str| out.lines().find(|l| l.contains(name)).unwrap().to_string();
+        let first = line("codex-acc1");
+        assert!(first.contains("yes"), "{w}: {first}");
+        assert!(w >= 90 || first.contains("(off)"), "{w}: {first}");
+        assert!(!line("codex-acc2").contains("RSV"));
+        assert!(!out.contains("codex-…"), "{w}");
+    }
 }
 
 #[test]

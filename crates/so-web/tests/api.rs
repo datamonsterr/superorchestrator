@@ -513,6 +513,21 @@ async fn reserved_account_is_marked_in_accounts_api() {
 }
 
 #[tokio::test]
+async fn unreserved_account_omits_reserved_in_accounts_api() {
+    let f = fx_cfg(Some(TEST_TOKEN), Config::default()).await;
+    let (status, created) = post(
+        &f.app,
+        "/api/v1/accounts",
+        Some(json!({"harness": "codex", "name": "codex-acc2"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(created.get("reserved").is_none());
+    let (_, list) = get(&f.app, "/api/v1/accounts").await;
+    assert!(list[0].get("reserved").is_none());
+}
+
+#[tokio::test]
 async fn reserved_accounts_config_round_trips() {
     let f = fx().await;
     let (status, value) = send_json(

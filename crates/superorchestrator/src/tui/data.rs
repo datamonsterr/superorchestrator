@@ -271,10 +271,26 @@ fn checklist(ctx: &Ctx, host: &HostEnv, accounts: &[AccountRow]) -> Vec<Check> {
     out
 }
 
+/// Whether an account is reserved. The running supervisor routes with its own loaded config,
+/// so its answer wins when the TUI has one (`from_supervisor`). Offline, the config file is
+/// the best available source. If that cannot be read either, the flag is unknown and shown
+/// as not reserved: the tag is only ever drawn from a source that said so.
+fn is_reserved(
+    name: &str,
+    from_supervisor: Option<&std::collections::HashSet<String>>,
+    config: Option<&so_core::Config>,
+) -> bool {
+    match from_supervisor {
+        Some(set) => set.contains(name),
+        None => config.is_some_and(|c| c.orchestrator.is_reserved(name)),
+    }
+}
+
 fn account_rows(
     ctx: &Ctx,
     host: &HostEnv,
     now: DateTime<Utc>,
+    from_supervisor: Option<&std::collections::HashSet<String>>,
 ) -> (Vec<AccountRow>, Option<String>) {
     let config = ctx.config().ok();
     match collect_views_with(ctx, host) {
@@ -282,9 +298,7 @@ fn account_rows(
             views
                 .into_iter()
                 .map(|v| AccountRow {
-                    reserved: config
-                        .as_ref()
-                        .is_some_and(|c| c.orchestrator.is_reserved(&v.account.name)),
+                    reserved: is_reserved(&v.account.name, from_supervisor, config.as_ref()),
                     cooling: v.headroom.iter().any(|(_, t)| t.starts_with("cooldown")),
                     headroom: v
                         .headroom
@@ -329,9 +343,10 @@ pub fn load_snapshot(
     ctx: &Ctx,
     host: &HostEnv,
     sup: Option<SupInfo>,
+    reserved_from_supervisor: Option<&std::collections::HashSet<String>>,
     now: DateTime<Utc>,
 ) -> Snapshot {
-    let (accounts, accounts_error) = account_rows(ctx, host, now);
+    let (accounts, accounts_error) = account_rows(ctx, host, now, reserved_from_supervisor);
     let (rows, active) = open_existing_store(&ctx.paths)
         .and_then(|s| recent_runs(&s).ok())
         .unwrap_or_default();
@@ -528,6 +543,20 @@ mod tests {
             let c: so_core::Choice = r.parse().unwrap();
             assert!(catalog.contains(c.harness, &c.model), "{r}");
         }
+    }
+
+    #[test]
+    fn supervisor_reserved_flag_wins_over_the_config_file() {
+        let mut config = so_core::Config::default();
+        config.orchestrator.reserved_accounts = vec!["a".into()];
+        let sup: std::collections::HashSet<String> = ["b".to_string()].into();
+        assert!(is_reserved("b", Some(&sup), Some(&config)));
+        assert!(!is_reserved("a", Some(&sup), Some(&config)));
+        // Connected, with the config unreadable: the supervisor still decides.
+        assert!(is_reserved("b", Some(&sup), None));
+        // Offline: the config decides; unreadable config marks nothing.
+        assert!(is_reserved("a", None, Some(&config)));
+        assert!(!is_reserved("a", None, None));
     }
 
     #[test]

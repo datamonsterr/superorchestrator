@@ -597,6 +597,7 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(9),
             Constraint::Length(10),
             Constraint::Length(8),
+            Constraint::Length(3),
             Constraint::Length(4),
             Constraint::Length(6),
             Constraint::Fill(1),
@@ -606,6 +607,7 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(18),
             Constraint::Length(9),
             Constraint::Length(10),
+            Constraint::Length(3),
             Constraint::Length(6),
             Constraint::Fill(1),
         ]
@@ -626,17 +628,11 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|a| {
             let dim = if a.enabled { t.base() } else { t.muted() };
-            let mut name = if wide || a.enabled {
+            let name = if wide || a.enabled {
                 a.name.clone()
             } else {
                 format!("{} (off)", a.name)
             };
-            if a.reserved {
-                name = format!(
-                    "{} [reserved]",
-                    truncate(&name, w(0).saturating_sub(11), t.ellipsis())
-                );
-            }
             let mut cells = vec![
                 Cell::new(truncate(&name, w(0), t.ellipsis())),
                 Cell::new(a.harness.as_str()),
@@ -644,6 +640,10 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             ];
             if wide {
                 cells.push(Cell::new(if a.enabled { "yes" } else { "no" }));
+            }
+            // Reservation has its own column so it never eats into the name.
+            cells.push(Cell::new(if a.reserved { "yes" } else { "" }));
+            if wide {
                 cells.push(Cell::new(a.cap.to_string()));
             }
             cells.push(Cell::new(a.active.to_string()));
@@ -657,12 +657,13 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             "HARNESS",
             "SIGNED IN",
             "ENABLED",
+            "RSV",
             "CAP",
             "ACTIVE",
             "HEADROOM",
         ]
     } else {
-        vec!["NAME", "HARNESS", "SIGNED IN", "ACTIVE", "HEADROOM"]
+        vec!["NAME", "HARNESS", "SIGNED IN", "RSV", "ACTIVE", "HEADROOM"]
     })
     .style(t.header());
     let table = Table::new(rows, widths)

@@ -187,7 +187,23 @@ fn read_one(ctx: &Ctx, host: &HostEnv, link: &mut Link, effect: Effect, tx: &Sen
                     version: s.version,
                     uptime_s: s.uptime_s,
                 });
-            let snap = load_snapshot(ctx, host, sup, Utc::now());
+            // The supervisor routes with its loaded config, so its reserved flags are the
+            // truth while it runs.
+            let reserved = sup.as_ref().and_then(|_| {
+                link.call::<_, so_core::proto::HarnessesView>(
+                    so_core::proto::METHOD_LIST_HARNESSES,
+                    serde_json::json!({}),
+                )
+                .ok()
+                .map(|v| {
+                    v.accounts
+                        .into_iter()
+                        .filter(|a| a.reserved)
+                        .map(|a| a.name)
+                        .collect::<std::collections::HashSet<_>>()
+                })
+            });
+            let snap = load_snapshot(ctx, host, sup, reserved.as_ref(), Utc::now());
             send(tx, Update::Snapshot(Box::new(snap)));
         }
         Effect::Detail { id, diff } => {

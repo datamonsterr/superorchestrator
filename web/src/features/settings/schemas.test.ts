@@ -60,6 +60,26 @@ describe('settings schemas', () => {
     expect(diffToPatch(base, next)).toEqual({ router: { policy: { min_confidence: 0.7 } } })
   })
 
+  it('sends several comma-separated reserved accounts as a trimmed list', () => {
+    const next = structuredClone(base)
+    next.orchestrator.reserved_accounts = ' codex-acc1 , agy-acc1,, '
+    expect(diffToPatch(base, next)).toEqual({ orchestrator: { reserved_accounts: ['codex-acc1', 'agy-acc1'] } })
+  })
+
+  it('sends an empty list when the reserved accounts are cleared', () => {
+    const before = structuredClone(base)
+    before.orchestrator.reserved_accounts = 'codex-acc1'
+    const next = structuredClone(before)
+    next.orchestrator.reserved_accounts = ''
+    expect(diffToPatch(before, next)).toEqual({ orchestrator: { reserved_accounts: [] } })
+  })
+
+  it('sends no patch for a whitespace-only reserved accounts edit', () => {
+    const next = structuredClone(base)
+    next.orchestrator.reserved_accounts = '   '
+    expect(diffToPatch(base, next)).toEqual({})
+  })
+
   it('lists every field path from the schema', () => {
     expect(FIELD_PATHS).toContain('router.jev.key_file')
     expect(FIELD_PATHS).toContain('limits.global_cap')
