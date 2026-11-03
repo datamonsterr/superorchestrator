@@ -600,7 +600,7 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::raw(
                     "Press a to add accounts, or i to import logins already on this machine.",
                 ),
-                Line::styled("Setup (4) does both in one go.", t.muted()),
+                Line::styled("Setup (9) does both in one go.", t.muted()),
             ],
         );
     }

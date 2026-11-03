@@ -75,8 +75,8 @@ impl Tab {
             Tab::Accounts => "Acct",
             Tab::Usage => "Usage",
             Tab::Levels => "Lvls",
-            Tab::Models => "Mods",
-            Tab::Settings => "Opts",
+            Tab::Models => "Model",
+            Tab::Settings => "Conf",
             Tab::Setup => "Setup",
         }
     }
