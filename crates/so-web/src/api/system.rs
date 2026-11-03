@@ -157,16 +157,24 @@ pub async fn routing_records(
         events.truncate(limit);
         events.last().map(|e| encode_cursor(&e.ts, &e.id))
     });
+    let ids: Vec<String> = events.iter().filter_map(|e| e.run_id.clone()).collect();
+    let prompts = st.db(move |s| s.run_prompts(&ids)).await?;
     let items = events
         .into_iter()
         .filter_map(|e| {
             let mut result = super::runs::route_result_of(&e.data)?;
             result.rationale = so_core::redact::redact(&result.rationale);
-            let excerpt = e.data["prompt_excerpt"].as_str().unwrap_or_default();
+            let excerpt = e
+                .run_id
+                .as_ref()
+                .and_then(|id| prompts.get(id))
+                .map(String::as_str)
+                .or_else(|| e.data["prompt_excerpt"].as_str())
+                .unwrap_or_default();
             Some(RouteRecord {
                 ts: e.ts,
                 run_id: e.run_id,
-                prompt_excerpt: so_core::redact::redact(excerpt),
+                prompt_excerpt: so_core::redact::prompt_excerpt(excerpt, 160),
                 result,
             })
         })

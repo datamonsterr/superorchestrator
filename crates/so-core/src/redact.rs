@@ -50,6 +50,21 @@ pub fn redact(text: &str) -> String {
     out
 }
 
+/// Normalizes and redacts a prompt, limiting the result to `max_chars` characters.
+pub fn prompt_excerpt(text: &str, max_chars: usize) -> String {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let redacted = redact(&normalized);
+    if redacted.chars().count() <= max_chars {
+        return redacted;
+    }
+    if max_chars == 0 {
+        return String::new();
+    }
+    let mut excerpt: String = redacted.chars().take(max_chars - 1).collect();
+    excerpt.push('…');
+    excerpt
+}
+
 /// Returns the replacement text and the number of bytes consumed.
 fn match_secret(
     rest: &str,
@@ -171,6 +186,22 @@ pub fn redact_json(v: &mut serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn excerpt_normalizes_redacts_and_truncates() {
+        assert_eq!(prompt_excerpt("  hello\n\tworld  ", 40), "hello world");
+        assert_eq!(
+            prompt_excerpt("key sk-abcdef1234567890 end", 40),
+            "key [REDACTED] end"
+        );
+        assert_eq!(prompt_excerpt("short text", 10), "short text");
+        assert_eq!(prompt_excerpt("é🙂世界", 3), "é🙂…");
+        assert_eq!(prompt_excerpt("é🙂", 1), "…");
+        assert_eq!(prompt_excerpt("é🙂", 0), "");
+        for limit in 0..6 {
+            assert!(prompt_excerpt("é🙂世界", limit).chars().count() <= limit);
+        }
+    }
 
     #[test]
     fn redacts_known_patterns() {
