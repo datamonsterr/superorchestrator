@@ -156,21 +156,24 @@ describe('Decider tab', () => {
     expect((screen.getByLabelText('Key') as HTMLInputElement).value).toBe('')
   })
 
-  it('drops the pasted key after a 4xx rejection but keeps it after a 5xx failure', async () => {
-    let status = 400
-    server.use(http.patch('/api/v1/decider', () => HttpResponse.json({ error: { code: -32602, message: 'key: invalid' } }, { status })))
-    await openDecider()
+  it('drops the pasted key after a 4xx rejection but keeps it after a 5xx failure, with no secret in the cache', async () => {
+    let failure = { status: 400, message: 'key: invalid' }
+    server.use(http.patch('/api/v1/decider', () => HttpResponse.json({ error: { code: -32602, message: failure.message } }, { status: failure.status })))
+    const { queryClient } = await openDecider()
+    const cached = () => JSON.stringify(queryClient.getMutationCache().getAll().map((m) => [m.state.variables, m.state.error, m.state.data]))
     await userEvent.click(screen.getByRole('radio', { name: 'Paste key' }))
     await userEvent.type(screen.getByLabelText('Key'), 'bad-key')
     await save()
     expect(await screen.findByText('key: invalid')).toBeInTheDocument()
     await waitFor(() => expect((screen.getByLabelText('Key') as HTMLInputElement).value).toBe(''))
+    expect(cached()).not.toContain('bad-key')
 
-    status = 503
+    failure = { status: 503, message: 'supervisor unavailable, try again' }
     await userEvent.type(screen.getByLabelText('Key'), 'kept-key')
     await save()
-    await waitFor(() => expect(screen.getAllByRole('alert').length).toBeGreaterThan(0))
+    expect(await screen.findByText(/supervisor unavailable, try again/)).toBeInTheDocument()
     expect((screen.getByLabelText('Key') as HTMLInputElement).value).toBe('kept-key')
+    expect(cached()).not.toContain('kept-key')
   })
 
   it('says which variable to set when no key is found', async () => {

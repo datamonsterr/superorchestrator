@@ -35,6 +35,12 @@ const hr = (pct: number | null, status: Headroom['status'] = 'ok'): Headroom => 
 })
 
 describe('DashboardPage', () => {
+  it('shows a cooldown with its end time next to the account headroom', async () => {
+    renderWithProviders(<DashboardPage />)
+    const row = await screen.findByRole('link', { name: 'agy-acc1' })
+    expect((row.closest('tr') as HTMLElement).querySelector('[data-cooldown="claude"]')).toHaveTextContent(/cooling down claude until .* \(.+\)/)
+  })
+
   it('shows stat cards, accounts, live runs and escalations', async () => {
     renderWithProviders(<DashboardPage />)
     const overview = await screen.findByRole('region', { name: 'Overview' })

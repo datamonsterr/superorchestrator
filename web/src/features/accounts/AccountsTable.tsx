@@ -1,4 +1,5 @@
 import { MoreHorizontal } from 'lucide-react'
+import { CooldownBadge } from '@/components/common/CooldownBadge'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
@@ -7,7 +8,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { HarnessBadge } from '@/components/common/HarnessBadge'
 import { HeadroomBar } from '@/components/common/HeadroomBar'
 import { SignInState } from '@/components/common/SignInState'
-import { RelativeTime } from '@/components/common/RelativeTime'
 import type { AccountView } from '@/api/types'
 
 export interface AccountActions {
@@ -75,9 +75,7 @@ export function AccountsTable({ accounts, actions }: { accounts: AccountView[]; 
                   </Badge>
                 ))}
                 {(a.flags ?? []).map((f) => (
-                  <Badge key={`${f.pool ?? 'all'}-${f.until}`} variant="destructive" title={f.reason ?? undefined}>
-                    cooldown {f.pool ?? 'all'} <RelativeTime value={f.until} />
-                  </Badge>
+                  <CooldownBadge key={`${f.pool ?? 'all'}-${f.until}`} flag={f} />
                 ))}
               </div>
             </TableCell>

@@ -3,6 +3,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { SignInState } from '@/components/common/SignInState'
 import { HarnessBadge } from '@/components/common/HarnessBadge'
 import { HeadroomBar } from '@/components/common/HeadroomBar'
+import { CooldownBadge } from '@/components/common/CooldownBadge'
 import { EmptyState } from '@/components/common/EmptyState'
 import { Users } from 'lucide-react'
 import type { AccountView } from '@/api/types'
@@ -52,6 +53,13 @@ export function AccountsSummaryTable({ accounts }: { accounts: AccountView[] }) 
                       {a.name}
                     </Link>
                     {!a.enabled && <span className="ml-2 text-xs text-muted-foreground">disabled</span>}
+                    {(a.flags ?? []).length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1 font-normal">
+                        {(a.flags ?? []).map((f) => (
+                          <CooldownBadge key={`${f.pool ?? 'all'}-${f.until}`} flag={f} />
+                        ))}
+                      </div>
+                    )}
                   </TableCell>
                   <TableCell rowSpan={rows.length} className="align-top">
                     <HarnessBadge harness={a.harness} />
