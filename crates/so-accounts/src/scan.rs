@@ -82,11 +82,10 @@ pub fn scan(host: &HostEnv) -> Vec<ImportCandidate> {
     if claude.is_dir() {
         push("claude-acc1".into(), Harness::Claude, claude);
     }
+    // Copilot and Cursor are not discovered because sign-in cannot be detected from files.
     for (name, harness, path) in [
-        ("copilot", Harness::Copilot, home.join(".copilot")),
         ("gemini", Harness::Gemini, home.to_path_buf()),
         ("kimi", Harness::Kimi, home.join(".kimi-code")),
-        ("cursor", Harness::Cursor, home.join(".cursor")),
         ("qwen", Harness::Qwen, home.join(".qwen")),
     ] {
         if path.is_dir() {
@@ -181,6 +180,10 @@ mod tests {
         mk(d.path(), ".cursor/projects");
         let c = scan_at(d.path());
         assert_eq!(names(&c), ["gemini-acc1", "kimi-acc1", "qwen-acc1"]);
+        assert!(
+            !c.iter()
+                .any(|c| matches!(c.harness, Harness::Copilot | Harness::Cursor))
+        );
         assert_eq!(c[0].home, d.path());
     }
 
