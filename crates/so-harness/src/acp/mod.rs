@@ -7,7 +7,7 @@ use crate::{
         Driver, DriverConfig, DriverError, HarnessEvent, JoinCommand, JoinInfo, LaunchSpec,
         RunControl, RunHandle, ShutdownOutcome, check_effort, check_launch_values, classify_common,
     },
-    process::{EventSink, ProcessHandle, spawn_supervised, startup_failure},
+    process::{EventSink, ProcessHandle, ProducerGuard, spawn_supervised, startup_failure},
 };
 use serde_json::{Value, json};
 use so_core::{ErrorKind, Harness};
@@ -68,6 +68,8 @@ async fn write(proc: &ProcessHandle, value: Value) -> Result<(), DriverError> {
         proc.stdin.write_line(value.to_string()).await
     }
 }
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(120);
+
 async fn request(
     proc: &ProcessHandle,
     rx: &mut mpsc::UnboundedReceiver<Value>,
@@ -80,8 +82,13 @@ async fn request(
         json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params}),
     )
     .await?;
+    let timeout = if method == "session/set_config_option" {
+        Duration::from_secs(30)
+    } else {
+        HANDSHAKE_TIMEOUT
+    };
     loop {
-        let v = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+        let v = tokio::time::timeout(timeout, rx.recv())
             .await
             .map_err(|_| DriverError::Other(format!("ACP {method} timed out")))?
             .ok_or_else(|| DriverError::Other(format!("ACP exited during {method}")))?;
@@ -89,7 +96,15 @@ async fn request(
             answer(proc, &v).await?;
         } else if v.get("id").and_then(Value::as_u64) == Some(id) {
             if let Some(err) = v.get("error") {
-                return Err(DriverError::Other(format!("ACP {method}: {err}")));
+                let text = format!("ACP {method}: {err}");
+                return Err(if err["code"] == -32000 {
+                    DriverError::Exited {
+                        kind: ErrorKind::Auth,
+                        text,
+                    }
+                } else {
+                    DriverError::Other(text)
+                });
             }
             return Ok(v.get("result").cloned().unwrap_or(Value::Null));
         }
@@ -239,6 +254,7 @@ impl Driver for AcpDriver {
             rpc::Parser(tx),
             &spec.launch.pass_env,
         )?;
+        let guard = sup.producer_guard();
         let init = handshake(&sup.handle, &mut rx, &spec, &row).await;
         let id = match init {
             Ok(id) => id,
@@ -247,6 +263,7 @@ impl Driver for AcpDriver {
                     || matches!(
                         &e, DriverError::Other(text) if text.starts_with("ACP exited during ")
                     );
+                drop(guard);
                 sup.handle.shutdown(Duration::ZERO).await;
                 let failure =
                     startup_failure(e, &mut sup.events, |text| self.classify_error(text)).await;
@@ -279,7 +296,11 @@ impl Driver for AcpDriver {
             ctl_rx,
             events: sup.events_sink,
             session: id.clone(),
-            schema: spec.output_schema,
+            schema: spec
+                .output_schema
+                .as_ref()
+                .map(|schema| jsonschema::validator_for(schema).map_err(|error| error.to_string())),
+            _guard: guard,
             harness: self.harness,
             seq: 3,
             active: false,
@@ -289,7 +310,7 @@ impl Driver for AcpDriver {
             tools: HashMap::new(),
             queue: VecDeque::new(),
             retries: 0,
-            interrupt: None,
+            interrupts: Vec::new(),
         };
         tokio::spawn(actor.run(blocks));
         Ok(RunHandle {
@@ -379,7 +400,8 @@ struct Actor {
     ctl_rx: mpsc::UnboundedReceiver<Control>,
     events: EventSink,
     session: String,
-    schema: Option<Value>,
+    schema: Option<Result<jsonschema::Validator, String>>,
+    _guard: ProducerGuard,
     harness: Harness,
     seq: u64,
     active: bool,
@@ -389,7 +411,7 @@ struct Actor {
     tools: HashMap<String, String>,
     queue: VecDeque<Vec<Value>>,
     retries: u8,
-    interrupt: Option<oneshot::Sender<()>>,
+    interrupts: Vec<oneshot::Sender<()>>,
 }
 impl Actor {
     async fn prompt(&mut self, blocks: Vec<Value>, announce: bool) -> Result<(), DriverError> {
@@ -401,6 +423,17 @@ impl Actor {
         self.tools.clear();
         if announce {
             self.events.send(HarnessEvent::TurnStarted);
+        }
+        if let Some(Err(error)) = &self.schema {
+            self.events.send(HarnessEvent::TurnFinished {
+                result_text: None,
+                structured: None,
+                is_error: true,
+                error_kind: Some(ErrorKind::Config),
+                error_text: Some(error.clone()),
+            });
+            self.active = false;
+            return Ok(());
         }
         let proc = self.proc.upgrade().ok_or(DriverError::Closed)?;
         write(
@@ -491,26 +524,29 @@ impl Actor {
         }
         let mut structured = None;
         let mut validation_error = None;
+        let mut config_error = None;
         if kind.is_none()
             && reason != "cancelled"
             && let Some(schema) = &self.schema
         {
-            let text = self.final_message.trim();
-            let text = text
-                .strip_prefix("```json")
-                .or_else(|| text.strip_prefix("```"))
-                .and_then(|s| s.trim().strip_suffix("```"))
-                .unwrap_or(text)
-                .trim();
-            match serde_json::from_str::<Value>(text) {
-                Ok(value) => match jsonschema::validator_for(schema) {
-                    Ok(validator) => match validator.validate(&value) {
-                        Ok(()) => structured = Some(value),
-                        Err(e) => validation_error = Some(e.to_string()),
-                    },
-                    Err(e) => validation_error = Some(e.to_string()),
-                },
-                Err(e) => validation_error = Some(e.to_string()),
+            match schema {
+                Err(error) => config_error = Some(error.clone()),
+                Ok(validator) => {
+                    let text = self.final_message.trim();
+                    let text = text
+                        .strip_prefix("```json")
+                        .or_else(|| text.strip_prefix("```"))
+                        .and_then(|s| s.trim().strip_suffix("```"))
+                        .unwrap_or(text)
+                        .trim();
+                    match serde_json::from_str::<Value>(text) {
+                        Ok(value) => match validator.validate(&value) {
+                            Ok(()) => structured = Some(value),
+                            Err(error) => validation_error = Some(error.to_string()),
+                        },
+                        Err(error) => validation_error = Some(error.to_string()),
+                    }
+                }
             }
         }
         if let Some(error) = validation_error.as_ref()
@@ -525,19 +561,20 @@ impl Actor {
                 .prompt(vec![json!({"type": "text", "text": message})], false)
                 .await;
         }
-        let error_kind = kind.or_else(|| validation_error.as_ref().map(|_| ErrorKind::Other));
+        let error_kind = kind
+            .or_else(|| config_error.as_ref().map(|_| ErrorKind::Config))
+            .or_else(|| validation_error.as_ref().map(|_| ErrorKind::Other));
         self.events.send(HarnessEvent::TurnFinished {
             result_text: (!self.text.is_empty()).then(|| self.text.clone()),
             structured,
             is_error: error_kind.is_some(),
             error_kind,
-            error_text: error_text.or(validation_error),
+            error_text: error_text.or(config_error).or(validation_error),
         });
         self.active = false;
         self.retries = 0;
-        if let Some(ack) = self.interrupt.take() {
-            let _ = ack.send(());
-        }
+        self.ack_interrupts();
+        // Parent messages queued during a turn must survive an interrupt.
         if let Some(next) = self.queue.pop_front() {
             self.prompt(next, true).await?;
         }
@@ -555,17 +592,20 @@ impl Actor {
             }
             Control::Interrupt(ack) => {
                 if self.active {
-                    let proc = self.proc.upgrade().ok_or(DriverError::Closed)?;
-                    write(
-                        &proc,
-                        json!({
-                            "jsonrpc": "2.0",
-                            "method": "session/cancel",
-                            "params": {"sessionId": self.session}
-                        }),
-                    )
-                    .await?;
-                    self.interrupt = Some(ack);
+                    let first = self.interrupts.is_empty();
+                    self.interrupts.push(ack);
+                    if first {
+                        let proc = self.proc.upgrade().ok_or(DriverError::Closed)?;
+                        write(
+                            &proc,
+                            json!({
+                                "jsonrpc": "2.0",
+                                "method": "session/cancel",
+                                "params": {"sessionId": self.session}
+                            }),
+                        )
+                        .await?;
+                    }
                 } else {
                     let _ = ack.send(());
                 }
@@ -586,20 +626,37 @@ impl Actor {
         Ok(())
     }
 
-    async fn run(mut self, first: Vec<Value>) {
-        if self.prompt(first, true).await.is_err() {
-            return;
+    fn ack_interrupts(&mut self) {
+        for ack in self.interrupts.drain(..) {
+            let _ = ack.send(());
         }
-        loop {
-            tokio::select! {
-                Some(cmd) = self.ctl_rx.recv() => {
-                    if self.on_control(cmd).await.is_err() { break; }
+    }
+
+    async fn run(mut self, first: Vec<Value>) {
+        if self.prompt(first, true).await.is_ok() {
+            loop {
+                tokio::select! {
+                    Some(cmd) = self.ctl_rx.recv() => {
+                        if self.on_control(cmd).await.is_err() { break; }
+                    }
+                    value = self.rx.recv() => {
+                        let Some(value) = value else { break };
+                        if self.on_message(value).await.is_err() { break; }
+                    }
+                    else => break,
                 }
-                Some(value) = self.rx.recv() => {
-                    if self.on_message(value).await.is_err() { break; }
-                }
-                else => break,
             }
         }
+        if self.active {
+            self.flush();
+            self.events.send(HarnessEvent::TurnFinished {
+                result_text: (!self.text.is_empty()).then(|| self.text.clone()),
+                structured: None,
+                is_error: true,
+                error_kind: Some(ErrorKind::Other),
+                error_text: Some("ACP agent exited mid-turn".into()),
+            });
+        }
+        self.ack_interrupts();
     }
 }

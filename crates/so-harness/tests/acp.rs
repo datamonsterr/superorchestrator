@@ -419,3 +419,134 @@ fn argv_and_join_for_each_harness() {
         assert!(cmd.env.is_empty());
     }
 }
+
+#[tokio::test]
+async fn exit_mid_turn_finishes_before_exited() {
+    let rig = Rig::new();
+    let mut h = driver(Harness::Copilot)
+        .launch(rig.spec("exit_prompt", Harness::Copilot))
+        .await
+        .unwrap();
+    let events = turn(&mut h).await;
+    assert!(events.iter().any(|e| matches!(e, HarnessEvent::TurnFinished { is_error: true, error_kind: Some(ErrorKind::Other), error_text: Some(text), .. } if text == "ACP agent exited mid-turn")));
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(5), h.events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        if matches!(event, HarnessEvent::Exited { .. }) {
+            break;
+        }
+    }
+}
+
+#[tokio::test]
+async fn handshake_auth_and_resume_capabilities() {
+    let rig = Rig::new();
+    assert!(
+        matches!(driver(Harness::Copilot).launch(rig.spec("handshake_auth", Harness::Copilot)).await, Err(DriverError::Exited { kind: ErrorKind::Auth, text }) if text.contains("credentials required"))
+    );
+    for (mode, supported) in [("resume", true), ("no_resume", false)] {
+        let rig = Rig::new();
+        let mut spec = rig.spec(mode, Harness::Copilot);
+        spec.resume = Some("native-1".into());
+        let result = driver(Harness::Copilot).launch(spec).await;
+        if supported {
+            let mut h = result.unwrap();
+            turn(&mut h).await;
+            h.control.shutdown(Duration::from_secs(1)).await.unwrap();
+            assert!(rig.log().iter().any(|v| v["method"] == "session/resume"));
+        } else {
+            assert!(
+                matches!(result, Err(DriverError::Other(text)) if text.contains("does not support session load or resume"))
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn failed_tool_and_schema_retry_reset() {
+    let rig = Rig::new();
+    let mut h = driver(Harness::Copilot)
+        .launch(rig.spec("tool_failed", Harness::Copilot))
+        .await
+        .unwrap();
+    let events = turn(&mut h).await;
+    assert!(events.iter().any(
+        |e| matches!(e, HarnessEvent::ToolCallFinished { name, ok: false } if name == "Read")
+    ));
+    h.control.shutdown(Duration::from_secs(1)).await.unwrap();
+
+    let rig = Rig::new();
+    let mut spec = rig.spec("structured_twice", Harness::Copilot);
+    spec.output_schema = Some(json!({"type":"object","required":["ok"]}));
+    let mut h = driver(Harness::Copilot).launch(spec).await.unwrap();
+    for i in 0..2 {
+        if i == 1 {
+            h.control.send("second").await.unwrap();
+        }
+        let events = turn(&mut h).await;
+        assert!(events.iter().any(|e| matches!(
+            e,
+            HarnessEvent::TurnFinished {
+                is_error: false,
+                structured: Some(_),
+                ..
+            }
+        )));
+    }
+    h.control.shutdown(Duration::from_secs(1)).await.unwrap();
+    assert_eq!(
+        rig.log()
+            .iter()
+            .filter(|v| v["method"] == "session/prompt")
+            .count(),
+        12
+    );
+}
+
+#[tokio::test]
+async fn invalid_schema_is_config_error_without_retry() {
+    let rig = Rig::new();
+    let mut spec = rig.spec("invalid", Harness::Copilot);
+    spec.output_schema = Some(json!({"type": 7}));
+    let mut h = driver(Harness::Copilot).launch(spec).await.unwrap();
+    let events = turn(&mut h).await;
+    assert!(events.iter().any(|e| matches!(
+        e,
+        HarnessEvent::TurnFinished {
+            is_error: true,
+            error_kind: Some(ErrorKind::Config),
+            ..
+        }
+    )));
+    h.control.shutdown(Duration::from_secs(1)).await.unwrap();
+    assert_eq!(
+        rig.log()
+            .iter()
+            .filter(|v| v["method"] == "session/prompt")
+            .count(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn concurrent_interrupts_are_acknowledged() {
+    let rig = Rig::new();
+    let mut h = driver(Harness::Copilot)
+        .launch(rig.spec("slow_interrupt", Harness::Copilot))
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(h.control.interrupt(), h.control.interrupt());
+    a.unwrap();
+    b.unwrap();
+    turn(&mut h).await;
+    h.control.shutdown(Duration::from_secs(1)).await.unwrap();
+    assert_eq!(
+        rig.log()
+            .iter()
+            .filter(|v| v["method"] == "session/cancel")
+            .count(),
+        1
+    );
+}

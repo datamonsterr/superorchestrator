@@ -43,10 +43,20 @@ fn main() {
                     eprintln!("quota exhausted");
                     return;
                 }
-                result =
-                    Some(json!({"protocolVersion":1,"agentCapabilities":{"loadSession":true}}));
+                if mode == "handshake_auth" {
+                    emit(
+                        json!({"jsonrpc":"2.0","id":id,"error":{"code":-32000,"message":"credentials required"}}),
+                    );
+                    continue;
+                }
+                let capabilities = match mode.as_str() {
+                    "resume" => json!({"sessionCapabilities":{"resume":{}}}),
+                    "no_resume" => json!({}),
+                    _ => json!({"loadSession":true}),
+                };
+                result = Some(json!({"protocolVersion":1,"agentCapabilities":capabilities}));
             }
-            "session/new" | "session/load" => {
+            "session/new" | "session/load" | "session/resume" => {
                 if method == "session/load" {
                     emit(
                         json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"old history"}}}}),
@@ -59,7 +69,10 @@ fn main() {
             "session/set_config_option" => result = Some(json!({})),
             "session/prompt" => {
                 turns += 1;
-                if mode == "slow" && turns == 1 {
+                if mode == "exit_prompt" {
+                    return;
+                }
+                if (mode == "slow" || mode == "slow_interrupt") && turns == 1 {
                     pending = Some(id.clone());
                     continue;
                 }
@@ -83,9 +96,12 @@ fn main() {
                         json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-1","update":{"sessionUpdate":"tool_call","toolCallId":"first","title":"Check"}}}),
                     );
                 }
-                let text = if mode == "invalid" || (mode == "structured" && turns == 1) {
+                let text = if mode == "invalid"
+                    || (mode == "structured" && turns == 1)
+                    || (mode == "structured_twice" && turns % 6 != 0)
+                {
                     "invalid"
-                } else if mode == "structured" {
+                } else if mode == "structured" || mode == "structured_twice" {
                     "{\"ok\":true}"
                 } else {
                     "hello world"
@@ -97,7 +113,7 @@ fn main() {
                     json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-1","update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":"Read"}}}),
                 );
                 emit(
-                    json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed"}}}),
+                    json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":if mode == "tool_failed" {"failed"} else {"completed"}}}}),
                 );
                 let reason = match mode.as_str() {
                     "refusal" | "max_tokens" | "max_turn_requests" => mode.as_str(),
@@ -109,6 +125,9 @@ fn main() {
                 }));
             }
             "session/cancel" => {
+                if mode == "slow_interrupt" {
+                    std::thread::sleep(std::time::Duration::from_millis(200));
+                }
                 if let Some(id) = pending.take() {
                     emit(json!({"jsonrpc":"2.0","id":id,"result":{"stopReason":"cancelled"}}));
                 }
