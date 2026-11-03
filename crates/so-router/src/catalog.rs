@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use so_accounts::{HostEnv, build_launch};
-use so_core::{AccountFile, Choice, Harness, Paths};
+use so_core::{AccountFile, Choice, EndpointPreset, Harness, Paths};
 use so_usage::{ProbeRequest, ProbeRunner, ResponseMatcher};
 
 use crate::error::{Result, RouterError};
@@ -66,6 +66,9 @@ pub struct ModelEntry {
     /// agy only: the usage pool (`gemini` or `claude`) the model draws on.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
+    /// claude only: the endpoint preset serving this model; only endpoint accounts of that preset can run it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<EndpointPreset>,
     pub cost: Cost,
 }
 
@@ -199,6 +202,11 @@ impl Catalog {
     /// Tier of a model; unknown models are `mid`.
     pub fn tier(&self, harness: Harness, model: &str) -> Tier {
         self.get(harness, model).map_or(Tier::Mid, |m| m.tier)
+    }
+
+    /// Endpoint preset associated with a catalog model, if any.
+    pub fn endpoint(&self, harness: Harness, model: &str) -> Option<EndpointPreset> {
+        self.get(harness, model).and_then(|m| m.endpoint)
     }
 
     /// Cost class of a model; unknown models are guessed from the name.
@@ -702,6 +710,7 @@ pub async fn refresh(
                 tier: infer_tier(&c.id),
                 pool: (c.harness == Harness::Agy).then(|| infer_agy_pool(&c.id).to_string()),
                 efforts: c.efforts,
+                endpoint: None,
                 cost,
                 id: c.id,
             },
@@ -789,6 +798,7 @@ mod tests {
                 tier: Tier::Mid,
                 efforts: vec![],
                 pool: None,
+                endpoint: None,
                 cost: Cost::Paid,
             },
         );
@@ -836,6 +846,7 @@ mod tests {
                 tier: Tier::Fast,
                 efforts: vec!["low".into()],
                 pool: None,
+                endpoint: None,
                 cost: Cost::Paid,
             },
         );

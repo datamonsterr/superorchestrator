@@ -1417,6 +1417,187 @@ fn pin(model: &str) -> RouteParams {
     }
 }
 
+fn endpoint_account(name: &str, preset: &str, models: &[&str]) -> AccountFile {
+    let mut a = AccountFile::new(name, Harness::Claude, "/h/endpoint", "claude").unwrap();
+    let mut endpoint: so_core::Endpoint = toml::from_str(&format!(
+        "preset = \"{preset}\"\ntoken_env = \"TEST_TOKEN\"\n"
+    ))
+    .unwrap();
+    endpoint.models = models.iter().map(|m| (*m).into()).collect();
+    a.endpoint = Some(endpoint);
+    a
+}
+
+#[test]
+fn endpoint_catalog_and_eligibility_matrix() {
+    use so_router::eligible::{apply_claude_rank, candidate};
+    let catalog = Catalog::default_catalog();
+    for (model, tier, preset) in [
+        (
+            "glm-5.3",
+            so_router::Tier::High,
+            so_core::EndpointPreset::Zai,
+        ),
+        (
+            "glm-5.3-flash",
+            so_router::Tier::Fast,
+            so_core::EndpointPreset::Zai,
+        ),
+        (
+            "k3.1-pro",
+            so_router::Tier::High,
+            so_core::EndpointPreset::Kimi,
+        ),
+        (
+            "k3.1-pro-highspeed",
+            so_router::Tier::Mid,
+            so_core::EndpointPreset::Kimi,
+        ),
+        ("k3", so_router::Tier::Mid, so_core::EndpointPreset::Kimi),
+        (
+            "kimi-for-coding",
+            so_router::Tier::Mid,
+            so_core::EndpointPreset::Kimi,
+        ),
+        (
+            "MiniMax-M3.1-Flash",
+            so_router::Tier::Mid,
+            so_core::EndpointPreset::Minimax,
+        ),
+    ] {
+        let entry = catalog.get(Harness::Claude, model).unwrap();
+        assert_eq!(
+            (entry.tier, entry.cost, entry.endpoint),
+            (tier, so_router::Cost::Included, Some(preset))
+        );
+        assert!(entry.efforts.is_empty());
+    }
+    let parsed: Catalog = toml::from_str(
+        "[[claude.models]]\nid = 'example'\ntier = 'high'\ncost = 'included'\nendpoint = 'zai'\n",
+    )
+    .unwrap();
+    assert!(
+        toml::to_string(&parsed)
+            .unwrap()
+            .contains("endpoint = \"zai\"")
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let paths = so_core::Paths::from_dir(dir.path().to_path_buf());
+    std::fs::write(
+        paths.models_toml(),
+        "[[claude.models]]\nid = 'glm-5.3'\ntier = 'mid'\ncost = 'paid'\nendpoint = 'kimi'\n",
+    )
+    .unwrap();
+    let overridden = Catalog::load(&paths).unwrap();
+    assert_eq!(
+        overridden.endpoint(Harness::Claude, "glm-5.3"),
+        Some(so_core::EndpointPreset::Kimi)
+    );
+    assert_eq!(
+        overridden.tier(Harness::Claude, "glm-5.3"),
+        so_router::Tier::Mid
+    );
+    let files = vec![
+        AccountFile::new("plain", Harness::Claude, "/h", "claude").unwrap(),
+        endpoint_account("zai", "zai", &[]),
+        endpoint_account("kimi", "kimi", &[]),
+        endpoint_account("custom", "custom", &["my-model"]),
+        AccountFile::new("codex-test", Harness::Codex, "/h", "codex").unwrap(),
+    ];
+    let snapshot = Snapshot::collect(
+        &Store::open_in_memory().unwrap(),
+        &files,
+        15.0,
+        chrono::Utc::now(),
+    )
+    .unwrap();
+    for (model, names) in [
+        ("claude-sonnet-5-5", vec!["plain"]),
+        ("glm-5.3", vec!["zai"]),
+        ("k3.1-pro", vec!["kimi"]),
+        ("my-model", vec!["plain", "custom"]),
+    ] {
+        let choice: Choice = format!("claude/{model}").parse().unwrap();
+        let c = candidate(&choice, &catalog, &snapshot).unwrap();
+        assert_eq!(
+            c.accounts
+                .iter()
+                .map(|a| a.file.name.as_str())
+                .collect::<Vec<_>>(),
+            names,
+            "{model}"
+        );
+    }
+    let choices: Vec<Choice> = [
+        "claude/claude-sonnet-5-5",
+        "claude/glm-5.3",
+        "codex/gpt-6.1-sol/high",
+    ]
+    .iter()
+    .map(|s| s.parse().unwrap())
+    .collect();
+    let candidates = so_router::eligible::eligible(&choices, &catalog, &snapshot, &[]);
+    let ranked = apply_claude_rank(candidates, &catalog);
+    assert_eq!(
+        ranked.iter().map(|c| c.choice.id()).collect::<Vec<_>>(),
+        ["claude/glm-5.3", "codex/gpt-6.1-sol/high"]
+    );
+}
+
+#[tokio::test]
+async fn pinned_endpoint_uses_opus_and_plain_account_rejects_endpoint_model() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    w.accounts.push(endpoint_account("zai", "zai", &[]));
+    let mut p = params("x");
+    p.account = Some("zai".into());
+    let r = route_detailed(&w.inputs(), &p).await.unwrap().result;
+    assert_eq!((r.account.as_str(), r.model.as_str()), ("zai", "glm-5.3"));
+    p.account = Some("claude-a".into());
+    p.model = Some("claude/glm-5.3".into());
+    let e = route_detailed(&w.inputs(), &p).await.unwrap_err();
+    assert!(e.to_string().contains("does not serve"), "{e}");
+}
+
+#[tokio::test]
+async fn pinned_account_with_a_different_harness_pin_errors_on_the_harness_first() {
+    let w = world("http://127.0.0.1:1/x", false);
+    let mut p = params("x");
+    p.account = Some("claude-a".into());
+    p.harness = Some("codex".into());
+    p.model = Some("gpt-6.1-sol".into());
+    let e = route_detailed(&w.inputs(), &p).await.unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("account claude-a is a claude account; harness pin is codex"),
+        "{e}"
+    );
+}
+
+#[tokio::test]
+async fn endpoint_models_without_accounts_do_not_change_tier_picks() {
+    let mut w = world("http://127.0.0.1:1/x", false);
+    w.config.router.levels = vec![
+        level("listed", 0, 9, &["claude/glm-5.3", CODEX_BIG]),
+        Level {
+            name: "tier".into(),
+            min: 10,
+            max: 100,
+            tier: Some(LevelTier::High),
+            models: vec![],
+        },
+    ];
+    let snapshot = Snapshot::collect(&w.store, &w.accounts, 15.0, chrono::Utc::now()).unwrap();
+    assert!(
+        so_router::eligible::candidate(&"claude/glm-5.3".parse().unwrap(), &w.catalog, &snapshot)
+            .is_none()
+    );
+    let result = route_detailed(&w.inputs(), &params("x"))
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(result.choice_id, CODEX_BIG);
+}
+
 /// Routes `p` with the snapshot adjusted by `edit`.
 async fn route_edited(
     w: &World,
