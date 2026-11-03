@@ -325,18 +325,8 @@ impl FromStr for Choice {
             Some((model, effort)) => (model.to_string(), Some(effort.to_string())),
             None => (rest.to_string(), None),
         };
-        if matches!(
-            harness,
-            Harness::Gemini | Harness::Kimi | Harness::Cursor | Harness::Qwen
-        ) && segments.len() > 1
-            && segments.last().is_some_and(|s| {
-                [
-                    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "thinking",
-                ]
-                .contains(s)
-            })
-        {
-            return Err(bad(format!("{harness} does not support effort")));
+        if segments.len() > 1 && harness.accepted_efforts().is_some_and(|ok| ok.is_empty()) {
+            return Err(bad(format!("{harness} does not accept an effort")));
         }
         let (model, effort) = match harness {
             Harness::Opencode => match segments.len() {
@@ -688,7 +678,21 @@ mod tests {
         for name in ["gemini", "kimi", "cursor", "qwen"] {
             let good = format!("{name}/gemini-2.5-pro");
             assert!(resolve_model_ref(None, Some(&good), None).is_ok());
-            assert!(resolve_model_ref(None, Some(&format!("{good}/high")), None).is_err());
+            for suffix in ["high", "anything"] {
+                let bad = format!("{good}/{suffix}");
+                let message = format!("{name} does not accept an effort");
+                assert!(
+                    bad.parse::<Choice>()
+                        .unwrap_err()
+                        .to_string()
+                        .contains(&message)
+                );
+                assert!(
+                    resolve_model_ref(None, Some(&bad), None)
+                        .unwrap_err()
+                        .contains(&message)
+                );
+            }
         }
     }
 

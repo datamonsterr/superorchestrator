@@ -37,11 +37,7 @@ impl ToolSpec {
 const PARAM_DOCS: &[(&str, &str, &str)] = &[
     ("route", "exclude", "model refs to skip"),
     ("route", "exclude_accounts", "account names to skip"),
-    (
-        "spawn_agent",
-        "prompt",
-        "goal, checks, exclusions, pointers",
-    ),
+    ("spawn_agent", "prompt", "goal, checks, scope, pointers"),
     (
         "spawn_agent",
         "harness",
@@ -50,7 +46,11 @@ const PARAM_DOCS: &[(&str, &str, &str)] = &[
     ("spawn_agent", "model", "model, or harness/model/effort"),
     ("spawn_agent", "isolation", "default worktree"),
     ("spawn_agent", "output_schema", "JSON Schema of the result"),
-    ("spawn_agent", "review", "pending_review: accept or reject"),
+    (
+        "spawn_agent",
+        "review",
+        "pending_review: accept_run or reject_run",
+    ),
     (
         "spawn_agent",
         "checks",
