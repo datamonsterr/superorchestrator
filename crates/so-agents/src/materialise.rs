@@ -1084,6 +1084,30 @@ maxTurns: 7";
     }
 
     #[test]
+    fn acp_agents_keep_instructions_and_report_unsupported_fields() {
+        for h in [
+            Harness::Copilot,
+            Harness::Gemini,
+            Harness::Kimi,
+            Harness::Cursor,
+            Harness::Qwen,
+        ] {
+            let f = fx();
+            let d = agent(&f, FULL);
+            let m = materialise(&d, h, &f.run, &f.cwd, &f.paths).unwrap();
+            assert_eq!(m.system_addendum_extra, "Be careful.");
+            assert_eq!(m.gaps, gaps(&d, h));
+            let joined = m.gaps.join("\n");
+            for field in ["tools", "skills", "hooks", "inline"] {
+                assert!(joined.contains(field), "{h}: missing {field}: {joined}");
+            }
+            let mut plain = agent(&f, "");
+            plain.dir = None;
+            assert!(gaps(&plain, h).is_empty(), "{h}");
+        }
+    }
+
+    #[test]
     fn plain_agent_has_no_gaps_anywhere() {
         let f = fx();
         let mut d = agent(&f, "");
