@@ -143,7 +143,7 @@ pub fn add(
     home: Option<&str>,
 ) -> Result<AccountFile> {
     let home_spec = home.map_or_else(|| format!("~/.{name}"), str::to_string);
-    let account = AccountFile::new(name, harness, &home_spec, harness.as_str())?;
+    let account = AccountFile::new(name, harness, &home_spec, harness.binary())?;
     ensure_new(paths, name)?;
     ensure_no_shadow(cfg, host, name)?;
     check_single_agy(paths, host, name, harness)?;
@@ -218,7 +218,7 @@ pub fn import(
     harness: Harness,
     home: &str,
 ) -> Result<AccountFile> {
-    let account = AccountFile::new(name, harness, home, harness.as_str())?;
+    let account = AccountFile::new(name, harness, home, harness.binary())?;
     ensure_new(paths, name)?;
     ensure_no_shadow(cfg, host, name)?;
     check_single_agy(paths, host, name, harness)?;
@@ -237,10 +237,19 @@ pub fn import(
 
 /// Homes of the harness defaults; never purged, nor anything inside or above.
 fn default_homes(host: &HostEnv) -> Vec<PathBuf> {
-    [".codex", ".claude", ".gemini", ".local/share/opencode"]
-        .iter()
-        .map(|r| host.home.join(r))
-        .collect()
+    [
+        ".codex",
+        ".claude",
+        ".gemini",
+        ".local/share/opencode",
+        ".copilot",
+        ".kimi-code",
+        ".cursor",
+        ".qwen",
+    ]
+    .iter()
+    .map(|r| host.home.join(r))
+    .collect()
 }
 
 fn related(a: &Path, b: &Path) -> bool {
@@ -419,6 +428,18 @@ pub fn login_command(account: &AccountFile, host: &HostEnv, has_tty: bool) -> Re
     let wrapper_note = |msg: &str| Some(msg.to_string());
     let env = build_launch_vars(account, host)?;
     Ok(match account.harness {
+        Harness::Copilot | Harness::Cursor | Harness::Kimi => LoginPlan {
+            argv: vec![bin, "login".into()],
+            env,
+            needs_tty: true,
+            note: None,
+        },
+        Harness::Gemini | Harness::Qwen => LoginPlan {
+            argv: vec![bin],
+            env,
+            needs_tty: true,
+            note: wrapper_note("sign in inside the session"),
+        },
         Harness::Codex => LoginPlan {
             argv: if has_tty {
                 vec![bin, "login".into()]
@@ -1124,6 +1145,60 @@ mod tests {
                 .enabled
         );
         assert!(set_enabled(&f.paths, &f.host, "nope-x", true).is_err());
+    }
+
+    #[test]
+    fn acp_login_plans_and_wrappers() {
+        let f = fx();
+        for (name, binary, var, args) in [
+            (
+                "copilot",
+                "copilot",
+                "COPILOT_HOME",
+                vec!["copilot", "login"],
+            ),
+            ("gemini", "gemini", "GEMINI_CLI_HOME", vec!["gemini"]),
+            ("kimi", "kimi", "KIMI_CODE_HOME", vec!["kimi", "login"]),
+            (
+                "cursor",
+                "agent",
+                "CURSOR_CONFIG_DIR",
+                vec!["agent", "login"],
+            ),
+            ("qwen", "qwen", "QWEN_HOME", vec!["qwen"]),
+        ] {
+            let a = AccountFile::new(
+                &format!("{name}-test"),
+                name.parse().unwrap(),
+                "~/account",
+                binary,
+            )
+            .unwrap();
+            let p = login_command(&a, &f.host, true).unwrap();
+            assert_eq!(p.argv, args);
+            assert!(p.needs_tty);
+            assert_eq!(
+                p.env[0],
+                (
+                    var.into(),
+                    f.host.home.join("account").to_string_lossy().into_owned()
+                )
+            );
+            let path = write_wrapper(
+                &f.host.home.join("bin"),
+                &f.host.home.join("bak"),
+                &a.name,
+                SELF_EXE,
+            )
+            .unwrap();
+            assert_eq!(
+                std::fs::read_to_string(path).unwrap(),
+                format!(
+                    "#!/bin/sh\n# managed-by: superorchestrator\nexec superorchestrator exec {} -- \"$@\"\n",
+                    a.name
+                )
+            );
+        }
     }
 
     #[test]

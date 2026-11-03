@@ -84,6 +84,11 @@ pub fn check_launch_values(
                 safe && id.len() == 36 && uuid::Uuid::parse_str(id).is_ok(),
                 "a hyphenated UUID",
             ),
+            Harness::Copilot
+            | Harness::Gemini
+            | Harness::Kimi
+            | Harness::Cursor
+            | Harness::Qwen => (safe, "a nonempty safe ASCII id"),
             Harness::Opencode => (
                 safe && id
                     .strip_prefix("ses_")
@@ -496,6 +501,11 @@ impl AnyDriver {
     /// future harnesses, see [`DriverError::Unsupported`]).
     pub fn for_harness(h: Harness, config: DriverConfig) -> Result<Self, DriverError> {
         match h {
+            Harness::Copilot
+            | Harness::Gemini
+            | Harness::Kimi
+            | Harness::Cursor
+            | Harness::Qwen => Err(DriverError::Unsupported(h)),
             Harness::Claude => Ok(AnyDriver::Claude(ClaudeDriver::new(config))),
             Harness::Agy => Ok(AnyDriver::Agy(AgyDriver::new(config))),
             Harness::Opencode => Ok(AnyDriver::Opencode(OpencodeDriver::new(config))),

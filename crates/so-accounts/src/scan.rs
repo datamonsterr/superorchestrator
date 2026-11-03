@@ -82,6 +82,17 @@ pub fn scan(host: &HostEnv) -> Vec<ImportCandidate> {
     if claude.is_dir() {
         push("claude-acc1".into(), Harness::Claude, claude);
     }
+    for (name, harness, path) in [
+        ("copilot", Harness::Copilot, home.join(".copilot")),
+        ("gemini", Harness::Gemini, home.to_path_buf()),
+        ("kimi", Harness::Kimi, home.join(".kimi-code")),
+        ("cursor", Harness::Cursor, home.join(".cursor")),
+        ("qwen", Harness::Qwen, home.join(".qwen")),
+    ] {
+        if path.is_dir() {
+            push(format!("{name}-acc1"), harness, path);
+        }
+    }
     out.retain(|c| signed_in(c, host));
     dedupe(out)
 }
@@ -101,7 +112,7 @@ fn signed_in(c: &ImportCandidate, host: &HostEnv) -> bool {
     };
     match sign_in_state(&acct, host) {
         Ok(SignIn::SignedIn) => true,
-        Ok(SignIn::Unknown) => c.home.join("projects").is_dir(),
+        Ok(SignIn::Unknown) => c.harness == Harness::Claude && c.home.join("projects").is_dir(),
         _ => false,
     }
 }

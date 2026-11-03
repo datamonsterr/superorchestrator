@@ -336,6 +336,11 @@ impl Default for Router {
                 Harness::Opencode,
                 Harness::Codex,
                 Harness::Claude,
+                Harness::Copilot,
+                Harness::Gemini,
+                Harness::Kimi,
+                Harness::Cursor,
+                Harness::Qwen,
             ],
             weights: Weights::default(),
             instruction: DEFAULT_ROUTER_INSTRUCTION.to_string(),
@@ -938,7 +943,12 @@ mod tests {
                 Harness::Agy,
                 Harness::Opencode,
                 Harness::Codex,
-                Harness::Claude
+                Harness::Claude,
+                Harness::Copilot,
+                Harness::Gemini,
+                Harness::Kimi,
+                Harness::Cursor,
+                Harness::Qwen
             ]
         );
         assert_eq!(

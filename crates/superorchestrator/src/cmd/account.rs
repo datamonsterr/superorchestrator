@@ -109,7 +109,16 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
             // codex and opencode sign in through `account login`; claude and agy
             // sign in inside their wrapper, which `account login` cannot drive
             // without a terminal.
-            let via_cli = matches!(acc.harness, Harness::Codex | Harness::Opencode);
+            let via_cli = matches!(
+                acc.harness,
+                Harness::Codex
+                    | Harness::Opencode
+                    | Harness::Copilot
+                    | Harness::Gemini
+                    | Harness::Kimi
+                    | Harness::Cursor
+                    | Harness::Qwen
+            );
             write_login_hint(w, login, via_cli)?;
         }
         Ok(())

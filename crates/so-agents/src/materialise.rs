@@ -146,6 +146,9 @@ pub fn gaps(def: &AgentDef, harness: Harness) -> Vec<String> {
         .iter()
         .any(|m| matches!(m, McpRef::Inline { .. }));
     match harness {
+        Harness::Copilot | Harness::Gemini | Harness::Kimi | Harness::Cursor | Harness::Qwen => {
+            g.push("agent materialisation is unsupported for this harness".into());
+        }
         Harness::Claude => {
             for t in &def.tools {
                 if t.contains('(') || t.starts_with("mcp__") {
@@ -387,7 +390,7 @@ pub fn materialise(
             McpRef::Name(_) => None,
         })
         .collect();
-    let want_skills = !matches!(harness, Harness::Opencode);
+    let want_skills = matches!(harness, Harness::Claude | Harness::Codex | Harness::Agy);
 
     match harness {
         Harness::Claude => {
@@ -418,7 +421,12 @@ pub fn materialise(
             m.config_fragment = Some(frag);
             m.mcp_extra = inline;
         }
-        Harness::Agy => {}
+        Harness::Agy
+        | Harness::Copilot
+        | Harness::Gemini
+        | Harness::Kimi
+        | Harness::Cursor
+        | Harness::Qwen => {}
     }
 
     if want_skills {

@@ -74,6 +74,15 @@ pub(crate) fn build_launch_vars(
 fn harness_vars(account: &AccountFile, host: &HostEnv, home: &Path) -> Vec<(String, String)> {
     let s = |p: &Path| p.to_string_lossy().into_owned();
     match account.harness {
+        Harness::Copilot => vec![("COPILOT_HOME".into(), s(home))],
+        Harness::Gemini => vec![("GEMINI_CLI_HOME".into(), s(home))],
+        Harness::Kimi => vec![("KIMI_CODE_HOME".into(), s(home))],
+        Harness::Qwen => vec![("QWEN_HOME".into(), s(home))],
+        // Cursor does not document its auth storage; isolate HOME as well.
+        Harness::Cursor => vec![
+            ("CURSOR_CONFIG_DIR".into(), s(home)),
+            ("HOME".into(), s(home)),
+        ],
         Harness::Codex => vec![("CODEX_HOME".into(), s(home))],
         // The default install keeps the real XDG layout; everything else
         // gets an isolated XDG triple.
@@ -105,7 +114,14 @@ pub fn build_launch(account: &AccountFile, host: &HostEnv) -> Result<Launch> {
     };
     launch.vars = harness_vars(account, host, &home);
     match account.harness {
-        Harness::Codex | Harness::Opencode | Harness::Claude => {}
+        Harness::Codex
+        | Harness::Opencode
+        | Harness::Claude
+        | Harness::Copilot
+        | Harness::Gemini
+        | Harness::Kimi
+        | Harness::Cursor
+        | Harness::Qwen => {}
         Harness::Agy => {
             let gemini = home.join(".gemini");
             let real = host.home.join(".gemini");

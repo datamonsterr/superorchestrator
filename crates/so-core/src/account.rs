@@ -9,7 +9,19 @@ use crate::paths::Paths;
 use crate::types::Harness;
 
 /// Names an account must not take: they would shadow a real binary.
-const RESERVED: [&str; 5] = ["codex", "agy", "opencode", "claude", "superorchestrator"];
+const RESERVED: [&str; 11] = [
+    "codex",
+    "agy",
+    "opencode",
+    "claude",
+    "copilot",
+    "gemini",
+    "kimi",
+    "cursor",
+    "qwen",
+    "agent",
+    "superorchestrator",
+];
 
 /// Checks `^[a-z][a-z0-9-]{1,31}$` and that the name is not reserved.
 pub fn validate_account_name(name: &str) -> Result<()> {

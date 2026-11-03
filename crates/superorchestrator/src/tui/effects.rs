@@ -273,7 +273,16 @@ fn perform(
             // Fails early when the harness binary is missing.
             let plan = manage::login_command(&account, host, true)?;
             let (program, args) = plan.argv.split_first().context("empty login command")?;
-            let via_cli = matches!(account.harness, Harness::Codex | Harness::Opencode);
+            let via_cli = matches!(
+                account.harness,
+                Harness::Codex
+                    | Harness::Opencode
+                    | Harness::Copilot
+                    | Harness::Gemini
+                    | Harness::Kimi
+                    | Harness::Cursor
+                    | Harness::Qwen
+            );
             // claude and agy sign in inside a session of their wrapper.
             let wrapper_ok =
                 via_cli || so_accounts::resolve_binary(program, host.path_var.as_deref()).is_ok();
@@ -643,7 +652,16 @@ fn step_body(ctx: &Ctx, host: &HostEnv, step: SetupStep) -> Result<(StepState, V
             )];
             for a in &pending {
                 let login = login_json(a, host)?;
-                let via_cli = matches!(a.harness, Harness::Codex | Harness::Opencode);
+                let via_cli = matches!(
+                    a.harness,
+                    Harness::Codex
+                        | Harness::Opencode
+                        | Harness::Copilot
+                        | Harness::Gemini
+                        | Harness::Kimi
+                        | Harness::Cursor
+                        | Harness::Qwen
+                );
                 let key = if via_cli { "cli" } else { "command" };
                 lines.push(format!(
                     "{}: {}",

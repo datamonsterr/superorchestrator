@@ -309,6 +309,11 @@ impl UsageService {
                 }
                 Err(e) => Err(e),
             },
+            Harness::Copilot
+            | Harness::Gemini
+            | Harness::Kimi
+            | Harness::Cursor
+            | Harness::Qwen => Ok(Vec::new()),
             Harness::Opencode | Harness::Claude => {
                 let acct = account.clone();
                 blocking(&self.store, move |s| {

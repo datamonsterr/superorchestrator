@@ -60,7 +60,7 @@ pub(crate) fn detect_harnesses(
         .iter()
         .map(|&harness| HarnessInfo {
             harness,
-            binary: resolve_binary(harness.as_str(), host.path_var.as_deref()).ok(),
+            binary: resolve_binary(harness.binary(), host.path_var.as_deref()).ok(),
             accounts: accounts
                 .iter()
                 .filter(|a| a.harness == harness)
@@ -138,6 +138,9 @@ fn asked(args: &SetupArgs, h: Harness) -> Option<u32> {
         Harness::Claude => args.claude,
         Harness::Opencode => args.opencode,
         Harness::Agy => args.agy,
+        Harness::Copilot | Harness::Gemini | Harness::Kimi | Harness::Cursor | Harness::Qwen => {
+            None
+        }
     }
 }
 
@@ -367,7 +370,16 @@ fn run_steps(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
         if !args.no_login {
             say!("{}:", a.name);
             if !ctx.json {
-                let via_cli = matches!(a.harness, Harness::Codex | Harness::Opencode);
+                let via_cli = matches!(
+                    a.harness,
+                    Harness::Codex
+                        | Harness::Opencode
+                        | Harness::Copilot
+                        | Harness::Gemini
+                        | Harness::Kimi
+                        | Harness::Cursor
+                        | Harness::Qwen
+                );
                 write_login_hint(&mut std::io::stdout().lock(), &login, via_cli)?;
             }
         }
