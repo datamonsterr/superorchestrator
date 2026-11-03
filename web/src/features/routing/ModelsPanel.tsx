@@ -6,12 +6,13 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { HarnessBadge } from '@/components/common/HarnessBadge'
 import { RelativeTime } from '@/components/common/RelativeTime'
-import { useModels, useRefreshModels } from '@/api/queries'
+import { useInsights, useModels, useRefreshModels } from '@/api/queries'
 import type { ModelEntry } from '@/api/types'
 
 export function ModelsPanel() {
   const models = useModels()
   const refresh = useRefreshModels()
+  const unassigned = new Set((useInsights().data?.unassigned_models ?? []).map((m) => `${m.harness}/${m.model}`))
   const byHarness = new Map<string, ModelEntry[]>()
   for (const m of models.data?.models ?? []) byHarness.set(m.harness, [...(byHarness.get(m.harness) ?? []), m])
 
@@ -55,6 +56,7 @@ export function ModelsPanel() {
                   {list.map((m) => (
                     <li key={m.id} className="flex flex-wrap items-center gap-1.5">
                       <span className="font-mono text-xs">{m.id}</span>
+                      {unassigned.has(`${m.harness}/${m.id}`) && <Badge variant="secondary">not in any level</Badge>}
                       {m.efforts.map((e) => (
                         <Badge key={e} variant="outline">
                           {e}

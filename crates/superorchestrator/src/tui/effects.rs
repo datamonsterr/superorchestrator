@@ -19,7 +19,7 @@ use so_supervisor::SupervisorClient;
 use so_supervisor::services::accounts::{FlagAction, apply_flag, flag_pools};
 
 use super::app::{Effect, Launch, SetupStep, StepState, Update};
-use super::data::{SupInfo, load_detail, load_snapshot};
+use super::data::{SupInfo, load_detail, load_insights, load_snapshot};
 use crate::cmd::account::{login_json, write_login_hint};
 use crate::cmd::{install, runs, setup};
 use crate::ctx::Ctx;
@@ -216,6 +216,12 @@ fn read_one(ctx: &Ctx, host: &HostEnv, link: &mut Link, effect: Effect, tx: &Sen
             });
             send(tx, Update::Detail(d));
         }
+        Effect::Insights => {
+            let report = load_insights(ctx)
+                .map(|r| r.map(Box::new))
+                .map_err(|e| format!("insights unavailable: {e:#}"));
+            send(tx, Update::Insights(report));
+        }
         _ => {}
     }
 }
@@ -251,7 +257,7 @@ fn perform(
         }
     };
     Ok(Some(match effect {
-        Effect::Refresh | Effect::Detail { .. } => return Ok(None),
+        Effect::Refresh | Effect::Detail { .. } | Effect::Insights => return Ok(None),
         Effect::Levels(cmd) => {
             let result = crate::cmd::levels::apply(ctx, cmd)?;
             if result.changed {
@@ -259,6 +265,12 @@ fn perform(
             } else {
                 result.text
             }
+        }
+        Effect::ApplySuggestion(id) => {
+            crate::cmd::levels::apply_suggestion(ctx, &id)?;
+            skill_warnings(format!(
+                "applied suggestion {id}; restart the supervisor to apply"
+            ))
         }
         Effect::AddAccounts { harness, count } => {
             let cfg = ctx.config()?;

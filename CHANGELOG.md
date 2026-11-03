@@ -16,10 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `install` writes `startup_timeout_sec = 30`, `tool_timeout_sec = 1860` and `env_vars = ["XDG_RUNTIME_DIR"]` on the Codex MCP entries, and a managed block in `$CODEX_HOME/AGENTS.md` and each Codex account's `AGENTS.md` (`--no-agents-md` skips it). The three skills are harness-neutral with Codex notes.
   - Codex plugin in `plugin-codex/` and marketplace `.agents/plugins/marketplace.json`.
   - Hidden `superorchestrator hook session-start|stop` for Claude Code and Codex hooks.
+- Model refresh includes the documented Claude model list when a Claude account is enabled and reports catalog models not assigned to levels.
+- Level insights and deterministic suggestions are available in the CLI, web UI and TUI.
 
 ### Changed
 
 - `wait_agent` caps its timeout at 30 minutes, and `spawn_agent(wait: true)` returns after at most 30 minutes with the current state. The run continues.
+
+### Fixed
+
+- Routing record prompt excerpts now contain a redacted, whitespace-collapsed excerpt of the run prompt (up to 160 characters).
 
 ### Security
 
@@ -59,6 +65,9 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Changed
 
+- `models refresh --json` renames `unused_models` to `unassigned_models`.
+- `models list` gains a `LEVELS` column and a `levels` field in `--json`.
+- `levels suggest` prints deterministic level suggestions, and the TUI Levels tab shows insights and suggestions (`s` focuses the suggestions, `A` or Enter asks to apply the selected one).
 - Seeded complexity levels route harder work to Codex first: `moderate` leads with `codex/gpt-6-luna/medium`, `complex` with `codex/gpt-6.1-sol/high` and `expert` with `codex/gpt-6.1-sol/xhigh`. `simple` also lists `gpt-6-luna`, which is seeded only for `moderate` and below. The seed no longer lists `opencode/opencode/muse-spark-1.3`. `gpt-6-luna` is added to the bundled catalog and the bundled eval labels follow the new seed. Existing configs are not changed; copy the levels from `seed/` to adopt them.
 
 - The seeded choice `opencode-muse-long` uses `opencode/muse-spark-1.3`; the old model id

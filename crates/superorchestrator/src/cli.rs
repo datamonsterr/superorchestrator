@@ -436,6 +436,11 @@ pub enum ConfigCmd {
 pub enum LevelsCmd {
     /// List levels, their ranges and the models each allows
     List,
+    /// Analyze levels and optionally apply a suggestion
+    Suggest {
+        #[arg(long)]
+        apply: Option<String>,
+    },
     /// Add a level
     Add(LevelAdd),
     /// Change a level's name, range or tier

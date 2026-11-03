@@ -162,7 +162,7 @@ async fn fx_cfg(token: Option<&str>, config: Config) -> Fx {
             &session,
             Some(&run.id),
             EventType::RouteDecision,
-            json!({"result": route, "prompt_excerpt": "do it"}),
+            json!({"result": route}),
             10,
         ))
         .unwrap();
@@ -469,6 +469,66 @@ async fn route_decision_and_route_log() {
     f.handle.state().store.insert_run(&other).unwrap();
     let (s, _) = get(&f.app, &format!("/api/v1/runs/{}/route", other.id)).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn route_log_uses_redacted_truncated_run_prompt() {
+    let f = fx().await;
+    let mut run = run_row(&f.session, RunState::Running);
+    run.prompt = Some(format!("  hello\n{SECRET} {}", "é".repeat(180)));
+    f.handle.state().store.insert_run(&run).unwrap();
+    let query = so_store::EventQuery {
+        event_type: Some(EventType::RouteDecision),
+        limit: 10,
+        ..Default::default()
+    };
+    let mut route = f
+        .handle
+        .state()
+        .store
+        .query_events(&query)
+        .unwrap()
+        .remove(0);
+    route.id = new_id();
+    route.run_id = Some(run.id);
+    route.ts = Utc::now();
+    f.handle.state().store.append_event(&route).unwrap();
+    let (status, body) = get(&f.app, "/api/v1/routing/records").await;
+    assert_eq!(status, StatusCode::OK);
+    let excerpt = body["items"][0]["prompt_excerpt"].as_str().unwrap();
+    assert_eq!(excerpt, format!("hello [REDACTED] {}…", "é".repeat(142)));
+    assert_eq!(excerpt.chars().count(), 160);
+}
+
+#[tokio::test]
+async fn route_log_falls_back_when_run_prompt_is_unavailable() {
+    let f = fx().await;
+    let store = &f.handle.state().store;
+    let mut run = run_row(&f.session, RunState::Running);
+    run.prompt = None;
+    store.insert_run(&run).unwrap();
+    let query = so_store::EventQuery {
+        event_type: Some(EventType::RouteDecision),
+        limit: 10,
+        ..Default::default()
+    };
+    let mut route = store.query_events(&query).unwrap().remove(0);
+    route.data["prompt_excerpt"] = json!(format!("fallback {SECRET}"));
+    route.ts = Utc::now();
+    route.id = new_id();
+    route.run_id = Some(run.id);
+    store.append_event(&route).unwrap();
+    route.id = new_id();
+    route.run_id = None;
+    store.append_event(&route).unwrap();
+    let (status, body) = get(&f.app, "/api/v1/routing/records").await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    let fallbacks: Vec<_> = items
+        .iter()
+        .filter(|item| item["prompt_excerpt"] == "fallback [REDACTED]")
+        .collect();
+    assert_eq!(fallbacks.len(), 2);
 }
 
 #[tokio::test]
@@ -2602,4 +2662,33 @@ async fn mutations_refresh_an_installed_skill_and_only_an_installed_one() {
     );
     // Both files follow.
     assert_eq!(skill(), std::fs::read_to_string(&files[1]).unwrap());
+}
+
+#[tokio::test]
+async fn routing_insights_are_authenticated_and_redacted() {
+    let f = fx().await;
+    let mut run = run_row(&f.session, RunState::Failed);
+    run.prompt = Some(format!("task {SECRET}"));
+    f.handle.state().store.insert_run(&run).unwrap();
+    f.handle
+        .state()
+        .store
+        .append_event(&event(
+            &f.session,
+            Some(&run.id),
+            EventType::RouteDecision,
+            json!({"complexity": 30}),
+            0,
+        ))
+        .unwrap();
+    let (status, body) = get(&f.app, "/api/v1/routing/insights").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["levels"].is_array() && body["suggestions"].is_array());
+    assert!(body.to_string().contains("[REDACTED]") && !body.to_string().contains(SECRET));
+    let (status, _, _) = send(
+        &f.app,
+        anonymous_request("GET", "/api/v1/routing/insights", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

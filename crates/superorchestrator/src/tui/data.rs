@@ -398,6 +398,24 @@ fn level_rows(ctx: &Ctx) -> anyhow::Result<Vec<LevelRow>> {
         .collect())
 }
 
+/// The routing insights report, read-only; `None` when no state.db exists yet. Not part of
+/// the snapshot: it costs about half a second on a real database.
+pub fn load_insights(
+    ctx: &Ctx,
+) -> anyhow::Result<Option<so_supervisor::services::insights::InsightsReport>> {
+    if !ctx.paths.state_db().exists() {
+        return Ok(None);
+    }
+    let store = so_store::Store::open_read_only(ctx.paths.state_db())?;
+    let catalog = so_router::Catalog::load(&ctx.paths)?;
+    Ok(Some(so_supervisor::services::insights::insights_report(
+        &store,
+        &ctx.config()?,
+        &catalog,
+        chrono::Utc::now(),
+    )?))
+}
+
 /// Expand each catalog model into the model refs the picker can offer.
 fn catalog_refs(ctx: &Ctx) -> anyhow::Result<Vec<String>> {
     let catalog = so_router::Catalog::load(&ctx.paths)?;
@@ -557,6 +575,23 @@ mod tests {
         // Offline: the config decides; unreadable config marks nothing.
         assert!(is_reserved("a", None, Some(&config)));
         assert!(!is_reserved("a", None, None));
+    }
+
+    #[test]
+    fn missing_state_db_gives_no_insights_and_no_error() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(Some(d.path().to_path_buf()), false, true).unwrap();
+        assert!(!ctx.paths.state_db().exists());
+        assert!(load_insights(&ctx).unwrap().is_none());
+    }
+
+    #[test]
+    fn existing_state_db_gives_a_report() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(Some(d.path().to_path_buf()), false, true).unwrap();
+        drop(so_store::Store::open(ctx.paths.state_db()).unwrap());
+        let report = load_insights(&ctx).unwrap().unwrap();
+        assert_eq!(report.history_runs, 0);
     }
 
     #[test]

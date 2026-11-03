@@ -16,6 +16,9 @@ const LEVELS_KEY: &str = "router.levels";
 const RESTART: &str = "restart the supervisor to apply";
 
 pub fn run(ctx: &Ctx, cmd: LevelsCmd) -> Result<()> {
+    if let LevelsCmd::Suggest { apply } = &cmd {
+        return suggest(ctx, apply.as_deref());
+    }
     if matches!(cmd, LevelsCmd::List) {
         return list(ctx);
     }
@@ -49,7 +52,7 @@ pub(crate) struct EditResult {
 
 pub(crate) fn apply(ctx: &Ctx, cmd: LevelsCmd) -> Result<EditResult> {
     match cmd {
-        LevelsCmd::List => bail!("list is not a level edit"),
+        LevelsCmd::List | LevelsCmd::Suggest { .. } => bail!("command is not a level edit"),
         LevelsCmd::Add(a) => add(ctx, a),
         LevelsCmd::Edit(a) => edit(ctx, a),
         LevelsCmd::Remove { name } => remove(ctx, &name),
@@ -177,6 +180,120 @@ fn list(ctx: &Ctx) -> Result<()> {
             )
         },
     )
+}
+
+/// Recomputes the insights report and writes the levels of suggestion `id` to config.toml.
+pub(crate) fn apply_suggestion(ctx: &Ctx, id: &str) -> Result<EditResult> {
+    let report = load_report(ctx)?;
+    let suggestion = so_supervisor::services::insights::find_suggestion(&report, id)?;
+    let mut draft = Draft::load(ctx)?;
+    draft.levels = suggestion.levels.clone();
+    draft.save(ctx, &format!("applied {id}"))
+}
+
+fn load_report(ctx: &Ctx) -> Result<so_supervisor::services::insights::InsightsReport> {
+    let config = ctx.config()?;
+    let catalog = Catalog::load(&ctx.paths)?;
+    // Never create or migrate state.db here; without one the report is built from an empty history.
+    let store = if ctx.paths.state_db().exists() {
+        so_store::Store::open_read_only(ctx.paths.state_db())?
+    } else {
+        so_store::Store::open_in_memory()?
+    };
+    Ok(so_supervisor::services::insights::insights_report(
+        &store,
+        &config,
+        &catalog,
+        chrono::Utc::now(),
+    )?)
+}
+
+fn suggest(ctx: &Ctx, apply: Option<&str>) -> Result<()> {
+    if let Some(id) = apply {
+        let result = apply_suggestion(ctx, id)?;
+        ctx.refresh_skill();
+        return ctx.emit_ok(result.value, &result.text);
+    }
+    let report = load_report(ctx)?;
+    ctx.emit(&report, |w| write_report(w, &report))
+}
+
+pub(crate) fn percent(value: Option<f64>) -> String {
+    value.map_or_else(|| "-".into(), |v| format!("{:.1}%", v * 100.0))
+}
+
+pub(crate) fn number(value: Option<f64>) -> String {
+    value.map_or_else(|| "-".into(), |v| format!("{v:.1}"))
+}
+
+fn write_report(
+    w: &mut dyn std::io::Write,
+    report: &so_supervisor::services::insights::InsightsReport,
+) -> std::io::Result<()> {
+    writeln!(w, "Routing insights: {} history runs", report.history_runs)?;
+    for level in &report.levels {
+        writeln!(
+            w,
+            "{} {}-{}: {} runs",
+            level.name, level.min, level.max, level.runs
+        )?;
+        writeln!(
+            w,
+            "  accepted {} rejected {} failed {} failover {}",
+            percent(level.accepted_rate),
+            percent(level.rejected_rate),
+            percent(level.failed_rate),
+            percent(level.failover_rate)
+        )?;
+        writeln!(
+            w,
+            "  median complexity {} median duration {} ms",
+            number(level.complexity_median),
+            number(level.median_duration_ms)
+        )?;
+        for model in level.models.iter().take(3) {
+            writeln!(
+                w,
+                "  model {}: {} runs, {} success",
+                model.choice_id.as_deref().unwrap_or("unknown"),
+                model.runs,
+                percent(model.success_rate)
+            )?;
+        }
+        for example in &level.examples {
+            let outcome = example
+                .outcome
+                .map_or("-", so_router::insights::Outcome::as_str);
+            writeln!(
+                w,
+                "  [{}] c={:.0} {} {}{}",
+                example.source,
+                example.complexity,
+                outcome,
+                example.excerpt,
+                if example.borderline {
+                    " (borderline)"
+                } else {
+                    ""
+                }
+            )?;
+        }
+    }
+    writeln!(w, "Suggestions:")?;
+    if report.suggestions.is_empty() {
+        writeln!(w, "No suggestions.")?;
+    }
+    for suggestion in &report.suggestions {
+        writeln!(w, "  {}: {}", suggestion.id, suggestion.rationale)?;
+        for change in &suggestion.diff {
+            writeln!(
+                w,
+                "    {}.{}: {} -> {}",
+                change.level, change.field, change.before, change.after
+            )?;
+        }
+    }
+    writeln!(w, "{} unassigned models", report.unassigned_models.len())
 }
 
 // ------------------------------------------------------------------ editing

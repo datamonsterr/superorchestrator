@@ -312,6 +312,7 @@ A run whose process died unexpectedly is resumed once from its native session, i
 - codex app-server `model/list`
 - `opencode models`, plus free models from models.dev, cached 24 h
 - `agy models`
+- documented Claude model list when an enabled Claude account exists
 
 The catalog is used only for discovery, validation, tiers and the free flag. `models refresh` reports listed models that the catalog does not know and catalog models that no level lists, and never edits config.
 
@@ -347,6 +348,22 @@ A file that still has `[[choices]]` at the top level, or `choices = [...]` on a 
 - expert (88-100): `opencode/opencode/muse-spark-1.3`, `codex/gpt-6.1-sol/high`, `agy/claude-sonnet-4-6/thinking`
 
 Claude is not seeded. Codex models are seeded, so they start routing when a codex account is added. A Claude model routes only when a level lists it, for example `claude/claude-sonnet-5-5/medium`, and it still ranks last unless the call names it (8.4).
+
+### 8.2.1 Level insights and suggestions
+
+`GET /api/v1/routing/insights` returns `InsightsReport`: generation time, history run count, per-level insights, suggestions and unassigned catalog models. History is mapped to the levels in effect now by complexity. Outcomes are rejected (any review rejection), accepted, failed, succeeded or other; other outcomes are excluded from rates. A bad outcome is rejected, failed, escalated or failed over.
+
+Per-level insights include complexity min/median/max and 10-point buckets, outcome counts and rates, failover and escalation rates, median duration, per-model success rate, and up to three examples nearest the level centre plus two within five points of a boundary. If history has fewer than three examples, bundled eval examples fill the set and are labelled `eval`.
+
+`superorchestrator levels suggest [--json] [--apply ID]` reports deterministic suggestions. A success rate is the share of counted runs (outcome not other) that are not bad. The rules:
+
+- `shift-boundary`: when at least five runs in the five-point band below a level's upper bound have a bad rate of at least 50% (BAD_RATE, a clear majority), move that bound down five points. The next level's `min` moves down five too, only when it was `max + 1` (gaps are kept). Skipped when the new `max` would fall below the level's `min`.
+- `promote-model`: when each compared model has at least five runs and a later model's success rate is at least 20 percentage points higher (PROMOTE_MARGIN, a gap larger than noise at small samples), move it ahead of the earlier one.
+- `assign-model`: append an unlisted catalog model to a level of its tier. A level's tier is its `tier`, else the majority catalog tier of its listed models (ties go to the higher tier). Tier-only levels are skipped. At most `MAX_ASSIGN_PER_LEVEL` (3) per level, ranked by: harness already listed in some level, then free catalog cost, then ref id. When models were cut, the last suggestion's rationale says how many.
+- `close-gap`: extend a level to cover uncovered complexity.
+- `remove-empty`: with at least two levels, remove a level that lists models when none are in the catalog. Its range goes to the lower neighbour (its `max` extended), or to the next level up (its `min` extended) when it is the lowest.
+
+Every suggestion includes its stable id, rationale, full proposed `levels` and diff, and is omitted if validation fails. `--apply ID` writes through the existing levels edit path and requires a supervisor restart. The web Insights panel applies with `PUT /api/v1/levels`; the TUI Levels tab offers apply with confirmation.
 
 ### 8.3 Decision procedure (`route`)
 
@@ -577,6 +594,8 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
 
 **API:** The JSON API under `/api/v1` mirrors the CLI. `/api/v1/stream` is SSE for events. The frontend uses only this API.
 
+`GET /api/v1/routing/insights` returns per-level routing history analysis, suggestions and unassigned models (8.2.1).
+
 ## 15. CLI
 
 `superorchestrator` with no arguments on a terminal opens the terminal UI (`tui`, below); without a terminal it prints the help. Every action in it is also a subcommand:
@@ -597,6 +616,7 @@ monitor [--session ID] [--client-pid PID] [--cwd DIR] [--window MINUTES]
 account add [--name N] [--count K] [--login]|import|login|list|remove|enable|disable|flag
 agent create|list|show|edit|remove
 models refresh|list
+levels suggest [--json] [--apply ID]
 route "<task>" [--model REF] [--agent NAME] [--explain]
 route eval [...]
 runs list|show|watch|cancel

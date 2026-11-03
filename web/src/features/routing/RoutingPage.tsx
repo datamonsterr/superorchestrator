@@ -13,6 +13,7 @@ import { useLevels, usePutLevels } from '@/api/queries'
 import type { Level } from '@/api/types'
 import { InstructionEditor } from './InstructionEditor'
 import { LevelDialog } from './LevelDialog'
+import { InsightsPanel } from './InsightsPanel'
 import { LevelsList } from './LevelsList'
 import { ModelDialog } from './ModelDialog'
 import { ModelsPanel } from './ModelsPanel'
@@ -100,6 +101,7 @@ export function RoutingPage() {
             />
           )}
           {listError !== null && <ErrorAlert error={listError} title="Could not save the levels" />}
+          <InsightsPanel />
           <ModelsPanel />
         </TabsContent>
 

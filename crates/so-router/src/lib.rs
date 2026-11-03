@@ -7,6 +7,7 @@ pub mod error;
 pub mod eval;
 pub mod heuristic;
 mod http;
+pub mod insights;
 pub mod jev;
 pub mod levels;
 pub mod route;
@@ -18,3 +19,5 @@ pub use error::{Result, RouterError};
 pub use route::{
     RouteCtx, RouteInputs, RouteOutcome, config_fingerprint, route_detailed, route_with,
 };
+
+pub mod suggest;
