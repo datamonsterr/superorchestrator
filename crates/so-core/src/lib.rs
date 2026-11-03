@@ -25,5 +25,7 @@ pub use types::*;
 pub const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 /// Codex MCP startup timeout in seconds.
 pub const CODEX_STARTUP_TIMEOUT_SECS: u64 = 30;
+/// Environment variables Codex must pass through to the MCP server (it scrubs the rest).
+pub const CODEX_MCP_ENV_VARS: &[&str] = &["XDG_RUNTIME_DIR"];
 /// Additional time for an MCP response after the longest wait completes.
 pub const CODEX_TOOL_TIMEOUT_MARGIN_SECS: u64 = 60;

@@ -87,12 +87,7 @@ fn codex_plugin_and_marketplace_are_wired() {
     let codex = &codex_mcp["mcpServers"]["superorchestrator"];
     assert_eq!(codex["command"], claude["command"]);
     assert_eq!(codex["args"], claude["args"]);
-    assert!(
-        codex["env_vars"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("XDG_RUNTIME_DIR"))
-    );
+    assert_eq!(codex["env_vars"], json!(so_core::CODEX_MCP_ENV_VARS));
     assert_eq!(
         codex["startup_timeout_sec"],
         so_core::CODEX_STARTUP_TIMEOUT_SECS
