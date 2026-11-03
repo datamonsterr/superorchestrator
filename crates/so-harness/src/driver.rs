@@ -16,6 +16,7 @@ use so_accounts::Launch;
 use so_core::{AccountFile, ErrorKind, Harness};
 use tokio::sync::mpsc;
 
+use crate::acp::{AcpControl, AcpDriver};
 use crate::agy::{AgyControl, AgyDriver};
 use crate::claude::{ClaudeControl, ClaudeDriver};
 use crate::codex::{CodexControl, CodexDriver};
@@ -402,6 +403,7 @@ pub enum ShutdownOutcome {
 /// kills whatever is left of the harness process group.
 #[derive(Debug, Clone)]
 pub enum RunControl {
+    Acp(AcpControl),
     Claude(ClaudeControl),
     Agy(AgyControl),
     Opencode(OpencodeControl),
@@ -412,6 +414,7 @@ impl RunControl {
     /// Sends a follow-up user message.
     pub async fn send(&self, text: &str) -> Result<(), DriverError> {
         match self {
+            RunControl::Acp(c) => c.send(text).await,
             RunControl::Claude(c) => c.send(text).await,
             RunControl::Agy(c) => c.send(text).await,
             RunControl::Opencode(c) => c.send(text).await,
@@ -423,6 +426,7 @@ impl RunControl {
     /// acknowledge; the run stays alive for more input.
     pub async fn interrupt(&self) -> Result<(), DriverError> {
         match self {
+            RunControl::Acp(c) => c.interrupt().await,
             RunControl::Claude(c) => c.interrupt().await,
             RunControl::Agy(c) => c.interrupt().await,
             RunControl::Opencode(c) => c.interrupt().await,
@@ -434,6 +438,7 @@ impl RunControl {
     /// then kills the process group.
     pub async fn shutdown(&self, deadline: Duration) -> Result<ShutdownOutcome, DriverError> {
         match self {
+            RunControl::Acp(c) => c.shutdown(deadline).await,
             RunControl::Claude(c) => c.shutdown(deadline).await,
             RunControl::Agy(c) => c.shutdown(deadline).await,
             RunControl::Opencode(c) => c.shutdown(deadline).await,
@@ -443,6 +448,7 @@ impl RunControl {
 
     pub fn pid(&self) -> Option<u32> {
         match self {
+            RunControl::Acp(c) => c.pid(),
             RunControl::Claude(c) => c.pid(),
             RunControl::Agy(c) => c.pid(),
             RunControl::Opencode(c) => c.pid(),
@@ -484,6 +490,7 @@ pub trait Driver {
 /// Runtime driver selection.
 #[derive(Debug, Clone)]
 pub enum AnyDriver {
+    Acp(AcpDriver),
     Claude(ClaudeDriver),
     Agy(AgyDriver),
     Opencode(OpencodeDriver),
@@ -494,7 +501,7 @@ impl AnyDriver {
     /// Whether `LaunchSpec::fork` works: claude (`--resume <id> --fork-session`), codex
     /// (`thread/fork`) and opencode (`POST /session/{id}/fork`). Agy has no fork.
     pub fn supports_fork(&self) -> bool {
-        !matches!(self, AnyDriver::Agy(_))
+        !matches!(self, AnyDriver::Agy(_) | AnyDriver::Acp(_))
     }
 
     /// Driver for a harness (all four have one; the `Result` is kept for
@@ -505,7 +512,7 @@ impl AnyDriver {
             | Harness::Gemini
             | Harness::Kimi
             | Harness::Cursor
-            | Harness::Qwen => Err(DriverError::Unsupported(h)),
+            | Harness::Qwen => Ok(AnyDriver::Acp(AcpDriver::new(h, config))),
             Harness::Claude => Ok(AnyDriver::Claude(ClaudeDriver::new(config))),
             Harness::Agy => Ok(AnyDriver::Agy(AgyDriver::new(config))),
             Harness::Opencode => Ok(AnyDriver::Opencode(OpencodeDriver::new(config))),
@@ -517,6 +524,7 @@ impl AnyDriver {
 impl Driver for AnyDriver {
     fn harness(&self) -> Harness {
         match self {
+            AnyDriver::Acp(d) => d.harness(),
             AnyDriver::Claude(d) => d.harness(),
             AnyDriver::Agy(d) => d.harness(),
             AnyDriver::Opencode(d) => d.harness(),
@@ -526,6 +534,7 @@ impl Driver for AnyDriver {
 
     async fn launch(&self, spec: LaunchSpec) -> Result<RunHandle, DriverError> {
         match self {
+            AnyDriver::Acp(d) => d.launch(spec).await,
             AnyDriver::Claude(d) => d.launch(spec).await,
             AnyDriver::Agy(d) => d.launch(spec).await,
             AnyDriver::Opencode(d) => d.launch(spec).await,
@@ -535,6 +544,7 @@ impl Driver for AnyDriver {
 
     fn join_command(&self, j: &JoinInfo) -> JoinCommand {
         match self {
+            AnyDriver::Acp(d) => d.join_command(j),
             AnyDriver::Claude(d) => d.join_command(j),
             AnyDriver::Agy(d) => d.join_command(j),
             AnyDriver::Opencode(d) => d.join_command(j),
@@ -544,6 +554,7 @@ impl Driver for AnyDriver {
 
     fn classify_error(&self, text: &str) -> ErrorKind {
         match self {
+            AnyDriver::Acp(d) => d.classify_error(text),
             AnyDriver::Claude(d) => d.classify_error(text),
             AnyDriver::Agy(d) => d.classify_error(text),
             AnyDriver::Opencode(d) => d.classify_error(text),
