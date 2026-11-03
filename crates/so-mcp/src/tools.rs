@@ -304,6 +304,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn wait_descriptions_follow_max_wait() {
+        let minutes = format!("{} minutes", so_core::MAX_WAIT.as_secs() / 60);
+        for name in ["spawn_agent", "wait_agent"] {
+            let spec = tool_specs(false).find(|t| t.name == name).unwrap();
+            assert!(spec.description.contains(&minutes), "{name}");
+        }
+    }
+
+    #[test]
     fn run_workflow_description_names_every_script_global() {
         for name in so_workflow::GLOBALS {
             assert!(

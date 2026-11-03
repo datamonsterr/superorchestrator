@@ -71,7 +71,7 @@ fn yes_adds_the_default_accounts_and_runs_install_in_the_isolated_home() {
         .assert()
         .success();
     let s = stdout(&out);
-    // One account for each installed harness except claude, which is kept for the orchestrator.
+    // One account for each installed harness except claude, which no level lists by default.
     assert_eq!(accounts(&e), ["codex-1", "opencode-1"], "{s}");
     assert!(e.home.join(".local/bin/codex-1").is_file());
     assert!(s.contains("added account codex-1"), "{s}");

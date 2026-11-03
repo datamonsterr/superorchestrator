@@ -4,7 +4,7 @@ Branch: `claude/codex-orchestrator-0a0caa`. Parent plan: `docs/plans/2026-11-02-
 
 ## Decisions
 
-- **One plugin directory.** `plugin/` serves both Claude Code and Codex. Codex gets `plugin/.codex-plugin/plugin.json`, which reuses `plugin/.mcp.json` and `plugin/skills/`. Codex discovers `hooks/hooks.json` by default, and that file is the Claude Code mod module list, so the Codex manifest points `extensions["com.openai"].hooks` at `./hooks/codex-hooks.json`. An explicit value replaces default discovery. Recorded in ADR 0008.
+- **Separate Codex plugin directory.** `plugin-codex/` holds the Codex plugin: `.codex-plugin/plugin.json`, `skills/`, default-discovered `hooks/hooks.json` and its own `.mcp.json` (timeouts and `env_vars`). The marketplace source is `./plugin-codex`. Superseded after a real codex 0.166 test; see ADR 0008.
 - **Harness-neutral hooks.** Hook commands call a new `superorchestrator hook <event>` subcommand. It reads the hook JSON on stdin and prints hook JSON that Claude Code and Codex both accept. No shell or Python scripts.
 - **Bounded waits.** `wait_agent` gets a maximum timeout (`MAX_WAIT`, 30 minutes) that the supervisor clamps to. `install` writes the Codex `tool_timeout_sec` as that maximum plus a 60 second margin, and `startup_timeout_sec = 30`.
 - **Reserved accounts.** New config section `[orchestrator]` with `reserved_accounts = ["name", ...]`. Term "Reserved account" in CONTEXT.md. Auto routing never picks a reserved account. A spawn or route that pins `account` may use it.
@@ -37,16 +37,16 @@ Goal: config `orchestrator.reserved_accounts`; routing excludes them unless the 
 
 ### Task 3: Harness-neutral skills
 
-- `so-agents/src/skill.rs`: the `use-superorchestrator-mcp`, `superorchestrator-cli` and `superorchestrator-config` texts stop assuming Claude is the orchestrator. Add short Codex notes: tool timeout and `wait: false` plus `wait_agent` with a `timeout_ms` under the limit, `codex resume`, `[mcp_servers.superorchestrator]` in `config.toml`, `orchestrator.reserved_accounts`.
+- `so-agents/src/skill.rs`: the `use-superorchestrator-mcp`, `superorchestrator-cli` and `superorchestrator-config` texts stop assuming Claude is the orchestrator. Add short Codex notes: tool timeout and `wait: false` plus `wait_agent` with a `timeout_ms` under the limit, `superorchestrator join <run>`, `[mcp_servers.superorchestrator]` in `config.toml`, `orchestrator.reserved_accounts`.
 - Regenerate `plugin/skills/*` (`UPDATE_PLUGIN_SKILL=1 cargo test -p superorchestrator --test plugin`).
 - Acceptance: `cargo test -p so-agents -p superorchestrator --test plugin`.
 - Out of scope: install block text, docs pages.
 
 ### Task 4: Codex plugin, marketplace, `superorchestrator hook`
 
-- `plugin/.codex-plugin/plugin.json`: `name`, `version` (same as `.claude-plugin`), `description`, author, homepage, repository, license, keywords, `skills: "./skills/"`, `mcpServers: "./.mcp.json"`, `extensions["com.openai"]` with `interface` and `hooks: "./hooks/codex-hooks.json"`.
-- `.agents/plugins/marketplace.json` at repo root: marketplace `superorchestrator`, one plugin `superorchestrator`, `source` local `./plugin`, policy, category.
-- `plugin/hooks/codex-hooks.json`: `SessionStart` runs `superorchestrator hook session-start`; `Stop` runs `superorchestrator hook stop`.
+- `plugin-codex/.codex-plugin/plugin.json`: `name`, `version` (same as `.claude-plugin`), `description`, author, homepage, repository, license, keywords, `skills: "./skills/"`, `mcpServers: "./.mcp.json"`, `extensions["com.openai"]` with `interface`. Superseded after a real codex 0.166 test; see ADR 0008.
+- `.agents/plugins/marketplace.json` at repo root: marketplace `superorchestrator`, one plugin `superorchestrator`, `source` local `./plugin-codex`, policy, category.
+- `plugin-codex/hooks/hooks.json` (default-discovered): `SessionStart` runs `superorchestrator hook session-start`; `Stop` runs `superorchestrator hook stop`. `plugin-codex/.mcp.json` carries the timeouts and `env_vars`.
 - `superorchestrator hook session-start|stop`: reads hook JSON from stdin (`cwd`, `stop_hook_active`), asks the supervisor for open runs whose cwd lies in the same git repo, prints JSON. SessionStart: `hookSpecificOutput.additionalContext` listing runs at `pending_review` or with unanswered questions. Stop: `systemMessage` warning when runs wait at the review gate; never blocks; empty output when nothing waits or the supervisor is down. Always exit 0.
 - `tests/plugin.rs`: manifest and marketplace parse and carry the documented fields; versions match.
 - Real check: in a scratch `CODEX_HOME`, `codex plugin marketplace add <worktree>` succeeds.

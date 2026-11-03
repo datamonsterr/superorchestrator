@@ -125,10 +125,7 @@ fn reservation_names(
         .collect();
     matching.sort_by(|a, b| a.name.cmp(&b.name));
     let preferred = if harness == OrchestratorHarness::Codex {
-        let home = std::env::var_os("CODEX_HOME")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .unwrap_or_else(|| host.home.join(".codex"));
+        let home = host.codex_home();
         matching
             .iter()
             .find(|a| {

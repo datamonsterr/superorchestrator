@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `install` resolves symlinks before editing managed files (dangling links are followed), so a linked config, `CLAUDE.md` or `AGENTS.md` is edited at its target.
 - Codex CLI as a first-class orchestrator. See `docs/guide/codex-orchestrator.md` and ADR-0008.
   - `[orchestrator] reserved_accounts`: auto routing never picks them; a call that pins `account` may. `list_harnesses` marks them `reserved: true` and `why: "account reserved"`. The web Settings, web accounts table and TUI accounts view show them.
   - `setup --orchestrator claude|codex [--reserve NAME]... [--dry-run] [--no-agents-md]`.

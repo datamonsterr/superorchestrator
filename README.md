@@ -74,7 +74,7 @@ Watch runs from the shell with `superorchestrator runs list` and `superorchestra
 | Codex | `codex` | Live join through the app-server |
 | Antigravity | `agy` | One `.gemini` directory per account. Linux only for several accounts. |
 | OpenCode | `opencode` | Live attach |
-| Claude | `claude` | Ranks last in routing, to keep your limits for the orchestrator |
+| Claude | `claude` | Ranks last in routing; no level lists a Claude model by default |
 
 ## Development
 

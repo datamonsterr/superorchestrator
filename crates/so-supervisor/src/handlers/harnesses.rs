@@ -7,7 +7,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Map, Value, json};
 use so_accounts::{HostEnv, SignIn, sign_in_state};
 use so_core::proto::{AccountFlag, AccountView, HarnessesView, METHOD_LIST_HARNESSES, SignInState};
-use so_core::{AccountFile, Harness, Headroom, HeadroomSource, HeadroomStatus};
+use so_core::{AccountFile, Choice, Harness, Headroom, HeadroomSource, HeadroomStatus};
 use so_router::{Catalog, Snapshot, eligible::candidate};
 use so_usage::effective_with;
 
@@ -95,6 +95,49 @@ fn headroom_short(rows: &[Headroom]) -> Option<String> {
     Some(rows.iter().map(one).collect::<Vec<_>>().join("; "))
 }
 
+/// Why no account can take a run on choice `c`, for a choice the router would not consider.
+fn why_ineligible(
+    state: &SupervisorState,
+    view: &HarnessesView,
+    c: &Choice,
+    snapshot: &Snapshot,
+) -> &'static str {
+    let reserved = |name: &str| state.config.orchestrator.is_reserved(name);
+    let same = view.accounts.iter().filter(|a| a.harness == c.harness);
+    let (usable, held): (Vec<_>, Vec<_>) = same.partition(|a| !reserved(&a.name));
+    let open: Vec<_> = usable
+        .iter()
+        .filter(|a| a.enabled && a.active_runs < a.cap)
+        .collect();
+    if usable.is_empty() {
+        if held.is_empty() {
+            "no account"
+        } else {
+            "account reserved"
+        }
+    } else if usable.iter().all(|a| !a.enabled) {
+        "account disabled"
+    } else if open.is_empty() {
+        "at cap"
+    } else if open
+        .iter()
+        .all(|a| a.flags.as_ref().is_some_and(|f| !f.is_empty()))
+    {
+        "cooldown"
+    } else if open.iter().any(|a| {
+        snapshot
+            .accounts
+            .iter()
+            .find(|s| s.file.name == a.name)
+            .is_some_and(|s| s.pools.values().any(|p| !p.available))
+    }) {
+        "no headroom"
+    } else {
+        // The router found no usable account for a reason this view cannot name.
+        "not eligible"
+    }
+}
+
 /// `list_harnesses` for an orchestrator, with `{"brief": true}`: one short row per account
 /// and per choice, plus the free models. Omitted keys mean false or empty; `signed_in` and
 /// `headroom` are left out when unknown. A choice row is `{id, harness, model, effort?,
@@ -176,48 +219,7 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
             let why = if candidate(c, &catalog, &snapshot).is_some() {
                 None
             } else {
-                let same: Vec<_> = view
-                    .accounts
-                    .iter()
-                    .filter(|a| {
-                        a.harness == c.harness && !state.config.orchestrator.is_reserved(&a.name)
-                    })
-                    .collect();
-                let open: Vec<_> = same
-                    .iter()
-                    .filter(|a| a.enabled && a.active_runs < a.cap)
-                    .collect();
-                Some(
-                    if same.is_empty()
-                        && view.accounts.iter().any(|a| {
-                            a.harness == c.harness && state.config.orchestrator.is_reserved(&a.name)
-                        })
-                    {
-                        "account reserved"
-                    } else if same.is_empty() {
-                        "no account"
-                    } else if same.iter().all(|a| !a.enabled) {
-                        "account disabled"
-                    } else if open.is_empty() {
-                        "at cap"
-                    } else if open
-                        .iter()
-                        .all(|a| a.flags.as_ref().is_some_and(|f| !f.is_empty()))
-                    {
-                        "cooldown"
-                    } else if open.iter().any(|a| {
-                        snapshot
-                            .accounts
-                            .iter()
-                            .find(|s| s.file.name == a.name)
-                            .is_some_and(|s| s.pools.values().any(|p| !p.available))
-                    }) {
-                        "no headroom"
-                    } else {
-                        // The router found no usable account for a reason this view cannot name.
-                        "not eligible"
-                    },
-                )
+                Some(why_ineligible(state, &view, c, &snapshot))
             };
             if let Some(why) = why {
                 row.insert("eligible".into(), json!(false));

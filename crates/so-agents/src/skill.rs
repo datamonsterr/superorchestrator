@@ -473,6 +473,25 @@ mod tests {
     use crate::parse::{AgentSource, HarnessPref};
     use so_core::Harness;
 
+    #[test]
+    fn codex_timeout_text_follows_the_constants() {
+        let ms = so_core::MAX_WAIT.as_millis();
+        let secs = so_core::MAX_WAIT.as_secs() + so_core::CODEX_TOOL_TIMEOUT_MARGIN_SECS;
+        let startup = so_core::CODEX_STARTUP_TIMEOUT_SECS;
+        assert!(WORKFLOW.contains(&format!("({} min)", so_core::MAX_WAIT.as_secs() / 60)));
+        for (name, text) in [("workflow", WORKFLOW), ("config", CONFIG_BODY)] {
+            assert!(text.contains(&format!("`{ms}`")), "{name}: ms");
+            assert!(
+                text.contains(&format!("tool_timeout_sec = {secs}")),
+                "{name}: tool timeout"
+            );
+            assert!(
+                text.contains(&format!("startup_timeout_sec = {startup}")),
+                "{name}: startup timeout"
+            );
+        }
+    }
+
     fn level(name: &str, min: u8, max: u8, models: &[&str]) -> Level {
         Level {
             name: name.into(),

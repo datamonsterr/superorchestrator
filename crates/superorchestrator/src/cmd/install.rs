@@ -171,10 +171,7 @@ fn resolve(path: &Path) -> Result<PathBuf> {
 }
 
 fn agents_md_paths(host: &HostEnv, accounts: &[AccountFile]) -> Result<Vec<PathBuf>> {
-    let global = std::env::var_os("CODEX_HOME")
-        .filter(|v| !v.is_empty())
-        .map_or_else(|| host.home.join(".codex"), PathBuf::from);
-    let mut paths = vec![global.join("AGENTS.md")];
+    let mut paths = vec![host.codex_home().join("AGENTS.md")];
     for account in accounts.iter().filter(|a| a.harness == Harness::Codex) {
         paths.push(host.expand(&account.home)?.join("AGENTS.md"));
     }
@@ -836,15 +833,23 @@ pub(crate) fn install_steps(
     }
     if agents_md {
         for path in agents_md_paths(&host, &accounts)? {
-            if path.parent().is_some_and(Path::is_dir) {
-                results.push((
-                    "agents.md".into(),
-                    edit_managed_md(w, &path, true, ManagedMd::Codex),
-                ));
-            }
+            results.push(("agents.md".into(), agents_md_install(w, &path)));
         }
     }
     Ok(results)
+}
+
+/// Adds the managed block to `path`, or skips when its directory is missing.
+fn agents_md_install(w: &Writer, path: &Path) -> Result<Outcome> {
+    match path.parent() {
+        Some(dir) if !dir.is_dir() => Ok(Outcome::new(
+            "agents.md",
+            "skip",
+            Some(path),
+            Some(format!("{} does not exist", dir.display())),
+        )),
+        _ => edit_managed_md(w, path, true, ManagedMd::Codex),
+    }
 }
 
 pub fn uninstall(ctx: &Ctx, dry_run: bool) -> Result<()> {
@@ -879,6 +884,31 @@ pub fn uninstall(ctx: &Ctx, dry_run: bool) -> Result<()> {
 mod tests {
     use super::*;
     use chrono::TimeZone;
+
+    #[test]
+    fn codex_block_wait_text_follows_max_wait() {
+        let minutes = format!("{} minutes", so_core::MAX_WAIT.as_secs() / 60);
+        assert!(block_text(ManagedMd::Codex).contains(&minutes));
+    }
+
+    #[test]
+    fn agents_md_in_a_missing_dir_is_a_skip() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(dir.path().join("config"));
+        let writer = Writer::new(&paths, false);
+        let missing = dir.path().join("nope/AGENTS.md");
+        let out = agents_md_install(&writer, &missing).unwrap();
+        assert_eq!(out.action, "skip");
+        assert!(
+            out.note
+                .as_deref()
+                .unwrap()
+                .ends_with("nope does not exist")
+        );
+        assert!(!missing.exists());
+        let here = dir.path().join("AGENTS.md");
+        assert_eq!(agents_md_install(&writer, &here).unwrap().action, "create");
+    }
 
     #[test]
     fn skill_marker_in_prose_is_never_overwritten_or_deleted() {
