@@ -787,6 +787,28 @@ impl Store {
         )
     }
 
+    /// The newest runs in a session, newest first.
+    pub fn list_recent_runs_by_session(
+        &self,
+        session_id: &str,
+        limit: usize,
+    ) -> Result<Vec<RunRow>> {
+        self.query_runs(
+            &format!("SELECT {COLS} FROM runs WHERE session_id = ?1 ORDER BY created_at DESC, id DESC LIMIT ?2"),
+            params![session_id, limit as i64],
+        )
+    }
+
+    /// Count all active runs in a session, including queued runs.
+    pub fn count_active_runs_by_session(&self, session_id: &str) -> Result<i64> {
+        let active = &*ACTIVE;
+        Ok(self.conn().query_row(
+            &format!("SELECT COUNT(*) FROM runs WHERE session_id = ?1 AND {active}"),
+            [session_id],
+            |r| r.get(0),
+        )?)
+    }
+
     pub fn list_child_runs(&self, parent_run_id: &str, limit: usize) -> Result<Vec<RunRow>> {
         self.query_runs(
             &format!(
@@ -1045,6 +1067,10 @@ pub(crate) mod tests {
         assert_eq!(got, vec![ids[2].clone(), ids[1].clone(), ids[0].clone()]);
         assert_eq!(s.list_recent_runs(2).unwrap().len(), 2);
         assert!(s.list_recent_runs(0).unwrap().is_empty());
+        let session_runs = s.list_recent_runs_by_session(&sid, 1).unwrap();
+        assert_eq!(session_runs.len(), 1);
+        assert_eq!(session_runs[0].id, ids[2]);
+        assert_eq!(s.count_active_runs_by_session(&sid).unwrap(), 2);
     }
 
     #[test]

@@ -19,7 +19,7 @@ use so_supervisor::SupervisorClient;
 use so_supervisor::services::accounts::{FlagAction, apply_flag, flag_pools};
 
 use super::app::{Effect, Launch, SetupStep, StepState, Update};
-use super::data::{SupInfo, load_detail, load_snapshot};
+use super::data::{SupInfo, load_detail, load_session_runs, load_snapshot};
 use crate::cmd::account::{login_json, write_login_hint};
 use crate::cmd::{install, runs, setup};
 use crate::ctx::Ctx;
@@ -190,6 +190,10 @@ fn read_one(ctx: &Ctx, host: &HostEnv, link: &mut Link, effect: Effect, tx: &Sen
             let snap = load_snapshot(ctx, host, sup, Utc::now());
             send(tx, Update::Snapshot(Box::new(snap)));
         }
+        Effect::SessionRuns { id } => {
+            let runs = load_session_runs(ctx, &id);
+            send(tx, Update::SessionRuns { id, runs });
+        }
         Effect::Detail { id, diff } => {
             let d = load_detail(ctx, &id).map(|mut d| {
                 // The diff comes from the supervisor (it owns the worktree's git calls).
@@ -235,7 +239,7 @@ fn perform(
         }
     };
     Ok(Some(match effect {
-        Effect::Refresh | Effect::Detail { .. } => return Ok(None),
+        Effect::Refresh | Effect::Detail { .. } | Effect::SessionRuns { .. } => return Ok(None),
         Effect::RefreshModels => {
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()

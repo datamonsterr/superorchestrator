@@ -157,6 +157,7 @@ impl Dispatch<'_> {
                 self.last_refresh = Instant::now();
                 self.reads.send(Effect::Refresh).is_ok()
             }
+            Effect::SessionRuns { .. } => self.reads.send(effect).is_ok(),
             Effect::Detail { .. } => {
                 if self.detail_in_flight {
                     return true;
@@ -237,6 +238,7 @@ fn event_loop(
         }
         while let Ok(u) = updates.try_recv() {
             d.on_update(&u);
+            let snapshot = matches!(u, Update::Snapshot(_));
             match app.on_update(u) {
                 Next::Nothing => {}
                 Next::Refresh => sent &= d.send(Effect::Refresh),
@@ -244,6 +246,9 @@ fn event_loop(
                     run_launch(terminal, &l, stop)?;
                     sent &= d.send(Effect::Refresh);
                 }
+            }
+            if snapshot && let Some(id) = &app.sessions_tab.open {
+                sent &= d.send(Effect::SessionRuns { id: id.clone() });
             }
             dirty = true;
         }

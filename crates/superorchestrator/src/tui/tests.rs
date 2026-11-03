@@ -1788,7 +1788,7 @@ fn sessions_navigation_and_snapshots() {
         started_at: now() - chrono::Duration::hours(2),
         title: "/work/project".into(),
         run_count: runs.len() as i64,
-        runs,
+        active_count: runs.iter().filter(|r| r.state.is_active()).count() as i64,
     }];
     let mut older = a.snap.as_ref().unwrap().sessions[0].clone();
     older.id = "older-session".into();
@@ -1798,12 +1798,30 @@ fn sessions_navigation_and_snapshots() {
     insta::assert_snapshot!("sessions_80x24", shot(&mut a, 80, 24));
     insta::assert_snapshot!("sessions_120x40", shot(&mut a, 120, 40));
     a.on_key(ch('j'));
-    a.on_key(key(KeyCode::Enter));
+    assert!(
+        matches!(a.on_key(key(KeyCode::Enter)), Some(Effect::SessionRuns { id }) if id == "older-session")
+    );
     assert_eq!(a.sessions_tab.open.as_deref(), Some("older-session"));
+    a.on_update(Update::SessionRuns {
+        id: "session-123".into(),
+        runs: Ok(vec![]),
+    });
+    assert!(
+        a.sessions_tab.runs.is_none(),
+        "ignore a stale session response"
+    );
+    a.on_update(Update::SessionRuns {
+        id: "older-session".into(),
+        runs: Ok(runs.clone()),
+    });
+    assert_eq!(
+        a.sessions_tab.runs.as_ref().unwrap().as_ref().unwrap(),
+        &runs
+    );
     insta::assert_snapshot!("session_runs_80x24", shot(&mut a, 80, 24));
     insta::assert_snapshot!("session_runs_120x40", shot(&mut a, 120, 40));
     a.on_key(ch('j'));
-    let expected = a.snap.as_ref().unwrap().sessions[1].runs[1].id.clone();
+    let expected = runs[1].id.clone();
     assert!(
         matches!(a.on_key(key(KeyCode::Enter)), Some(Effect::Detail { id, .. }) if id == expected)
     );
@@ -1841,7 +1859,7 @@ fn sessions_refresh_preserves_and_clamps_selection() {
         started_at: now(),
         title: id.into(),
         run_count: runs.len() as i64,
-        runs: runs.clone(),
+        active_count: 0,
     };
     a.snap.as_mut().unwrap().sessions = vec![
         session("first"),
@@ -1856,10 +1874,15 @@ fn sessions_refresh_preserves_and_clamps_selection() {
     assert_eq!(a.sessions_tab.sel, 1, "follow the selected Session by id");
     a.on_key(key(KeyCode::Enter));
     assert_eq!(a.sessions_tab.open.as_deref(), Some("third"));
+    a.on_update(Update::SessionRuns {
+        id: "third".into(),
+        runs: Ok(runs.clone()),
+    });
     press(&mut a, &[ch('j'), ch('j')]);
-    let mut refreshed = a.snap.clone().unwrap();
-    refreshed.sessions[1].runs.truncate(1);
-    a.on_update(Update::Snapshot(Box::new(refreshed)));
+    a.on_update(Update::SessionRuns {
+        id: "third".into(),
+        runs: Ok(runs[..1].to_vec()),
+    });
     assert_eq!(a.sessions_tab.run_sel, 0);
     assert!(
         matches!(a.on_key(key(KeyCode::Enter)), Some(Effect::Detail { id, .. }) if id == runs[0].id)
@@ -1872,9 +1895,10 @@ fn sessions_refresh_preserves_and_clamps_selection() {
     assert_eq!(a.sessions_tab.sel, 1);
     a.on_key(key(KeyCode::Enter));
     assert_eq!(a.sessions_tab.open.as_deref(), Some("fourth"));
-    let mut refreshed = a.snap.clone().unwrap();
-    refreshed.sessions[1].runs.clear();
-    a.on_update(Update::Snapshot(Box::new(refreshed)));
+    a.on_update(Update::SessionRuns {
+        id: "fourth".into(),
+        runs: Ok(vec![]),
+    });
     insta::assert_snapshot!("empty_session_runs_80x24", shot(&mut a, 80, 24));
     a.on_key(key(KeyCode::Esc));
     let mut refreshed = a.snap.clone().unwrap();

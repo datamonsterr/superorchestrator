@@ -157,6 +157,9 @@ pub struct StepRow {
 pub enum Effect {
     Refresh,
     RefreshModels,
+    SessionRuns {
+        id: String,
+    },
     /// `diff` also asks the supervisor for the run's diff (only done for runs waiting for review).
     Detail {
         id: String,
@@ -198,7 +201,7 @@ impl Effect {
     /// Short phrase for the status line while the effect runs; `None` for reads.
     pub fn busy_label(&self) -> Option<&'static str> {
         Some(match self {
-            Effect::Refresh | Effect::Detail { .. } => return None,
+            Effect::Refresh | Effect::Detail { .. } | Effect::SessionRuns { .. } => return None,
             Effect::AddAccounts { .. } => "adding accounts",
             Effect::Login(_) => "preparing sign-in",
             Effect::SetEnabled { .. } => "updating account",
@@ -233,6 +236,10 @@ pub struct Launch {
 #[derive(Debug)]
 pub enum Update {
     Snapshot(Box<Snapshot>),
+    SessionRuns {
+        id: String,
+        runs: Result<Vec<RunItem>, String>,
+    },
     Detail(Result<Box<RunDetail>, String>),
     /// A read on the reader thread panicked or failed outright.
     ReadFailed(String),
@@ -555,6 +562,7 @@ impl App {
             self.detail = None;
         } else if self.tab == Tab::Sessions && self.sessions_tab.open.is_some() {
             self.sessions_tab.open = None;
+            self.sessions_tab.runs = None;
         } else if self.tab == Tab::Levels && self.level_open.is_some() {
             self.level_open = None;
         } else {
@@ -1187,6 +1195,16 @@ impl App {
                 self.apply_snapshot(*s);
                 Next::Nothing
             }
+            Update::SessionRuns { id, runs } => {
+                if self.sessions_tab.open.as_deref() == Some(&id) {
+                    if let Ok(rows) = &runs {
+                        self.sessions_tab.run_sel =
+                            self.sessions_tab.run_sel.min(rows.len().saturating_sub(1));
+                    }
+                    self.sessions_tab.runs = Some(runs);
+                }
+                Next::Nothing
+            }
             Update::Detail(r) => {
                 if let Some(d) = &mut self.detail {
                     match r {
@@ -1278,13 +1296,9 @@ impl App {
             .unwrap_or(self.sessions_tab.sel)
             .min(snap.sessions.len().saturating_sub(1));
         if let Some(id) = &self.sessions_tab.open {
-            if let Some(session) = snap.sessions.iter().find(|s| &s.id == id) {
-                self.sessions_tab.run_sel = self
-                    .sessions_tab
-                    .run_sel
-                    .min(session.runs.len().saturating_sub(1));
-            } else {
+            if !snap.sessions.iter().any(|s| &s.id == id) {
                 self.sessions_tab.open = None;
+                self.sessions_tab.runs = None;
                 self.sessions_tab.run_sel = 0;
                 if self.tab == Tab::Sessions {
                     self.detail = None;

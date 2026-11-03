@@ -1,6 +1,6 @@
 use super::super::{
     app::{App, Effect},
-    data::{SessionItem, clean},
+    data::{RunItem, SessionItem, clean},
     ui,
 };
 use ratatui::{
@@ -15,13 +15,14 @@ pub struct State {
     pub sel: usize,
     pub run_sel: usize,
     pub open: Option<String>,
+    pub runs: Option<Result<Vec<RunItem>, String>>,
     pub table: TableState,
     pub runs_table: TableState,
 }
 impl State {
     pub fn on_key(&mut self, key: KeyEvent, sessions: &[SessionItem]) -> Option<Effect> {
-        if let Some(id) = &self.open {
-            let runs = &sessions.iter().find(|s| &s.id == id)?.runs;
+        if self.open.is_some() {
+            let runs = self.runs.as_ref()?.as_ref().ok()?;
             if let Some(sel) = App::movement(key.code, self.run_sel, runs.len()) {
                 self.run_sel = sel;
             } else if key.code == KeyCode::Enter {
@@ -33,8 +34,11 @@ impl State {
         } else if let Some(sel) = App::movement(key.code, self.sel, sessions.len()) {
             self.sel = sel;
         } else if key.code == KeyCode::Enter {
-            self.open = Some(sessions.get(self.sel)?.id.clone());
+            let id = sessions.get(self.sel)?.id.clone();
+            self.open = Some(id.clone());
+            self.runs = None;
             self.run_sel = 0;
+            return Some(Effect::SessionRuns { id });
         }
         None
     }
@@ -44,21 +48,25 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         f.render_widget(Paragraph::new("Loading Sessions..."), area);
         return;
     };
-    if let Some(id) = &app.sessions_tab.open {
-        if let Some(session) = s.sessions.iter().find(|s| &s.id == id) {
-            if session.runs.is_empty() {
+    if app.sessions_tab.open.is_some() {
+        match &app.sessions_tab.runs {
+            None => f.render_widget(Paragraph::new("Loading Runs..."), area),
+            Some(Err(error)) => f.render_widget(
+                Paragraph::new(format!("Runs unavailable: {}", clean(error))),
+                area,
+            ),
+            Some(Ok(runs)) if runs.is_empty() => {
                 f.render_widget(Paragraph::new("No Runs in this Session."), area);
-            } else {
-                ui::draw_run_table(
-                    f,
-                    &session.runs,
-                    app.now,
-                    &app.theme,
-                    app.sessions_tab.run_sel,
-                    &mut app.sessions_tab.runs_table,
-                    area,
-                );
             }
+            Some(Ok(runs)) => ui::draw_run_table(
+                f,
+                runs,
+                app.now,
+                &app.theme,
+                app.sessions_tab.run_sel,
+                &mut app.sessions_tab.runs_table,
+                area,
+            ),
         }
         return;
     }
@@ -78,13 +86,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             Cell::new(s.id.chars().take(8).collect::<String>()),
             Cell::new(ui::age(app.now, s.started_at)),
             Cell::new(s.run_count.to_string()),
-            Cell::new(
-                s.runs
-                    .iter()
-                    .filter(|r| r.state.is_active())
-                    .count()
-                    .to_string(),
-            ),
+            Cell::new(s.active_count.to_string()),
             Cell::new(clean(&s.title)),
         ])
     });
