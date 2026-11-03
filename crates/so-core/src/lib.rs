@@ -23,3 +23,7 @@ pub use types::*;
 
 /// Maximum time a single agent wait may block; the run continues after this limit.
 pub const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// Codex MCP startup timeout in seconds.
+pub const CODEX_STARTUP_TIMEOUT_SECS: u64 = 30;
+/// Additional time for an MCP response after the longest wait completes.
+pub const CODEX_TOOL_TIMEOUT_MARGIN_SECS: u64 = 60;

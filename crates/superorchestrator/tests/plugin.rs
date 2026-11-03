@@ -9,6 +9,10 @@ fn plugin_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugin")
 }
 
+fn codex_plugin_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../plugin-codex")
+}
+
 fn json_file(rel: &str) -> Value {
     serde_json::from_str(&std::fs::read_to_string(plugin_dir().join(rel)).unwrap()).unwrap()
 }
@@ -48,37 +52,61 @@ fn skills_are_the_generated_plugin_skills() {
         ),
     ];
     for (name, want) in skills {
-        let path = plugin_dir().join(format!("skills/{name}/SKILL.md"));
-        if std::env::var_os("UPDATE_PLUGIN_SKILL").is_some() {
-            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-            std::fs::write(&path, &want).unwrap();
+        for dir in [plugin_dir(), codex_plugin_dir()] {
+            let path = dir.join(format!("skills/{name}/SKILL.md"));
+            if std::env::var_os("UPDATE_PLUGIN_SKILL").is_some() {
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(&path, &want).unwrap();
+            }
+            let have = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(
+                have, want,
+                "plugin/skills/{name}/SKILL.md is stale; run with UPDATE_PLUGIN_SKILL=1"
+            );
         }
-        let have = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(
-            have, want,
-            "plugin/skills/{name}/SKILL.md is stale; run with UPDATE_PLUGIN_SKILL=1"
-        );
     }
     assert!(!plugin_dir().join("skills/superorchestrator").exists());
 }
 
 #[test]
 fn codex_plugin_and_marketplace_are_wired() {
-    let m = json_file(".codex-plugin/plugin.json");
+    let codex_dir = codex_plugin_dir();
+    let read_codex = |rel: &str| -> Value {
+        serde_json::from_slice(&std::fs::read(codex_dir.join(rel)).unwrap()).unwrap()
+    };
+    let m = read_codex(".codex-plugin/plugin.json");
     assert_eq!(m["name"], "superorchestrator");
     assert_eq!(
         m["version"],
         json_file(".claude-plugin/plugin.json")["version"]
     );
     assert_eq!(m["skills"], "./skills/");
-    assert_eq!(m["mcpServers"], "./.mcp.json");
+    let claude_mcp = json_file(".mcp.json");
+    let codex_mcp = read_codex(".mcp.json");
+    let claude = &claude_mcp["mcpServers"]["superorchestrator"];
+    let codex = &codex_mcp["mcpServers"]["superorchestrator"];
+    assert_eq!(codex["command"], claude["command"]);
+    assert_eq!(codex["args"], claude["args"]);
+    assert!(
+        codex["env_vars"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("XDG_RUNTIME_DIR"))
+    );
+    assert_eq!(
+        codex["startup_timeout_sec"],
+        so_core::CODEX_STARTUP_TIMEOUT_SECS
+    );
+    assert_eq!(
+        codex["tool_timeout_sec"],
+        so_core::MAX_WAIT.as_secs() + so_core::CODEX_TOOL_TIMEOUT_MARGIN_SECS
+    );
     for field in ["description", "homepage", "repository", "license"] {
         assert!(m[field].as_str().is_some_and(|s| !s.is_empty()));
     }
     assert!(m["author"]["name"].is_string());
     assert!(m["keywords"].is_array());
     let ext = &m["extensions"]["com.openai"];
-    assert_eq!(ext["hooks"], "./hooks/codex-hooks.json");
     for field in [
         "displayName",
         "shortDescription",
@@ -105,7 +133,7 @@ fn codex_plugin_and_marketplace_are_wired() {
     assert_eq!(entry["name"], "superorchestrator");
     assert_eq!(
         entry["source"],
-        json!({"source":"local", "path":"./plugin"})
+        json!({"source":"local", "path":"./plugin-codex"})
     );
     assert_eq!(
         entry["policy"],
@@ -117,7 +145,14 @@ fn codex_plugin_and_marketplace_are_wired() {
             .join(".codex-plugin/plugin.json")
             .is_file()
     );
-    let hooks = json_file("hooks/codex-hooks.json");
+    let hooks = read_codex("hooks/hooks.json");
+    assert!(
+        hooks
+            .as_object()
+            .unwrap()
+            .keys()
+            .all(|key| key == "hooks" || key == "description")
+    );
     assert_eq!(hooks["hooks"].as_object().unwrap().len(), 2);
     for (event, command) in [("SessionStart", "session-start"), ("Stop", "stop")] {
         assert_eq!(hooks["hooks"][event].as_array().unwrap().len(), 1);
@@ -139,6 +174,30 @@ fn codex_plugin_and_marketplace_are_wired() {
         assert!(h["timeout"].as_u64().is_some_and(|n| n > 0 && n <= 10));
         assert!(h["statusMessage"].is_string());
     }
+}
+
+#[test]
+fn all_codex_plugin_json_files_parse_and_hook_keys_are_supported() {
+    fn check(dir: &std::path::Path) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                check(&path);
+            } else if path.extension().is_some_and(|ext| ext == "json") {
+                let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                if path.ends_with("hooks/hooks.json") {
+                    assert!(
+                        value
+                            .as_object()
+                            .unwrap()
+                            .keys()
+                            .all(|key| key == "hooks" || key == "description")
+                    );
+                }
+            }
+        }
+    }
+    check(&codex_plugin_dir());
 }
 
 #[test]
@@ -176,6 +235,38 @@ fn hook_stop_returns_when_stdin_remains_open() {
             child.kill().unwrap();
             child.wait().unwrap();
             panic!("hook stop did not exit with stdin open");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn hook_stop_returns_when_supervisor_does_not_reply() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("s.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    std::thread::spawn(move || {
+        let (_stream, _) = listener.accept().unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    });
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_superorchestrator"))
+        .args(["hook", "stop"])
+        .env("SUPERORCHESTRATOR_SOCKET", &socket)
+        .env("SUPERORCHESTRATOR_CONFIG_DIR", dir.path())
+        .stdin(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("hook stop did not exit with an unresponsive supervisor");
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }

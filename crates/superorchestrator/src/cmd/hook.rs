@@ -1,16 +1,16 @@
 //! Quiet, best-effort lifecycle notifications for harnesses.
 
+use std::collections::HashMap;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use so_core::{EventType, Paths, RunState};
+use so_core::{Paths, RunState};
 use so_supervisor::SupervisorClient;
 
 use crate::cli::HookCmd;
 use crate::ctx::Ctx;
-use crate::views::open_existing_store;
 
 struct WaitingRun {
     id: String,
@@ -19,8 +19,31 @@ struct WaitingRun {
     question: bool,
 }
 
-fn relevant(cwd: &Path, root: &Path) -> bool {
-    cwd.starts_with(root)
+#[derive(Clone)]
+struct RepoIdentity {
+    path: PathBuf,
+    common_dir: Option<PathBuf>,
+}
+
+fn repo_identity(cwd: &Path) -> RepoIdentity {
+    let path = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let common_dir = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&path)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .and_then(|out| String::from_utf8(out.stdout).ok())
+        .and_then(|out| path.join(out.trim()).canonicalize().ok());
+    RepoIdentity { path, common_dir }
+}
+
+fn relevant(run: &RepoIdentity, root: &RepoIdentity) -> bool {
+    match (&run.common_dir, &root.common_dir) {
+        (Some(a), Some(b)) => a == b,
+        _ => run.path.starts_with(&root.path),
+    }
 }
 
 fn format_output(event: HookCmd, runs: &[&WaitingRun]) -> Option<Value> {
@@ -64,47 +87,26 @@ fn format_output(event: HookCmd, runs: &[&WaitingRun]) -> Option<Value> {
     }
 }
 
-async fn collect(ctx: &Ctx, cwd: &Path, event: HookCmd) -> Option<Value> {
-    let socket = Paths::socket_path().ok()?;
-    let client = SupervisorClient::connect(&socket).await.ok()?;
-    client
-        .hello_inspect("hook", &cwd.to_string_lossy(), Some(std::process::id()))
-        .await
-        .ok()?;
-    let root = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(cwd)
-        .args(["rev-parse", "--show-toplevel"])
-        .kill_on_drop(true)
-        .output()
-        .await
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| PathBuf::from(s.trim()))
-        .unwrap_or_else(|| cwd.to_path_buf());
-    let root = root.canonicalize().unwrap_or(root);
-    let store = open_existing_store(&ctx.paths)?;
+/// Reads the runs of this repository that wait on the user, from a read-only database.
+fn read_waiting(db: &Path, cwd: &Path, event: HookCmd) -> Option<Vec<WaitingRun>> {
+    let root = repo_identity(cwd);
+    let store = so_store::Store::open_read_only(db).ok()?;
     let rows = store.list_active_runs(100_000).ok()?;
     let mut runs = Vec::new();
+    let mut identities = HashMap::from([(cwd.to_path_buf(), root.clone())]);
     for row in rows {
-        let Some(cwd) = row.cwd.map(PathBuf::from) else {
+        let Some(run_cwd) = row.cwd.map(PathBuf::from) else {
             continue;
         };
-        let cwd = cwd.canonicalize().unwrap_or(cwd);
-        if !relevant(&cwd, &root) {
+        let identity = identities
+            .entry(run_cwd.clone())
+            .or_insert_with(|| repo_identity(&run_cwd));
+        if !relevant(identity, &root) {
             continue;
         }
-        let mut question = false;
-        if matches!(event, HookCmd::SessionStart) {
-            for e in store.list_events_by_run(&row.id, 100_000).ok()? {
-                match e.event_type {
-                    EventType::QuestionAsked => question = true,
-                    EventType::QuestionAnswered => question = false,
-                    _ => {}
-                }
-            }
-        }
+        let question = matches!(event, HookCmd::SessionStart)
+            && row.parent_run_id.is_none()
+            && store.has_open_question(&row.id).ok()?;
         runs.push(WaitingRun {
             id: row.id,
             name: row.name.unwrap_or_default(),
@@ -112,43 +114,54 @@ async fn collect(ctx: &Ctx, cwd: &Path, event: HookCmd) -> Option<Value> {
             question,
         });
     }
+    Some(runs)
+}
+
+async fn collect(ctx: &Ctx, cwd: &Path, event: HookCmd) -> Option<Value> {
+    // Liveness gate: with no supervisor, print nothing.
+    let socket = Paths::socket_path().ok()?;
+    let client = SupervisorClient::connect(&socket).await.ok()?;
+    client
+        .hello_inspect("hook", &cwd.to_string_lossy(), Some(std::process::id()))
+        .await
+        .ok()?;
+    let (db, cwd) = (ctx.paths.state_db(), cwd.to_path_buf());
+    let runs = tokio::task::spawn_blocking(move || read_waiting(&db, &cwd, event))
+        .await
+        .ok()??;
     format_output(event, &runs.iter().collect::<Vec<_>>())
 }
 
 pub fn run(config_dir: Option<PathBuf>, event: HookCmd) {
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        if let Some(value) = run_worker(config_dir, event) {
+            println!("{value}");
+        }
+        let _ = tx.send(());
+    });
+    let _ = rx.recv_timeout(Duration::from_secs(2));
+}
+
+fn run_worker(config_dir: Option<PathBuf>, event: HookCmd) -> Option<Value> {
+    let mut input = String::new();
+    if !std::io::stdin().is_terminal() {
+        let _ = std::io::stdin().read_to_string(&mut input);
+    }
     let Ok(rt) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
     else {
-        return;
+        return None;
     };
-    let result = rt.block_on(async {
-        tokio::time::timeout(Duration::from_secs(2), async {
-            let input = if std::io::stdin().is_terminal() {
-                String::new()
-            } else {
-                let (tx, rx) = tokio::sync::oneshot::channel();
-                std::thread::spawn(move || {
-                    let mut input = String::new();
-                    let _ = std::io::stdin().read_to_string(&mut input);
-                    let _ = tx.send(input);
-                });
-                rx.await.unwrap_or_default()
-            };
-            let cwd = serde_json::from_str::<Value>(&input)
-                .ok()
-                .and_then(|v| v.get("cwd").and_then(Value::as_str).map(PathBuf::from))
-                .or_else(|| std::env::current_dir().ok())?;
-            let ctx = Ctx::new(config_dir, false, false).ok()?;
-            collect(&ctx, &cwd, event).await
-        })
-        .await
-        .ok()
-        .flatten()
-    });
-    if let Some(value) = result {
-        println!("{value}");
-    }
+    rt.block_on(async {
+        let cwd = serde_json::from_str::<Value>(&input)
+            .ok()
+            .and_then(|v| v.get("cwd").and_then(Value::as_str).map(PathBuf::from))
+            .or_else(|| std::env::current_dir().ok())?;
+        let ctx = Ctx::new(config_dir, false, false).ok()?;
+        collect(&ctx, &cwd, event).await
+    })
 }
 
 #[cfg(test)]
@@ -170,12 +183,7 @@ mod tests {
             run("r3", true, true),
             run("r4", false, false),
         ];
-        let selected: Vec<_> = runs
-            .iter()
-            .zip(["/repo/a", "/repo/b", "/repo-other", "/repo"])
-            .filter(|(_, cwd)| relevant(Path::new(cwd), Path::new("/repo")))
-            .map(|(run, _)| run)
-            .collect();
+        let selected: Vec<_> = [&runs[0], &runs[1], &runs[3]].into();
         assert_eq!(selected.len(), 3);
         let start = format_output(HookCmd::SessionStart, &selected).unwrap();
         let text = start["hookSpecificOutput"]["additionalContext"]
@@ -193,5 +201,70 @@ mod tests {
         assert!(stop.get("decision").is_none());
         assert!(format_output(HookCmd::Stop, &[&runs[1]]).is_none());
         assert!(format_output(HookCmd::SessionStart, &[&runs[3]]).is_none());
+    }
+
+    #[test]
+    fn repository_identity_distinguishes_worktrees_and_nested_repositories() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        let sibling = dir.path().join("sibling");
+        let nested = repo.join("nested");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |cwd: &Path, args: &[&str]| {
+            let status = std::process::Command::new("git")
+                .arg("-C")
+                .arg(cwd)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "Test")
+                .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com")
+                .output()
+                .unwrap();
+            assert!(
+                status.status.success(),
+                "{}",
+                String::from_utf8_lossy(&status.stderr)
+            );
+        };
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["commit", "--allow-empty", "-qm", "initial"]);
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "sibling",
+                sibling.to_str().unwrap(),
+            ],
+        );
+        std::fs::create_dir_all(&nested).unwrap();
+        git(&nested, &["init", "-q"]);
+        let root = repo_identity(&repo);
+        assert!(relevant(&repo_identity(&sibling), &root));
+        assert!(!relevant(&repo_identity(&nested), &root));
+        let outside = dir.path().join("outside");
+        let child = outside.join("child");
+        std::fs::create_dir_all(&child).unwrap();
+        assert!(relevant(&repo_identity(&child), &repo_identity(&outside)));
+        assert!(!relevant(&repo_identity(&repo), &repo_identity(&outside)));
+    }
+
+    #[test]
+    fn read_waiting_works_while_another_connection_holds_a_write_transaction() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("state.db");
+        drop(so_store::Store::open(&db).unwrap());
+        let writer = rusqlite::Connection::open(&db).unwrap();
+        writer
+            .execute_batch("BEGIN IMMEDIATE; CREATE TABLE hold(x);")
+            .unwrap();
+        let start = std::time::Instant::now();
+        let runs = read_waiting(&db, dir.path(), HookCmd::SessionStart).unwrap();
+        assert!(runs.is_empty());
+        assert!(start.elapsed() < Duration::from_secs(2));
+        writer.execute_batch("ROLLBACK").unwrap();
     }
 }

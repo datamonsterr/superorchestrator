@@ -9,9 +9,6 @@ use toml_edit::{Array, DocumentMut, Item, Table};
 /// Key of our entry in every harness config.
 pub const NAME: &str = "superorchestrator";
 
-const CODEX_STARTUP_TIMEOUT_SECS: i64 = 30;
-const CODEX_TOOL_TIMEOUT_MARGIN_SECS: u64 = 60;
-
 /// Codex `config.toml`: `[mcp_servers.superorchestrator]` with `command` and `args`.
 pub fn codex_add(old: &str, exe: &str) -> Result<Option<String>> {
     let mut doc: DocumentMut = old.parse().context("not valid TOML")?;
@@ -34,9 +31,11 @@ pub fn codex_add(old: &str, exe: &str) -> Result<Option<String>> {
         .get("args")
         .and_then(Item::as_array)
         .is_some_and(|a| a.len() == 1 && a.get(0).and_then(|v| v.as_str()) == Some("mcp"));
-    let startup = CODEX_STARTUP_TIMEOUT_SECS;
-    let timeout = i64::try_from(so_core::MAX_WAIT.as_secs() + CODEX_TOOL_TIMEOUT_MARGIN_SECS)
-        .context("Codex tool timeout exceeds TOML integer range")?;
+    let startup = i64::try_from(so_core::CODEX_STARTUP_TIMEOUT_SECS)
+        .context("Codex startup timeout exceeds TOML integer range")?;
+    let timeout =
+        i64::try_from(so_core::MAX_WAIT.as_secs() + so_core::CODEX_TOOL_TIMEOUT_MARGIN_SECS)
+            .context("Codex tool timeout exceeds TOML integer range")?;
     let same_startup = entry.get("startup_timeout_sec").and_then(Item::as_integer) == Some(startup);
     let same_timeout = entry.get("tool_timeout_sec").and_then(Item::as_integer) == Some(timeout);
     if same_command && same_args && same_startup && same_timeout {

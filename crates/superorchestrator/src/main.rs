@@ -58,7 +58,8 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     };
     let ok = |r: Result<()>| r.map(|()| ExitCode::SUCCESS);
     match command {
-        Command::Hook(_) => Ok(ExitCode::SUCCESS),
+        // Handled before constructing the context above.
+        Command::Hook(_) => unreachable!("hook handled before context creation"),
         Command::Setup(a) => cmd::setup::run(&ctx, a),
         Command::Tui => ok(tui::run(&ctx)),
         Command::Init => ok(cmd::init::run(&ctx)),

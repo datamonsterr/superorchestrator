@@ -90,6 +90,12 @@ pub enum Command {
     Mcp(McpArgs),
 }
 
+#[derive(Subcommand, Debug, Clone, Copy)]
+pub enum HookCmd {
+    SessionStart,
+    Stop,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum OrchestratorHarness {
@@ -564,10 +570,4 @@ mod tests {
         assert!(a.sub.is_none());
         assert!(matches!(route(&["eval"]).sub, Some(RouteSub::Eval { .. })));
     }
-}
-
-#[derive(Subcommand, Debug, Clone, Copy)]
-pub enum HookCmd {
-    SessionStart,
-    Stop,
 }

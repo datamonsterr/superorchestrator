@@ -8,7 +8,6 @@
   "license": "MIT",
   "keywords": ["delegation", "subagents", "codex", "opencode", "mcp"],
   "skills": "./skills/",
-  "mcpServers": "./.mcp.json",
   "extensions": {
     "com.openai": {
       "interface": {
@@ -20,8 +19,7 @@
         "capabilities": ["Interactive"],
         "websiteURL": "https://github.com/datamonsterr/superorchestrator",
         "defaultPrompt": ["Delegate a coding task with superorchestrator."]
-      },
-      "hooks": "./hooks/codex-hooks.json"
+      }
     }
   }
 }
