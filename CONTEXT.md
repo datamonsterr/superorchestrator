@@ -48,6 +48,10 @@ _Avoid_: Provider, backend, tool, CLI
 One named login for one harness, backed by its own credential home, such as `codex-acc2`. An account is the unit that is routed, capped and metered.
 _Avoid_: Profile, login, credential, worker
 
+**Endpoint account**:
+A `claude` account with an `[endpoint]` table. Its Claude Code process talks to an Anthropic-compatible coding-plan API (Z.ai GLM, Kimi Code, MiniMax, or a custom URL) instead of an Anthropic subscription. See [ADR 0008](docs/adr/0008-endpoint-accounts.md).
+_Avoid_: Provider account, proxy account, API account
+
 **Credential home**:
 The folder that holds one account's login and harness state, selected through the harness's own environment variable.
 _Avoid_: Home dir, config dir, profile folder
