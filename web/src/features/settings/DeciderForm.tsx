@@ -29,6 +29,13 @@ function keySummary(v: DeciderView): string {
 }
 
 function Override({ o }: { o: EnvOverride }) {
+  if (o.field === 'key_file') {
+    return (
+      <p role="note" className="text-sm text-amber-700 dark:text-amber-400" data-testid="env-override-key_file">
+        <code className="font-mono">{o.name}</code> is set and wins over the key file until it is unset.
+      </p>
+    )
+  }
   return (
     <p role="note" className="text-sm text-amber-700 dark:text-amber-400" data-testid={`env-override-${o.field}`}>
       <code className="font-mono">{o.name}</code> is set{o.value ? ` (${o.value})` : ''} and wins over this setting until it is unset.
@@ -153,7 +160,7 @@ export function DeciderForm({ view, hidden = false }: { view: DeciderView; hidde
             </p>
           </div>
 
-          {field('endpoint', 'Endpoint', 'An https URL, or http to a loopback host such as localhost.', { mono: true, override: 'endpoint' })}
+          {field('endpoint', 'Endpoint', 'An https URL, or http to a loopback host such as localhost.', { mono: true })}
           {field('model', 'Model', 'The model that scores complexity. Any OpenRouter model id.', { mono: true, list: `${uid}-models`, override: 'model' })}
           {field('fallback_model', 'Fallback model', 'Tried when the model fails. Empty for none.', { mono: true, list: `${uid}-fallbacks`, override: 'fallback_model' })}
           <datalist id={`${uid}-models`}>
@@ -170,19 +177,19 @@ export function DeciderForm({ view, hidden = false }: { view: DeciderView; hidde
             <FieldDescription id="decider-on_unreachable-hint">
               error: fail the route. heuristic: estimate the complexity locally and carry on.
             </FieldDescription>
-            {overrideFor('on_unreachable').map((o) => <Override key={o.name} o={o} />)}
             <FieldError errors={[errOf('on_unreachable')]} />
           </Field>
 
-          {field('timeout', 'Timeout', 'How long to wait for the decider, from 1s to 120s, for example 20s.', { mono: true, override: 'timeout' })}
-          {field('min_confidence', 'Minimum confidence', "Below this the decider's score is ignored and the heuristic estimates the complexity (0 to 1).", { number: true, override: 'min_confidence' })}
-          {field('min_margin', 'Minimum margin', 'Deprecated: routing no longer uses it. Kept so older configs still load (0 to 1).', { number: true, override: 'min_margin' })}
+          {field('timeout', 'Timeout', 'How long to wait for the decider, from 1s to 120s, for example 20s.', { mono: true })}
+          {field('min_confidence', 'Minimum confidence', "Below this the decider's score is ignored and the heuristic estimates the complexity (0 to 1).", { number: true })}
+          {field('min_margin', 'Minimum margin', 'Deprecated: routing no longer uses it. Kept so older configs still load (0 to 1).', { number: true })}
 
           <FieldSet>
             <FieldLegend variant="label">OpenRouter key</FieldLegend>
             <p id="decider-key-current" data-testid="decider-key-current" className="text-sm text-muted-foreground">
               {keySummary(view)}
             </p>
+            {overrideFor('key_file').map((o) => <Override key={o.name} o={o} />)}
             <div role="radiogroup" aria-label="Key source" aria-describedby="decider-key-current" className="flex flex-wrap gap-4 text-sm">
               {(Object.keys(KEY_MODE_LABELS) as KeyMode[]).map((m) => (
                 <label key={m} className="flex items-center gap-2">

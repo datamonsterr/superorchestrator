@@ -317,6 +317,19 @@ describe('SettingsPage decider tab', () => {
     expect(screen.getByTestId('decider-effective')).toHaveTextContent('x/forced (env)')
   })
 
+  it('shows the key file override notice in every key mode, without a value', async () => {
+    server.use(
+      http.get('/api/v1/decider', () =>
+        HttpResponse.json({ ...fx.decider, env_overrides: [{ name: 'OPENROUTER_API_KEY', field: 'key_file', value: null }] }),
+      ),
+    )
+    await openDecider()
+    for (const mode of ['Environment variable', 'Key file', 'Paste key']) {
+      await userEvent.click(screen.getByRole('radio', { name: mode }))
+      expect(screen.getByTestId('env-override-key_file')).toHaveTextContent('OPENROUTER_API_KEY is set and wins over the key file until it is unset.')
+    }
+  })
+
   it('shows a server 400 on the named field', async () => {
     server.use(http.patch('/api/v1/decider', () => HttpResponse.json({ error: { code: -32602, message: 'model: unknown model id' } }, { status: 400 })))
     await openDecider()
