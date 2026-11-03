@@ -27,6 +27,9 @@ fn main() {
         let mut result = None;
         match method {
             "initialize" => {
+                if mode == "exit_silent" {
+                    return;
+                }
                 if mode == "exit" {
                     eprintln!("quota exhausted");
                     return;
@@ -62,6 +65,14 @@ fn main() {
                         json!({"jsonrpc":"2.0","id":700,"method":"session/request_permission","params":{"options":[{"kind":"allow_once","optionId":"once"},{"kind":"allow_always","optionId":"always"}]}}),
                     );
                     emit(json!({"jsonrpc":"2.0","id":701,"method":"unknown/method","params":{}}));
+                }
+                if mode == "structured" && turns > 1 {
+                    emit(
+                        json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Checking first"}}}}),
+                    );
+                    emit(
+                        json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-1","update":{"sessionUpdate":"tool_call","toolCallId":"first","title":"Check"}}}),
+                    );
                 }
                 let text = if mode == "invalid" || (mode == "structured" && turns == 1) {
                     "invalid"

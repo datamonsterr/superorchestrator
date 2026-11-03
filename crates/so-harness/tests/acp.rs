@@ -220,6 +220,16 @@ async fn errors_and_cancel_queue() {
             ..
         })
     ));
+    let rig = Rig::new();
+    assert!(matches!(
+        driver(Harness::Copilot)
+            .launch(rig.spec("exit_silent", Harness::Copilot))
+            .await,
+        Err(DriverError::Exited {
+            kind: ErrorKind::Other,
+            ..
+        })
+    ));
 }
 
 #[tokio::test]
@@ -256,4 +266,62 @@ async fn real_acp_cli() {
     );
     assert!(events.iter().any(|e| matches!(e,HarnessEvent::TurnFinished{is_error:false,result_text:Some(text),..} if text.to_lowercase().contains("pong"))));
     h.control.shutdown(Duration::from_secs(5)).await.unwrap();
+}
+
+#[test]
+fn argv_and_join_for_each_harness() {
+    use so_harness::JoinInfo;
+    let rig = Rig::new();
+    for (h, expected, join) in [
+        (
+            Harness::Copilot,
+            vec![
+                "--acp",
+                "--allow-all-tools",
+                "--allow-all-paths",
+                "--model",
+                "test-model",
+                "--reasoning-effort",
+                "high",
+            ],
+            vec!["acct", "--resume=native-1"],
+        ),
+        (
+            Harness::Gemini,
+            vec!["--acp", "--approval-mode", "yolo", "-m", "test-model"],
+            vec!["acct", "--resume", "native-1"],
+        ),
+        (
+            Harness::Kimi,
+            vec!["acp"],
+            vec!["acct", "--session", "native-1"],
+        ),
+        (
+            Harness::Cursor,
+            vec!["acp", "--force", "--approve-mcps", "--model", "test-model"],
+            vec!["acct", "--resume", "native-1"],
+        ),
+        (
+            Harness::Qwen,
+            vec!["--acp", "--approval-mode", "yolo", "-m", "test-model"],
+            vec!["acct", "--resume", "native-1"],
+        ),
+    ] {
+        let mut spec = rig.spec("", h);
+        spec.model = Some("test-model".into());
+        if h == Harness::Copilot {
+            spec.effort = Some("high".into());
+        }
+        assert_eq!(so_harness::acp::build_args(h, &spec), expected);
+        let info = JoinInfo {
+            account_name: "acct".into(),
+            native_session_id: "native-1".into(),
+            endpoint: None,
+            cwd: rig.dir.path().into(),
+        };
+        let cmd = driver(h).join_command(&info);
+        assert_eq!(cmd.argv, join);
+        assert_eq!(cmd.cwd, info.cwd);
+        assert!(cmd.env.is_empty());
+    }
 }

@@ -166,10 +166,18 @@ impl Driver for AcpDriver {
         let id = match init {
             Ok(id) => id,
             Err(e) => {
+                let exited = sup.handle.exit.borrow().is_some()
+                    || matches!(&e, DriverError::Other(text) if text.starts_with("ACP exited during "));
                 sup.handle.shutdown(Duration::ZERO).await;
-                return Err(
-                    startup_failure(e, &mut sup.events, |text| self.classify_error(text)).await,
-                );
+                let failure =
+                    startup_failure(e, &mut sup.events, |text| self.classify_error(text)).await;
+                return Err(match failure {
+                    DriverError::Other(text) if exited => DriverError::Exited {
+                        kind: self.classify_error(&text),
+                        text,
+                    },
+                    other => other,
+                });
             }
         };
         sup.events_sink.send(HarnessEvent::SessionStarted {
@@ -198,6 +206,7 @@ impl Driver for AcpDriver {
             active: false,
             text: String::new(),
             message: String::new(),
+            final_message: String::new(),
             tools: HashMap::new(),
             queue: VecDeque::new(),
             retries: 0,
@@ -231,7 +240,19 @@ impl Driver for AcpDriver {
         }
     }
     fn classify_error(&self, text: &str) -> ErrorKind {
-        classify_common(text)
+        let common = classify_common(text);
+        if common != ErrorKind::Other {
+            return common;
+        }
+        let text = text.to_lowercase();
+        spec::spec(self.harness)
+            .and_then(|row| {
+                row.error_patterns
+                    .iter()
+                    .find(|(pattern, _)| text.contains(pattern))
+                    .map(|(_, kind)| *kind)
+            })
+            .unwrap_or(ErrorKind::Other)
     }
 }
 
@@ -281,6 +302,7 @@ struct Actor {
     active: bool,
     text: String,
     message: String,
+    final_message: String,
     tools: HashMap<String, String>,
     queue: VecDeque<Vec<Value>>,
     retries: u8,
@@ -292,6 +314,7 @@ impl Actor {
         self.active = true;
         self.text.clear();
         self.message.clear();
+        self.final_message.clear();
         self.tools.clear();
         if announce {
             self.events.send(HarnessEvent::TurnStarted);
@@ -301,6 +324,7 @@ impl Actor {
     }
     fn flush(&mut self) {
         if !self.message.is_empty() {
+            self.final_message.clone_from(&self.message);
             self.events.send(HarnessEvent::AssistantMessage {
                 text: std::mem::take(&mut self.message),
             });
@@ -346,6 +370,7 @@ impl Actor {
         self.flush();
         let result = &v["result"];
         let err = v.get("error");
+        // max_tokens and max_turn_requests are successful stops, like end_turn.
         let reason = result["stopReason"].as_str().unwrap_or("end_turn");
         let error_text = err
             .map(ToString::to_string)
@@ -379,7 +404,7 @@ impl Actor {
             && reason != "cancelled"
             && let Some(schema) = &self.schema
         {
-            let text = self.text.trim();
+            let text = self.final_message.trim();
             let text = text
                 .strip_prefix("```json")
                 .or_else(|| text.strip_prefix("```"))

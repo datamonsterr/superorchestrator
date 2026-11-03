@@ -1,3 +1,4 @@
+use so_core::ErrorKind;
 use so_core::Harness;
 
 #[derive(Debug)]
@@ -6,6 +7,7 @@ pub struct AcpSpec {
     pub model_flag: Option<&'static str>,
     pub effort_flag: Option<&'static str>,
     pub join_flag: &'static str,
+    pub error_patterns: &'static [(&'static str, ErrorKind)],
 }
 
 pub fn spec(harness: Harness) -> Option<AcpSpec> {
@@ -15,18 +17,21 @@ pub fn spec(harness: Harness) -> Option<AcpSpec> {
             model_flag: Some("--model"),
             effort_flag: Some("--reasoning-effort"),
             join_flag: "--resume=",
+            error_patterns: &[],
         },
         Harness::Gemini => AcpSpec {
             launch: &["--acp", "--approval-mode", "yolo"],
             model_flag: Some("-m"),
             effort_flag: None,
             join_flag: "--resume",
+            error_patterns: &[],
         },
         Harness::Kimi => AcpSpec {
             launch: &["acp"],
             model_flag: None,
             effort_flag: None,
             join_flag: "--session",
+            error_patterns: &[],
         },
         // Cursor is not installed here; global flags are documented but not verified in ACP mode.
         Harness::Cursor => AcpSpec {
@@ -34,12 +39,14 @@ pub fn spec(harness: Harness) -> Option<AcpSpec> {
             model_flag: Some("--model"),
             effort_flag: None,
             join_flag: "--resume",
+            error_patterns: &[],
         },
         Harness::Qwen => AcpSpec {
             launch: &["--acp", "--approval-mode", "yolo"],
             model_flag: Some("-m"),
             effort_flag: None,
             join_flag: "--resume",
+            error_patterns: &[],
         },
         _ => return None,
     };
