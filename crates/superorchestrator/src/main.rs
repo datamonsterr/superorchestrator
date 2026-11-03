@@ -42,11 +42,12 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         yes,
         command,
     } = cli;
-    if let Some(Command::Hook(event)) = command {
-        cmd::hook::run(config_dir, event);
-        return Ok(ExitCode::SUCCESS);
-    }
-    let ctx = Ctx::new(config_dir, json, yes)?;
+    let ctx = match Ctx::new(config_dir, json, yes) {
+        Ok(ctx) => ctx,
+        // A hook never fails the harness, even when the config dir cannot be resolved.
+        Err(_) if matches!(command, Some(Command::Hook(_))) => return Ok(ExitCode::SUCCESS),
+        Err(e) => return Err(e),
+    };
     let Some(command) = command else {
         if interactive() {
             tui::run(&ctx)?;
@@ -58,8 +59,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     };
     let ok = |r: Result<()>| r.map(|()| ExitCode::SUCCESS);
     match command {
-        // Handled before constructing the context above.
-        Command::Hook(_) => unreachable!("hook handled before context creation"),
+        Command::Hook(event) => {
+            cmd::hook::run(&ctx, event);
+            Ok(ExitCode::SUCCESS)
+        }
         Command::Setup(a) => cmd::setup::run(&ctx, a),
         Command::Tui => ok(tui::run(&ctx)),
         Command::Init => ok(cmd::init::run(&ctx)),

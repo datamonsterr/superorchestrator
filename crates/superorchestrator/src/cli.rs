@@ -92,7 +92,9 @@ pub enum Command {
 
 #[derive(Subcommand, Debug, Clone, Copy)]
 pub enum HookCmd {
+    /// Report runs that wait at the review gate or on an answer, as session context
     SessionStart,
+    /// Report runs that still wait at the review gate, as a system message
     Stop,
 }
 

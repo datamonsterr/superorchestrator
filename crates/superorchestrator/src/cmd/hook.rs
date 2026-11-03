@@ -25,17 +25,58 @@ struct RepoIdentity {
     common_dir: Option<PathBuf>,
 }
 
-fn repo_identity(cwd: &Path) -> RepoIdentity {
-    let path = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let common_dir = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&path)
+/// Upper bound for one `git rev-parse`; the hook as a whole has a 2 s budget.
+const GIT_BUDGET: Duration = Duration::from_millis(500);
+
+/// Canonical git common dir of `path`, or `None` when it is not a git checkout (or git is
+/// missing, slow, or the directory was deleted). The child never outlives `GIT_BUDGET`.
+fn git_common_dir(path: &Path) -> Option<PathBuf> {
+    use std::process::{Command, Stdio};
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(path)
         .args(["rev-parse", "--git-common-dir"])
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-        .and_then(|out| String::from_utf8(out.stdout).ok())
-        .and_then(|out| path.join(out.trim()).canonicalize().ok());
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    // Inherited repository-location variables would point git at the wrong repository.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GIT_") {
+            cmd.env_remove(key);
+        }
+    }
+    let mut child = cmd.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        let _ = stdout.read_to_string(&mut out);
+        out
+    });
+    let deadline = std::time::Instant::now() + GIT_BUDGET;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let out = reader.join().ok()?;
+    status
+        .success()
+        .then(|| path.join(out.trim()).canonicalize().ok())?
+}
+
+fn repo_identity(cwd: &Path) -> RepoIdentity {
+    // A deleted directory cannot be canonicalized or asked about git; such a run falls back
+    // to path containment on the path as recorded.
+    let path = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    let common_dir = git_common_dir(&path);
     RepoIdentity { path, common_dir }
 }
 
@@ -90,6 +131,8 @@ fn format_output(event: HookCmd, runs: &[&WaitingRun]) -> Option<Value> {
 /// Reads the runs of this repository that wait on the user, from a read-only database.
 fn read_waiting(db: &Path, cwd: &Path, event: HookCmd) -> Option<Vec<WaitingRun>> {
     let root = repo_identity(cwd);
+    // Deliberate: if the database is missing, locked past the short busy timeout, or has an
+    // older schema, the hook prints nothing rather than failing the harness.
     let store = so_store::Store::open_read_only(db).ok()?;
     let rows = store.list_active_runs(100_000).ok()?;
     let mut runs = Vec::new();
@@ -106,7 +149,8 @@ fn read_waiting(db: &Path, cwd: &Path, event: HookCmd) -> Option<Vec<WaitingRun>
         }
         let question = matches!(event, HookCmd::SessionStart)
             && row.parent_run_id.is_none()
-            && store.has_open_question(&row.id).ok()?;
+            // A failed lookup only drops this run's question flag, not the whole report.
+            && store.has_open_question(&row.id).unwrap_or(false);
         runs.push(WaitingRun {
             id: row.id,
             name: row.name.unwrap_or_default(),
@@ -132,18 +176,20 @@ async fn collect(ctx: &Ctx, cwd: &Path, event: HookCmd) -> Option<Value> {
     format_output(event, &runs.iter().collect::<Vec<_>>())
 }
 
-pub fn run(config_dir: Option<PathBuf>, event: HookCmd) {
+pub fn run(ctx: &Ctx, event: HookCmd) {
+    let ctx = ctx.clone();
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     std::thread::spawn(move || {
-        if let Some(value) = run_worker(config_dir, event) {
-            println!("{value}");
+        if let Some(value) = run_worker(&ctx, event) {
+            use std::io::Write;
+            let _ = writeln!(std::io::stdout().lock(), "{value}");
         }
         let _ = tx.send(());
     });
     let _ = rx.recv_timeout(Duration::from_secs(2));
 }
 
-fn run_worker(config_dir: Option<PathBuf>, event: HookCmd) -> Option<Value> {
+fn run_worker(ctx: &Ctx, event: HookCmd) -> Option<Value> {
     let mut input = String::new();
     if !std::io::stdin().is_terminal() {
         let _ = std::io::stdin().read_to_string(&mut input);
@@ -159,8 +205,7 @@ fn run_worker(config_dir: Option<PathBuf>, event: HookCmd) -> Option<Value> {
             .ok()
             .and_then(|v| v.get("cwd").and_then(Value::as_str).map(PathBuf::from))
             .or_else(|| std::env::current_dir().ok())?;
-        let ctx = Ctx::new(config_dir, false, false).ok()?;
-        collect(&ctx, &cwd, event).await
+        collect(ctx, &cwd, event).await
     })
 }
 
@@ -176,7 +221,7 @@ mod tests {
         }
     }
     #[test]
-    fn filters_by_path_components_and_formats_both_events() {
+    fn formats_both_events_for_the_selected_runs() {
         let runs = [
             run("r1", true, false),
             run("r2", false, true),
@@ -253,18 +298,74 @@ mod tests {
     }
 
     #[test]
-    fn read_waiting_works_while_another_connection_holds_a_write_transaction() {
+    fn read_waiting_reports_runs_while_another_connection_holds_a_write_transaction() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("state.db");
-        drop(so_store::Store::open(&db).unwrap());
+        let store = so_store::Store::open(&db).unwrap();
+        let now = chrono::Utc::now();
+        let session = so_store::SessionRow {
+            id: so_core::new_id(),
+            kind: so_core::SessionKind::Orchestrator,
+            client: "test".into(),
+            cwd: None,
+            account: None,
+            pid: None,
+            started_at: now,
+            ended_at: None,
+            status: "active".into(),
+        };
+        store.insert_session(&session).unwrap();
+        let run = so_store::RunRow {
+            id: so_core::new_id(),
+            session_id: session.id.clone(),
+            parent_run_id: None,
+            depth: 0,
+            name: Some("w".into()),
+            agent: None,
+            choice_id: None,
+            harness: so_core::Harness::Codex,
+            account: None,
+            model: None,
+            effort: None,
+            cwd: Some(dir.path().to_string_lossy().into_owned()),
+            worktree_path: None,
+            branch: None,
+            native_session_id: None,
+            state: RunState::PendingReview,
+            review: true,
+            output_schema: None,
+            result_json: None,
+            error_kind: None,
+            prompt: None,
+            isolation: so_core::Isolation::None,
+            max_turns: None,
+            worktree_base: None,
+            worktree_repo: None,
+            timeout_ms: None,
+            created_at: now,
+            started_at: None,
+            finished_at: None,
+        };
+        store.insert_run(&run).unwrap();
+        store
+            .append_event(&so_core::Event {
+                id: so_core::new_id(),
+                session_id: session.id,
+                run_id: Some(run.id.clone()),
+                ts: now,
+                event_type: so_core::EventType::QuestionAsked,
+                data: json!({}),
+            })
+            .unwrap();
         let writer = rusqlite::Connection::open(&db).unwrap();
         writer
             .execute_batch("BEGIN IMMEDIATE; CREATE TABLE hold(x);")
             .unwrap();
         let start = std::time::Instant::now();
         let runs = read_waiting(&db, dir.path(), HookCmd::SessionStart).unwrap();
-        assert!(runs.is_empty());
         assert!(start.elapsed() < Duration::from_secs(2));
         writer.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(runs.len(), 1);
+        assert!(runs[0].id == run.id && runs[0].review && runs[0].question);
     }
 }

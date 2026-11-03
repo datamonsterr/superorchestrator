@@ -88,7 +88,8 @@ impl Store {
     }
 
     /// Whether the newest `QuestionAsked` event of `run_id` is newer (by id) than its newest
-    /// `QuestionAnswered` event, in one indexed query. A question abandoned by a disconnected
+    /// `QuestionAnswered` event, in one query. It is a lookup on the `idx_events_run_ts` run_id range filtered by type
+    /// (not a type index), so its cost is linear in the run's events. A question abandoned by a disconnected
     /// client stays open, same as the monitor; that is a known limitation.
     pub fn has_open_question(&self, run_id: &str) -> Result<bool> {
         let conn = self.conn();

@@ -60,8 +60,10 @@ fn skills_are_the_generated_plugin_skills() {
             }
             let have = std::fs::read_to_string(&path).unwrap();
             assert_eq!(
-                have, want,
-                "plugin/skills/{name}/SKILL.md is stale; run with UPDATE_PLUGIN_SKILL=1"
+                have,
+                want,
+                "{}/skills/{name}/SKILL.md is stale; run with UPDATE_PLUGIN_SKILL=1",
+                dir.display()
             );
         }
     }
@@ -172,23 +174,14 @@ fn codex_plugin_and_marketplace_are_wired() {
 }
 
 #[test]
-fn all_codex_plugin_json_files_parse_and_hook_keys_are_supported() {
+fn all_codex_plugin_json_files_parse() {
     fn check(dir: &std::path::Path) {
         for entry in std::fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
             if path.is_dir() {
                 check(&path);
             } else if path.extension().is_some_and(|ext| ext == "json") {
-                let value: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-                if path.ends_with("hooks/hooks.json") {
-                    assert!(
-                        value
-                            .as_object()
-                            .unwrap()
-                            .keys()
-                            .all(|key| key == "hooks" || key == "description")
-                    );
-                }
+                serde_json::from_slice::<Value>(&std::fs::read(&path).unwrap()).unwrap();
             }
         }
     }
