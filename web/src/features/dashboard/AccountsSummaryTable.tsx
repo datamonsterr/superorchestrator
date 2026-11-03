@@ -2,6 +2,7 @@ import { Link } from 'react-router'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { SignInState } from '@/components/common/SignInState'
 import { HarnessBadge } from '@/components/common/HarnessBadge'
+import { ReservedBadge } from '@/components/common/ReservedBadge'
 import { HeadroomBar } from '@/components/common/HeadroomBar'
 import { EmptyState } from '@/components/common/EmptyState'
 import { Users } from 'lucide-react'
@@ -51,6 +52,7 @@ export function AccountsSummaryTable({ accounts }: { accounts: AccountView[] }) 
                     <Link to="/accounts" className="underline-offset-4 hover:underline">
                       {a.name}
                     </Link>
+                    {a.reserved && <ReservedBadge />}
                     {!a.enabled && <span className="ml-2 text-xs text-muted-foreground">disabled</span>}
                   </TableCell>
                   <TableCell rowSpan={rows.length} className="align-top">

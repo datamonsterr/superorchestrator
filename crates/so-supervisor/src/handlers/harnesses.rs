@@ -292,7 +292,7 @@ pub fn harnesses_view(state: &SupervisorState) -> Result<HarnessesView, String> 
     for path in files {
         match AccountFile::load(&path) {
             Ok(account) => accounts.push(account_view(state, host, &index, &flags, now, &account)),
-            Err(e) => accounts.push(broken_account(&path, first_line(&e.to_string()))),
+            Err(e) => accounts.push(broken_account(state, &path, first_line(&e.to_string()))),
         }
     }
     accounts.sort_by(|a, b| a.name.cmp(&b.name));
@@ -365,6 +365,7 @@ fn account_view(
         harness: account.harness,
         signed_in,
         enabled: account.enabled,
+        reserved: state.config.orchestrator.is_reserved(&account.name),
         cap: account.cap,
         active_runs: u32::try_from(runs + sessions).unwrap_or(u32::MAX),
         headroom: rows,
@@ -392,7 +393,7 @@ fn first_line(s: &str) -> &str {
 
 /// Entry for an account file that could not be loaded. The harness is unknown, so the
 /// first one stands in; `error` is what tells a reader not to trust the other fields.
-fn broken_account(path: &std::path::Path, error: &str) -> AccountView {
+fn broken_account(state: &SupervisorState, path: &std::path::Path, error: &str) -> AccountView {
     AccountView {
         name: path
             .file_stem()
@@ -401,6 +402,10 @@ fn broken_account(path: &std::path::Path, error: &str) -> AccountView {
         harness: Harness::Codex,
         signed_in: SignInState::Unknown,
         enabled: false,
+        reserved: path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|name| state.config.orchestrator.is_reserved(name)),
         cap: 0,
         active_runs: 0,
         headroom: Vec::new(),
