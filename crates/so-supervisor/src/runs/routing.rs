@@ -230,8 +230,8 @@ impl RunManager {
             params.account.clone(),
             params.model.clone(),
         );
-        let ranked = self
-            .blocking(move || -> Result<Vec<(String, Option<String>)>, String> {
+        let (ranked, model) = self
+            .blocking(move || -> Result<(Vec<String>, String), String> {
                 let accounts = AccountFile::list(&paths).map_err(|e| e.to_string())?;
                 let catalog = Catalog::load(&paths).map_err(|e| e.to_string())?;
                 let mut snap = Snapshot::collect(&store, &accounts, low, Utc::now())
@@ -242,63 +242,32 @@ impl RunManager {
                 let (_, model, _) =
                     so_core::resolve_model_ref(harness.into(), model.as_deref(), None)
                         .map_err(|e| e.to_string())?;
-                let pool = catalog.pool_for(harness, model.as_deref().unwrap_or_default());
-                let usable: Vec<_> = snap
-                    .accounts
-                    .iter()
-                    .filter(|a| {
-                        let effective_model = model.as_deref().unwrap_or_else(|| {
-                            a.file
-                                .endpoint
-                                .as_ref()
-                                .map_or("", |e| e.slot(so_core::Slot::Opus))
-                        });
-                        a.file.enabled
-                            && so_router::eligible::serves(
-                                &a.file,
-                                harness,
-                                effective_model,
-                                &catalog,
-                            )
-                            && a.active < a.file.cap
-                            && a.pools.get(&pool).is_some_and(|p| p.available)
-                    })
-                    .filter(|a| !exclude.contains(&a.file.name))
-                    .filter(|a| pin_account.as_ref().is_none_or(|n| n == &a.file.name))
-                    .collect();
-                let ordered = so_router::select::rank_accounts(&usable, &pool);
-                let selected_model = model
-                    .as_deref()
-                    .unwrap_or_else(|| {
-                        ordered
-                            .first()
-                            .and_then(|a| a.file.endpoint.as_ref())
-                            .map_or("", |e| e.slot(so_core::Slot::Opus))
-                    })
-                    .to_string();
-                Ok(ordered
+                let model = model.unwrap_or_else(|| {
+                    pin_account
+                        .as_ref()
+                        .and_then(|name| snap.accounts.iter().find(|a| &a.file.name == name))
+                        .and_then(|a| a.file.endpoint.as_ref())
+                        .map_or("", |endpoint| endpoint.slot(so_core::Slot::Opus))
+                        .to_string()
+                });
+                let pool = catalog.pool_for(harness, &model);
+                let usable: Vec<_> =
+                    so_router::eligible::usable_accounts(&snap, harness, &pool, &model, &catalog)
+                        .into_iter()
+                        .filter(|a| !exclude.contains(&a.file.name))
+                        .filter(|a| pin_account.as_ref().is_none_or(|n| n == &a.file.name))
+                        .collect();
+                let ranked = so_router::select::rank_accounts(&usable, &pool)
                     .into_iter()
-                    .filter(|a| {
-                        so_router::eligible::serves(&a.file, harness, &selected_model, &catalog)
-                    })
-                    .map(|a| {
-                        (
-                            a.file.name.clone(),
-                            a.file
-                                .endpoint
-                                .as_ref()
-                                .map(|e| e.slot(so_core::Slot::Opus).to_string()),
-                        )
-                    })
-                    .collect())
+                    .map(|a| a.file.name.clone())
+                    .collect();
+                Ok((ranked, model))
             })
             .await?
             .map_err(|e| rpc(UNAVAILABLE, e))?;
-        let Some((first, opus)) = ranked.first().cloned() else {
+        let Some(first) = ranked.first().cloned() else {
             return Err(why.clone());
         };
-        let ranked: Vec<String> = ranked.into_iter().map(|(name, _)| name).collect();
-        let model = params.model.clone().or(opus).unwrap_or_default();
         // No level lists this pin, so its id is a ref built from what was pinned; with no model
         // named there is no ref to form and the id is the harness name.
         let choice_id = if model.is_empty() {
@@ -470,6 +439,38 @@ mod tests {
             None,
         );
         (m, dir)
+    }
+
+    #[tokio::test]
+    async fn fallback_respects_endpoint_serving_and_pins() {
+        let (m, _dir) = two_accounts();
+        let paths = &m.inner.paths;
+        let mut endpoint =
+            AccountFile::new("claude-a", Harness::Claude, "/tmp/endpoint", "/bin/sh").unwrap();
+        endpoint.endpoint = Some(
+            serde_json::from_value(serde_json::json!({"preset": "zai", "token_env": "TEST_TOKEN"}))
+                .unwrap(),
+        );
+        endpoint.save(paths).unwrap();
+        let why = rpc(UNAVAILABLE, "no eligible choice");
+        let mut params = RouteParams {
+            prompt: "test".into(),
+            harness: Some("claude".into()),
+            ..RouteParams::default()
+        };
+        let result = m.fallback_route(&params, &why, false).await.unwrap().result;
+        assert_eq!(result.account, "claude-t");
+        assert_eq!(result.model, "");
+        assert_eq!(result.ranked_accounts, ["claude-t", "claude-u"]);
+        params.account = Some("claude-a".into());
+        let result = m.fallback_route(&params, &why, false).await.unwrap().result;
+        assert_eq!(
+            (result.account.as_str(), result.model.as_str()),
+            ("claude-a", "glm-5.3")
+        );
+        params.account = Some("claude-t".into());
+        params.model = Some("claude/glm-5.3".into());
+        assert!(m.fallback_route(&params, &why, false).await.is_err());
     }
 
     fn queued_on_the_full_account(m: &RunManager) -> so_store::RunRow {
