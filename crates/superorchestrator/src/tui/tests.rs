@@ -25,6 +25,7 @@ fn account(name: &str, harness: Harness, signed_in: SignIn, enabled: bool) -> Ac
         harness,
         signed_in,
         enabled,
+        reserved: false,
         cap: 2,
         active: 0,
         headroom: String::new(),
@@ -430,6 +431,14 @@ fn accounts_selection_stays_inside_the_list() {
     assert_eq!(a.accounts_sel, 3);
     a.on_key(key(KeyCode::PageUp));
     assert_eq!(a.accounts_sel, 0);
+}
+
+#[test]
+fn reserved_account_is_marked_in_accounts_view() {
+    let mut a = app();
+    a.tab = Tab::Accounts;
+    a.snap.as_mut().unwrap().accounts[0].reserved = true;
+    assert!(shot(&mut a, 120, 40).contains("reserved"));
 }
 
 #[test]

@@ -13,6 +13,24 @@ vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { success: vi.fn(), err
 const openTab = async (name: string) => userEvent.click(await screen.findByRole('tab', { name }))
 
 describe('SettingsPage config', () => {
+  it('loads and saves reserved account names', async () => {
+    let body: unknown
+    let config = { ...fx.config, config: { ...fx.config.config, orchestrator: { reserved_accounts: ['codex-acc1'] } } }
+    server.use(http.get('/api/v1/config', () => HttpResponse.json(config)), http.patch('/api/v1/config', async ({ request }) => {
+      body = await request.json()
+      config = { ...config, config: { ...config.config, orchestrator: { reserved_accounts: ['agy-acc1'] } } }
+      return HttpResponse.json(config)
+    }))
+    renderWithProviders(<SettingsPage />)
+    await openTab('Orchestrator')
+    const field = await screen.findByLabelText('Reserved accounts')
+    expect(field).toHaveValue('codex-acc1')
+    await userEvent.clear(field)
+    await userEvent.type(field, 'agy-acc1')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(body).toEqual({ orchestrator: { reserved_accounts: ['agy-acc1'] } }))
+    await waitFor(() => expect(field).toHaveValue('agy-acc1'))
+  })
   it('saves only the changed field and shows the restart banner', async () => {
     let body: unknown
     server.use(

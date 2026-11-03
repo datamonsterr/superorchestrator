@@ -109,6 +109,11 @@ export function ConfigForm({ view, hidden = false }: { view: ConfigView; hidden?
           {text('router.jev.key_file', 'Key file', 'Optional dotenv file holding the key. Clearing it here does not remove the saved path.', { mono: true })}
         </FieldGroup>
       </TabsContent>
+      <TabsContent value="orchestrator">
+        <FieldGroup className="max-w-xl">
+          {text('orchestrator.reserved_accounts', 'Reserved accounts', 'Comma-separated account names kept for the orchestrator. Automatic routing skips these accounts.')}
+        </FieldGroup>
+      </TabsContent>
       <TabsContent value="ui">
         <FieldGroup className="max-w-xl">
           {text('ui.bind', 'Bind address', 'Changing the address or port takes effect after a restart.', { mono: true })}

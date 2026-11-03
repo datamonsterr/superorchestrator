@@ -496,6 +496,53 @@ async fn unknown_api_routes_are_json_404s() {
 // --------------------------------------------------------------------- accounts
 
 #[tokio::test]
+async fn reserved_account_is_marked_in_accounts_api() {
+    let mut config = Config::default();
+    config.orchestrator.reserved_accounts = vec!["codex-acc1".into()];
+    let f = fx_cfg(Some(TEST_TOKEN), config).await;
+    let (status, created) = post(
+        &f.app,
+        "/api/v1/accounts",
+        Some(json!({"harness": "codex", "name": "codex-acc1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["reserved"], true);
+    let (_, list) = get(&f.app, "/api/v1/accounts").await;
+    assert_eq!(list[0]["reserved"], true);
+}
+
+#[tokio::test]
+async fn reserved_accounts_config_round_trips() {
+    let f = fx().await;
+    let (status, value) = send_json(
+        &f.app,
+        "PATCH",
+        "/api/v1/config",
+        json!({"orchestrator": {"reserved_accounts": ["codex-acc1", "agy-acc1"]}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let (_, value) = get(&f.app, "/api/v1/config").await;
+    assert_eq!(
+        value["config"]["orchestrator"]["reserved_accounts"],
+        json!(["codex-acc1", "agy-acc1"])
+    );
+    let (status, value) = send_json(
+        &f.app,
+        "PATCH",
+        "/api/v1/config",
+        json!({"orchestrator": {"reserved_accounts": []}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(
+        value["config"]["orchestrator"]["reserved_accounts"],
+        json!([])
+    );
+}
+
+#[tokio::test]
 async fn account_lifecycle() {
     let f = fx().await;
     let (s, v) = post(

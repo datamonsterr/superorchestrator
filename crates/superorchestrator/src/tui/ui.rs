@@ -626,11 +626,17 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|a| {
             let dim = if a.enabled { t.base() } else { t.muted() };
-            let name = if wide || a.enabled {
+            let mut name = if wide || a.enabled {
                 a.name.clone()
             } else {
                 format!("{} (off)", a.name)
             };
+            if a.reserved {
+                name = format!(
+                    "{} [reserved]",
+                    truncate(&name, w(0).saturating_sub(11), t.ellipsis())
+                );
+            }
             let mut cells = vec![
                 Cell::new(truncate(&name, w(0), t.ellipsis())),
                 Cell::new(a.harness.as_str()),

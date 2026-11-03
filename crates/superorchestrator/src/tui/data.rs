@@ -26,6 +26,7 @@ pub struct AccountRow {
     pub harness: Harness,
     pub signed_in: SignIn,
     pub enabled: bool,
+    pub reserved: bool,
     pub cap: u32,
     pub active: i64,
     /// `pool: text, pool: text`.
@@ -275,11 +276,15 @@ fn account_rows(
     host: &HostEnv,
     now: DateTime<Utc>,
 ) -> (Vec<AccountRow>, Option<String>) {
+    let config = ctx.config().ok();
     match collect_views_with(ctx, host) {
         Ok(views) => (
             views
                 .into_iter()
                 .map(|v| AccountRow {
+                    reserved: config
+                        .as_ref()
+                        .is_some_and(|c| c.orchestrator.is_reserved(&v.account.name)),
                     cooling: v.headroom.iter().any(|(_, t)| t.starts_with("cooldown")),
                     headroom: v
                         .headroom

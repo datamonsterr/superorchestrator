@@ -63,6 +63,7 @@ describe('settings schemas', () => {
   it('lists every field path from the schema', () => {
     expect(FIELD_PATHS).toContain('router.jev.key_file')
     expect(FIELD_PATHS).toContain('limits.global_cap')
-    expect(FIELD_PATHS).toHaveLength(15)
+    expect(FIELD_PATHS).toContain('orchestrator.reserved_accounts')
+    expect(FIELD_PATHS).toHaveLength(16)
   })
 })

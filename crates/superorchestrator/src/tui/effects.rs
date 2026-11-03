@@ -910,6 +910,11 @@ mod tests {
             .unwrap()
             .save(&ctx.paths)
             .unwrap();
+        std::fs::write(
+            d.path().join("cfg/config.toml"),
+            "[orchestrator]\nreserved_accounts = [\"agy-1\"]\n",
+        )
+        .unwrap();
         let (tx, rx) = channel();
         let mut link = Link::new(None, SUP_TIMEOUT).unwrap();
         read_one(&ctx, &host, &mut link, Effect::Refresh, &tx);
@@ -930,6 +935,7 @@ mod tests {
             "gemini: ok 74%, claude: ok wk 36%"
         );
         assert!(snapshot.supervisor.is_none());
+        assert!(snapshot.accounts[0].reserved);
     }
 
     #[test]
