@@ -157,7 +157,7 @@ describe('Decider tab', () => {
   })
 
   it('drops the pasted key after a 4xx rejection but keeps it after a 5xx failure, with no secret in the cache', async () => {
-    let failure = { status: 400, message: 'key: invalid' }
+    let failure = { status: 422, message: 'key: invalid' }
     server.use(http.patch('/api/v1/decider', () => HttpResponse.json({ error: { code: -32602, message: failure.message } }, { status: failure.status })))
     const { queryClient } = await openDecider()
     const cached = () => JSON.stringify(queryClient.getMutationCache().getAll().map((m) => [m.state.variables, m.state.error, m.state.data]))
@@ -214,8 +214,8 @@ describe('Decider tab', () => {
     }
   })
 
-  it('shows a server 400 on the named field', async () => {
-    server.use(http.patch('/api/v1/decider', () => HttpResponse.json({ error: { code: -32602, message: 'model: unknown model id' } }, { status: 400 })))
+  it('shows a server 422 on the named field', async () => {
+    server.use(http.patch('/api/v1/decider', () => HttpResponse.json({ error: { code: -32602, message: 'model: unknown model id' } }, { status: 422 })))
     await openDecider()
     const model = screen.getByLabelText('Model')
     await userEvent.type(model, '-x')
@@ -223,8 +223,8 @@ describe('Decider tab', () => {
     expect(await screen.findByText('unknown model id')).toBeInTheDocument()
   })
 
-  it('shows an unattributed server 400 as a form error', async () => {
-    server.use(http.patch('/api/v1/decider', () => HttpResponse.json({ error: { code: -32602, message: 'config is locked' } }, { status: 400 })))
+  it('shows an unattributed server 422 as a form error', async () => {
+    server.use(http.patch('/api/v1/decider', () => HttpResponse.json({ error: { code: -32602, message: 'config is locked' } }, { status: 422 })))
     await openDecider()
     await userEvent.type(screen.getByLabelText('Model'), '-x')
     await save()

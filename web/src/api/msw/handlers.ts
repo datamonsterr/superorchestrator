@@ -199,7 +199,7 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
     http.patch(`${B}/decider`, async ({ request }) => {
       const p = (await request.json()) as DeciderPatch
       if (p.endpoint != null && !/^(https:\/\/|http:\/\/(localhost|127\.0\.0\.1|\[::1\])([:/]|$))/.test(p.endpoint)) {
-        return apiError(400, -32602, 'endpoint: must be https, or http only to a loopback host')
+        return apiError(422, -32602, 'endpoint: must be https, or http only to a loopback host')
       }
       const { key, ...rest } = p
       decider = { ...decider, ...Object.fromEntries(Object.entries(rest).filter(([, v]) => v != null)) } as DeciderView

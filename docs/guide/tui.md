@@ -60,7 +60,7 @@ The list is read from the store. The diff, cancel, join, accept and reject go th
 | `x` | Remove. You must type the account name to confirm. |
 | `i` | Scan for logins already on this machine and import them. |
 
-**5 Usage.** One row per account and pool with 5-hour and weekly headroom bars and "resets in 2h 10m" beside each, then the cooldowns with their end time, and a sparkline of daily usage for the last 14 days (the same data as `GET /api/v1/usage/daily`). `j` / `k` scroll. It is read-only; flag or clear a cooldown on the Accounts tab.
+**5 Usage.** One row per account and pool with 5-hour and weekly headroom bars and "resets in 2h 10m" beside each. A cooling-down account or pool shows "cooldown until 14:30 (in 2h 10m)" inline on its own row. Below the rows is a sparkline of daily usage for the last 14 days (the same data as `GET /api/v1/usage/daily`). `j` / `k` scroll. It is read-only; flag or clear a cooldown on the Accounts tab.
 
 **7 Models.** The model catalog per harness: model, efforts, whether it is free, and when the catalog was last refreshed. `r` refreshes it through the supervisor's model refresh, the same as the web Levels page. Models you add to a level come from this catalog.
 
