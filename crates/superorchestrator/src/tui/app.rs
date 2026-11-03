@@ -28,32 +28,56 @@ const TOAST_ERR: i64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
-    Overview,
-    Accounts,
+    Dashboard,
+    Sessions,
     Runs,
-    Setup,
+    Accounts,
+    Usage,
     Levels,
+    Models,
+    Settings,
+    Setup,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [
-        Tab::Overview,
-        Tab::Accounts,
+    pub const ALL: [Tab; 9] = [
+        Tab::Dashboard,
+        Tab::Sessions,
         Tab::Runs,
-        Tab::Setup,
+        Tab::Accounts,
+        Tab::Usage,
         Tab::Levels,
+        Tab::Models,
+        Tab::Settings,
+        Tab::Setup,
     ];
-
     pub fn index(self) -> usize {
         Self::ALL.iter().position(|t| *t == self).unwrap_or(0)
     }
     pub fn title(self) -> &'static str {
         match self {
-            Tab::Overview => "Overview",
-            Tab::Accounts => "Accounts",
+            Tab::Dashboard => "Dashboard",
+            Tab::Sessions => "Sessions",
             Tab::Runs => "Runs",
-            Tab::Setup => "Setup",
+            Tab::Accounts => "Accounts",
+            Tab::Usage => "Usage",
             Tab::Levels => "Levels",
+            Tab::Models => "Models",
+            Tab::Settings => "Settings",
+            Tab::Setup => "Setup",
+        }
+    }
+    pub fn compact_title(self) -> &'static str {
+        match self {
+            Tab::Dashboard => "Dash",
+            Tab::Sessions => "Sess",
+            Tab::Runs => "Runs",
+            Tab::Accounts => "Acct",
+            Tab::Usage => "Usage",
+            Tab::Levels => "Lvls",
+            Tab::Models => "Mods",
+            Tab::Settings => "Opts",
+            Tab::Setup => "Setup",
         }
     }
     fn step(self, by: isize) -> Tab {
@@ -324,6 +348,10 @@ pub struct DetailView {
 }
 
 pub struct App {
+    pub sessions_tab: super::tabs::sessions::State,
+    pub usage_tab: super::tabs::usage::State,
+    pub models_tab: super::tabs::models::State,
+    pub settings_tab: super::tabs::settings::State,
     pub theme: Theme,
     pub tab: Tab,
     pub now: DateTime<Utc>,
@@ -351,8 +379,12 @@ pub struct App {
 impl App {
     pub fn new(theme: Theme, now: DateTime<Utc>) -> Self {
         Self {
+            sessions_tab: Default::default(),
+            usage_tab: Default::default(),
+            models_tab: Default::default(),
+            settings_tab: Default::default(),
             theme,
-            tab: Tab::Overview,
+            tab: Tab::Dashboard,
             now,
             tick: 0,
             snap: None,
@@ -457,7 +489,7 @@ impl App {
         match key.code {
             KeyCode::Tab => self.switch(self.tab.step(1)),
             KeyCode::BackTab => self.switch(self.tab.step(-1)),
-            KeyCode::Char(c @ '1'..='5') if plain => {
+            KeyCode::Char(c @ '1'..='9') if plain => {
                 self.switch(Tab::ALL[usize::from(c as u8 - b'1')]);
             }
             KeyCode::F(5) => return self.refresh(),
@@ -465,7 +497,11 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc if plain => self.back_or_quit(),
             _ => {
                 return match self.tab {
-                    Tab::Overview => None,
+                    Tab::Dashboard => None,
+                    Tab::Sessions => self.sessions_tab.on_key(key),
+                    Tab::Usage => self.usage_tab.on_key(key),
+                    Tab::Models => self.models_tab.on_key(key),
+                    Tab::Settings => self.settings_tab.on_key(key),
                     Tab::Accounts => self.accounts_key(key),
                     Tab::Runs => self.runs_key(key),
                     Tab::Setup => self.setup_key(key),

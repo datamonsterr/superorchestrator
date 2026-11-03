@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: small
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+ 1 Dash 2 Sess 3 Runs 4 Acct 5 Usage 6 Lvls 7 Mods 8 Opts 9 Setup
+ Account and pool headroom
+ codex-1 / default: low
+   5-hour [████████░░] 82%  resets in 2h 10m
+   weekly [█░░░░░░░░░] 12%  resets in 2d 0h
+ codex-2 / default: unknown  cooldown until 2026-10-23 15:00 UTC (in 3h 0m)
+   5-hour [░░░░░░░░░░] unknown
+   weekly [░░░░░░░░░░] unknown
+
+
+
+
+
+
+
+
+
+ Daily usage (tokens, last 14 days)
+          ▁▂▄▆█
+      ▂▄▅▇█████
+ ▂▃▅▇██████████
+ updated 3s ago
+ j/k scroll  1-9 tabs  R refresh  ? help  q quit

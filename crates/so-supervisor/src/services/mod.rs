@@ -2,5 +2,5 @@
 
 pub mod accounts;
 pub mod models;
-pub(crate) mod usage;
+pub mod usage;
 pub mod worktrees;

@@ -1,6 +1,5 @@
 //! Status, dashboard, usage, doctor, harnesses, routing log, config, levels and worktrees.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use axum::Json;
@@ -54,26 +53,19 @@ async fn accounts_of(st: &AppState) -> ApiResult<Vec<AccountView>> {
 
 async fn daily(st: &AppState, days: i64) -> ApiResult<Vec<DailyUsage>> {
     let since = Utc::now() - Duration::days(days);
-    let rows = st.db(move |s| s.ledger_daily(since)).await?;
-    let mut out: Vec<DailyUsage> = Vec::new();
-    for r in rows {
-        if out.last().is_none_or(|d| d.day != r.day) {
-            out.push(DailyUsage {
-                day: r.day.clone(),
-                input_tokens: 0,
-                output_tokens: 0,
-                cost: 0.0,
-                by_account: BTreeMap::new(),
-            });
-        }
-        if let Some(d) = out.last_mut() {
-            d.input_tokens += u64::try_from(r.input_tokens).unwrap_or(0);
-            d.output_tokens += u64::try_from(r.output_tokens).unwrap_or(0);
-            d.cost += r.cost;
-            *d.by_account.entry(r.account).or_default() += r.cost;
-        }
-    }
-    Ok(out)
+    let rows = st
+        .db(move |s| so_supervisor::services::usage::daily(s, since))
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| DailyUsage {
+            day: r.day,
+            input_tokens: r.input_tokens,
+            output_tokens: r.output_tokens,
+            cost: r.cost,
+            by_account: r.by_account,
+        })
+        .collect())
 }
 
 #[derive(Debug, Deserialize)]

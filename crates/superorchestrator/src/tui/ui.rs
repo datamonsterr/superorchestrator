@@ -47,7 +47,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_header(f, app, header);
     draw_tabs(f, app, tabs);
     match app.tab {
-        Tab::Overview => draw_overview(f, app, body),
+        Tab::Dashboard => draw_overview(f, app, body),
+        Tab::Sessions => super::tabs::sessions::draw(f, app, body),
+        Tab::Usage => super::tabs::usage::draw(f, app, body),
+        Tab::Models => super::tabs::models::draw(f, app, body),
+        Tab::Settings => super::tabs::settings::draw(f, app, body),
         Tab::Accounts => draw_accounts(f, app, body),
         Tab::Runs => draw_runs(f, app, body),
         Tab::Setup => draw_setup(f, app, body),
@@ -192,20 +196,28 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<Line> = Tab::ALL
         .iter()
         .map(|tab| {
-            let mut label = format!(" {} {} ", tab.index() + 1, tab.title());
-            if let Some(s) = &app.snap {
+            let compact = area.width < 118;
+            let title = if compact {
+                tab.compact_title()
+            } else {
+                tab.title()
+            };
+            let mut label = format!("{} {}", tab.index() + 1, title);
+            if let Some(s) = &app.snap
+                && !compact
+            {
                 match tab {
                     Tab::Runs if s.pending_review > 0 => {
                         label = format!(
-                            " {} {} {}{} ",
+                            "{} {} {}{}",
                             tab.index() + 1,
-                            tab.title(),
+                            title,
                             t.bang(),
                             s.pending_review
                         );
                     }
                     Tab::Runs if s.active_runs > 0 => {
-                        label = format!(" {} {} {} ", tab.index() + 1, tab.title(), s.active_runs);
+                        label = format!("{} {} {}", tab.index() + 1, title, s.active_runs);
                     }
                     _ => {}
                 }
@@ -215,6 +227,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         .collect();
     f.render_widget(
         Tabs::new(titles)
+            .padding("", "")
             .select(app.tab.index())
             .style(t.muted())
             .highlight_style(t.selected())
@@ -257,9 +270,12 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
     if app.modal.is_some() {
         return (vec![("Esc", "close")], "");
     }
-    let nav = ("1-5", "tabs");
+    let nav = ("1-9", "tabs");
     match app.tab {
-        Tab::Overview => (vec![nav, ("R", "refresh")], "quit"),
+        Tab::Dashboard | Tab::Sessions | Tab::Models | Tab::Settings => {
+            (vec![nav, ("R", "refresh")], "quit")
+        }
+        Tab::Usage => (vec![("j/k", "scroll"), nav, ("R", "refresh")], "quit"),
         Tab::Accounts => (
             vec![
                 ("j/k", "move"),
@@ -1119,7 +1135,8 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
     let mut out = vec![
         Line::styled("Everywhere", t.accent()),
         row("Tab  S-Tab", "next / previous tab"),
-        row("1 2 3 4 5", "Overview, Accounts, Runs, Setup, Levels"),
+        row("1-5", "Dashboard, Sessions, Runs, Accounts, Usage"),
+        row("6-9", "Levels, Models, Settings, Setup"),
         row("R  F5", "refresh now (the screen refreshes every 2 s)"),
         row("?", "this help"),
         row("q  Esc", "close a pane, or quit at the top level"),
@@ -1127,10 +1144,12 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
         Line::raw(""),
     ];
     match app.tab {
-        Tab::Overview => out.push(Line::styled(
-            "Overview shows what is set up and what to do next.",
+        Tab::Dashboard => out.push(Line::styled(
+            "Dashboard shows what is set up and what to do next.",
             t.muted(),
         )),
+        Tab::Usage => out.push(row("j k  g", "scroll headroom / top")),
+        Tab::Sessions | Tab::Models | Tab::Settings => {}
         Tab::Accounts => {
             out.push(Line::styled("Accounts", t.accent()));
             out.extend([

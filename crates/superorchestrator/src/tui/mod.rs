@@ -6,6 +6,7 @@
 mod app;
 mod data;
 mod effects;
+mod tabs;
 #[cfg(test)]
 mod tests;
 mod theme;
