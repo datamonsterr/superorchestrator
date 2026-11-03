@@ -2,12 +2,12 @@
 source: crates/superorchestrator/src/tui/tests.rs
 expression: "shot(&mut a, 80, 24)"
 ---
- superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
-  ╭ Help ────────────────────────────────────────────────────────────────────╮
-  │                                                                          │
+ s╭ Help ────────────────────────────────────────────────────────────────────╮
+ 1│                                                                          │
   │ Everywhere                                                               │
   │ Tab  S-Tab  next / previous tab                                          │
-  │ 1 2 3 4 5   Overview, Accounts, Runs, Setup, Levels                      │
+  │ 1-5         Dashboard, Sessions, Runs, Accounts, Usage                   │
+  │ 6-9         Levels, Models, Settings, Setup                              │
   │ R  F5       refresh now (the screen refreshes every 2 s)                 │
   │ ?           this help                                                    │
   │ q  Esc      close a pane, or quit at the top level                       │

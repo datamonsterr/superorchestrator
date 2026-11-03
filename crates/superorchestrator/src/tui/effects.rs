@@ -638,7 +638,7 @@ fn step_body(ctx: &Ctx, host: &HostEnv, step: SetupStep) -> Result<(StepState, V
                 return Ok((StepState::Done, vec!["no account is signed out".into()]));
             }
             let mut lines = vec![format!(
-                "{} account(s) signed out. Accounts tab (2), select one, press l:",
+                "{} account(s) signed out. Accounts tab (4), select one, press l:",
                 pending.len()
             )];
             for a in &pending {

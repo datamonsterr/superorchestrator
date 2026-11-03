@@ -29,6 +29,7 @@ fn account(name: &str, harness: Harness, signed_in: SignIn, enabled: bool) -> Ac
         active: 0,
         headroom: String::new(),
         cooling: false,
+        pools: Vec::new(),
     }
 }
 
@@ -66,6 +67,8 @@ fn snapshot() -> Snapshot {
             account("claude-1", Harness::Claude, SignIn::Unknown, false),
         ],
         accounts_error: None,
+        daily_usage: Vec::new(),
+        usage_error: None,
         levels_error: None,
         catalog_refs: vec![
             "codex/gpt-6.1-sol/high".into(),
@@ -231,13 +234,13 @@ fn snapshot() -> Snapshot {
                 label: "signed in",
                 level: Level::Missing,
                 detail: "2 of 3 enabled".into(),
-                fix: Some("Accounts tab (2): select one, press l".into()),
+                fix: Some("Accounts tab (4): select one, press l".into()),
             },
             Check {
                 label: "Claude Code",
                 level: Level::Missing,
                 detail: "not installed".into(),
-                fix: Some("Setup tab (4): press i, or `superorchestrator install`".into()),
+                fix: Some("Setup tab (9): press i, or `superorchestrator install`".into()),
             },
             Check {
                 label: "router key",
@@ -315,21 +318,17 @@ fn type_text(a: &mut App, text: &str) {
 #[test]
 fn tab_keys_cycle_and_digits_jump() {
     let mut a = app();
-    assert_eq!(a.tab, Tab::Overview);
-    press(&mut a, &[key(KeyCode::Tab)]);
-    assert_eq!(a.tab, Tab::Accounts);
-    press(&mut a, &[key(KeyCode::BackTab), key(KeyCode::BackTab)]);
-    assert_eq!(a.tab, Tab::Levels, "shift-tab wraps backwards");
-    press(&mut a, &[key(KeyCode::Tab)]);
-    assert_eq!(a.tab, Tab::Overview, "tab wraps forwards");
-    for (c, tab) in [
-        ('2', Tab::Accounts),
-        ('3', Tab::Runs),
-        ('4', Tab::Setup),
-        ('5', Tab::Levels),
-        ('1', Tab::Overview),
-    ] {
-        press(&mut a, &[ch(c)]);
+    assert_eq!(a.tab, Tab::Dashboard);
+    for &tab in Tab::ALL.iter().cycle().skip(1).take(Tab::ALL.len()) {
+        press(&mut a, &[key(KeyCode::Tab)]);
+        assert_eq!(a.tab, tab);
+    }
+    for &tab in Tab::ALL.iter().rev() {
+        press(&mut a, &[key(KeyCode::BackTab)]);
+        assert_eq!(a.tab, tab);
+    }
+    for (i, &tab) in Tab::ALL.iter().enumerate() {
+        press(&mut a, &[ch(char::from(b'1' + i as u8))]);
         assert_eq!(a.tab, tab);
     }
 }
@@ -402,7 +401,7 @@ fn help_opens_everywhere_and_closes_with_esc_or_question_mark() {
 #[test]
 fn a_modal_swallows_keys_meant_for_the_tab() {
     let mut a = app();
-    press(&mut a, &[ch('2'), ch('?')]);
+    press(&mut a, &[ch('4'), ch('?')]);
     a.on_key(ch('3'));
     assert_eq!(
         a.tab,
@@ -417,7 +416,7 @@ fn a_modal_swallows_keys_meant_for_the_tab() {
 #[test]
 fn accounts_selection_stays_inside_the_list() {
     let mut a = app();
-    a.on_key(ch('2'));
+    a.on_key(ch('4'));
     press(&mut a, &[key(KeyCode::Up)]);
     assert_eq!(a.accounts_sel, 0);
     for _ in 0..10 {
@@ -435,7 +434,7 @@ fn accounts_selection_stays_inside_the_list() {
 #[test]
 fn add_form_picks_a_harness_and_a_count() {
     let mut a = app();
-    press(&mut a, &[ch('2'), ch('a')]);
+    press(&mut a, &[ch('4'), ch('a')]);
     assert!(matches!(
         a.modal,
         Some(Modal::AddAccount { harness: 0, .. })
@@ -458,7 +457,7 @@ fn add_form_rejects_a_bad_count_and_stays_open() {
     press(
         &mut a,
         &[
-            ch('2'),
+            ch('4'),
             ch('a'),
             key(KeyCode::Tab),
             key(KeyCode::Backspace),
@@ -478,7 +477,7 @@ fn add_form_rejects_a_bad_count_and_stays_open() {
 #[test]
 fn add_form_wraps_the_harness_choice() {
     let mut a = app();
-    press(&mut a, &[ch('2'), ch('a'), key(KeyCode::Left)]);
+    press(&mut a, &[ch('4'), ch('a'), key(KeyCode::Left)]);
     assert!(matches!(
         a.modal,
         Some(Modal::AddAccount { harness: 3, .. })
@@ -493,7 +492,7 @@ fn add_form_wraps_the_harness_choice() {
 #[test]
 fn enable_toggles_the_selected_account() {
     let mut a = app();
-    a.on_key(ch('2'));
+    a.on_key(ch('4'));
     let Some(Effect::SetEnabled { name, enabled }) = a.on_key(ch('e')) else {
         panic!()
     };
@@ -508,7 +507,7 @@ fn enable_toggles_the_selected_account() {
 #[test]
 fn remove_needs_the_exact_name() {
     let mut a = app();
-    press(&mut a, &[ch('2'), ch('x')]);
+    press(&mut a, &[ch('4'), ch('x')]);
     assert!(matches!(a.modal, Some(Modal::TypeName { .. })));
     type_text(&mut a, "codex");
     assert!(a.on_key(key(KeyCode::Enter)).is_none());
@@ -527,7 +526,7 @@ fn remove_needs_the_exact_name() {
 #[test]
 fn remove_can_be_cancelled() {
     let mut a = app();
-    press(&mut a, &[ch('2'), ch('x')]);
+    press(&mut a, &[ch('4'), ch('x')]);
     type_text(&mut a, "codex-1");
     assert!(a.on_key(key(KeyCode::Esc)).is_none());
     assert!(a.modal.is_none() && a.busy.is_none() && !a.quit);
@@ -536,7 +535,7 @@ fn remove_can_be_cancelled() {
 #[test]
 fn flag_asks_for_hours_then_sets_a_cooldown() {
     let mut a = app();
-    press(&mut a, &[ch('2'), ch('f')]);
+    press(&mut a, &[ch('4'), ch('f')]);
     assert!(matches!(
         a.modal,
         Some(Modal::Input {
@@ -557,7 +556,7 @@ fn flag_asks_for_hours_then_sets_a_cooldown() {
 fn flag_rejects_nonsense_hours() {
     for bad in ["", "abc", "-1", "0", "NaN"] {
         let mut a = app();
-        press(&mut a, &[ch('2'), ch('f'), key(KeyCode::Backspace)]);
+        press(&mut a, &[ch('4'), ch('f'), key(KeyCode::Backspace)]);
         type_text(&mut a, bad);
         assert!(a.on_key(key(KeyCode::Enter)).is_none(), "{bad:?}");
         assert!(a.modal.is_some(), "{bad:?} keeps the prompt");
@@ -567,7 +566,7 @@ fn flag_rejects_nonsense_hours() {
 #[test]
 fn flag_on_a_cooling_account_clears_it() {
     let mut a = app();
-    press(&mut a, &[ch('2'), key(KeyCode::Down)]);
+    press(&mut a, &[ch('4'), key(KeyCode::Down)]);
     let Some(Effect::Cooldown { name, hours }) = a.on_key(ch('f')) else {
         panic!()
     };
@@ -577,7 +576,7 @@ fn flag_on_a_cooling_account_clears_it() {
 #[test]
 fn login_and_import_start_work() {
     let mut a = app();
-    a.on_key(ch('2'));
+    a.on_key(ch('4'));
     assert!(matches!(a.on_key(ch('l')), Some(Effect::Login(n)) if n == "codex-1"));
     assert!(matches!(a.on_key(ch('i')), Some(Effect::ScanImport)));
 }
@@ -586,7 +585,7 @@ fn login_and_import_start_work() {
 fn account_keys_with_no_accounts_do_nothing_harmful() {
     let mut a = app();
     a.snap.as_mut().unwrap().accounts.clear();
-    a.on_key(ch('2'));
+    a.on_key(ch('4'));
     for c in ['l', 'e', 'f', 'x'] {
         assert!(a.on_key(ch(c)).is_none());
     }
@@ -743,7 +742,7 @@ fn selection_is_clamped_when_the_lists_shrink() {
 #[test]
 fn setup_runs_the_selected_step_and_one_at_a_time() {
     let mut a = app();
-    a.on_key(ch('4'));
+    a.on_key(ch('9'));
     a.on_key(key(KeyCode::Down));
     assert!(matches!(
         a.on_key(key(KeyCode::Enter)),
@@ -760,7 +759,7 @@ fn setup_runs_the_selected_step_and_one_at_a_time() {
 #[test]
 fn setup_shortcuts_select_install_and_doctor() {
     let mut a = app();
-    a.on_key(ch('4'));
+    a.on_key(ch('9'));
     assert!(matches!(
         a.on_key(ch('i')),
         Some(Effect::Setup(SetupStep::Install))
@@ -776,7 +775,7 @@ fn setup_shortcuts_select_install_and_doctor() {
 #[test]
 fn run_all_resets_the_rows_and_steps_report_back() {
     let mut a = app();
-    a.on_key(ch('4'));
+    a.on_key(ch('9'));
     a.on_update(Update::Step {
         step: SetupStep::Init,
         state: StepState::Failed,
@@ -848,7 +847,7 @@ fn a_keypress_dismisses_the_toast() {
         ok: false,
         text: "bad".into(),
     });
-    a.on_key(ch('2'));
+    a.on_key(ch('4'));
     assert!(a.toast.is_none());
 }
 
@@ -943,7 +942,7 @@ macro_rules! sizes {
 
 sizes!(overview, |_| {});
 sizes!(accounts, |a| {
-    a.on_key(ch('2'));
+    a.on_key(ch('4'));
     a.on_key(key(KeyCode::Down));
 });
 sizes!(runs, |a| {
@@ -955,7 +954,7 @@ sizes!(run_detail, |a| {
     a.on_update(Update::Detail(Ok(Box::new(detail()))));
 });
 sizes!(setup, |a| {
-    a.on_key(ch('4'));
+    a.on_key(ch('9'));
     a.on_update(Update::Step {
         step: SetupStep::Init,
         state: StepState::Done,
@@ -990,16 +989,16 @@ fn modals_render_at_80x24() {
             a.on_key(ch('?'));
         }),
         ("help_accounts", |a| {
-            press(a, &[ch('2'), ch('?')]);
+            press(a, &[ch('4'), ch('?')]);
         }),
         ("add_account", |a| {
-            press(a, &[ch('2'), ch('a'), key(KeyCode::Right)]);
+            press(a, &[ch('4'), ch('a'), key(KeyCode::Right)]);
         }),
         ("confirm_cancel", |a| {
             press(a, &[ch('3'), ch('c')]);
         }),
         ("remove_account", |a| {
-            press(a, &[ch('2'), ch('x')]);
+            press(a, &[ch('4'), ch('x')]);
             type_text(a, "codex");
         }),
         ("reject_feedback", |a| {
@@ -1058,7 +1057,7 @@ fn empty_states_say_what_to_do() {
         s.active_runs = 0;
         s.pending_review = 0;
     }
-    a.on_key(ch('2'));
+    a.on_key(ch('4'));
     insta::assert_snapshot!("empty_accounts_80x24", shot(&mut a, 80, 24));
     a.on_key(ch('3'));
     insta::assert_snapshot!("empty_runs_80x24", shot(&mut a, 80, 24));
@@ -1078,7 +1077,7 @@ fn loading_before_the_first_snapshot() {
 fn accounts_read_error_is_shown_not_dropped() {
     let mut a = app();
     a.snap.as_mut().unwrap().accounts_error = Some("bad toml in codex-1.toml".into());
-    a.on_key(ch('2'));
+    a.on_key(ch('4'));
     assert!(shot(&mut a, 80, 24).contains("bad toml"));
 }
 
@@ -1088,7 +1087,7 @@ fn too_small_terminals_get_a_message_not_a_broken_layout() {
     let s = shot(&mut a, 40, 10);
     assert!(s.contains("too small") && s.contains("60x16"), "{s}");
     // And recovers on resize.
-    assert!(shot(&mut a, 80, 24).contains("Overview"));
+    assert!(shot(&mut a, 80, 24).contains("Dash"));
 }
 
 #[test]
@@ -1116,7 +1115,7 @@ fn long_text_is_truncated_with_an_ellipsis_inside_its_column() {
         s.runs[0].title = "x".repeat(200);
         s.runs[1].title = "日本語のタイトルがとても長い場合でも切り詰められる".repeat(3);
     }
-    a.on_key(ch('2'));
+    a.on_key(ch('4'));
     let s = shot(&mut a, 80, 24);
     assert!(s.contains("a-very-long-accou…"), "{s}");
     a.on_key(ch('3'));
@@ -1145,7 +1144,7 @@ fn selected_rows_are_reversed_and_status_has_a_symbol_without_colour() {
         now(),
     );
     a.snap = Some(snapshot());
-    a.on_key(ch('2'));
+    a.on_key(ch('4'));
     let buf = render(&mut a, 80, 24);
     let s = text(&buf);
     // Row 0 of the table is selected: find its cells and check the modifier.
@@ -1288,7 +1287,7 @@ fn accept_offers_a_merge_only_for_runs_with_a_worktree() {
 #[test]
 fn vim_keys_move_in_every_list() {
     let mut a = app();
-    a.on_key(ch('2'));
+    a.on_key(ch('4'));
     press(&mut a, &[ch('j'), ch('j')]);
     assert_eq!(a.accounts_sel, 2);
     a.on_key(ch('k'));
@@ -1302,7 +1301,7 @@ fn vim_keys_move_in_every_list() {
     assert_eq!(a.runs_sel, a.runs().len() - 1);
     a.on_key(ch('g'));
     assert_eq!(a.runs_sel, 0);
-    a.on_key(ch('4'));
+    a.on_key(ch('9'));
     press(&mut a, &[ch('j'), ch('j'), ch('k')]);
     assert_eq!(a.setup_sel, 1);
     a.on_key(ch('G'));
@@ -1543,7 +1542,7 @@ fn overview_lists_levels_and_says_so_when_none_list_models() {
 #[test]
 fn levels_editing_keys_and_confirmations() {
     let mut a = app();
-    a.on_key(ch('5'));
+    a.on_key(ch('6'));
     assert_eq!(a.tab, Tab::Levels);
     a.on_key(key(KeyCode::Enter));
     assert_eq!(a.level_open.as_deref(), Some("simple"));
@@ -1603,7 +1602,7 @@ fn levels_editing_keys_and_confirmations() {
 #[test]
 fn levels_render_snapshots() {
     let mut a = app();
-    a.on_key(ch('5'));
+    a.on_key(ch('6'));
     insta::assert_snapshot!("levels_80x24", shot(&mut a, 80, 24));
     insta::assert_snapshot!("levels_120x40", shot(&mut a, 120, 40));
     a.on_key(key(KeyCode::Enter));
@@ -1618,7 +1617,7 @@ fn levels_render_snapshots() {
 #[test]
 fn levels_forms_picker_and_refresh_preserve_the_focused_ref() {
     let mut a = app();
-    a.on_key(ch('5'));
+    a.on_key(ch('6'));
     a.on_key(ch('n'));
     type_text(&mut a, "gap");
     a.on_key(key(KeyCode::Tab));
@@ -1679,7 +1678,7 @@ fn levels_forms_picker_and_refresh_preserve_the_focused_ref() {
 #[test]
 fn levels_empty_errors_and_cancelled_dialogs_are_safe() {
     let mut a = app();
-    a.on_key(ch('5'));
+    a.on_key(ch('6'));
     a.snap.as_mut().unwrap().levels.clear();
     a.on_key(ch('a'));
     assert!(a.modal.is_none());
@@ -1698,7 +1697,7 @@ fn levels_empty_errors_and_cancelled_dialogs_are_safe() {
     a.on_key(ch('r'));
     assert!(a.toast.as_ref().unwrap().text.contains("bad range"));
     let mut a = app();
-    a.on_key(ch('5'));
+    a.on_key(ch('6'));
     a.snap.as_mut().unwrap().catalog_error = Some("bad catalog".into());
     a.on_key(ch('a'));
     assert!(a.modal.is_none());
@@ -1707,4 +1706,51 @@ fn levels_empty_errors_and_cancelled_dialogs_are_safe() {
     a.on_key(ch('D'));
     insta::assert_snapshot!("modal_delete_level", shot(&mut a, 80, 24));
     assert!(a.on_key(key(KeyCode::Esc)).is_none());
+}
+
+#[test]
+fn usage_snapshots_and_tab_bar_fit() {
+    use crate::views::PoolHeadroom;
+    use so_core::{Headroom, HeadroomSource, HeadroomStatus};
+    let mut a = app();
+    let s = a.snap.as_mut().unwrap();
+    s.accounts.truncate(2);
+    s.accounts[0].pools = vec![PoolHeadroom {
+        pool: "default".into(),
+        cooldown_until: None,
+        headroom: Some(Headroom {
+            account: "codex-1".into(),
+            pool: "default".into(),
+            five_hour_remaining_pct: Some(82.0),
+            five_hour_resets_at: Some(now() + chrono::Duration::minutes(130)),
+            weekly_remaining_pct: Some(12.0),
+            weekly_resets_at: Some(now() + chrono::Duration::days(2)),
+            status: HeadroomStatus::Low,
+            source: HeadroomSource::Ledger,
+            observed_at: now(),
+        }),
+    }];
+    s.accounts[1].pools = vec![PoolHeadroom {
+        pool: "default".into(),
+        headroom: None,
+        cooldown_until: Some(now() + chrono::Duration::hours(3)),
+    }];
+    s.daily_usage = (0..14)
+        .map(|d| so_supervisor::services::usage::DailyUsage {
+            day: (now().date_naive() - chrono::Duration::days(13 - d)).to_string(),
+            input_tokens: (d + 1) as u64 * 100,
+            output_tokens: 30,
+            cost: 0.0,
+            by_account: Default::default(),
+        })
+        .collect();
+    a.tab = Tab::Usage;
+    let small = shot(&mut a, 80, 24);
+    assert!(small.lines().nth(1).unwrap().contains("9 Setup"));
+    insta::assert_snapshot!("usage_80x24", small);
+    insta::assert_snapshot!("usage_120x40", shot(&mut a, 120, 40));
+    let s = a.snap.as_mut().unwrap();
+    s.accounts.clear();
+    s.daily_usage.clear();
+    insta::assert_snapshot!("empty_usage_80x24", shot(&mut a, 80, 24));
 }

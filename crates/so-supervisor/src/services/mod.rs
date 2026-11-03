@@ -3,5 +3,5 @@
 pub mod accounts;
 pub mod decider;
 pub mod models;
-pub(crate) mod usage;
+pub mod usage;
 pub mod worktrees;
