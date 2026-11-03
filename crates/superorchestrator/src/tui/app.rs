@@ -15,11 +15,16 @@ use super::theme::Theme;
 use so_core::proto::RunDiff;
 
 /// The harnesses an account can be added for, in the order the form lists them.
-pub const HARNESSES: [Harness; 4] = [
+pub const HARNESSES: [Harness; 9] = [
     Harness::Codex,
     Harness::Opencode,
     Harness::Agy,
     Harness::Claude,
+    Harness::Copilot,
+    Harness::Gemini,
+    Harness::Kimi,
+    Harness::Cursor,
+    Harness::Qwen,
 ];
 
 const PAGE: usize = 10;

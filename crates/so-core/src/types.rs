@@ -325,6 +325,19 @@ impl FromStr for Choice {
             Some((model, effort)) => (model.to_string(), Some(effort.to_string())),
             None => (rest.to_string(), None),
         };
+        if matches!(
+            harness,
+            Harness::Gemini | Harness::Kimi | Harness::Cursor | Harness::Qwen
+        ) && segments.len() > 1
+            && segments.last().is_some_and(|s| {
+                [
+                    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra", "thinking",
+                ]
+                .contains(s)
+            })
+        {
+            return Err(bad(format!("{harness} does not support effort")));
+        }
         let (model, effort) = match harness {
             Harness::Opencode => match segments.len() {
                 1 => return Err(bad("opencode models are provider/model".into())),
@@ -849,6 +862,13 @@ mod tests {
 
     fn ref_error(s: &str) -> String {
         s.parse::<Choice>().unwrap_err().to_string()
+    }
+
+    #[test]
+    fn acp_without_effort_rejects_effort_suffixes() {
+        for h in ["gemini", "kimi", "cursor", "qwen"] {
+            assert!(format!("{h}/model/high").parse::<Choice>().is_err());
+        }
     }
 
     #[test]

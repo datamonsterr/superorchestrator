@@ -147,7 +147,22 @@ pub fn gaps(def: &AgentDef, harness: Harness) -> Vec<String> {
         .any(|m| matches!(m, McpRef::Inline { .. }));
     match harness {
         Harness::Copilot | Harness::Gemini | Harness::Kimi | Harness::Cursor | Harness::Qwen => {
-            g.push("agent materialisation is unsupported for this harness".into());
+            if has_tools {
+                g.push("tools/disallowedTools: per-tool controls are not supported".into());
+            }
+            if has_hooks {
+                g.push("hooks: not supported for ACP harnesses".into());
+            }
+            if !def.skills.is_empty() || def.dir.as_ref().is_some_and(|d| d.join("skills").is_dir())
+            {
+                g.push("skills: not supported for ACP harnesses".into());
+            }
+            if has_inline {
+                g.push(
+                    "mcpServers (inline): agent MCP servers are not configured for ACP harnesses"
+                        .into(),
+                );
+            }
         }
         Harness::Claude => {
             for t in &def.tools {

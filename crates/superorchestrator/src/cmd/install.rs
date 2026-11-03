@@ -103,8 +103,9 @@ pub(crate) fn config_files(host: &HostEnv, accounts: &[AccountFile]) -> Result<V
             }),
             // Claude's MCP registration is user-scope and global (`~/.claude.json`), so
             // no account home needs an entry of its own.
-            Harness::Claude
-            | Harness::Copilot
+            Harness::Claude => {}
+            // ACP runs receive the MCP server in session/new, with no per-CLI registration.
+            Harness::Copilot
             | Harness::Gemini
             | Harness::Kimi
             | Harness::Cursor

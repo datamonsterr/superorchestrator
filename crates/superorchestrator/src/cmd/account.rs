@@ -109,16 +109,7 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
             // codex and opencode sign in through `account login`; claude and agy
             // sign in inside their wrapper, which `account login` cannot drive
             // without a terminal.
-            let via_cli = matches!(
-                acc.harness,
-                Harness::Codex
-                    | Harness::Opencode
-                    | Harness::Copilot
-                    | Harness::Gemini
-                    | Harness::Kimi
-                    | Harness::Cursor
-                    | Harness::Qwen
-            );
+            let via_cli = login_via_cli(acc.harness);
             write_login_hint(w, login, via_cli)?;
         }
         Ok(())
@@ -166,6 +157,10 @@ pub(crate) fn login_json(account: &AccountFile, host: &HostEnv) -> Result<Value>
         "cli": format!("superorchestrator account login {}", account.name),
         "note": plan.note,
     }))
+}
+
+pub(crate) fn login_via_cli(harness: Harness) -> bool {
+    !matches!(harness, Harness::Claude | Harness::Agy)
 }
 
 pub(crate) fn write_login_hint(

@@ -101,6 +101,21 @@ pub struct SetupArgs {
     /// Antigravity accounts to add (default: 1 when there is none yet)
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
     pub agy: Option<u32>,
+    /// Copilot accounts to add
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
+    pub copilot: Option<u32>,
+    /// Gemini accounts to add
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
+    pub gemini: Option<u32>,
+    /// Kimi accounts to add
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
+    pub kimi: Option<u32>,
+    /// Cursor accounts to add
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
+    pub cursor: Option<u32>,
+    /// Qwen accounts to add
+    #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
+    pub qwen: Option<u32>,
     /// Do not sign in to the new accounts
     #[arg(long)]
     pub no_login: bool,
@@ -522,6 +537,32 @@ mod tests {
             Some(Command::Route(a)) => a,
             other => panic!("not a route command: {other:?}"),
         }
+    }
+
+    #[test]
+    fn setup_parses_acp_account_counts() {
+        let cli = Cli::try_parse_from([
+            "so",
+            "setup",
+            "--copilot",
+            "1",
+            "--gemini",
+            "2",
+            "--kimi",
+            "3",
+            "--cursor",
+            "4",
+            "--qwen",
+            "5",
+        ])
+        .unwrap();
+        let Some(Command::Setup(a)) = cli.command else {
+            panic!("expected setup")
+        };
+        assert_eq!(
+            (a.copilot, a.gemini, a.kimi, a.cursor, a.qwen),
+            (Some(1), Some(2), Some(3), Some(4), Some(5))
+        );
     }
 
     #[test]

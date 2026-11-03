@@ -20,7 +20,7 @@ use so_supervisor::services::accounts::{FlagAction, apply_flag, flag_pools};
 
 use super::app::{Effect, Launch, SetupStep, StepState, Update};
 use super::data::{SupInfo, load_detail, load_snapshot};
-use crate::cmd::account::{login_json, write_login_hint};
+use crate::cmd::account::{login_json, login_via_cli, write_login_hint};
 use crate::cmd::{install, runs, setup};
 use crate::ctx::Ctx;
 
@@ -273,16 +273,7 @@ fn perform(
             // Fails early when the harness binary is missing.
             let plan = manage::login_command(&account, host, true)?;
             let (program, args) = plan.argv.split_first().context("empty login command")?;
-            let via_cli = matches!(
-                account.harness,
-                Harness::Codex
-                    | Harness::Opencode
-                    | Harness::Copilot
-                    | Harness::Gemini
-                    | Harness::Kimi
-                    | Harness::Cursor
-                    | Harness::Qwen
-            );
+            let via_cli = login_via_cli(account.harness);
             // claude and agy sign in inside a session of their wrapper.
             let wrapper_ok =
                 via_cli || so_accounts::resolve_binary(program, host.path_var.as_deref()).is_ok();
@@ -652,16 +643,7 @@ fn step_body(ctx: &Ctx, host: &HostEnv, step: SetupStep) -> Result<(StepState, V
             )];
             for a in &pending {
                 let login = login_json(a, host)?;
-                let via_cli = matches!(
-                    a.harness,
-                    Harness::Codex
-                        | Harness::Opencode
-                        | Harness::Copilot
-                        | Harness::Gemini
-                        | Harness::Kimi
-                        | Harness::Cursor
-                        | Harness::Qwen
-                );
+                let via_cli = login_via_cli(a.harness);
                 let key = if via_cli { "cli" } else { "command" };
                 lines.push(format!(
                     "{}: {}",

@@ -328,10 +328,15 @@ fn check_binaries(c: &mut Checks, host: &HostEnv, accounts: &[AccountFile]) {
         Harness::Agy,
         Harness::Opencode,
         Harness::Claude,
+        Harness::Copilot,
+        Harness::Gemini,
+        Harness::Kimi,
+        Harness::Cursor,
+        Harness::Qwen,
     ] {
         let name = h.as_str();
         let needed = accounts.iter().any(|a| a.enabled && a.harness == h);
-        match resolve_binary(name, host.path_var.as_deref()) {
+        match resolve_binary(h.binary(), host.path_var.as_deref()) {
             Ok(path) => match version_of(&path, timeout) {
                 Ok(v) => c.ok(name, format!("{} ({v})", path.display())),
                 Err(e) if needed => c.fail(name, format!("{} {e}", path.display())),
