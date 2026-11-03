@@ -113,6 +113,101 @@ async fn answer(proc: &ProcessHandle, v: &Value) -> Result<(), DriverError> {
     write(proc, response).await
 }
 
+async fn handshake(
+    proc: &ProcessHandle,
+    rx: &mut mpsc::UnboundedReceiver<Value>,
+    launch: &LaunchSpec,
+    row: &spec::AcpSpec,
+) -> Result<String, DriverError> {
+    let init = request(
+        proc,
+        rx,
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": 1,
+            "clientCapabilities": {
+                "fs": {"readTextFile": false, "writeTextFile": false},
+                "terminal": false
+            },
+            "clientInfo": {"name": "superorchestrator", "version": env!("CARGO_PKG_VERSION")}
+        }),
+    )
+    .await?;
+    let env: Vec<Value> = launch
+        .mcp
+        .env
+        .iter()
+        .map(|(name, value)| json!({"name": name, "value": value}))
+        .collect();
+    let servers = json!([{
+        "name": "superorchestrator",
+        "command": launch.mcp.command,
+        "args": launch.mcp.args,
+        "env": env
+    }]);
+    let (method, params) = if let Some(id) = &launch.resume {
+        let caps = &init["agentCapabilities"];
+        let resume = &caps["sessionCapabilities"]["resume"];
+        let method = if caps["loadSession"] == true {
+            "session/load"
+        } else if resume.is_object() || *resume == true {
+            "session/resume"
+        } else {
+            return Err(DriverError::Other(
+                "ACP agent does not support session load or resume".into(),
+            ));
+        };
+        (
+            method,
+            json!({"sessionId": id, "cwd": launch.cwd, "mcpServers": servers}),
+        )
+    } else {
+        (
+            "session/new",
+            json!({"cwd": launch.cwd, "mcpServers": servers}),
+        )
+    };
+    let session = request(proc, rx, 2, method, params).await?;
+    let id = launch
+        .resume
+        .clone()
+        .or_else(|| session["sessionId"].as_str().map(str::to_owned))
+        .ok_or_else(|| DriverError::Other("ACP session response missing sessionId".into()))?;
+    if row.model_flag.is_none()
+        && let Some(model) = &launch.model
+    {
+        let option = session["configOptions"]
+            .as_array()
+            .and_then(|options| options.iter().find(|option| option["category"] == "model"))
+            .ok_or_else(|| {
+                DriverError::Other("ACP agent did not offer a model config option".into())
+            })?;
+        let valid = option["options"].as_array().is_some_and(|options| {
+            options.iter().any(|option| {
+                option["value"] == *model
+                    || option["options"]
+                        .as_array()
+                        .is_some_and(|group| group.iter().any(|option| option["value"] == *model))
+            })
+        });
+        if !valid {
+            return Err(DriverError::Other(format!(
+                "ACP model {model} is not offered"
+            )));
+        }
+        request(
+            proc,
+            rx,
+            3,
+            "session/set_config_option",
+            json!({"sessionId": id, "configId": option["id"], "value": model}),
+        )
+        .await?;
+    }
+    Ok(id)
+}
+
 impl Driver for AcpDriver {
     fn harness(&self) -> Harness {
         self.harness
@@ -144,30 +239,14 @@ impl Driver for AcpDriver {
             rpc::Parser(tx),
             &spec.launch.pass_env,
         )?;
-        let init = async {
-            let init = request(&sup.handle, &mut rx, 1, "initialize", json!({"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"superorchestrator","version":env!("CARGO_PKG_VERSION")}})).await?;
-            let env: Vec<Value> = spec.mcp.env.iter().map(|(name,value)| json!({"name":name,"value":value})).collect();
-            let servers = json!([{"name":"superorchestrator","command":spec.mcp.command,"args":spec.mcp.args,"env":env}]);
-            let (method, params) = if let Some(id) = &spec.resume {
-                let caps = &init["agentCapabilities"];
-                let method = if caps["loadSession"] == true { "session/load" } else if caps["sessionCapabilities"]["resume"].is_object() || caps["sessionCapabilities"]["resume"] == true { "session/resume" } else { return Err(DriverError::Other("ACP agent does not support session load or resume".into())); };
-                (method, json!({"sessionId":id,"cwd":spec.cwd,"mcpServers":servers}))
-            } else { ("session/new", json!({"cwd":spec.cwd,"mcpServers":servers})) };
-            let session = request(&sup.handle, &mut rx, 2, method, params).await?;
-            let id = spec.resume.clone().or_else(|| session["sessionId"].as_str().map(str::to_owned)).ok_or_else(|| DriverError::Other("ACP session response missing sessionId".into()))?;
-            if row.model_flag.is_none() && let Some(model) = &spec.model {
-                let option = session["configOptions"].as_array().and_then(|v| v.iter().find(|v| v["category"] == "model")).ok_or_else(|| DriverError::Other("ACP agent did not offer a model config option".into()))?;
-                let valid = option["options"].as_array().is_some_and(|opts| opts.iter().any(|o| o["value"] == *model || o["options"].as_array().is_some_and(|sub| sub.iter().any(|o| o["value"] == *model))));
-                if !valid { return Err(DriverError::Other(format!("ACP model {model} is not offered"))); }
-                request(&sup.handle, &mut rx, 3, "session/set_config_option", json!({"sessionId":id,"configId":option["id"],"value":model})).await?;
-            }
-            Ok(id)
-        }.await;
+        let init = handshake(&sup.handle, &mut rx, &spec, &row).await;
         let id = match init {
             Ok(id) => id,
             Err(e) => {
                 let exited = sup.handle.exit.borrow().is_some()
-                    || matches!(&e, DriverError::Other(text) if text.starts_with("ACP exited during "));
+                    || matches!(
+                        &e, DriverError::Other(text) if text.starts_with("ACP exited during ")
+                    );
                 sup.handle.shutdown(Duration::ZERO).await;
                 let failure =
                     startup_failure(e, &mut sup.events, |text| self.classify_error(text)).await;
@@ -240,20 +319,24 @@ impl Driver for AcpDriver {
         }
     }
     fn classify_error(&self, text: &str) -> ErrorKind {
-        let common = classify_common(text);
-        if common != ErrorKind::Other {
-            return common;
-        }
-        let text = text.to_lowercase();
-        spec::spec(self.harness)
-            .and_then(|row| {
-                row.error_patterns
-                    .iter()
-                    .find(|(pattern, _)| text.contains(pattern))
-                    .map(|(_, kind)| *kind)
-            })
-            .unwrap_or(ErrorKind::Other)
+        classify(self.harness, text)
     }
+}
+
+fn classify(harness: Harness, text: &str) -> ErrorKind {
+    let common = classify_common(text);
+    if common != ErrorKind::Other {
+        return common;
+    }
+    let text = text.to_lowercase();
+    spec::spec(harness)
+        .and_then(|row| {
+            row.error_patterns
+                .iter()
+                .find(|(pattern, _)| text.contains(pattern))
+                .map(|(_, kind)| *kind)
+        })
+        .unwrap_or(ErrorKind::Other)
 }
 
 #[derive(Debug, Clone)]
@@ -320,7 +403,16 @@ impl Actor {
             self.events.send(HarnessEvent::TurnStarted);
         }
         let proc = self.proc.upgrade().ok_or(DriverError::Closed)?;
-        write(&proc, json!({"jsonrpc":"2.0","id":self.seq,"method":"session/prompt","params":{"sessionId":self.session,"prompt":blocks}})).await
+        write(
+            &proc,
+            json!({
+                "jsonrpc": "2.0",
+                "id": self.seq,
+                "method": "session/prompt",
+                "params": {"sessionId": self.session, "prompt": blocks}
+            }),
+        )
+        .await
     }
     fn flush(&mut self) {
         if !self.message.is_empty() {
@@ -379,8 +471,7 @@ impl Actor {
             Some(if v["error"]["code"] == -32000 {
                 ErrorKind::Auth
             } else {
-                AcpDriver::new(self.harness, DriverConfig::default())
-                    .classify_error(error_text.as_deref().unwrap_or(""))
+                classify(self.harness, error_text.as_deref().unwrap_or(""))
             })
         } else if reason == "refusal" {
             Some(ErrorKind::Refused)
@@ -426,7 +517,13 @@ impl Actor {
             && self.retries < 5
         {
             self.retries += 1;
-            return self.prompt(vec![json!({"type":"text","text":format!("Your response was not valid JSON matching the required schema: {error}. Please respond again with valid JSON.")})], false).await;
+            let message = format!(
+                "Your response was not valid JSON matching the required schema: {error}. \
+                 Please respond again with valid JSON."
+            );
+            return self
+                .prompt(vec![json!({"type": "text", "text": message})], false)
+                .await;
         }
         let error_kind = kind.or_else(|| validation_error.as_ref().map(|_| ErrorKind::Other));
         self.events.send(HarnessEvent::TurnFinished {
@@ -446,21 +543,61 @@ impl Actor {
         }
         Ok(())
     }
+    async fn on_control(&mut self, cmd: Control) -> Result<(), DriverError> {
+        match cmd {
+            Control::Send(text) => {
+                let blocks = vec![json!({"type": "text", "text": text})];
+                if self.active {
+                    self.queue.push_back(blocks);
+                } else {
+                    self.prompt(blocks, true).await?;
+                }
+            }
+            Control::Interrupt(ack) => {
+                if self.active {
+                    let proc = self.proc.upgrade().ok_or(DriverError::Closed)?;
+                    write(
+                        &proc,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "session/cancel",
+                            "params": {"sessionId": self.session}
+                        }),
+                    )
+                    .await?;
+                    self.interrupt = Some(ack);
+                } else {
+                    let _ = ack.send(());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn on_message(&mut self, value: Value) -> Result<(), DriverError> {
+        if value.get("method").is_some() && value.get("id").is_some() {
+            let proc = self.proc.upgrade().ok_or(DriverError::Closed)?;
+            answer(&proc, &value).await?;
+        } else if value["method"] == "session/update" && self.active {
+            self.update(&value);
+        } else if value["id"].as_u64() == Some(self.seq) && self.active {
+            self.complete(value).await?;
+        }
+        Ok(())
+    }
+
     async fn run(mut self, first: Vec<Value>) {
         if self.prompt(first, true).await.is_err() {
             return;
         }
         loop {
             tokio::select! {
-                Some(cmd) = self.ctl_rx.recv() => match cmd {
-                    Control::Send(text) => { let blocks = vec![json!({"type":"text","text":text})]; if self.active { self.queue.push_back(blocks); } else if self.prompt(blocks,true).await.is_err() { break; } },
-                    Control::Interrupt(ack) => if self.active { if let Some(proc) = self.proc.upgrade() { if write(&proc,json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":self.session}})).await.is_err() { break; } self.interrupt = Some(ack); } else { break; } } else { let _ = ack.send(()); },
-                },
-                Some(v) = self.rx.recv() => {
-                    if v.get("method").is_some() && v.get("id").is_some() { if let Some(proc) = self.proc.upgrade() { if answer(&proc,&v).await.is_err() { break; } } else { break; } }
-                    else if v["method"] == "session/update" && self.active { self.update(&v); }
-                    else if v["id"].as_u64() == Some(self.seq) && self.active && self.complete(v).await.is_err() { break; }
-                },
+                Some(cmd) = self.ctl_rx.recv() => {
+                    if self.on_control(cmd).await.is_err() { break; }
+                }
+                Some(value) = self.rx.recv() => {
+                    if self.on_message(value).await.is_err() { break; }
+                }
                 else => break,
             }
         }
