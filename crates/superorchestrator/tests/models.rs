@@ -35,13 +35,16 @@ fn models_refresh_reports_sources_and_writes_the_catalog() {
     let v: serde_json::Value = serde_json::from_str(&common::stdout(&out)).unwrap();
     assert!(!v["sources"].as_array().unwrap().is_empty(), "{v}");
     assert!(v["added"].is_array() && v["unassigned_models"].is_array());
+    assert!(v.get("unused_models").is_none());
     assert!(e.cfg.join("models.toml").is_file());
     let before = std::fs::read(e.cfg.join("models.toml")).unwrap();
-    e.cmd()
+    let out = e
+        .cmd()
         .env("SUPERORCHESTRATOR_MODELS_DEV_URL", stub_models_dev())
         .args(["models", "refresh"])
         .assert()
         .success();
+    assert!(common::stdout(&out).contains("catalog model(s) not listed by any level"));
     assert_eq!(std::fs::read(e.cfg.join("models.toml")).unwrap(), before);
 }
 

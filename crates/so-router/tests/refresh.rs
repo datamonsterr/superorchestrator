@@ -8,7 +8,7 @@ use axum::routing::get;
 use serde_json::json;
 use so_accounts::HostEnv;
 use so_core::{AccountFile, Choice, Harness, Paths, Platform};
-use so_router::catalog::{Catalog, Cost, RefreshEnv, SourceStatus, refresh};
+use so_router::catalog::{Catalog, Cost, RefreshEnv, SourceStatus, infer_tier, refresh};
 use so_usage::{BoxFuture, ProbeOutput, ProbeRequest, ProbeRunner, UsageError};
 
 #[derive(Default)]
@@ -131,6 +131,21 @@ async fn refresh_merges_reports_and_caches_models_dev() {
             .map(|s| s.source.as_str())
             .collect::<Vec<_>>(),
         ["codex", "opencode", "models.dev", "agy", "claude"]
+    );
+    let previous: Vec<_> = rep
+        .sources
+        .iter()
+        .take(4)
+        .map(|s| (s.source.as_str(), s.status, s.models, s.detail.as_str()))
+        .collect();
+    assert_eq!(
+        previous,
+        [
+            ("codex", SourceStatus::Ok, 1, "model/list"),
+            ("opencode", SourceStatus::Ok, 3, "opencode models"),
+            ("models.dev", SourceStatus::Ok, 1, "fetched"),
+            ("agy", SourceStatus::Ok, 1, "agy models")
+        ]
     );
     let claude = rep.sources.iter().find(|s| s.source == "claude").unwrap();
     assert_eq!(claude.status, SourceStatus::Skipped);
@@ -258,7 +273,9 @@ async fn claude_documented_models_require_an_enabled_account() {
                 "claude-haiku-5-5",
                 "claude-fable-5-1",
             ] {
-                assert!(cat.contains(Harness::Claude, id));
+                let entry = cat.get(Harness::Claude, id).unwrap();
+                assert_eq!(entry.tier, infer_tier(id));
+                assert_eq!(entry.cost, Cost::Included);
             }
             assert!(report.missing_choice_models.is_empty());
         } else {

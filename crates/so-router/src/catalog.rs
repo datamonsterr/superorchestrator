@@ -2,6 +2,7 @@
 //! Used only for discovery and validation; it never edits the models listed on levels.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::path::Path;
 use std::time::Duration;
 
@@ -381,8 +382,8 @@ pub struct RefreshReport {
     pub added: Vec<ModelRef>,
     /// Choices whose model the catalog does not know.
     pub unknown_choice_models: Vec<ChoiceRef>,
-    /// Catalog models no choice uses.
-    pub unused_models: Vec<ModelRef>,
+    /// Catalog models no level lists.
+    pub unassigned_models: Vec<ModelRef>,
     /// Choices whose model a harness did not list in this refresh. Only harnesses that
     /// listed at least one model are checked, so a failed or skipped source reports nothing.
     pub missing_choice_models: Vec<ChoiceRef>,
@@ -447,6 +448,7 @@ pub fn codex_model_list_lines() -> Vec<String> {
     ]
 }
 
+#[derive(Clone)]
 struct Collected {
     harness: Harness,
     id: String,
@@ -648,6 +650,71 @@ async fn gather_models_dev(env: &RefreshEnv<'_>) -> Gathered {
     g
 }
 
+// Each entry describes one source; static lists are not authoritative listings.
+#[derive(Clone, Copy)]
+enum ModelSource {
+    Codex,
+    Listing(Harness, &'static str),
+    ModelsDev,
+    Documented(Harness, &'static str, &'static str, &'static [&'static str]),
+}
+
+const SOURCES: &[ModelSource] = &[
+    ModelSource::Codex,
+    ModelSource::Listing(Harness::Opencode, "opencode"),
+    ModelSource::ModelsDev,
+    ModelSource::Listing(Harness::Agy, "agy"),
+    ModelSource::Documented(
+        Harness::Claude,
+        "claude",
+        "documented model ids (claude has no model listing)",
+        &[
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+        ],
+    ),
+];
+
+impl ModelSource {
+    async fn gather(self, env: &RefreshEnv<'_>) -> Gathered {
+        match self {
+            Self::Codex => gather_codex(env).await,
+            Self::Listing(harness, name) => gather_listing(env, harness, name).await,
+            Self::ModelsDev => gather_models_dev(env).await,
+            Self::Documented(harness, name, detail, ids) => {
+                let enabled = first_account(env, harness).is_some();
+                Gathered {
+                    sources: vec![if enabled {
+                        source(name, SourceStatus::Ok, ids.len(), detail)
+                    } else {
+                        source(
+                            name,
+                            SourceStatus::Skipped,
+                            0,
+                            format!("no enabled {name} account"),
+                        )
+                    }],
+                    models: if enabled {
+                        ids.iter()
+                            .map(|id| Collected {
+                                harness,
+                                id: (*id).into(),
+                                efforts: Vec::new(),
+                                free: false,
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    },
+                    free: BTreeSet::new(),
+                }
+            }
+        }
+    }
+}
+
 /// Collects models from the harness CLIs and models.dev (concurrently), merges them into
 /// `catalog` (existing entries keep their tier, efforts and pool) and reports against
 /// `choices` (the distinct refs of `Config::choices()`). Does not write.
@@ -656,22 +723,42 @@ pub async fn refresh(
     mut catalog: Catalog,
     choices: &[Choice],
 ) -> (Catalog, RefreshReport) {
-    let (codex, opencode, dev, agy) = tokio::join!(
-        gather_codex(env),
-        gather_listing(env, Harness::Opencode, "opencode"),
-        gather_models_dev(env),
-        gather_listing(env, Harness::Agy, "agy"),
-    );
+    // Poll every source in each pass and retain table order in the final report.
+    let mut pending: Vec<_> = SOURCES
+        .iter()
+        .map(|source| Some(Box::pin(source.gather(env))))
+        .collect();
+    let mut gathered: Vec<Option<Gathered>> = (0..SOURCES.len()).map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        for (future, result) in pending.iter_mut().zip(&mut gathered) {
+            if let Some(fut) = future
+                && let std::task::Poll::Ready(value) = fut.as_mut().poll(cx)
+            {
+                *result = Some(value);
+                *future = None;
+            }
+        }
+        if pending.iter().all(Option::is_none) {
+            std::task::Poll::Ready(())
+        } else {
+            std::task::Poll::Pending
+        }
+    })
+    .await;
     let mut sources = Vec::new();
     let mut collected: Vec<Collected> = Vec::new();
+    let mut listed: Vec<Collected> = Vec::new();
     let mut free_set: BTreeSet<String> = BTreeSet::new();
-    for g in [codex, opencode, dev, agy] {
+    for (kind, g) in SOURCES.iter().zip(gathered.into_iter().flatten()) {
         sources.extend(g.sources);
+        if !matches!(kind, ModelSource::Documented(..)) {
+            listed.extend(g.models.iter().cloned());
+        }
         collected.extend(g.models);
         free_set.extend(g.free);
     }
 
-    let missing_choice_models = missing_choice_models(&collected, choices);
+    let missing_choice_models = missing_choice_models(&listed, choices);
     let mut added = Vec::new();
     for c in collected {
         let free = c.free || (c.harness == Harness::Opencode && free_set.contains(&c.id));
@@ -712,7 +799,7 @@ pub async fn refresh(
         sources,
         added,
         unknown_choice_models: unknown_choice_models(&catalog, choices),
-        unused_models: unused_models(&catalog, choices),
+        unassigned_models: unassigned_models(&catalog, choices),
         missing_choice_models,
     };
     (catalog, report)
@@ -749,8 +836,8 @@ pub fn unknown_choice_models(catalog: &Catalog, choices: &[Choice]) -> Vec<Choic
         .collect()
 }
 
-/// Catalog models no choice names.
-pub fn unused_models(catalog: &Catalog, choices: &[Choice]) -> Vec<ModelRef> {
+/// Catalog models no level lists.
+pub fn unassigned_models(catalog: &Catalog, choices: &[Choice]) -> Vec<ModelRef> {
     let used: BTreeSet<(Harness, &str)> = choices
         .iter()
         .map(|c| (c.harness, c.model.as_str()))
@@ -915,7 +1002,7 @@ pool = "gemini"
         let unknown = unknown_choice_models(&cat, &choices);
         assert_eq!(unknown.len(), 1);
         assert_eq!(unknown[0].choice, "agy/no-such-model/low");
-        let unused = unused_models(&cat, &choices);
+        let unused = unassigned_models(&cat, &choices);
         assert_eq!(unused.len(), cat.model_count() - 1);
         assert!(!unused.iter().any(|m| m.model == "gemini-3.8-flash-low"));
     }
