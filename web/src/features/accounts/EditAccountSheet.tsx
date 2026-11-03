@@ -9,6 +9,7 @@ import { Switch } from '@/components/ui/switch'
 import { usePatchAccount } from '@/api/queries'
 import { applyApiFieldErrors } from '@/lib/form-errors'
 import type { AccountView } from '@/api/types'
+import { presetLabel } from './endpoint-presets'
 import { AGY_POOLS, editAccountSchema, type EditAccountValues } from './schemas'
 
 function EditForm({ account, onClose }: { account: AccountView; onClose: () => void }) {
@@ -43,7 +44,7 @@ function EditForm({ account, onClose }: { account: AccountView; onClose: () => v
         </Field>
         {account.endpoint && (
           <p className="text-sm text-muted-foreground">
-            Endpoint: {account.endpoint.preset} ({account.endpoint.base_url}). API key source: {account.endpoint.token_source}.
+            Endpoint: {presetLabel(account.endpoint.preset)} ({account.endpoint.base_url}). API key source: {account.endpoint.token_source}.
           </p>
         )}
         {account.harness === 'agy' && (

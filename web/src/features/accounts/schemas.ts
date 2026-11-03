@@ -1,12 +1,11 @@
 import '@/lib/zod-setup'
 import { z } from 'zod'
+import type { AddAccountRequest } from '@/api/types'
+import { ENDPOINT_PRESETS } from './endpoint-presets'
 
 export const HARNESSES = ['codex', 'agy', 'opencode', 'claude'] as const
 export const AGY_POOLS = ['gemini', 'claude'] as const
 
-/** Account names double as directory and wrapper names (design 5). */
-export const ENDPOINT_PRESETS = ['none', 'zai', 'kimi', 'minimax', 'custom'] as const
-export type EndpointPreset = (typeof ENDPOINT_PRESETS)[number]
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 
@@ -20,6 +19,7 @@ function isAllowedBaseUrl(raw: string): boolean {
   }
 }
 
+/** Account names double as directory and wrapper names (design 5). */
 export function addAccountSchema(existing: readonly string[]) {
   return z
     .object({
@@ -37,7 +37,7 @@ export function addAccountSchema(existing: readonly string[]) {
     slotSonnet: z.string().trim().optional(),
     slotHaiku: z.string().trim().optional(),
     tokenSource: z.enum(['paste', 'env']).optional(),
-    token: z.string().optional(),
+    token: z.string().trim().optional(),
     tokenEnv: z.string().trim().optional(),
   })
     .superRefine((v, ctx) => {
@@ -87,3 +87,26 @@ export const flagSchema = z
     message: 'Pick a date and time',
   })
 export type FlagValues = z.infer<typeof flagSchema>
+
+/** The POST /accounts body for validated form values. Endpoint fields are sent only for a claude endpoint account. */
+export function buildAddAccountRequest(values: AddAccountValues): AddAccountRequest {
+  const base: AddAccountRequest = { harness: values.harness, name: values.name, ...(values.home ? { home: values.home } : {}) }
+  const preset = values.endpointPreset ?? 'none'
+  if (values.harness !== 'claude' || preset === 'none') return base
+  const env = values.tokenSource === 'env'
+  return {
+    ...base,
+    endpoint: {
+      preset,
+      ...(preset === 'custom'
+        ? {
+            base_url: values.baseUrl,
+            models: parseModels(values.models),
+            slots: { opus: values.slotOpus, sonnet: values.slotSonnet, haiku: values.slotHaiku },
+          }
+        : {}),
+      ...(env ? { token_env: values.tokenEnv } : {}),
+    },
+    ...(env ? {} : { token: values.token?.trim() }),
+  }
+}

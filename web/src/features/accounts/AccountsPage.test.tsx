@@ -1,5 +1,6 @@
 import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import type { QueryClient } from '@tanstack/react-query'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
 import { server } from '@/test/server'
@@ -135,8 +136,9 @@ describe('AccountsPage', () => {
   })
 
   describe('endpoint accounts', () => {
+    let queryClient: QueryClient
     async function openAdd() {
-      renderWithProviders(<AccountsPage />)
+      queryClient = renderWithProviders(<AccountsPage />).queryClient
       await userEvent.click(await screen.findByRole('button', { name: /Add account/ }))
       const dialog = await screen.findByRole('dialog', { name: 'Add account' })
       await userEvent.click(within(dialog).getByRole('combobox', { name: 'Harness' }))
@@ -235,8 +237,54 @@ describe('AccountsPage', () => {
       await userEvent.click(within(again).getByRole('combobox', { name: 'Harness' }))
       await userEvent.click(await screen.findByRole('option', { name: 'Claude' }))
       await pickPreset(again, 'MiniMax')
+      expect(within(again).getByRole('radio', { name: 'Paste key' })).toBeChecked()
       expect(within(again).getByLabelText('API key', { selector: 'input' })).toHaveValue('')
       expect(screen.queryByDisplayValue('sk-secret')).not.toBeInTheDocument()
+    })
+
+    it.each([
+      ['switching the key source', async (d: HTMLElement) => {
+        await userEvent.click(within(d).getByRole('radio', { name: 'Environment variable' }))
+        await userEvent.click(within(d).getByRole('radio', { name: 'Paste key' }))
+      }],
+      ['changing the preset', async (d: HTMLElement) => {
+        await pickPreset(d, 'Kimi Code')
+      }],
+      ['changing the harness', async (d: HTMLElement) => {
+        await userEvent.click(within(d).getByRole('combobox', { name: 'Harness' }))
+        await userEvent.click(await screen.findByRole('option', { name: 'Codex' }))
+        await userEvent.click(within(d).getByRole('combobox', { name: 'Harness' }))
+        await userEvent.click(await screen.findByRole('option', { name: 'Claude' }))
+      }],
+    ])('clears the pasted key when %s', async (_n, change) => {
+      const dialog = await openAdd()
+      await pickPreset(dialog, 'Z.ai GLM')
+      await userEvent.type(within(dialog).getByLabelText('API key', { selector: 'input' }), 'sk-secret')
+      await change(dialog)
+      if (within(dialog).queryByLabelText('API key', { selector: 'input' }) === null) await pickPreset(dialog, 'Z.ai GLM')
+      expect(within(dialog).getByLabelText('API key', { selector: 'input' })).toHaveValue('')
+    })
+
+    it('sends the key trimmed', async () => {
+      const sink: { body?: unknown } = {}
+      capture(sink)
+      const dialog = await openAdd()
+      await pickPreset(dialog, 'Z.ai GLM')
+      await userEvent.type(within(dialog).getByLabelText('API key', { selector: 'input' }), '  sk-1  ')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Add and sign in' }))
+      await waitFor(() => expect(sink.body).toMatchObject({ token: 'sk-1' }))
+    })
+
+    it('leaves no API key in the mutation cache after submit', async () => {
+      const sink: { body?: unknown } = {}
+      capture(sink)
+      const dialog = await openAdd()
+      await pickPreset(dialog, 'Z.ai GLM')
+      await userEvent.type(within(dialog).getByLabelText('API key', { selector: 'input' }), 'sk-secret')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Add and sign in' }))
+      await waitFor(() => expect(sink.body).toBeDefined())
+      await screen.findByRole('dialog', { name: 'Sign in zai-1' })
+      await waitFor(() => expect(JSON.stringify(queryClient.getMutationCache().getAll().map((m) => m.state.variables))).not.toContain('sk-secret'))
     })
 
     it('renders API field errors', async () => {
@@ -257,12 +305,27 @@ describe('AccountsPage', () => {
       expect(within(dialog).getByLabelText('API key', { selector: 'input' })).toHaveValue('')
     })
 
+    it('shows slot and hidden-field server errors in a form-level message', async () => {
+      server.use(
+        http.post('/api/v1/accounts', () =>
+          HttpResponse.json({ error: { code: -32602, message: 'bad', data: { 'endpoint.slots': 'opus is not in models', 'endpoint.token_env': 'unset' } } }, { status: 422 }),
+        ),
+      )
+      const dialog = await openAdd()
+      await pickPreset(dialog, 'Z.ai GLM')
+      await userEvent.type(within(dialog).getByLabelText('API key', { selector: 'input' }), 'k')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Add and sign in' }))
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent(/opus is not in models|unset/)
+      expect(within(dialog).queryByLabelText('Opus model')).not.toBeInTheDocument()
+    })
+
     it('shows the preset badge and token source for endpoint accounts', async () => {
       const ep = { preset: 'zai', base_url: 'https://api.z.ai/api/anthropic', models: ['glm-4.6'], token_source: 'env:ZAI_API_KEY' }
       server.use(http.get('/api/v1/accounts', () => HttpResponse.json([{ ...fx.accounts[0], name: 'zai-1', harness: 'claude', endpoint: ep }, fx.accounts[0]])))
       renderWithProviders(<AccountsPage />)
       expect(within(await row('zai-1')).getByText('Z.ai')).toBeInTheDocument()
       await openMenu('zai-1', 'Edit')
+      expect(await screen.findByText(/Endpoint: Z\.ai GLM/)).toBeInTheDocument()
       expect(await screen.findByText(/API key source: env:ZAI_API_KEY/)).toBeInTheDocument()
     })
   })

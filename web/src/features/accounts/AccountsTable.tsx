@@ -9,8 +9,7 @@ import { HeadroomBar } from '@/components/common/HeadroomBar'
 import { SignInState } from '@/components/common/SignInState'
 import { RelativeTime } from '@/components/common/RelativeTime'
 import type { AccountView } from '@/api/types'
-
-const PRESET_SHORT: Record<string, string> = { zai: 'Z.ai', kimi: 'Kimi', minimax: 'MiniMax', custom: 'Custom' }
+import { presetBadge } from './endpoint-presets'
 
 export interface AccountActions {
   onToggle: (account: AccountView, enabled: boolean) => void
@@ -55,7 +54,7 @@ export function AccountsTable({ accounts, actions }: { accounts: AccountView[]; 
               <HarnessBadge harness={a.harness} />
               {a.endpoint && (
                 <Badge variant="outline" className="ml-1" title={`${a.endpoint.base_url} (${a.endpoint.token_source})`}>
-                  {PRESET_SHORT[a.endpoint.preset] ?? a.endpoint.preset}
+                  {presetBadge(a.endpoint.preset)}
                 </Badge>
               )}
             </TableCell>
