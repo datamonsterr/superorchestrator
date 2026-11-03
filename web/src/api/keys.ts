@@ -26,6 +26,7 @@ export const qk = {
   runRoute: (id: string) => ['run', id, 'route'] as const,
   runMessages: (id: string) => ['run', id, 'messages'] as const,
   levels: () => ['levels'] as const,
+  insights: () => ['routing', 'insights'] as const,
   models: () => ['models'] as const,
   routingRecords: () => ['routing', 'records'] as const,
   worktrees: () => ['worktrees'] as const,

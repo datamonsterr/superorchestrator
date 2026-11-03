@@ -55,6 +55,17 @@ export type WorkflowRunDetail = Always<GenWorkflowStatus, 'steps'>
 
 export type {
   AccountFlag,
+  Bucket,
+  InsightExample,
+  InsightsReport,
+  LevelChange,
+  LevelInsight,
+  ModelInsight,
+  ModelRef,
+  Outcome,
+  OutcomeCounts,
+  Rule,
+  Suggestion,
   AccountsCfg,
   AckResult,
   AddAccountRequest,
