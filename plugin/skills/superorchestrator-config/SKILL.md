@@ -9,7 +9,7 @@ Use the selected config directory (`--config-dir DIR`, otherwise `$SUPERORCHESTR
 
 Orchestrator accounts: `orchestrator.reserved_accounts` keeps accounts for the orchestrator: automatic routing never selects them, and subagents must never pin them. Set it with `superorchestrator config set orchestrator.reserved_accounts '["name"]'`; `setup --orchestrator claude|codex` reserves one.
 
-Codex orchestrator: the MCP entry belongs in `~/.codex/config.toml` or `$CODEX_HOME/config.toml`; configure `startup_timeout_sec = 30` and `tool_timeout_sec = 1860`. Prefer `spawn_agent(wait: false)`, then `wait_agent` with `timeout_ms` at most `1800000`. Resume with `codex resume <id>`.
+Codex orchestrator: `superorchestrator install` writes `startup_timeout_sec = 30` and `tool_timeout_sec = 1860` in the MCP entry at `~/.codex/config.toml` or `$CODEX_HOME/config.toml` (rerun `superorchestrator install` if missing). Prefer `spawn_agent(wait: false)`, then `wait_agent` with `timeout_ms` at most `1800000`. Resume with `codex resume <id>`.
 
 ## Workflow
 
