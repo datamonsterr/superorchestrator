@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Codex CLI as a first-class orchestrator. See `docs/guide/codex-orchestrator.md` and ADR-0008.
+  - `[orchestrator] reserved_accounts`: auto routing never picks them; a call that pins `account` may. `list_harnesses` marks them `reserved: true` and `why: "account reserved"`. The web Settings, web accounts table and TUI accounts view show them.
+  - `setup --orchestrator claude|codex [--reserve NAME]... [--dry-run] [--no-agents-md]`.
+  - `install` writes `startup_timeout_sec = 30`, `tool_timeout_sec = 1860` and `env_vars = ["XDG_RUNTIME_DIR"]` on the Codex MCP entries, and a managed block in `$CODEX_HOME/AGENTS.md` and each Codex account's `AGENTS.md` (`--no-agents-md` skips it). The three skills are harness-neutral with Codex notes.
+  - Codex plugin in `plugin-codex/` and marketplace `.agents/plugins/marketplace.json`.
+  - Hidden `superorchestrator hook session-start|stop` for Claude Code and Codex hooks.
+
+### Changed
+
+- `wait_agent` caps its timeout at 30 minutes, and `spawn_agent(wait: true)` returns after at most 30 minutes with the current state. The run continues.
+
 ### Security
 
 Fixes for the GitHub security advisories below. Several change behaviour; see "Changed (breaking)".

@@ -350,7 +350,7 @@ Claude is not seeded. Codex models are seeded, so they start routing when a code
 
 ### 8.3 Decision procedure (`route`)
 
-1. **Eligible models.** Keep the models listed on levels whose harness has at least one enabled account with headroom for the model's pool and below its cap. There is no role filter. Drop the models the call excludes (`exclude`, a list of model refs). Claude rank (8.4) applies.
+1. **Eligible models.** Keep the models listed on levels whose harness has at least one enabled account with headroom for the model's pool and below its cap. Accounts in `orchestrator.reserved_accounts` do not count unless the call pins `account`; a model reachable only through reserved accounts is dropped, and `list_harnesses` reports it with `why: "account reserved"` (reserved rows carry `reserved: true`). There is no role filter. Drop the models the call excludes (`exclude`, a list of model refs). Claude rank (8.4) applies.
 2. **Complexity.** The router needs one number, complexity from 0 to 100, to pick a level. It comes from the first source below that applies.
    - **Decider.** If an OpenRouter key is configured (`router.jev.key_env`, default `OPENROUTER_API_KEY`, or `router.jev.key_file`) and more than one model is eligible, call `POST https://openrouter.ai/api/alpha/decisions` with model `router.jev.model` (default `inception/mercury-decide:free`). The model is any OpenRouter model id, set in `config.toml` or by `SUPERORCHESTRATOR_ROUTER_MODEL`; the environment beats the config, which beats the default, and an empty value counts as unset. `router.jev.fallback_model` (default `~typesafe/jev-latest`, env `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL`, `none` disables it) is tried only when the primary model is unusable: a transport error, a timeout, HTTP 429 or 5xx, or HTTP 400/404 for a missing model. A 429, 5xx, 408 or refused connection is retried once first; a timeout is not retried, because it uses up the time left for that model. Other 4xx responses, invalid or oversized bodies and a disallowed endpoint (plain http to a non-loopback host) are not about the model: they go to the heuristic. A refused key (401/403) and a rejected answer never reach the fallback. Both calls together stay within `router.jev.timeout`; with a fallback the primary may use 3/5 of it. `route --explain`, `doctor` and the eval summary show the models in effect and where each came from. The request is:
      - `state`: `task_content`, `system_instruction`, `routing_instruction`, `agent` (the profile name, `worker` when none is named). No account names, quota, usage or credentials are sent.
@@ -422,7 +422,7 @@ Failing on an unreachable decider (8.3 step 2) applies to explicit routing reque
   - `send_message(run, text)`: delivered live when the harness supports live input (all four drivers do); otherwise queued for the child's next tool call.
   - `send_message` to a finished run resumes its native session with the message.
   - `read_messages()` returns unread messages for the caller.
-  - `wait_agent(runs[], timeout)` returns when any listed run finishes or posts a `question`/`progress`, or when the timeout ends. While it waits, child events stream to the client as MCP progress notifications.
+  - `wait_agent(runs[], timeout)` returns when any listed run finishes or posts a `question`/`progress`, or when the timeout ends. The timeout is capped at 30 minutes (`so_core::MAX_WAIT`); `spawn_agent(wait: true)` returns after at most 30 minutes with the run's current state, and the run continues. While it waits, child events stream to the client as MCP progress notifications.
 - **Child side.**
   - `report_progress(step, status, note?)`
   - `ask_parent(question, options?)`: blocks until an answer or `runs.ask_timeout` (default 30 min), then returns `timeout`.
@@ -583,6 +583,7 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
 
 ```
 setup [--codex N] [--claude N] [--opencode N] [--agy N] [--no-login] [--no-install] [--no-claude-md]
+      [--orchestrator claude|codex] [--reserve NAME]... [--dry-run] [--no-agents-md]
                           first-run guide: init, detect harnesses, offer account import --scan,
                           add N accounts per harness, sign in, install, doctor summary
 init                      create config dir, seed config, levels, catalog, starter agents
@@ -608,12 +609,15 @@ ui [--bind ADDR] [--port N] [--token T] [--install-service]
 daemon [--foreground]
 exec <account> -- <args>
 mcp
+hook session-start|stop    hidden: harness-neutral hook handlers (19.3)
 migrate [--apply]
 ```
 
 `tui` (also the bare command on a terminal) is a ratatui UI with four tabs: Overview (setup checklist with the fix for each missing item, account and run counts), Accounts (add, sign in (claude and agy in a session of their wrapper), enable or disable, flag a cooldown, remove with a typed-name confirmation, import scan), Runs (recent runs from the store refreshed every 2 s, a detail pane with the diff of a run waiting for review, cancel, open session (`o`), accept (`a` accepts and merges a run with a worktree, `A` only accepts) and reject) and Setup (the `setup` steps one at a time with live status, plus `install` and `doctor`). `?` opens help, `Tab` and `1` to `4` switch tabs, `j`/`k`/`g`/`G` or the arrow keys move, `q` or `Esc` quits from the top level. It calls the same library functions as the commands above and adds no business logic. Sign-in and join hand the terminal to the child process and restore it afterwards. The diff, cancel, open session, accept and reject use the supervisor socket and never start it; when it is not running they report that. It honors `NO_COLOR`, needs at least 60x16, redraws on resize and restores the terminal on every exit path. Without a terminal `tui` exits 2.
 
 `setup` is the first command a new user runs and is idempotent. It runs `init` (silent when nothing is created), prints the installed harnesses, offers the `account import --scan` results, asks for each installed harness how many accounts to add (default 0, or 1 when the harness has no account or importable login; claude defaults to 0 because its accounts are kept for the orchestrator and no level lists a Claude model by default, 8.2), signs in to the new accounts on a terminal (otherwise prints the commands), runs `install`, and prints a short `doctor` summary. `--yes` takes the defaults, `--codex N --claude N --opencode N --agy N` set the counts, `--no-login` and `--no-install` skip those steps, and `--no-claude-md` is passed to `install`. Accounts that are still signed out, new or from an earlier run, are offered a sign-in on a terminal and get their `account login` command printed otherwise. A run that adds nothing prints which accounts are already set up. A harness whose count was asked for but whose binary is not on `PATH` fails the run (exit 1) after the other steps. Ctrl-C at a prompt exits 130. `setup --yes --json` prints one summary object (`ok`, `created`, `imported`, `installed`, `signed_in_needed`, `doctor`). Without a terminal and without `--yes` it prints the plan and exits 0. Counts that are not asked are never added twice, so a second run changes nothing. On macOS only one agy account is added (ADR-0005).
+
+`setup --orchestrator claude|codex` names the harness the person orchestrates from; without it nothing is reserved and the defaults above apply. `--reserve NAME` (repeatable) names the accounts to put in `orchestrator.reserved_accounts`; each must be an account that exists after the account steps (existing, imported or created by this setup), otherwise setup fails with "account NAME does not exist". Defaults for `codex`: 2 Codex accounts when `codex` is installed and there is no account or importable login (one reserved, one for subagents), 1 Claude account when `claude` is installed and there is none; the reserved account is the Codex account whose home is `$CODEX_HOME` or `~/.codex`, else the first Codex account by name. Defaults for `claude`: 0 Claude accounts, and the first Claude account, if any, is reserved. `--reserve` overrides the choice. `--no-agents-md` is passed to `install`. Writes are idempotent. `--dry-run` prints the plan, including `orchestrator` and `reserve`, and writes nothing.
 
 `account add <harness>` without `--name` names the account `<harness>-<n>` with the lowest free `n` from 1; a name is skipped when the account exists or when it would shadow a command on `PATH`. `--count K` creates K accounts; `--name` with `--count` above 1 is a usage error (exit 2). `--login` signs in to each new account in turn on a terminal, and prints the commands otherwise. With `--json` the result lists every created account under `accounts`.
 
@@ -688,6 +692,9 @@ port = 7878
 [supervisor]
 idle_exit = "10m"
 
+[orchestrator]
+reserved_accounts = []                  # account names kept for the orchestrator (8.3)
+
 [notifications]
 discord_webhook_env = "SO_DISCORD_WEBHOOK"
 desktop = true
@@ -739,7 +746,9 @@ The supervisor sends notifications for the events listed in `notifications.on`, 
 
 `install` also adds a short managed block to `~/.claude/CLAUDE.md` (created if missing) between `<!-- superorchestrator:begin -->` and `<!-- superorchestrator:end -->`. It says to delegate implementation through superorchestrator, to load `use-superorchestrator-mcp` before the first delegation, and to use `superorchestrator-cli` for accounts, status and runs. Re-installing replaces the block in place, text outside it is never touched, `--no-claude-md` skips it, and `uninstall` removes only the block. The edit goes through the same backup, atomic write and `--dry-run` path as the other files.
 
-`install` also runs `claude mcp add superorchestrator -- superorchestrator mcp`. It adds the same MCP entry to the Codex, OpenCode and agy configs, without touching unrelated entries, and writes a backup of every file it changes.
+`install` also writes a managed block to `$CODEX_HOME/AGENTS.md` (default `~/.codex/AGENTS.md`) and to the `AGENTS.md` of each Codex account home, with the same markers, rules and opt-out (`--no-agents-md`, also on `setup`) as the `CLAUDE.md` block; `uninstall` removes it and symlinked files are edited through the link. The text is harness-neutral (reserved accounts, `harness: auto`); the `AGENTS.md` version adds that the orchestrator should use `spawn_agent(wait: false)` and then `wait_agent` with `timeout_ms` of at most 30 minutes. Codex reads `AGENTS.override.md` instead when it is present and not empty. The three skills are harness-neutral with Codex notes; `runs show <run>` prints a `join:` line (`get_run` returns `join_command`); for a Codex run it is `<account-name> resume <native session id>` through the account's wrapper, so the right credential home is used, and `join <run> [--exec]` runs it. A bare `codex resume <id>` uses the default `CODEX_HOME` and may not find the session.
+
+`install` also runs `claude mcp add superorchestrator -- superorchestrator mcp`. It adds the same MCP entry to the Codex, OpenCode and agy configs, without touching unrelated entries, and writes a backup of every file it changes. The Codex entries (`[mcp_servers.superorchestrator]` in `~/.codex/config.toml` and each Codex account's `config.toml`) also set `startup_timeout_sec = 30`, `tool_timeout_sec = 1860` and `env_vars = ["XDG_RUNTIME_DIR"]`. Codex defaults to 10 s and 60 s, and starts MCP servers with a scrubbed environment, so without `XDG_RUNTIME_DIR` the server cannot find the supervisor socket. 1860 s covers the 30 minute wait cap.
 
 ### 19.2 Cutover (`migrate`)
 
@@ -762,6 +771,12 @@ The supervisor sends notifications for the events listed in `notifications.on`, 
    - `~/.local/bin/add-agy-worker`
    - the `jev-router-mcp` entries in the Codex, agy and OpenCode configs
 5. Rewrite the delegation rules in `~/.claude/CLAUDE.md`: implementation is delegated through the superorchestrator MCP tools and skill, not the `orchestrate` skill. Other lines are left unchanged. A diff is shown first.
+
+### 19.3 Codex plugin and hooks
+
+The Codex plugin is in `plugin-codex/`, separate from the Claude Code `plugin/`: Codex always parses the default `hooks/hooks.json`, which in `plugin/` is the Claude Code mod module list (ADR-0008). It holds `.codex-plugin/plugin.json`, `.mcp.json` (with the timeouts and `env_vars` above), `hooks/hooks.json` and generated `skills/` copies, which `crates/superorchestrator/tests/plugin.rs` keeps in step with the shipped skills. The repository marketplace is `.agents/plugins/marketplace.json` (marketplace `superorchestrator`, plugin source `./plugin-codex`). It installs with `codex plugin marketplace add datamonsterr/superorchestrator` and `codex plugin add superorchestrator@superorchestrator`, and is toggled by `[plugins."superorchestrator@superorchestrator"] enabled`. An `[mcp_servers.superorchestrator]` entry in `config.toml` takes precedence over the plugin's server of the same name.
+
+`superorchestrator hook session-start|stop` is a hidden subcommand that reads the hook input and prints harness-neutral JSON; Claude Code and Codex accept the same shapes. `session-start` adds context that lists runs in the same git repository (same git common dir) that wait at the review gate (`pending_review`) or have an open question. `stop` prints a `systemMessage` warning when runs wait at the review gate and never blocks. Both are silent when nothing waits or the supervisor is down, finish within about 2 s, and read the store read-only. Codex requires the person to trust non-managed hooks through `/hooks`.
 
 ## 20. Security
 
