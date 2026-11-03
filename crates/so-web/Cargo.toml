@@ -42,6 +42,7 @@ tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+tracing-subscriber.workspace = true
 so-harness = { path = "../so-harness" }
 
 [[bin]]

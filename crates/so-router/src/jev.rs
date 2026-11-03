@@ -253,9 +253,8 @@ fn retry_after(resp: &reqwest::Response) -> Duration {
         .map_or(BACKOFF, |s| Duration::from_secs(s).min(MAX_RETRY_WAIT))
 }
 
-/// https, or plain http to a loopback host (tests and local proxies). The bearer key must not
-/// travel in clear text.
-/// Whether a decider endpoint uses an allowed transport.
+/// Whether a decider endpoint uses an allowed transport: https, or plain http to a loopback host
+/// (tests and local proxies). The bearer key must not travel in clear text.
 pub fn endpoint_allowed(endpoint: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(endpoint) else {
         return false;

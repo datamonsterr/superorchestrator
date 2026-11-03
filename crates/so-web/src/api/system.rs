@@ -12,6 +12,7 @@ use so_core::{Config, EventType, Platform};
 use so_store::EventQuery;
 use so_supervisor::doctor::{DoctorReport, run_checks};
 use so_supervisor::harnesses_view;
+use so_supervisor::services::decider::KeySource;
 use so_supervisor::services::worktrees as wt;
 
 use super::{redact_event, redact_run};
@@ -187,10 +188,10 @@ fn secret_sources(cfg: &Config) -> (SecretSource, SecretSource) {
     let decider_key =
         so_supervisor::services::decider::key_view(&cfg.router.jev, &so_router::jev::process_env);
     let key = SecretSource {
-        source: match decider_key.source.as_str() {
-            "env" => SecretOrigin::Env,
-            "file" => SecretOrigin::File,
-            _ => SecretOrigin::Unset,
+        source: match decider_key.source {
+            KeySource::Env => SecretOrigin::Env,
+            KeySource::File => SecretOrigin::File,
+            KeySource::Unset => SecretOrigin::Unset,
         },
         name: decider_key.name,
     };

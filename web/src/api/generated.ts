@@ -157,6 +157,7 @@ export interface DashboardView {
   status: StatusView;
 }
 
+/** A partial update of the decider settings; absent fields are left alone. */
 export interface DeciderPatch {
   endpoint?: string | null;
   fallback_model?: string | null;
@@ -164,14 +165,16 @@ export interface DeciderPatch {
   min_confidence?: number | null;
   min_margin?: number | null;
   model?: string | null;
-  on_unreachable?: string | null;
+  on_unreachable?: OnUnreachable | null;
   timeout?: string | null;
 }
 
+/** Optional prompt for a live decider test. */
 export interface DeciderTestRequest {
   prompt?: string | null;
 }
 
+/** The outcome of a live decider test. */
 export interface DeciderTestResult {
   complexity?: number | null;
   confidence?: number | null;
@@ -182,6 +185,7 @@ export interface DeciderTestResult {
   ok: boolean;
 }
 
+/** The decider settings as stored on disk, plus what is effective right now. */
 export interface DeciderView {
   effective: JevModels;
   endpoint: string;
@@ -209,6 +213,7 @@ export interface DoctorReport {
   ok: boolean;
 }
 
+/** An environment variable that currently overrides a configured field. */
 export interface EnvOverride {
   field: string;
   name: string;
@@ -322,12 +327,17 @@ export interface JoinView {
   env_names: string[];
 }
 
+/** How a patch changes the decider key. Deliberately not `Serialize`, so a pasted secret cannot be written out by accident. */
 export type KeyPatch = { env: string } | { file: string } | { paste: string };
 
+/** Where the decider key comes from. */
+export type KeySource = "env" | "file" | "unset";
+
+/** The decider key's origin and a masked hint; the key itself is never sent. */
 export interface KeyView {
   masked?: string | null;
   name?: string | null;
-  source: string;
+  source: KeySource;
 }
 
 /** A named range of complexity (`min` to `max`, within 0 to 100) and the models allowed for it, in preference order. Complexity can be fractional, so the integer range reads as the half-open span `[min, max + 1)`: 37.5 is in `0..=37`. A level with `max = 100` also includes 100.0. */
@@ -660,6 +670,7 @@ export interface StreamHello {
   server_time: string;
 }
 
+/** Model ids offered as defaults in the UI. */
 export interface Suggestions {
   fallback_model?: string | null;
   model: string;

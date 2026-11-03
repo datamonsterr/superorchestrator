@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use so_core::{Config, Paths};
-use so_supervisor::services::decider::{self, DeciderPatch, KeyPatch};
+use so_supervisor::services::decider::{self, DeciderError, DeciderPatch, KeyPatch, KeySource};
 
 #[test]
 fn validation_accepts_and_rejects_each_field_without_writes_on_error() {
@@ -51,12 +51,11 @@ fn validation_accepts_and_rejects_each_field_without_writes_on_error() {
     for (field, value, accepted) in cases {
         std::fs::write(paths.config_toml(), config).unwrap();
         std::fs::write(&key_path, key).unwrap();
-        let patch: DeciderPatch =
-            serde_json::from_value(serde_json::json!({(field):value})).unwrap();
-        let result = decider::set(&paths, &Config::default(), patch);
+        let result = DeciderPatch::from_value(serde_json::json!({(field):value}))
+            .and_then(|patch| decider::set(&paths, &Config::default(), patch));
         assert_eq!(result.is_ok(), accepted, "{field}: {value}: {result:?}");
         if !accepted {
-            assert!(result.unwrap_err().contains(field));
+            assert!(result.unwrap_err().to_string().contains(field));
             assert_eq!(std::fs::read(paths.config_toml()).unwrap(), config);
             assert_eq!(std::fs::read(&key_path).unwrap(), key);
         }
@@ -81,7 +80,7 @@ fn validation_accepts_and_rejects_each_field_without_writes_on_error() {
             let result = decider::set(&paths, &Config::default(), patch);
             assert_eq!(result.is_ok(), accepted, "{field}: {value}: {result:?}");
             if !accepted {
-                assert!(result.unwrap_err().contains(field));
+                assert!(result.unwrap_err().to_string().contains(field));
                 assert_eq!(std::fs::read(paths.config_toml()).unwrap(), config);
                 assert_eq!(std::fs::read(&key_path).unwrap(), key);
             }
@@ -165,7 +164,7 @@ fn accepted_fields_and_environment_override() {
     .unwrap();
     assert_eq!(view.effective.primary, "override/model");
     assert!(view.env_overrides.iter().any(|o| o.field == "model"));
-    assert_eq!(view.key.source, "env");
+    assert_eq!(view.key.source, KeySource::Env);
     assert!(
         !serde_json::to_string(&view)
             .unwrap()
@@ -278,7 +277,7 @@ fn key_sources_and_rejected_mixed_patch() {
     let paths = Paths::from_dir(dir.path().to_path_buf());
     let running = Config::default();
     let missing = decider::view_with_env(&paths, &running, |_| None).unwrap();
-    assert_eq!(missing.key.source, "unset");
+    assert_eq!(missing.key.source, KeySource::Unset);
     assert_eq!(missing.key.masked, None);
     assert_eq!(missing.key.name.as_deref(), Some("OPENROUTER_API_KEY"));
     let invalid = DeciderPatch {
@@ -300,13 +299,13 @@ fn key_sources_and_rejected_mixed_patch() {
     )
     .unwrap();
     let view = decider::view_with_env(&paths, &running, |_| None).unwrap();
-    assert_eq!(view.key.source, "file");
+    assert_eq!(view.key.source, KeySource::File);
     assert_eq!(view.key.masked.as_deref(), Some("…5678"));
     let view = decider::view_with_env(&paths, &running, |n| {
         (n == "OPENROUTER_API_KEY").then(|| "env-secret-1234".into())
     })
     .unwrap();
-    assert_eq!(view.key.source, "env");
+    assert_eq!(view.key.source, KeySource::Env);
     assert_eq!(view.key.masked.as_deref(), Some("…1234"));
     let shadow = view
         .env_overrides
@@ -362,13 +361,11 @@ fn model_override_that_is_also_the_key_is_not_exposed() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::from_dir(dir.path().to_path_buf());
     let running = Config::default();
-    decider::set(
-        &paths,
-        &running,
-        DeciderPatch {
-            key: Some(KeyPatch::Env("SUPERORCHESTRATOR_ROUTER_MODEL".into())),
-            ..Default::default()
-        },
+    // The API refuses this key_env, but a hand-edited file can still set it.
+    std::fs::create_dir_all(&paths.config_dir).unwrap();
+    std::fs::write(
+        paths.config_toml(),
+        "[router.jev]\nkey_env = \"SUPERORCHESTRATOR_ROUTER_MODEL\"\n",
     )
     .unwrap();
     let secret = "sensitive-secret-1234";
@@ -377,4 +374,119 @@ fn model_override_that_is_also_the_key_is_not_exposed() {
     })
     .unwrap();
     assert!(!serde_json::to_string(&view).unwrap().contains(secret));
+}
+
+#[test]
+fn from_value_errors_name_the_field_and_never_echo_values() {
+    let secret = "SECRETVALUE";
+    for body in [
+        serde_json::json!({"key": secret}),
+        serde_json::json!({"key": {"paste": 123}}),
+        serde_json::json!({"key": {"paste": secret, "env": secret}}),
+        serde_json::json!({"model": 7}),
+        serde_json::json!({"on_unreachable": secret}),
+        serde_json::json!({ secret: 1 }),
+        serde_json::json!(secret),
+    ] {
+        let error = DeciderPatch::from_value(body).unwrap_err();
+        assert!(matches!(error, DeciderError::Invalid(_)));
+        assert!(!error.to_string().contains(secret), "{error}");
+    }
+    let error = DeciderPatch::from_value(serde_json::json!({"key": {"paste": 1}})).unwrap_err();
+    assert!(error.to_string().starts_with("key:"), "{error}");
+    let ok = DeciderPatch::from_value(
+        serde_json::json!({"model": "a/b", "on_unreachable": "heuristic"}),
+    )
+    .unwrap();
+    assert_eq!(
+        ok.on_unreachable,
+        Some(so_core::config::OnUnreachable::Heuristic)
+    );
+}
+
+#[test]
+fn errors_are_classified_invalid_or_internal_without_the_secret() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::from_dir(dir.path().to_path_buf());
+    let secret = "sk-classify-1234";
+    let invalid = decider::set(
+        &paths,
+        &Config::default(),
+        DeciderPatch {
+            model: Some("a b".into()),
+            key: Some(KeyPatch::Paste(secret.into())),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(matches!(invalid, DeciderError::Invalid(_)), "{invalid:?}");
+    // A config the editor cannot modify is a server-side failure.
+    std::fs::write(paths.config_toml(), b"router = {}\n").unwrap();
+    let internal = decider::set(
+        &paths,
+        &Config::default(),
+        DeciderPatch {
+            key: Some(KeyPatch::Paste(secret.into())),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+    assert!(
+        matches!(internal, DeciderError::Internal(_)),
+        "{internal:?}"
+    );
+    assert!(!format!("{internal:?}{internal}").contains(secret));
+    std::fs::write(paths.config_toml(), b"not [valid toml").unwrap();
+    assert!(matches!(
+        decider::view(&paths, &Config::default()).unwrap_err(),
+        DeciderError::Internal(_)
+    ));
+}
+
+#[test]
+fn pasted_key_shadowed_by_environment_is_reported() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::from_dir(dir.path().to_path_buf());
+    let view = decider::set_with_env(
+        &paths,
+        &Config::default(),
+        DeciderPatch {
+            key: Some(KeyPatch::Paste("pasted-secret-0000".into())),
+            ..Default::default()
+        },
+        |n| (n == "OPENROUTER_API_KEY").then(|| "env-secret-9999".into()),
+    )
+    .unwrap();
+    let shadow = view
+        .env_overrides
+        .iter()
+        .find(|o| o.field == "key_file")
+        .expect("env override for key_file");
+    assert_eq!(shadow.name, "OPENROUTER_API_KEY");
+    assert_eq!(shadow.value, None);
+    assert_eq!(view.key.source, KeySource::Env);
+    assert!(!serde_json::to_string(&view).unwrap().contains("secret-"));
+}
+
+#[test]
+fn model_override_variables_are_rejected_as_key_env() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::from_dir(dir.path().to_path_buf());
+    for name in [
+        "SUPERORCHESTRATOR_ROUTER_MODEL",
+        "SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL",
+    ] {
+        let error = decider::set(
+            &paths,
+            &Config::default(),
+            DeciderPatch {
+                key: Some(KeyPatch::Env(name.into())),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(error, DeciderError::Invalid(_)));
+        let message = error.to_string();
+        assert!(message.starts_with("key.env:") && message.contains("model override"));
+    }
 }

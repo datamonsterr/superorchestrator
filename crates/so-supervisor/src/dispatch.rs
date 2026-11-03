@@ -389,6 +389,14 @@ pub async fn status_result(state: &Arc<SupervisorState>) -> Result<StatusResult,
     })
 }
 
+fn decider_rpc_error(error: crate::services::decider::DeciderError) -> RpcError {
+    use crate::services::decider::DeciderError;
+    match error {
+        DeciderError::Invalid(message) => RpcError::new(INVALID_PARAMS, message),
+        DeciderError::Internal(message) => RpcError::new(INTERNAL_ERROR, message),
+    }
+}
+
 async fn handle_decider(
     state: &Arc<SupervisorState>,
     method: &str,
@@ -402,45 +410,18 @@ async fn handle_decider(
                 tokio::task::spawn_blocking(move || decider::view(&state.paths, &state.config))
                     .await
                     .map_err(internal)?
-                    .map_err(internal)?;
+                    .map_err(decider_rpc_error)?;
             serde_json::to_value(view).map_err(internal)
         }
         METHOD_DECIDER_SET => {
-            // Deserialize each known field separately so malformed types identify the field
-            // without ever placing a pasted secret in the error message.
-            if let Some(fields) = params.as_object() {
-                for (name, value) in fields {
-                    if ![
-                        "endpoint",
-                        "model",
-                        "fallback_model",
-                        "on_unreachable",
-                        "timeout",
-                        "min_confidence",
-                        "min_margin",
-                        "key",
-                    ]
-                    .contains(&name.as_str())
-                    {
-                        return Err(RpcError::new(INVALID_PARAMS, "unknown decider patch field"));
-                    }
-                    let mut one = serde_json::Map::new();
-                    one.insert(name.clone(), value.clone());
-                    if serde_json::from_value::<decider::DeciderPatch>(Value::Object(one)).is_err()
-                    {
-                        return Err(RpcError::new(INVALID_PARAMS, format!("invalid {name}")));
-                    }
-                }
-            }
-            let patch: decider::DeciderPatch = serde_json::from_value(params)
-                .map_err(|_| RpcError::new(INVALID_PARAMS, "invalid decider patch"))?;
+            let patch = decider::DeciderPatch::from_value(params).map_err(decider_rpc_error)?;
             let state = Arc::clone(state);
             let view = tokio::task::spawn_blocking(move || {
                 decider::set(&state.paths, &state.config, patch)
             })
             .await
             .map_err(internal)?
-            .map_err(|e| RpcError::new(INVALID_PARAMS, e))?;
+            .map_err(decider_rpc_error)?;
             serde_json::to_value(view).map_err(internal)
         }
         METHOD_DECIDER_TEST => {
@@ -448,7 +429,7 @@ async fn handle_decider(
                 .map_err(|_| RpcError::new(INVALID_PARAMS, "invalid decider test request"))?;
             let result = decider::test_decider(&state.paths, &state.http, request.prompt)
                 .await
-                .map_err(internal)?;
+                .map_err(decider_rpc_error)?;
             serde_json::to_value(result).map_err(internal)
         }
         _ => Err(RpcError::new(METHOD_NOT_FOUND, "unknown decider method")),
