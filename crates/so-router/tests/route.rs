@@ -1559,6 +1559,21 @@ async fn pinned_endpoint_uses_opus_and_plain_account_rejects_endpoint_model() {
 }
 
 #[tokio::test]
+async fn pinned_account_with_a_different_harness_pin_errors_on_the_harness_first() {
+    let w = world("http://127.0.0.1:1/x", false);
+    let mut p = params("x");
+    p.account = Some("claude-a".into());
+    p.harness = Some("codex".into());
+    p.model = Some("gpt-6.1-sol".into());
+    let e = route_detailed(&w.inputs(), &p).await.unwrap_err();
+    assert!(
+        e.to_string()
+            .contains("account claude-a is a claude account; harness pin is codex"),
+        "{e}"
+    );
+}
+
+#[tokio::test]
 async fn endpoint_models_without_accounts_do_not_change_tier_picks() {
     let mut w = world("http://127.0.0.1:1/x", false);
     w.config.router.levels = vec![
