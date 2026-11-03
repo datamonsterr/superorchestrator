@@ -217,7 +217,7 @@ fn assign_caps_and_orders_per_level() {
     assert_eq!(more[0].id, "assign-model:fast:codex/z-paid/low");
 }
 #[test]
-fn assign_free_beats_ref_order_and_small_sets_are_unchanged() {
+fn assign_small_sets_are_unchanged() {
     let levels = vec![level("fast", 0, 100, &["codex/listed"])];
     let c = catalog_with(&[
         (Harness::Codex, "listed", Cost::Included),
@@ -227,6 +227,29 @@ fn assign_free_beats_ref_order_and_small_sets_are_unchanged() {
     let s = only(&levels, &[], &c, Rule::AssignModel);
     assert_eq!(s.len(), 2);
     assert!(s.iter().all(|x| !x.rationale.contains("more")));
+}
+#[test]
+fn assign_free_beats_ref_id_within_a_harness() {
+    let levels = vec![level("fast", 0, 100, &["codex/listed"])];
+    let c = catalog_with(&[
+        (Harness::Codex, "listed", Cost::Included),
+        (Harness::Codex, "a-paid", Cost::Included),
+        (Harness::Codex, "b-paid", Cost::Included),
+        (Harness::Codex, "c-paid", Cost::Included),
+        (Harness::Codex, "z-free", Cost::Free),
+    ]);
+    let ids: Vec<_> = only(&levels, &[], &c, Rule::AssignModel)
+        .into_iter()
+        .map(|x| x.id)
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "assign-model:fast:codex/a-paid/low",
+            "assign-model:fast:codex/b-paid/low",
+            "assign-model:fast:codex/z-free/low"
+        ]
+    );
 }
 #[test]
 fn gaps_removal_and_round_trip() {

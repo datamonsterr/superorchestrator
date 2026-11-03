@@ -91,6 +91,9 @@ simple 13-37: 18 runs
   median complexity 24.0 median duration 61200.0 ms
   model agy/gemini-3.8-flash-medium/medium: 12 runs, 83.3% success
   [history] c=34 accepted Rename the config loader and update its callers (borderline)
+high 63-100: 0 runs
+  accepted - rejected - failed - failover -
+  median complexity - median duration - ms
   [eval] c=94 - Design a sharded job queue with exactly-once delivery
 Suggestions:
   shift-boundary:simple:37-32: 4 of 6 runs within 5 of `simple`'s upper bound had a bad outcome (67%); move the boundary down by 5 toward `moderate`.
@@ -99,7 +102,7 @@ Suggestions:
 3 unassigned models
 ```
 
-Each example line reads `[source] c=NN outcome excerpt`. `c=NN` is the complexity the decider gave the run, rounded. The outcome is `accepted`, `rejected`, `failed` or `succeeded`; eval examples have no outcome and show `-`. `(borderline)` marks an example within five points of the level's boundary. A success rate is the share of counted runs (outcome not other) that are not bad.
+Each example line reads `[source] c=NN outcome excerpt`. `c=NN` is the complexity the decider gave the run, rounded. The outcome is `accepted`, `rejected`, `failed` or `succeeded`; eval examples have no outcome and show `-`. Eval lines appear only under a level with fewer than three history examples. `(borderline)` marks an example within five points of the level's boundary. A success rate is the share of counted runs (outcome not other) that are not bad.
 
 The command supports `--json` for structured output. To apply a suggestion, copy its id:
 
