@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
 import { Controller, useForm, useWatch } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { ChevronDown } from 'lucide-react'
@@ -21,7 +21,17 @@ interface Props {
   onCreated: (name: string) => void
 }
 
-const LABEL: Record<(typeof HARNESSES)[number], string> = { codex: 'Codex', agy: 'Antigravity (agy)', opencode: 'OpenCode', claude: 'Claude' }
+const LABEL: Record<(typeof HARNESSES)[number], string> = {
+  codex: 'Codex', agy: 'Antigravity (agy)', opencode: 'OpenCode', claude: 'Claude',
+  copilot: 'GitHub Copilot CLI', gemini: 'Gemini CLI', kimi: 'Kimi Code', cursor: 'Cursor CLI', qwen: 'Qwen Code',
+}
+const SIGN_IN_HINT: Partial<Record<(typeof HARNESSES)[number], ReactNode>> = {
+  copilot: <>Signs in with <code>copilot login</code>.</>,
+  gemini: 'Sign in inside an interactive Gemini CLI session.',
+  kimi: <>Signs in with <code>kimi login</code>.</>,
+  cursor: <>Signs in with <code>agent login</code>.</>,
+  qwen: 'Sign in inside an interactive Qwen Code session.',
+}
 
 export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Props) {
   const config = useConfig()
@@ -72,7 +82,7 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
                 name="harness"
                 render={({ field }) => (
                   <Select value={field.value} onValueChange={field.onChange}>
-                    <SelectTrigger id="add-harness" className="w-full">
+                    <SelectTrigger id="add-harness" aria-describedby={SIGN_IN_HINT[harness] ? 'add-harness-hint' : undefined} className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -86,6 +96,7 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
                   </Select>
                 )}
               />
+              {SIGN_IN_HINT[harness] && <FieldDescription id="add-harness-hint">{SIGN_IN_HINT[harness]}</FieldDescription>}
               <FieldError errors={[formState.errors.harness]} />
             </Field>
             <Field data-invalid={!!formState.errors.name}>

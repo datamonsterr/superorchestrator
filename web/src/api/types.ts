@@ -28,10 +28,14 @@ import type {
   LevelsView as GenLevels,
   RouteResult as GenRoute,
   DashboardView as GenDashboard,
+  Harness,
 } from './generated'
 
 export type { Page, SessionSummary } from './generated'
 export type { Event, Headroom }
+
+/** Harnesses supported by the web UI, in the same order as the API enum. */
+export const HARNESSES = ['codex', 'agy', 'opencode', 'claude', 'copilot', 'gemini', 'kimi', 'cursor', 'qwen'] as const satisfies readonly Harness[]
 
 /** `T` with the listed fields required: the server always serialises them. */
 type Always<T, K extends keyof T> = Omit<T, K> & Required<Pick<T, K>>

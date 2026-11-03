@@ -26,6 +26,11 @@ describe('model ref schema', () => {
     return r.success ? null : r.error.issues[0].message
   }
   it('requires a model', () => expect(issue({ harness: 'codex', model: '  ', effort: '' })).toBe('Enter a model'))
+  it('allows copilot effort and rejects effort for a harness without effort support', () => {
+    expect(schema.safeParse({ harness: 'copilot', model: 'gpt-5', effort: 'high' }).success).toBe(true)
+    expect(schema.safeParse({ harness: 'copilot', model: 'gpt-5', effort: 'bogus' }).success).toBe(false)
+    expect(schema.safeParse({ harness: 'gemini', model: 'gemini-2.5-pro', effort: 'high' }).success).toBe(false)
+  })
   it('requires provider/model for opencode', () => {
     expect(issue({ harness: 'opencode', model: 'muse-spark-1.3', effort: '' })).toMatch(/provider\/model/)
     expect(issue({ harness: 'opencode', model: 'opencode/muse-spark-1.3', effort: '' })).toBeNull()
