@@ -6,6 +6,7 @@ use crate::{
 };
 use serde::Serialize;
 use so_core::config::{Level, validate_levels};
+use std::collections::BTreeMap;
 
 pub const MIN_SAMPLES: usize = 5;
 pub const BAD_RATE: f64 = 0.5;
@@ -94,16 +95,12 @@ fn level_tier(l: &Level, catalog: &Catalog) -> Option<Tier> {
         Some([Tier::High, Tier::Mid, Tier::Fast][counts.iter().position(|&c| c == max)?])
     }
 }
-/// Produce suggestions, each containing a complete independently valid configuration.
-pub fn suggest(
+fn shift_boundary(
     levels: &[Level],
-    insights: &[LevelInsight],
+    order: &[usize],
     records: &[HistoryRecord],
-    catalog: &Catalog,
-) -> Vec<Suggestion> {
-    let mut order: Vec<usize> = (0..levels.len()).collect();
-    order.sort_by_key(|&i| levels[i].min);
-    let mut out = Vec::new();
+    out: &mut Vec<Suggestion>,
+) {
     for pair in order.windows(2) {
         let (i, j) = (pair[0], pair[1]);
         let (a, b) = (&levels[i], &levels[j]);
@@ -129,7 +126,7 @@ pub fn suggest(
             diff.push(change(b, "min", b.min, next[j].min));
         }
         push(
-            &mut out,
+            out,
             format!("shift-boundary:{}:{}-{}", a.name, a.max, new),
             Rule::ShiftBoundary,
             a,
@@ -144,7 +141,15 @@ pub fn suggest(
             diff,
         );
     }
-    for &i in &order {
+}
+
+fn promote_model(
+    levels: &[Level],
+    order: &[usize],
+    insights: &[LevelInsight],
+    out: &mut Vec<Suggestion>,
+) {
+    for &i in order {
         let l = &levels[i];
         let Some(insight) = insights.iter().find(|x| x.name == l.name) else {
             continue;
@@ -158,13 +163,13 @@ pub fn suggest(
                     .iter()
                     .find(|m| m.choice_id.as_deref() == Some(c.id().as_str()))
                     .filter(|m| m.runs >= MIN_SAMPLES)
-                    .and_then(|m| m.success_rate)
+                    .and_then(|m| m.success_rate.map(|rate| (rate, m.runs)))
             })
             .collect();
         let mut best: Option<(usize, usize, f64)> = None;
         for x in 0..stats.len() {
             for y in x + 1..stats.len() {
-                if let (Some(a), Some(b)) = (stats[x], stats[y]) {
+                if let (Some((a, _)), Some((b, _))) = (stats[x], stats[y]) {
                     let gain = b - a;
                     if b >= a + PROMOTE_MARGIN && best.is_none_or(|(_, _, g)| gain > g) {
                         best = Some((x, y, gain));
@@ -172,26 +177,34 @@ pub fn suggest(
                 }
             }
         }
-        if let Some((x, y, gain)) = best {
+        if let Some((x, y, _)) = best {
+            let (old_rate, old_runs) = stats[x].expect("chosen model has stats");
+            let (new_rate, new_runs) = stats[y].expect("chosen model has stats");
+            let old_id = l.models[x].id();
             let mut next = levels.to_vec();
             let c = next[i].models.remove(y);
             let id = c.id();
             next[i].models.insert(x, c);
             let diff = vec![change(l, "models", models(l), models(&next[i]))];
             push(
-                &mut out,
+                out,
                 format!("promote-model:{}:{id}", l.name),
                 Rule::PromoteModel,
                 l,
                 format!(
-                    "Promote `{id}` by {:.0} percentage points of success rate.",
-                    gain * 100.0
+                    "`{id}` ({:.0}% success, {new_runs} runs) vs `{old_id}` ({:.0}% success, {old_runs} runs) in `{}`; move `{id}` ahead of `{old_id}`.",
+                    new_rate * 100.0,
+                    old_rate * 100.0,
+                    l.name
                 ),
                 next,
                 diff,
             );
         }
     }
+}
+
+fn assign_model(levels: &[Level], order: &[usize], catalog: &Catalog, out: &mut Vec<Suggestion>) {
     let used: Vec<_> = levels
         .iter()
         .flat_map(|l| l.models.iter().cloned())
@@ -228,7 +241,7 @@ pub fn suggest(
         next[i].models.push(c);
         let diff = vec![change(l, "models", models(l), models(&next[i]))];
         push(
-            &mut out,
+            out,
             format!("assign-model:{}:{id}", l.name),
             Rule::AssignModel,
             l,
@@ -241,6 +254,9 @@ pub fn suggest(
             diff,
         );
     }
+}
+
+fn close_gap(levels: &[Level], order: &[usize], out: &mut Vec<Suggestion>) {
     for (pos, &i) in order.iter().enumerate() {
         let l = &levels[i];
         let mut gaps = Vec::new();
@@ -264,7 +280,7 @@ pub fn suggest(
                 vec![change(l, "max", l.max, to)]
             };
             push(
-                &mut out,
+                out,
                 format!("close-gap:{}:{from}-{to}", l.name),
                 Rule::CloseGap,
                 l,
@@ -274,6 +290,9 @@ pub fn suggest(
             );
         }
     }
+}
+
+fn remove_empty(levels: &[Level], order: &[usize], catalog: &Catalog, out: &mut Vec<Suggestion>) {
     for (pos, &i) in order.iter().enumerate() {
         let l = &levels[i];
         if order.len() < 2
@@ -297,7 +316,7 @@ pub fn suggest(
         }
         next.remove(i);
         push(
-            &mut out,
+            out,
             format!("remove-empty:{}", l.name),
             Rule::RemoveEmpty,
             l,
@@ -308,6 +327,27 @@ pub fn suggest(
             next,
             diff,
         );
+    }
+}
+
+/// Produce suggestions, each containing a complete independently valid configuration.
+pub fn suggest(
+    levels: &[Level],
+    insights: &[LevelInsight],
+    records: &[HistoryRecord],
+    catalog: &Catalog,
+) -> Vec<Suggestion> {
+    let mut order: Vec<usize> = (0..levels.len()).collect();
+    order.sort_by_key(|&i| levels[i].min);
+    let mut out = Vec::new();
+    shift_boundary(levels, &order, records, &mut out);
+    promote_model(levels, &order, insights, &mut out);
+    assign_model(levels, &order, catalog, &mut out);
+    close_gap(levels, &order, &mut out);
+    remove_empty(levels, &order, catalog, &mut out);
+    let mut minima = BTreeMap::new();
+    for level in levels {
+        minima.entry(level.name.as_str()).or_insert(level.min);
     }
     let rank = |rule: &Rule| match rule {
         Rule::ShiftBoundary => 0,
@@ -320,18 +360,9 @@ pub fn suggest(
         rank(&a.rule)
             .cmp(&rank(&b.rule))
             .then_with(|| {
-                levels
-                    .iter()
-                    .find(|l| l.name == a.level)
-                    .expect("suggestion level exists")
-                    .min
-                    .cmp(
-                        &levels
-                            .iter()
-                            .find(|l| l.name == b.level)
-                            .expect("suggestion level exists")
-                            .min,
-                    )
+                minima
+                    .get(a.level.as_str())
+                    .cmp(&minima.get(b.level.as_str()))
             })
             .then(a.id.cmp(&b.id))
     });

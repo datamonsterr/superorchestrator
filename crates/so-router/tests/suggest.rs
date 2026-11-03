@@ -139,6 +139,8 @@ fn promotion_threshold_largest_gain_and_sample_count() {
         .unwrap();
     assert_eq!(s.id, "promote-model:a:codex/c");
     assert_eq!(s.levels[0].models[0].id(), "codex/c");
+    assert!(s.rationale.contains("`codex/c` (100% success, 5 runs)"));
+    assert!(s.rationale.contains("`codex/a` (50% success, 5 runs)"));
 }
 #[test]
 fn assign_tiers_and_efforts() {
