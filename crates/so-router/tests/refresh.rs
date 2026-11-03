@@ -118,10 +118,23 @@ async fn refresh_merges_reports_and_caches_models_dev() {
     let (cat, rep) = refresh(&env, before.clone(), &choices).await;
 
     assert!(
-        rep.sources.iter().all(|s| s.status == SourceStatus::Ok),
+        rep.sources
+            .iter()
+            .filter(|s| s.source != "claude")
+            .all(|s| s.status == SourceStatus::Ok),
         "{:?}",
         rep.sources
     );
+    assert_eq!(
+        rep.sources
+            .iter()
+            .map(|s| s.source.as_str())
+            .collect::<Vec<_>>(),
+        ["codex", "opencode", "models.dev", "agy", "claude"]
+    );
+    let claude = rep.sources.iter().find(|s| s.source == "claude").unwrap();
+    assert_eq!(claude.status, SourceStatus::Skipped);
+    assert_eq!(claude.detail, "no enabled claude account");
     let added: Vec<_> = rep.added.iter().map(|m| m.model.as_str()).collect();
     assert!(added.contains(&"gpt-new") && added.contains(&"gemini-9-flash"));
     assert!(added.contains(&"opencode/brand-new-free") && added.contains(&"opencode/paid-one"));
@@ -161,9 +174,9 @@ async fn refresh_merges_reports_and_caches_models_dev() {
             "agy/gemini-3.8-flash-lwo/low"
         ]
     );
-    assert!(rep.unused_models.iter().any(|m| m.model == "gpt-new"));
+    assert!(rep.unassigned_models.iter().any(|m| m.model == "gpt-new"));
     assert!(
-        !rep.unused_models
+        !rep.unassigned_models
             .iter()
             .any(|m| m.model == "gemini-3.8-flash-low")
     );
@@ -192,6 +205,67 @@ async fn refresh_merges_reports_and_caches_models_dev() {
             .iter()
             .filter(|s| s.status == SourceStatus::Skipped)
             .count()
-            == 3
+            == 4
     );
+}
+
+#[tokio::test]
+async fn claude_documented_models_require_an_enabled_account() {
+    let d = tempfile::tempdir().unwrap();
+    let paths = Paths::from_dir(d.path().join("cfg"));
+    let host = HostEnv {
+        home: d.path().into(),
+        path_var: None,
+        platform: Platform::Linux,
+    };
+    let mut account =
+        AccountFile::new("claude1", Harness::Claude, "/tmp/claude1", "claude").unwrap();
+    let http = reqwest::Client::new();
+    let runner = Fake::default();
+    let choices: Vec<Choice> = ["claude/custom-real-model/high"]
+        .iter()
+        .map(|s| s.parse().unwrap())
+        .collect();
+    for enabled in [false, true] {
+        account.enabled = enabled;
+        let accounts = [account.clone()];
+        let env = RefreshEnv {
+            paths: &paths,
+            host: &host,
+            accounts: &accounts,
+            pass_env: &[],
+            runner: &runner,
+            http: &http,
+            models_dev_url: Some("http://127.0.0.1:1"),
+            now: chrono::Utc::now(),
+        };
+        let (cat, report) = refresh(&env, Catalog::default(), &choices).await;
+        let source = report
+            .sources
+            .iter()
+            .find(|s| s.source == "claude")
+            .unwrap();
+        if enabled {
+            assert_eq!(source.status, SourceStatus::Ok);
+            assert_eq!(
+                source.detail,
+                "documented model ids (claude has no model listing)"
+            );
+            assert_eq!(source.models, 4);
+            for id in [
+                "claude-opus-5-5",
+                "claude-sonnet-5-5",
+                "claude-haiku-5-5",
+                "claude-fable-5-1",
+            ] {
+                assert!(cat.contains(Harness::Claude, id));
+            }
+            assert!(report.missing_choice_models.is_empty());
+        } else {
+            assert_eq!(source.status, SourceStatus::Skipped);
+            assert_eq!(source.detail, "no enabled claude account");
+            assert!(!cat.contains(Harness::Claude, "claude-opus-5-5"));
+        }
+    }
+    assert!(runner.calls.lock().unwrap().is_empty());
 }
