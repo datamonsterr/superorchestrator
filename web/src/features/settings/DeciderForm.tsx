@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { TabsContent } from '@/components/ui/tabs'
 import { usePatchDecider, useTestDecider } from '@/api/queries'
+import { ApiError } from '@/api/client'
 import { errorMessage } from '@/lib/errors'
 import type { DeciderTestResult, DeciderView, EnvOverride } from '@/api/types'
 import { DECIDER_FIELD_PATHS, deciderPatch, deciderSchema, valuesFromDecider, type DeciderValues, type KeyMode } from './schemas'
@@ -43,7 +44,17 @@ function Override({ o }: { o: EnvOverride }) {
   )
 }
 
-function TestResult({ r }: { r: DeciderTestResult }) {
+/** The request itself failed (no answer from the supervisor), so there is no latency to show. */
+type TestState = DeciderTestResult | { transportError: string }
+
+function TestResult({ r }: { r: TestState }) {
+  if ('transportError' in r) {
+    return (
+      <p role="alert" className="text-sm text-destructive">
+        Test failed: {r.transportError}
+      </p>
+    )
+  }
   if (!r.ok) {
     return (
       <p role="alert" className="text-sm text-destructive">
@@ -75,13 +86,18 @@ export function DeciderForm({ view, hidden = false }: { view: DeciderView; hidde
   const patch = usePatchDecider()
   const test = useTestDecider()
   const [prompt, setPrompt] = useState('')
-  const [result, setResult] = useState<DeciderTestResult | null>(null)
+  const [result, setResult] = useState<TestState | null>(null)
   const uid = useId()
   const form = useForm<DeciderValues>({ resolver: zodResolver(deciderSchema), defaultValues: valuesFromDecider(view) })
-  const { control, register, handleSubmit, reset, setError, formState } = form
+  const { control, register, handleSubmit, reset, setError, setValue, formState } = form
   const { errors, isDirty } = formState
   const mode = useWatch({ control, name: 'key_mode' })
   const overrideFor = (field: string) => view.env_overrides.filter((o) => o.field === field)
+
+  // A pasted key must not outlive the paste choice, so leaving it drops the text.
+  useEffect(() => {
+    if (mode !== 'paste') setValue('key_paste', '')
+  }, [mode, setValue])
 
   useEffect(() => {
     if (!form.formState.isDirty) reset(valuesFromDecider(view))
@@ -104,6 +120,10 @@ export function DeciderForm({ view, hidden = false }: { view: DeciderView; hidde
       const field = message.split(':', 1)[0]
       if (message.includes(':') && DECIDER_FIELD_PATHS.includes(field)) setError(field as Name, { type: 'server', message: message.slice(field.length + 1).trim() })
       else setError('root', { type: 'server', message })
+      // The server rejected the request: drop the pasted key. After a network or 5xx failure it is kept so a retry does not need it typed again.
+      if (e instanceof ApiError && e.status >= 400 && e.status < 500) setValue('key_paste', '')
+    } finally {
+      patch.reset() // the mutation's variables hold the pasted key
     }
   }
 
@@ -112,7 +132,7 @@ export function DeciderForm({ view, hidden = false }: { view: DeciderView; hidde
     try {
       setResult(await test.mutateAsync(prompt.trim() ? { prompt: prompt.trim() } : {}))
     } catch (e) {
-      setResult({ ok: false, error: errorMessage(e), latency_ms: 0 })
+      setResult({ transportError: errorMessage(e) })
     }
   }
 
@@ -133,6 +153,11 @@ export function DeciderForm({ view, hidden = false }: { view: DeciderView; hidde
           aria-describedby={`${id}-hint`}
           autoComplete="off"
           className={opts.mono ? 'font-mono' : undefined}
+          {...(opts.type === 'password'
+            ? { autoComplete: 'new-password', 'data-1p-ignore': true, 'data-lpignore': 'true', spellCheck: false }
+            : opts.mono
+              ? { spellCheck: false, autoCapitalize: 'off' }
+              : {})}
           {...register(name, opts.number ? { valueAsNumber: true } : undefined)}
         />
         <FieldDescription id={`${id}-hint`}>{hint}</FieldDescription>
@@ -170,6 +195,7 @@ export function DeciderForm({ view, hidden = false }: { view: DeciderView; hidde
 
           <Field data-invalid={!!errOf('on_unreachable')}>
             <FieldLabel htmlFor="decider-on_unreachable">When the decider is unreachable</FieldLabel>
+            {/* Native select: two fixed options, and it keeps the form testable without a popper. */}
             <select id="decider-on_unreachable" className={SELECT_CLASS} aria-describedby="decider-on_unreachable-hint" {...register('on_unreachable')}>
               <option value="error">error</option>
               <option value="heuristic">heuristic</option>

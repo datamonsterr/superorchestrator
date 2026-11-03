@@ -215,11 +215,13 @@ export function usePatchDecider() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (body: DeciderPatch) => endpoints.patchDecider(body),
+    gcTime: 0, // the variables may hold a pasted key
     onSuccess: (data) => {
       qc.setQueryData(qk.decider(), data)
       return Promise.all([qc.invalidateQueries({ queryKey: qk.config() }), qc.invalidateQueries({ queryKey: qk.status() })])
     },
   })
 }
-export const useTestDecider = () => useApiMutation((body: DeciderTestRequest) => endpoints.testDecider(body))
+export const useTestDecider = () =>
+  useMutation({ mutationFn: (body: DeciderTestRequest) => endpoints.testDecider(body), meta: { silent: true } }) // the panel shows the error
 export const usePatchConfig = () => useApiMutation((body: ConfigPatch) => endpoints.patchConfig(body), () => [qk.config(), qk.status()])

@@ -203,6 +203,7 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
       }
       const { key, ...rest } = p
       decider = { ...decider, ...Object.fromEntries(Object.entries(rest).filter(([, v]) => v != null)) } as DeciderView
+      if (p.fallback_model === '') decider.fallback_model = null
       if (p.model != null) decider.effective = { ...decider.effective, primary: p.model }
       if (key) {
         const name = 'env' in key ? key.env : 'file' in key ? key.file : null
