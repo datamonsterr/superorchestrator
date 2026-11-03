@@ -69,6 +69,8 @@ superorchestrator config edit
 
 ### `[router.jev]`
 
+The decider settings. The web UI (Settings, Decider) and the TUI (Settings tab) edit them; see [Decider](#decider) below.
+
 | Key | Default | Meaning |
 |---|---|---|
 | `endpoint` | `https://openrouter.ai/api/alpha/decisions` | Decider URL |
@@ -76,7 +78,7 @@ superorchestrator config edit
 | `fallback_model` | `~typesafe/jev-latest` | Tried only when the primary model cannot be reached. Env `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL` overrides it; `none` disables it |
 | `on_unreachable` | `"error"` | When a configured decider cannot be reached: `"error"` fails the call, `"heuristic"` degrades |
 | `key_env` | `OPENROUTER_API_KEY` | Environment variable that holds the key |
-| `key_file` | unset | Optional dotenv file that holds the key |
+| `key_file` | unset | Optional dotenv file that holds the key. Pasting a key in the web UI or TUI sets this to `<config dir>/decider.env` |
 | `timeout` | `"20s"` | Decider timeout, shared by the primary and the fallback |
 
 ### `[router.policy]`
@@ -87,6 +89,25 @@ superorchestrator config edit
 | `min_margin` | `0.15` | Deprecated and ignored. Still parsed so old configs load. A score has no margin between choices. |
 
 `doctor` and `route eval` report the models from the environment of the shell that runs them. A supervisor started elsewhere may have a different environment. `min_confidence` was tuned on 2026-10-23 against `jev-1.14-20261014` for the earlier decider, which picked a choice; it has not been re-tuned for complexity scores. Re-run `route eval --require-live` after you change `router.instruction`, your levels or your choices, and adjust `min_confidence` from those results.
+
+### Decider
+
+The decider is `[router.jev]` plus `[router.policy]`. You can edit it in `config.toml`, in the web UI (Settings, Decider tab) or in the TUI (Settings tab, `8`). Both UIs call one supervisor API, which validates every field and writes `config.toml`; nothing is written when any field fails. Validation: `endpoint` must be https, or http to a loopback host; `model` is non-empty with no spaces; `fallback_model` is empty, `none` or a model id; `on_unreachable` is `error` or `heuristic`; `timeout` is from `1s` to `120s`; `min_confidence` and `min_margin` are from 0.0 to 1.0; environment variable names match `[A-Z_][A-Z0-9_]*`. `min_margin` is still accepted but ignored (see above). The model fields are free text: OpenRouter does not list the models usable for decisions, so the UIs only suggest the defaults.
+
+**The key.** Three choices:
+
+- **Environment variable.** `key_env` names the variable (default `OPENROUTER_API_KEY`). The supervisor reads it from its own environment.
+- **Key file.** `key_file` points at a dotenv file with a `<key_env>=<key>` line.
+- **Paste.** Paste the key in the web UI or TUI. The supervisor writes `<config dir>/decider.env` as `<key_env>=<key>` with mode 0600, atomically, and sets `router.jev.key_file` to it. If the config write fails, the file change is rolled back. The key is never returned by the API, logged, or stored in events. The UI shows only the source (`env`, `file` or `unset`), the variable or file name, and the key masked to its last four characters. See [ADR-0008](../adr/0008-supervisor-writes-decider-key-file.md).
+
+**Environment overrides and precedence.** Environment variables win over `config.toml`:
+
+- `SUPERORCHESTRATOR_ROUTER_MODEL` overrides `model`, and `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL` overrides `fallback_model` (`none` disables it).
+- If the `key_env` variable is set in the supervisor's environment, it wins over `key_file`, so a pasted key is not used until the variable is unset.
+
+The UIs show a notice for each field an environment variable overrides, with the variable name (never the key value) and the value in effect. The "in effect" models and key source are shown beside the form.
+
+**Test decider.** The button in the web UI and `t` in the TUI rate a built-in sample (or your own prompt in the web UI) with the config on disk and the resolved key, then show the complexity, level, confidence, model used and latency, or the error (no key, endpoint refused, unreachable, rejected by the confidence gate). It uses the saved config, so it works before a restart. Edits change `config.toml` on disk; a running supervisor applies them after a restart, and the UIs say when one is required.
 
 ### `[[router.levels]]`
 

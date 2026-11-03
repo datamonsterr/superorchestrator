@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- E5: the routing decider is configurable from the web UI and the TUI through one supervisor API. The Settings page has a Decider tab (endpoint, model, fallback model, on-unreachable, timeout, minimum confidence and margin, key from an environment variable, a key file or a pasted key, env override notices, restart notice and Test decider). `GET`/`PATCH /api/v1/decider`, `POST /api/v1/decider/test` and the RPC methods `decider_get`, `decider_set` and `decider_test` (inspect connections only) share `so_supervisor::services::decider`. A pasted key is written by the supervisor to `<config dir>/decider.env` (mode 0600, atomic, rolled back if the config write fails) and `router.jev.key_file` points at it. The key is never returned, logged or stored in events. See ADR-0008 and `docs/guide/config.md`.
+- The TUI has nine tabs: Dashboard, Sessions (sessions, their runs, run detail with events and transcript), Runs, Accounts, Usage (headroom bars with reset times, cooldowns, 14-day usage sparkline), Levels, Models (catalog, `r` to refresh), Settings (decider form, `t` to test, read-only config summary) and Setup. Keys `1` to `9` select them and titles are compact at 80 columns.
+- The web Dashboard shows cooldowns with their end time and time left beside the account headroom, as the Accounts page does.
+- `docs/guide/parity.md` maps each feature to the web UI and the TUI and records the gaps.
+
+### Changed
+
+- The TUI "Overview" tab is renamed "Dashboard", and Setup moves from `4` to `9` and Levels from `5` to `6`.
+- The web nav label "Routing" is now "Levels" (the URL `/routing` is unchanged). `min_confidence`, `min_margin`, `key_env` and `key_file` are edited in the Decider tab only, and the Routing tab of Settings is gone.
+
 ### Security
 
 Fixes for the GitHub security advisories below. Several change behaviour; see "Changed (breaking)".

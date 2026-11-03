@@ -16,14 +16,16 @@ The browser's global history may still record the original fragment. A history e
 
 ## Pages
 
-- **Dashboard.** Accounts with sign-in state, 5-hour and weekly headroom per pool, active runs against the cap, live runs, recent escalations, and cost and tokens per day.
+- **Dashboard.** Accounts with sign-in state, 5-hour and weekly headroom per pool with reset times, cooldowns ("cooling down until 14:30 (in 2h 10m)"), active runs against the cap, live runs, recent escalations, and cost and tokens per day.
 - **Sessions.** Orchestrator and interactive sessions. Filter by active, escalated or failed.
 - **Session timeline.** One lane per run, nested under its parent, updated live. Click a lane for the run panel: brief, route decision, events, transcript, result, worktree, join command, and actions (message, cancel, accept, reject).
-- **Accounts.** Add, import, edit cap, priority and pools, enable or disable, flag a cooldown, remove, and sign in.
-- **Levels.** Edit levels and the routing instruction, preview a route, read the decision log. The page is at `/routing`. Each level lists its models in order, with add, remove and move controls.
+- **Accounts.** Add, import, edit cap, priority and pools, enable or disable, flag a cooldown (shown with its end time), remove, and sign in.
+- **Levels.** Edit levels and the routing instruction, preview a route, read the decision log, and see the model catalog with a refresh button. The nav label was "Routing" in earlier versions; the page is still at `/routing`. Each level lists its models in order, with add, remove and move controls.
 - **Agents.** List, view and edit agent files.
 - **Workflows.** Saved workflows, runs and step status.
-- **Settings.** `config.toml` fields, notifications, worktree defaults and the key source for Jev. The key value is never shown.
+- **Settings.** `config.toml` fields, notifications, worktree defaults, the UI, and a System tab (doctor, worktrees). The **Decider** tab sets the routing decider (`[router.jev]` and `[router.policy]`): endpoint, model and fallback model (free text; the defaults are offered as suggestions, because OpenRouter has no list of decision-capable models), what to do when it is unreachable, timeout, minimum confidence and margin, and the key. Choose an environment variable, a key file, or paste a key; a pasted key goes to a file the supervisor writes (see [config](config.md#decider)) and is never shown again, only its source and last four characters. A notice names any environment variable that overrides a field. **Test decider** rates a sample prompt with the saved config, so it works before a restart, and shows the complexity, level, confidence, model and latency, or the error. The tab also shows when a restart is required.
+
+The terminal UI covers most of the same ground; the [feature map](parity.md) lists what each surface can do.
 
 ![Dashboard](../img/web-dashboard.png)
 

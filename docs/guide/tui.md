@@ -6,39 +6,36 @@ It needs a terminal of at least 60x16 and works best at 80x24 or larger. It read
 
 ## Layout
 
-A header (version, supervisor state, config directory), the tabs, the body for the current tab, a status line (progress, results, errors, or how old the data is) and the keys for the current view. The data reloads every 2 seconds.
+A header (version, supervisor state, config directory), the tabs, the body for the current tab, a status line (progress, results, errors, or how old the data is) and the keys for the current view. The data reloads every 2 seconds. At 80 columns the tab titles are compact (number and a short name) so all nine fit; wider terminals show full names.
 
 | Key | Action |
 | --- | --- |
-| `Tab` / `Shift-Tab`, `1` to `5` | Switch tab |
+| `Tab` / `Shift-Tab`, `1` to `9` | Switch tab |
 | `j` / `k` or `Down` / `Up`, `g` / `G` or `Home` / `End`, `PgUp` / `PgDn` | Move the selection, jump to the top or bottom (or scroll an open run). Same in every list. |
 | `R`, `F5` | Reload now |
 | `?` | Help for the current tab |
 | `q`, `Esc` | Close a pane, or quit from the top level |
 | `Ctrl-C` | Quit |
 
+The tabs follow the web UI where the feature is the same. See the [feature map](parity.md) for what each surface can and cannot do.
+
 ## Tabs
 
 | Key | Tab | Purpose |
 | --- | --- | --- |
-| `1` | Overview | Setup checklist, recent runs and routing levels |
-| `2` | Accounts | Accounts, sign-ins and headroom |
+| `1` | Dashboard | Setup checklist, recent runs and routing levels |
+| `2` | Sessions | Sessions, their runs, and run detail |
 | `3` | Runs | Run details and review |
-| `4` | Setup | First-run setup steps |
-| `5` | Levels | Level ranges and model refs in preference order |
+| `4` | Accounts | Accounts, sign-ins and headroom |
+| `5` | Usage | Headroom with reset times, cooldowns, 14-day usage |
+| `6` | Levels | Level ranges and model refs in preference order |
+| `7` | Models | The model catalog per harness |
+| `8` | Settings | Decider settings, Test decider, config summary |
+| `9` | Setup | First-run setup steps |
 
-**1 Overview.** Four counters (accounts, active runs, runs waiting for review, checklist progress), the setup checklist, the latest runs and a Levels block. The Levels block lists each level as `name  min-max  ref, ref` (the model refs in order). It is shown when rows remain after the recent runs, so at 80x24 with runs listed it may be out of view. When no level lists models, the block shows one line: no levels list models (nothing routes until one does). The checklist covers the config, the harnesses found on `PATH`, accounts, sign-ins, whether superorchestrator is registered with Claude Code, and the OpenRouter router key. Each missing item shows the fix beside it.
+**1 Dashboard.** (Called Overview in earlier versions.) Four counters (accounts, active runs, runs waiting for review, checklist progress), the setup checklist, the latest runs and a Levels block. The Levels block lists each level as `name  min-max  ref, ref` (the model refs in order). It is shown when rows remain after the recent runs, so at 80x24 with runs listed it may be out of view. When no level lists models, the block shows one line: no levels list models (nothing routes until one does). The checklist covers the config, the harnesses found on `PATH`, accounts, sign-ins, whether superorchestrator is registered with Claude Code, and the OpenRouter router key. Each missing item shows the fix beside it.
 
-**2 Accounts.** The account table: name, harness, signed in, enabled, cap, active runs and headroom.
-
-| Key | Action |
-| --- | --- |
-| `a` | Add accounts: pick the harness with the arrow keys, type a count (1 to 99). Names follow the same rule as `account add --count`. |
-| `l` | Sign in. The UI steps aside and runs the login: for codex and opencode the harness's own login, for claude and agy a session of the account's wrapper (type `/login` in Claude, sign in inside agy, then exit). Press Enter afterwards to return. If the wrapper is not on `PATH` it shows the command instead. |
-| `e` | Enable or disable the account. |
-| `f` | Flag a cooldown (asks for hours), or clear one that is set. |
-| `x` | Remove. You must type the account name to confirm. |
-| `i` | Scan for logins already on this machine and import them. |
+**2 Sessions.** Sessions, newest first: id, start time, run count, active runs, and title or working directory. `Enter` opens the session's runs; `Enter` on a run opens the same run detail as the Runs tab (brief, route decision, events, transcript tail, result). `Esc` goes back one level. Sending a message and forking are not available here; see the [feature map](parity.md).
 
 **3 Runs.** Recent runs, newest first: id, state, account, age and title. `Enter` opens a run: brief, route decision (its route line is `source / choice_id / account`, where the choice id is the model ref), recent events, result and, for a run waiting for review, its diff, all scrolling with `j` / `k`.
 
@@ -52,9 +49,26 @@ A header (version, supervisor state, config directory), the tabs, the body for t
 
 The list is read from the store. The diff, cancel, join, accept and reject go through the supervisor and never start it: when it is not running they say "supervisor not running — start with any delegation or `superorchestrator daemon`".
 
-**4 Setup.** The first-run steps one by one with live status: `init`, `harnesses`, `import`, `add accounts`, `sign in`, `install` and `doctor`. `Enter` runs the selected step, `a` runs them all in order (it stops at the first failure), and `i` and `d` jump to `install` and `doctor`. Steps do only what is missing, so running them again is safe. `sign in` lists the accounts that are signed out and how to sign in; use the Accounts tab for that.
+**4 Accounts.** The account table: name, harness, signed in, enabled, cap, active runs and headroom.
 
-**5 Levels.** Lists every level from `config.toml`, including levels that use a tier, with its name, min-max complexity and model refs in preference order. `Enter` opens the selected level's model refs. Changes use the same validation and config editing path as the `levels` CLI command; errors appear in the status line. The catalog picker offers model refs from `models.toml`, including their efforts. Existing refs remain visible even when they are absent from the catalog.
+| Key | Action |
+| --- | --- |
+| `a` | Add accounts: pick the harness with the arrow keys, type a count (1 to 99). Names follow the same rule as `account add --count`. |
+| `l` | Sign in. The UI steps aside and runs the login: for codex and opencode the harness's own login, for claude and agy a session of the account's wrapper (type `/login` in Claude, sign in inside agy, then exit). Press Enter afterwards to return. If the wrapper is not on `PATH` it shows the command instead. |
+| `e` | Enable or disable the account. |
+| `f` | Flag a cooldown (asks for hours), or clear one that is set. |
+| `x` | Remove. You must type the account name to confirm. |
+| `i` | Scan for logins already on this machine and import them. |
+
+**5 Usage.** One row per account and pool with 5-hour and weekly headroom bars and "resets in 2h 10m" beside each, then the cooldowns with their end time, and a sparkline of daily usage for the last 14 days (the same data as `GET /api/v1/usage/daily`). `j` / `k` scroll. It is read-only; flag or clear a cooldown on the Accounts tab.
+
+**7 Models.** The model catalog per harness: model, efforts, whether it is free, and when the catalog was last refreshed. `r` refreshes it through the supervisor's model refresh, the same as the web Levels page. Models you add to a level come from this catalog.
+
+**8 Settings.** The decider (`[router.jev]` and `[router.policy]`) as a form: endpoint, model, fallback model, on-unreachable behaviour, timeout, minimum confidence and margin, and the key source (environment variable, key file, or paste a key). A pasted key is masked as you type and is never shown again; the tab shows only where the key comes from and its last four characters. A notice appears beside any field an environment variable overrides. Changes go to the supervisor through the `decider_set` call, which validates and writes `config.toml`; the TUI itself validates nothing. `t` runs **Test decider** against the saved config and shows the complexity, level, confidence, model and latency, or the error. Below the form is a read-only summary of the rest of the config (config path, UI bind, caps); change those with the web UI or `config set`. The tab needs the supervisor; without it, it says the supervisor is not running. See [config](config.md#decider) for the fields.
+
+**9 Setup.** The first-run steps one by one with live status: `init`, `harnesses`, `import`, `add accounts`, `sign in`, `install` and `doctor`. `Enter` runs the selected step, `a` runs them all in order (it stops at the first failure), and `i` and `d` jump to `install` and `doctor`. Steps do only what is missing, so running them again is safe. `sign in` lists the accounts that are signed out and how to sign in; use the Accounts tab (`4`) for that.
+
+**6 Levels.** Lists every level from `config.toml`, including levels that use a tier, with its name, min-max complexity and model refs in preference order. `Enter` opens the selected level's model refs. Changes use the same validation and config editing path as the `levels` CLI command; errors appear in the status line. The catalog picker offers model refs from `models.toml`, including their efforts. Existing refs remain visible even when they are absent from the catalog.
 
 | Key | Action |
 | --- | --- |
@@ -68,7 +82,7 @@ The list is read from the store. The diff, cancel, join, accept and reject go th
 | `u` | Reset to the default levels after a `y` confirmation. |
 | `Esc` / `q` | Return from the model-ref pane to the level list, or quit from the list. |
 
-Edits are saved locally. **Restart the supervisor to apply them**; the UI displays this reminder after a change and never restarts the supervisor. The Overview Levels block remains a summary; use this tab to edit levels.
+Edits are saved locally. **Restart the supervisor to apply them**; the UI displays this reminder after a change and never restarts the supervisor. The Dashboard Levels block remains a summary; use this tab to edit levels.
 
 ## Colour and fallbacks
 
