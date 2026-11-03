@@ -1256,7 +1256,7 @@ impl App {
         }
     }
 
-    /// Keeps each selection on the same account or run when the lists change.
+    /// Keeps selections on the same items when the lists change.
     fn apply_snapshot(&mut self, snap: Snapshot) {
         let acc = self.selected_account().map(|a| a.name.clone());
         let run = self.selected_run().map(|r| r.id.clone());
@@ -1268,6 +1268,29 @@ impl App {
             .and_then(|id| snap.runs.iter().position(|r| r.id == id))
             .unwrap_or(self.runs_sel)
             .min(snap.runs.len().saturating_sub(1));
+        let session = self
+            .snap
+            .as_ref()
+            .and_then(|s| s.sessions.get(self.sessions_tab.sel))
+            .map(|s| &s.id);
+        self.sessions_tab.sel = session
+            .and_then(|id| snap.sessions.iter().position(|s| &s.id == id))
+            .unwrap_or(self.sessions_tab.sel)
+            .min(snap.sessions.len().saturating_sub(1));
+        if let Some(id) = &self.sessions_tab.open {
+            if let Some(session) = snap.sessions.iter().find(|s| &s.id == id) {
+                self.sessions_tab.run_sel = self
+                    .sessions_tab
+                    .run_sel
+                    .min(session.runs.len().saturating_sub(1));
+            } else {
+                self.sessions_tab.open = None;
+                self.sessions_tab.run_sel = 0;
+                if self.tab == Tab::Sessions {
+                    self.detail = None;
+                }
+            }
+        }
         let level = self.levels().get(self.levels_sel).map(|l| l.name.clone());
         self.levels_sel = level
             .and_then(|n| snap.levels.iter().position(|l| l.name == n))

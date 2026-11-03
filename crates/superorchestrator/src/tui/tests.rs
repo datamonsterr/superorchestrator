@@ -1831,3 +1831,56 @@ fn models_snapshots() {
     a.snap.as_mut().unwrap().models.clear();
     insta::assert_snapshot!("empty_models_80x24", shot(&mut a, 80, 24));
 }
+
+#[test]
+fn sessions_refresh_preserves_and_clamps_selection() {
+    let mut a = app();
+    let runs = a.snap.as_ref().unwrap().runs[..3].to_vec();
+    let session = |id: &str| SessionItem {
+        id: id.into(),
+        started_at: now(),
+        title: id.into(),
+        run_count: runs.len() as i64,
+        runs: runs.clone(),
+    };
+    a.snap.as_mut().unwrap().sessions = vec![
+        session("first"),
+        session("second"),
+        session("third"),
+        session("fourth"),
+    ];
+    press(&mut a, &[ch('2'), ch('j'), ch('j')]);
+    let mut refreshed = a.snap.clone().unwrap();
+    refreshed.sessions.remove(0);
+    a.on_update(Update::Snapshot(Box::new(refreshed)));
+    assert_eq!(a.sessions_tab.sel, 1, "follow the selected Session by id");
+    a.on_key(key(KeyCode::Enter));
+    assert_eq!(a.sessions_tab.open.as_deref(), Some("third"));
+    press(&mut a, &[ch('j'), ch('j')]);
+    let mut refreshed = a.snap.clone().unwrap();
+    refreshed.sessions[1].runs.truncate(1);
+    a.on_update(Update::Snapshot(Box::new(refreshed)));
+    assert_eq!(a.sessions_tab.run_sel, 0);
+    assert!(
+        matches!(a.on_key(key(KeyCode::Enter)), Some(Effect::Detail { id, .. }) if id == runs[0].id)
+    );
+    let mut refreshed = a.snap.clone().unwrap();
+    refreshed.sessions.remove(1);
+    a.on_update(Update::Snapshot(Box::new(refreshed)));
+    assert!(a.sessions_tab.open.is_none());
+    assert!(a.detail.is_none());
+    assert_eq!(a.sessions_tab.sel, 1);
+    a.on_key(key(KeyCode::Enter));
+    assert_eq!(a.sessions_tab.open.as_deref(), Some("fourth"));
+    let mut refreshed = a.snap.clone().unwrap();
+    refreshed.sessions[1].runs.clear();
+    a.on_update(Update::Snapshot(Box::new(refreshed)));
+    insta::assert_snapshot!("empty_session_runs_80x24", shot(&mut a, 80, 24));
+    a.on_key(key(KeyCode::Esc));
+    let mut refreshed = a.snap.clone().unwrap();
+    refreshed.sessions.pop();
+    a.on_update(Update::Snapshot(Box::new(refreshed)));
+    assert_eq!(a.sessions_tab.sel, 0);
+    a.on_key(key(KeyCode::Enter));
+    assert_eq!(a.sessions_tab.open.as_deref(), Some("second"));
+}
