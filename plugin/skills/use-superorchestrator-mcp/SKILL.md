@@ -8,10 +8,10 @@ description: "Delegate coding work to agents on other harnesses and accounts via
 ## Workflow
 
 1. `list_harnesses` first; inspect signed-in accounts, headroom and eligible choices. `list_agents` discovers agent profiles.
-2. Leave `harness: "auto"` and model/effort unset initially; keep Claude accounts for the orchestrator. `route` previews a route.
+2. Leave `harness: "auto"` and model/effort unset initially; keep accounts in `orchestrator.reserved_accounts` out of subagent pins. `route` previews a route.
 3. Brief each subagent with goal, acceptance commands, out-of-scope items and file pointers; it has no conversation context.
 4. `spawn_agent(prompt, agent: "implementer", cwd: "/repo", review: true, wait: false)`; use an existing agent profile. Default isolation is `worktree`.
-5. `wait_agent(runs: [id], timeout_ms: 30000)` until finish or `pending_review`. Answer question updates with `send_message(run: id, text: "...", kind: "answer")`, then wait again.
+5. `wait_agent(runs: [id], timeout_ms: 30000)` until finish or `pending_review`. Answer question updates with `send_message(run: id, text: "...", kind: "answer")`, then wait again. Codex orchestrator: prefer `spawn_agent(wait: false)`, then wait with `timeout_ms` ≤ `1800000` (30 min); install writes `startup_timeout_sec = 30` and `tool_timeout_sec = 1860` in `~/.codex/config.toml` or `$CODEX_HOME/config.toml` (rerun `superorchestrator install` if missing); resume with `codex resume <id>`.
 6. At the review gate, inspect `get_run(run: id, diff: true)`; `accept_run(run: id, merge: true)` lands the branch, or `reject_run(run: id, feedback: "...")` continues fixes. Wait and review again.
 
 Accounts, choices: `list_harnesses`. Agents: `list_agents`, then `agent: "<name>"`.
