@@ -23,6 +23,8 @@ pub const HARNESSES: [Harness; 4] = [
 ];
 
 const PAGE: usize = 10;
+/// While the Levels tab is open, the insights report is re-read at most this often.
+const INSIGHTS_EVERY_SECS: i64 = 30;
 const TOAST_OK: i64 = 4;
 const TOAST_ERR: i64 = 10;
 
@@ -169,13 +171,15 @@ pub enum Effect {
     Levels(LevelsCmd),
     /// Writes the levels of the routing suggestion with this id.
     ApplySuggestion(String),
+    /// Reads the routing insights report (reader thread; never part of the refresh).
+    Insights,
 }
 
 impl Effect {
     /// Short phrase for the status line while the effect runs; `None` for reads.
     pub fn busy_label(&self) -> Option<&'static str> {
         Some(match self {
-            Effect::Refresh | Effect::Detail { .. } => return None,
+            Effect::Refresh | Effect::Detail { .. } | Effect::Insights => return None,
             Effect::AddAccounts { .. } => "adding accounts",
             Effect::Login(_) => "preparing sign-in",
             Effect::SetEnabled { .. } => "updating account",
@@ -211,6 +215,8 @@ pub struct Launch {
 pub enum Update {
     Snapshot(Box<Snapshot>),
     Detail(Result<Box<RunDetail>, String>),
+    /// The insights report; `Ok(None)` when there is no state.db yet.
+    Insights(Result<Option<Box<so_supervisor::services::insights::InsightsReport>>, String>),
     /// A read on the reader thread panicked or failed outright.
     ReadFailed(String),
     Done {
@@ -341,6 +347,13 @@ pub struct App {
     /// The Levels tab keys act on the suggestions list instead of the levels.
     pub suggest_focus: bool,
     pub suggest_sel: usize,
+    /// Last good routing insights; loaded by `Effect::Insights`, not by the refresh.
+    pub insights: Option<so_supervisor::services::insights::InsightsReport>,
+    pub insights_error: Option<String>,
+    insights_stale: bool,
+    insights_at: Option<DateTime<Utc>>,
+    /// A levels edit or suggestion apply is running; its result makes the insights stale.
+    edit_pending: bool,
     pub levels_state: TableState,
     pub models_state: TableState,
     /// Scroll state of the two tables; the draw step keeps it on the selection.
@@ -370,6 +383,11 @@ impl App {
             level_open: None,
             suggest_focus: false,
             suggest_sel: 0,
+            insights: None,
+            insights_error: None,
+            insights_stale: false,
+            insights_at: None,
+            edit_pending: false,
             levels_state: TableState::default(),
             models_state: TableState::default(),
             accounts_state: TableState::default(),
@@ -436,6 +454,9 @@ impl App {
     }
 
     fn start(&mut self, effect: Effect) -> Option<Effect> {
+        if matches!(effect, Effect::Levels(_) | Effect::ApplySuggestion(_)) {
+            self.edit_pending = true;
+        }
         if let Some(label) = effect.busy_label() {
             self.busy = Some(label);
         }
@@ -504,7 +525,28 @@ impl App {
     }
 
     fn switch(&mut self, tab: Tab) {
+        if tab == Tab::Levels && self.tab != Tab::Levels {
+            self.insights_stale = true;
+        }
         self.tab = tab;
+    }
+
+    /// The insights read to send now: on entering the Levels tab, after a levels edit, and at
+    /// most every `INSIGHTS_EVERY_SECS` while the tab stays open. The caller sends it only
+    /// when no insights read is in flight.
+    pub fn insights_request(&mut self) -> Option<Effect> {
+        if self.tab != Tab::Levels {
+            return None;
+        }
+        let due = self
+            .insights_at
+            .is_none_or(|at| (self.now - at).num_seconds() >= INSIGHTS_EVERY_SECS);
+        if !(self.insights_stale || due) {
+            return None;
+        }
+        self.insights_stale = false;
+        self.insights_at = Some(self.now);
+        Some(Effect::Insights)
     }
 
     /// `q` and `Esc`: close what is open, else leave.
@@ -694,9 +736,8 @@ impl App {
     }
 
     pub fn suggestions(&self) -> &[so_router::suggest::Suggestion] {
-        self.snap
+        self.insights
             .as_ref()
-            .and_then(|s| s.insights.as_ref())
             .map_or(&[], |i| i.suggestions.as_slice())
     }
 
@@ -710,6 +751,7 @@ impl App {
         match key.code {
             KeyCode::Char('s') => self.suggest_focus = false,
             KeyCode::Char('A') | KeyCode::Enter => {
+                // `?` leaves the key a no-op when there is nothing to apply.
                 let id = self.suggestions().get(self.suggest_sel)?.id.clone();
                 self.modal = Some(Modal::Confirm {
                     prompt: format!("Apply suggestion {id}? (y/n)"),
@@ -1196,8 +1238,35 @@ impl App {
                 self.say(ToastKind::Err, e);
                 Next::Nothing
             }
+            Update::Insights(result) => {
+                // Follow the selected suggestion by id; an applied one disappears.
+                let picked = self
+                    .suggestions()
+                    .get(self.suggest_sel)
+                    .map(|s| s.id.clone());
+                match result {
+                    Ok(report) => {
+                        self.insights = report.map(|r| *r);
+                        self.insights_error = None;
+                    }
+                    Err(e) => self.insights_error = Some(e),
+                }
+                let now = self.suggestions();
+                let len = now.len();
+                self.suggest_sel = picked
+                    .and_then(|id| now.iter().position(|s| s.id == id))
+                    .unwrap_or(self.suggest_sel)
+                    .min(len.saturating_sub(1));
+                if len == 0 {
+                    self.suggest_focus = false;
+                }
+                Next::Nothing
+            }
             Update::Done { ok, text } => {
                 self.busy = None;
+                if std::mem::take(&mut self.edit_pending) {
+                    self.insights_stale = true;
+                }
                 if !text.is_empty() {
                     self.say(if ok { ToastKind::Ok } else { ToastKind::Err }, text);
                 }
@@ -1262,22 +1331,6 @@ impl App {
                 self.level_open = None;
                 self.models_sel = 0;
             }
-        }
-        // Follow the selected suggestion by id; an applied one disappears.
-        let suggestions = snap
-            .insights
-            .as_ref()
-            .map_or(&[][..], |i| i.suggestions.as_slice());
-        let picked = self
-            .suggestions()
-            .get(self.suggest_sel)
-            .map(|s| s.id.clone());
-        self.suggest_sel = picked
-            .and_then(|id| suggestions.iter().position(|s| s.id == id))
-            .unwrap_or(self.suggest_sel)
-            .min(suggestions.len().saturating_sub(1));
-        if suggestions.is_empty() {
-            self.suggest_focus = false;
         }
         self.snap = Some(snap);
     }

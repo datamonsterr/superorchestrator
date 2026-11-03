@@ -194,7 +194,12 @@ pub(crate) fn apply_suggestion(ctx: &Ctx, id: &str) -> Result<EditResult> {
 fn load_report(ctx: &Ctx) -> Result<so_supervisor::services::insights::InsightsReport> {
     let config = ctx.config()?;
     let catalog = Catalog::load(&ctx.paths)?;
-    let store = so_store::Store::open(ctx.paths.state_db())?;
+    // Never create or migrate state.db here; without one the report is built from an empty history.
+    let store = if ctx.paths.state_db().exists() {
+        so_store::Store::open_read_only(ctx.paths.state_db())?
+    } else {
+        so_store::Store::open_in_memory()?
+    };
     Ok(so_supervisor::services::insights::insights_report(
         &store,
         &config,

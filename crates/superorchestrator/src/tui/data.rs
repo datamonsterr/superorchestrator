@@ -87,9 +87,6 @@ pub struct Snapshot {
     pub checks: Vec<Check>,
     pub levels: Vec<LevelRow>,
     pub levels_error: Option<String>,
-    /// Routing insights for the Levels tab; `None` while there is no state.db or it failed.
-    pub insights: Option<so_supervisor::services::insights::InsightsReport>,
-    pub insights_error: Option<String>,
     pub catalog_refs: Vec<String>,
     pub catalog_error: Option<String>,
 }
@@ -361,10 +358,6 @@ pub fn load_snapshot(
         Ok(rows) => (rows, None),
         Err(e) => (Vec::new(), Some(format!("{e:#}"))),
     };
-    let (insights, insights_error) = match insights(ctx) {
-        Ok(report) => (report, None),
-        Err(e) => (None, Some(format!("insights unavailable: {e:#}"))),
-    };
     let (catalog_refs, catalog_error) = match catalog_refs(ctx) {
         Ok(refs) => (refs, None),
         Err(e) => (
@@ -384,8 +377,6 @@ pub fn load_snapshot(
         pending_review,
         levels,
         levels_error,
-        insights,
-        insights_error,
         catalog_refs,
         catalog_error,
     }
@@ -407,14 +398,15 @@ fn level_rows(ctx: &Ctx) -> anyhow::Result<Vec<LevelRow>> {
         .collect())
 }
 
-/// The routing insights report; `None` when no state.db exists yet.
-fn insights(
+/// The routing insights report, read-only; `None` when no state.db exists yet. Not part of
+/// the snapshot: it costs about half a second on a real database.
+pub fn load_insights(
     ctx: &Ctx,
 ) -> anyhow::Result<Option<so_supervisor::services::insights::InsightsReport>> {
     if !ctx.paths.state_db().exists() {
         return Ok(None);
     }
-    let store = so_store::Store::open(ctx.paths.state_db())?;
+    let store = so_store::Store::open_read_only(ctx.paths.state_db())?;
     let catalog = so_router::Catalog::load(&ctx.paths)?;
     Ok(Some(so_supervisor::services::insights::insights_report(
         &store,
@@ -590,15 +582,15 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let ctx = Ctx::new(Some(d.path().to_path_buf()), false, true).unwrap();
         assert!(!ctx.paths.state_db().exists());
-        assert!(insights(&ctx).unwrap().is_none());
+        assert!(load_insights(&ctx).unwrap().is_none());
     }
 
     #[test]
     fn existing_state_db_gives_a_report() {
         let d = tempfile::tempdir().unwrap();
         let ctx = Ctx::new(Some(d.path().to_path_buf()), false, true).unwrap();
-        so_store::Store::open(ctx.paths.state_db()).unwrap();
-        let report = insights(&ctx).unwrap().unwrap();
+        drop(so_store::Store::open(ctx.paths.state_db()).unwrap());
+        let report = load_insights(&ctx).unwrap().unwrap();
         assert_eq!(report.history_runs, 0);
     }
 

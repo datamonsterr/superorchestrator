@@ -298,24 +298,27 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
             vec![("j/k", "select"), ("A/Enter", "apply"), ("s", "levels")],
             "levels",
         ),
-        Tab::Levels => (
-            vec![
+        Tab::Levels => {
+            let mut items = vec![
                 ("j/k", "move"),
                 ("Enter", "open"),
-                ("s", "suggestions"),
                 ("a/x", "model refs"),
                 ("J/K", "reorder"),
                 ("r", "range"),
-                ("n", "new"),
-                ("D", "delete"),
-                ("u", "reset"),
-            ],
-            if app.level_open.is_some() {
-                "back"
-            } else {
-                "quit"
-            },
-        ),
+            ];
+            if app.level_open.is_none() && !app.suggestions().is_empty() {
+                items.push(("s", "suggestions"));
+            }
+            items.extend([("n", "new"), ("D", "delete"), ("u", "reset")]);
+            (
+                items,
+                if app.level_open.is_some() {
+                    "back"
+                } else {
+                    "quit"
+                },
+            )
+        }
         Tab::Setup => (
             vec![
                 ("j/k", "move"),
@@ -682,6 +685,9 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
 
 // ---------------------------------------------------------------------- levels
 
+/// Body height from which the Levels tab also draws the insights and suggestions panels.
+const INSIGHTS_MIN_HEIGHT: u16 = 14;
+
 fn draw_levels(f: &mut Frame, app: &mut App, area: Rect) {
     if app.snap.is_none() {
         return loading(f, app, area);
@@ -703,60 +709,35 @@ fn draw_levels(f: &mut Frame, app: &mut App, area: Rect) {
         intro,
     );
     let open = app.level_open.is_some();
-    let insights = s.insights.as_ref().filter(|_| body.height >= 14);
-    let show_error = s.insights_error.is_some() && body.height >= 14;
-    let sugg_lines = insights.map_or(0, |i| suggestion_lines(app, i, body.width).0.len());
-    let sugg_h = if open || sugg_lines == 0 {
-        0
-    } else {
-        (sugg_lines as u16 + 2).min(body.height / 3).max(3)
-    };
-    let has_panel = insights.is_some() || show_error;
+    // The insights panels need room; on a short screen only the levels are drawn.
+    let roomy = body.height >= INSIGHTS_MIN_HEIGHT;
+    let report = app.insights.as_ref().filter(|_| roomy);
+    let error = app.insights_error.as_ref().filter(|_| roomy);
+    let sugg = report
+        .filter(|_| !open)
+        .map(|r| suggestion_lines(app, r, body.width.saturating_sub(2)))
+        .filter(|(lines, _)| !lines.is_empty());
+    let sugg_h = sugg.as_ref().map_or(0, |(lines, _)| {
+        (lines.len() as u16 + 2).min(body.height / 3).max(3)
+    });
+    let has_panel = report.is_some() || error.is_some();
+    let third = body.height / 3;
     let main_h = match (has_panel, open) {
         (false, _) => body.height,
-        (true, true) => (body.height / 3).max(4),
-        (true, false) => (s.levels.len() as u16 + 3).clamp(4, body.height / 3),
+        (true, true) => third.max(4),
+        (true, false) => (s.levels.len() as u16 + 3).max(4).min(third),
     };
-    let [body, panel, sugg] = Layout::vertical([
+    let [body, panel, sugg_area] = Layout::vertical([
         Constraint::Length(main_h),
         Constraint::Min(0),
         Constraint::Length(sugg_h),
     ])
     .areas(body);
     if has_panel {
-        let lines = match (insights, &s.insights_error) {
-            (_, Some(e)) => vec![Line::styled(super::data::clean(e), t.bad())],
-            (Some(i), None) => insight_lines(app, i, panel.width.saturating_sub(2)),
-            _ => Vec::new(),
-        };
-        let name = app
-            .focused_level()
-            .map_or(String::new(), |l| super::data::clean(&l.name));
-        let b = block(&t, Span::styled(format!(" insights · {name} "), t.bold()));
-        let inner = b.inner(panel);
-        f.render_widget(b, panel);
-        f.render_widget(Paragraph::new(lines), inner);
+        draw_insights_panel(f, app, report, error, panel);
     }
-    if sugg_h > 0
-        && let Some(i) = insights
-    {
-        {
-            let (lines, starts) = suggestion_lines(app, i, sugg.width.saturating_sub(2));
-            let title = if app.suggest_focus {
-                " suggestions · j/k select, A apply "
-            } else {
-                " suggestions · s to focus "
-            };
-            let b = block(&t, Span::styled(title, t.bold()));
-            let inner = b.inner(sugg);
-            f.render_widget(b, sugg);
-            let end = starts
-                .get(app.suggest_sel + 1)
-                .copied()
-                .unwrap_or(lines.len());
-            let scroll = end.saturating_sub(usize::from(inner.height)) as u16;
-            f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
-        }
+    if let Some((lines, starts)) = sugg {
+        draw_suggestions(f, app, lines, &starts, sugg_area);
     }
     if let Some(l) = app.focused_level().filter(|_| open) {
         let title = format!(
@@ -833,6 +814,55 @@ fn draw_levels(f: &mut Frame, app: &mut App, area: Rect) {
         app.levels_state.select(Some(app.levels_sel));
         f.render_stateful_widget(table, body, &mut app.levels_state);
     }
+}
+
+/// Panel with the focused level's stats and example tasks, or the load error.
+fn draw_insights_panel(
+    f: &mut Frame,
+    app: &App,
+    report: Option<&so_supervisor::services::insights::InsightsReport>,
+    error: Option<&String>,
+    area: Rect,
+) {
+    let t = &app.theme;
+    let lines = match (report, error) {
+        (_, Some(e)) => vec![Line::styled(super::data::clean(e), t.bad())],
+        (Some(r), None) => insight_lines(app, r, area.width.saturating_sub(2)),
+        _ => Vec::new(),
+    };
+    let title = match app.focused_level() {
+        Some(l) => format!(" insights · {} ", super::data::clean(&l.name)),
+        None => " insights ".to_string(),
+    };
+    let b = block(t, Span::styled(title, t.bold()));
+    let inner = b.inner(area);
+    f.render_widget(b, area);
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Suggestions list; `starts` holds the first line of each, to keep the selection in view.
+fn draw_suggestions(
+    f: &mut Frame,
+    app: &App,
+    lines: Vec<Line<'static>>,
+    starts: &[usize],
+    area: Rect,
+) {
+    let t = &app.theme;
+    let title = if app.suggest_focus {
+        " suggestions · j/k select, A apply "
+    } else {
+        " suggestions · s to focus "
+    };
+    let b = block(t, Span::styled(title, t.bold()));
+    let inner = b.inner(area);
+    f.render_widget(b, area);
+    let end = starts
+        .get(app.suggest_sel + 1)
+        .copied()
+        .unwrap_or(lines.len());
+    let scroll = end.saturating_sub(usize::from(inner.height)) as u16;
+    f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
 }
 
 /// Stats and example tasks of the focused level, cut to `width` columns.
@@ -1328,7 +1358,7 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
             out.extend([
                 row("j k  g G", "move (arrows, PgUp/PgDn, Home/End too)"),
                 row("Enter", "open a level's model refs"),
-                row("s", "focus routing suggestions: j/k select, A or Enter apply (asks first), s or Esc back"),
+                row("s", "suggestions: j/k pick, A/Enter apply"),
                 row("a / x", "add from the catalog / remove the selected ref"),
                 row("J / K", "move the selected ref down / up"),
                 row("r", "edit min and max complexity (0-100)"),

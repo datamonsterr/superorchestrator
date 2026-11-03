@@ -68,8 +68,6 @@ fn snapshot() -> Snapshot {
         ],
         accounts_error: None,
         levels_error: None,
-        insights: None,
-        insights_error: None,
         catalog_refs: vec![
             "codex/gpt-6.1-sol/high".into(),
             "agy/claude-sonnet-4-6/thinking".into(),
@@ -1494,6 +1492,7 @@ fn dispatch_keeps_one_read_of_each_kind_in_flight() {
         actions: &atx,
         refreshing: false,
         detail_in_flight: false,
+        insights_in_flight: false,
         last_refresh: std::time::Instant::now(),
     };
     let det = || Effect::Detail {
@@ -1520,6 +1519,7 @@ fn dispatch_reports_a_dead_worker() {
         actions: &atx,
         refreshing: false,
         detail_in_flight: false,
+        insights_in_flight: false,
         last_refresh: std::time::Instant::now(),
     };
     drop(arx);
@@ -1814,7 +1814,7 @@ fn insights_fixture() -> so_supervisor::services::insights::InsightsReport {
 
 fn insights_app() -> App {
     let mut a = app();
-    a.snap.as_mut().unwrap().insights = Some(insights_fixture());
+    a.insights = Some(insights_fixture());
     a.on_key(ch('5'));
     a
 }
@@ -1842,9 +1842,8 @@ fn levels_tab_shows_insights_examples_and_suggestions() {
 #[test]
 fn insights_error_reaches_the_screen() {
     let mut a = insights_app();
-    let s = a.snap.as_mut().unwrap();
-    s.insights = None;
-    s.insights_error = Some("insights unavailable: disk gone".into());
+    a.insights = None;
+    a.insights_error = Some("insights unavailable: disk gone".into());
     assert!(shot(&mut a, 100, 40).contains("disk gone"));
 }
 
@@ -1894,12 +1893,66 @@ fn suggestion_keys_without_suggestions_do_nothing() {
 fn applied_suggestion_leaves_the_selection_in_range() {
     let mut a = insights_app();
     press(&mut a, &[ch('s'), ch('j')]);
-    let mut s = a.snap.clone().unwrap();
-    s.insights.as_mut().unwrap().suggestions.truncate(1);
-    a.on_update(Update::Snapshot(Box::new(s)));
+    let mut r = insights_fixture();
+    r.suggestions.remove(0);
+    a.on_update(Update::Insights(Ok(Some(Box::new(r.clone())))));
+    // Followed by id: widen-complex is now the first and only one.
     assert_eq!(a.suggest_sel, 0);
-    let mut s = a.snap.clone().unwrap();
-    s.insights.as_mut().unwrap().suggestions.clear();
-    a.on_update(Update::Snapshot(Box::new(s)));
+    r.suggestions.clear();
+    a.on_update(Update::Insights(Ok(Some(Box::new(r)))));
     assert!(!a.suggest_focus);
+}
+
+#[test]
+fn insights_load_only_on_the_levels_tab_and_when_due() {
+    let mut a = app();
+    assert!(
+        a.insights_request().is_none(),
+        "Overview must not load insights"
+    );
+    a.on_update(Update::Snapshot(Box::new(snapshot())));
+    assert!(
+        a.insights_request().is_none(),
+        "a refresh must not load insights"
+    );
+    a.on_key(ch('5'));
+    assert!(matches!(a.insights_request(), Some(Effect::Insights)));
+    assert!(a.insights_request().is_none());
+    a.on_tick(now() + chrono::Duration::seconds(29));
+    assert!(a.insights_request().is_none());
+    a.on_tick(now() + chrono::Duration::seconds(30));
+    assert!(matches!(a.insights_request(), Some(Effect::Insights)));
+    // Leaving and re-entering the tab loads again.
+    a.on_key(ch('1'));
+    assert!(a.insights_request().is_none());
+    a.on_key(ch('5'));
+    assert!(matches!(a.insights_request(), Some(Effect::Insights)));
+}
+
+#[test]
+fn levels_edit_and_suggestion_apply_make_insights_stale() {
+    let mut a = insights_app();
+    assert!(matches!(a.insights_request(), Some(Effect::Insights)));
+    press(&mut a, &[ch('s'), ch('A')]);
+    let effect = a.on_key(ch('y'));
+    assert!(matches!(effect, Some(Effect::ApplySuggestion(_))));
+    assert!(
+        a.insights_request().is_none(),
+        "wait for the apply to finish"
+    );
+    a.on_update(Update::Done {
+        ok: true,
+        text: "applied".into(),
+    });
+    assert!(matches!(a.insights_request(), Some(Effect::Insights)));
+}
+
+#[test]
+fn insights_failure_keeps_the_last_good_report() {
+    let mut a = insights_app();
+    a.on_update(Update::Insights(Err("insights unavailable: boom".into())));
+    assert!(a.insights.is_some());
+    assert!(shot(&mut a, 100, 40).contains("boom"));
+    a.on_update(Update::Insights(Ok(None)));
+    assert!(a.insights.is_none() && a.insights_error.is_none());
 }
