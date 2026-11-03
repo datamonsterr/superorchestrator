@@ -182,96 +182,113 @@ fn list(ctx: &Ctx) -> Result<()> {
     )
 }
 
-fn suggest(ctx: &Ctx, apply: Option<&str>) -> Result<()> {
+/// Recomputes the insights report and writes the levels of suggestion `id` to config.toml.
+pub(crate) fn apply_suggestion(ctx: &Ctx, id: &str) -> Result<EditResult> {
+    let report = load_report(ctx)?;
+    let suggestion = so_supervisor::services::insights::find_suggestion(&report, id)?;
+    let mut draft = Draft::load(ctx)?;
+    draft.levels = suggestion.levels.clone();
+    draft.save(ctx, &format!("applied {id}"))
+}
+
+fn load_report(ctx: &Ctx) -> Result<so_supervisor::services::insights::InsightsReport> {
     let config = ctx.config()?;
     let catalog = Catalog::load(&ctx.paths)?;
     let store = so_store::Store::open(ctx.paths.state_db())?;
-    let report = so_supervisor::services::insights::insights_report(
+    Ok(so_supervisor::services::insights::insights_report(
         &store,
         &config,
         &catalog,
         chrono::Utc::now(),
-    )?;
+    )?)
+}
+
+fn suggest(ctx: &Ctx, apply: Option<&str>) -> Result<()> {
     if let Some(id) = apply {
-        let suggestion = so_supervisor::services::insights::find_suggestion(&report, id)?;
-        let mut draft = Draft::load(ctx)?;
-        draft.levels = suggestion.levels.clone();
-        let result = draft.save(ctx, &format!("applied {id}"))?;
+        let result = apply_suggestion(ctx, id)?;
         ctx.refresh_skill();
         return ctx.emit_ok(result.value, &result.text);
     }
-    fn percent(value: Option<f64>) -> String {
-        value.map_or_else(|| "-".into(), |v| format!("{:.1}%", v * 100.0))
+    let report = load_report(ctx)?;
+    ctx.emit(&report, |w| write_report(w, &report))
+}
+
+pub(crate) fn percent(value: Option<f64>) -> String {
+    value.map_or_else(|| "-".into(), |v| format!("{:.1}%", v * 100.0))
+}
+
+pub(crate) fn number(value: Option<f64>) -> String {
+    value.map_or_else(|| "-".into(), |v| format!("{v:.1}"))
+}
+
+fn write_report(
+    w: &mut dyn std::io::Write,
+    report: &so_supervisor::services::insights::InsightsReport,
+) -> std::io::Result<()> {
+    writeln!(w, "Routing insights: {} history runs", report.history_runs)?;
+    for level in &report.levels {
+        writeln!(
+            w,
+            "{} {}-{}: {} runs",
+            level.name, level.min, level.max, level.runs
+        )?;
+        writeln!(
+            w,
+            "  accepted {} rejected {} failed {} failover {}",
+            percent(level.accepted_rate),
+            percent(level.rejected_rate),
+            percent(level.failed_rate),
+            percent(level.failover_rate)
+        )?;
+        writeln!(
+            w,
+            "  median complexity {} median duration {} ms",
+            number(level.complexity_median),
+            number(level.median_duration_ms)
+        )?;
+        for model in level.models.iter().take(3) {
+            writeln!(
+                w,
+                "  model {}: {} runs, {} success",
+                model.choice_id.as_deref().unwrap_or("unknown"),
+                model.runs,
+                percent(model.success_rate)
+            )?;
+        }
+        for example in &level.examples {
+            let outcome = example
+                .outcome
+                .map_or("-", so_router::insights::Outcome::as_str);
+            writeln!(
+                w,
+                "  [{}] c={:.0} {} {}{}",
+                example.source,
+                example.complexity,
+                outcome,
+                example.excerpt,
+                if example.borderline {
+                    " (borderline)"
+                } else {
+                    ""
+                }
+            )?;
+        }
     }
-    fn number(value: Option<f64>) -> String {
-        value.map_or_else(|| "-".into(), |v| format!("{v:.1}"))
+    writeln!(w, "Suggestions:")?;
+    if report.suggestions.is_empty() {
+        writeln!(w, "No suggestions.")?;
     }
-    ctx.emit(&report, |w| {
-        writeln!(w, "Routing insights: {} history runs", report.history_runs)?;
-        for level in &report.levels {
+    for suggestion in &report.suggestions {
+        writeln!(w, "  {}: {}", suggestion.id, suggestion.rationale)?;
+        for change in &suggestion.diff {
             writeln!(
                 w,
-                "{} {}-{}: {} runs",
-                level.name, level.min, level.max, level.runs
+                "    {}.{}: {} -> {}",
+                change.level, change.field, change.before, change.after
             )?;
-            writeln!(
-                w,
-                "  accepted {} rejected {} failed {} failover {}",
-                percent(level.accepted_rate),
-                percent(level.rejected_rate),
-                percent(level.failed_rate),
-                percent(level.failover_rate)
-            )?;
-            writeln!(
-                w,
-                "  median complexity {} median duration {} ms",
-                number(level.complexity_median),
-                number(level.median_duration_ms)
-            )?;
-            for model in level.models.iter().take(3) {
-                writeln!(
-                    w,
-                    "  model {}: {} runs, {} success",
-                    model.choice_id.as_deref().unwrap_or("unknown"),
-                    model.runs,
-                    percent(model.success_rate)
-                )?;
-            }
-            for example in &level.examples {
-                let outcome = example
-                    .outcome
-                    .map_or_else(|| "-".to_owned(), |o| format!("{o:?}").to_lowercase());
-                writeln!(
-                    w,
-                    "  [{}] c={:.0} {} {}{}",
-                    example.source,
-                    example.complexity,
-                    outcome,
-                    example.excerpt,
-                    if example.borderline {
-                        " (borderline)"
-                    } else {
-                        ""
-                    }
-                )?;
-            }
         }
-        writeln!(w, "Suggestions:")?;
-        if report.suggestions.is_empty() {
-            writeln!(w, "No suggestions.")?;
-        }
-        for suggestion in &report.suggestions {
-            writeln!(w, "  {}: {}", suggestion.id, suggestion.rationale)?;
-            for change in &suggestion.diff {
-                writeln!(
-                    w,
-                    "    {}.{}: {} -> {}",
-                    change.level, change.field, change.before, change.after
-                )?;
-            }
-        }
-        writeln!(w, "{} unassigned models", report.unassigned_models.len())
-    })
+    }
+    writeln!(w, "{} unassigned models", report.unassigned_models.len())
 }
 
 // ------------------------------------------------------------------ editing

@@ -260,6 +260,12 @@ fn perform(
                 result.text
             }
         }
+        Effect::ApplySuggestion(id) => {
+            crate::cmd::levels::apply_suggestion(ctx, &id)?;
+            skill_warnings(format!(
+                "applied suggestion {id}; restart the supervisor to apply"
+            ))
+        }
         Effect::AddAccounts { harness, count } => {
             let cfg = ctx.config()?;
             let batch = manage::add_numbered(&ctx.paths, &cfg, host, harness, count);

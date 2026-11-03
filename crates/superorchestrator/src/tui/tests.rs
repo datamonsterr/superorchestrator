@@ -68,6 +68,8 @@ fn snapshot() -> Snapshot {
         ],
         accounts_error: None,
         levels_error: None,
+        insights: None,
+        insights_error: None,
         catalog_refs: vec![
             "codex/gpt-6.1-sol/high".into(),
             "agy/claude-sonnet-4-6/thinking".into(),
@@ -1736,4 +1738,168 @@ fn levels_empty_errors_and_cancelled_dialogs_are_safe() {
     a.on_key(ch('D'));
     insta::assert_snapshot!("modal_delete_level", shot(&mut a, 80, 24));
     assert!(a.on_key(key(KeyCode::Esc)).is_none());
+}
+
+fn insights_fixture() -> so_supervisor::services::insights::InsightsReport {
+    use so_router::insights::{InsightExample, LevelInsight, ModelInsight, Outcome, OutcomeCounts};
+    use so_router::suggest::{LevelChange, Rule, Suggestion};
+    let example = |source: &str, outcome, text: &str, borderline| InsightExample {
+        run_id: None,
+        eval_id: None,
+        excerpt: text.into(),
+        complexity: 41.0,
+        outcome,
+        source: source.into(),
+        borderline,
+    };
+    let level = |name: &str, min, max, runs| LevelInsight {
+        name: name.into(),
+        min,
+        max,
+        runs,
+        complexity_min: Some(14.0),
+        complexity_median: Some(25.0),
+        complexity_max: Some(36.0),
+        buckets: Vec::new(),
+        outcomes: OutcomeCounts::default(),
+        success_rate: Some(0.5),
+        accepted_rate: Some(0.5),
+        rejected_rate: Some(0.25),
+        failed_rate: Some(0.125),
+        succeeded_rate: None,
+        failover_rate: Some(0.0),
+        escalated_rate: None,
+        median_duration_ms: Some(1500.0),
+        models: (1..=4)
+            .map(|i| ModelInsight {
+                choice_id: Some(format!("codex/model-{i}/high")),
+                runs: i,
+                success_rate: Some(0.8),
+            })
+            .collect(),
+        examples: vec![
+            example(
+                "history",
+                Some(Outcome::Rejected),
+                "fix the flaky test",
+                true,
+            ),
+            example("eval", None, "rename a variable", false),
+        ],
+    };
+    let suggestion = |id: &str, level: &str| Suggestion {
+        id: id.into(),
+        rule: Rule::ShiftBoundary,
+        level: level.into(),
+        rationale: format!("{level} fails too often"),
+        levels: Vec::new(),
+        diff: vec![LevelChange {
+            level: level.into(),
+            field: "max".into(),
+            before: "37".into(),
+            after: "30".into(),
+        }],
+    };
+    so_supervisor::services::insights::InsightsReport {
+        generated_at: now(),
+        history_runs: 8,
+        levels: vec![level("simple", 13, 37, 8), level("complex", 63, 87, 0)],
+        suggestions: vec![
+            suggestion("narrow-simple", "simple"),
+            suggestion("widen-complex", "complex"),
+        ],
+        unassigned_models: Vec::new(),
+    }
+}
+
+fn insights_app() -> App {
+    let mut a = app();
+    a.snap.as_mut().unwrap().insights = Some(insights_fixture());
+    a.on_key(ch('5'));
+    a
+}
+
+#[test]
+fn levels_tab_shows_insights_examples_and_suggestions() {
+    let mut a = insights_app();
+    let screen = shot(&mut a, 100, 40);
+    for want in [
+        "8 runs",
+        "median 25.0 (range 14.0-36.0)",
+        "accepted 50.0% rejected 25.0% failed 12.5% failover 0.0%",
+        "median duration 1500.0 ms",
+        "codex/model-3/high",
+        "[history] c=41 rejected fix the flaky test (borderline)",
+        "[eval] c=41 - rename a variable",
+        "narrow-simple",
+        "simple.max: 37 -> 30",
+    ] {
+        assert!(screen.contains(want), "missing {want:?} in\n{screen}");
+    }
+    assert!(!screen.contains("codex/model-4/high"));
+}
+
+#[test]
+fn insights_error_reaches_the_screen() {
+    let mut a = insights_app();
+    let s = a.snap.as_mut().unwrap();
+    s.insights = None;
+    s.insights_error = Some("insights unavailable: disk gone".into());
+    assert!(shot(&mut a, 100, 40).contains("disk gone"));
+}
+
+#[test]
+fn suggestion_focus_selection_and_apply_confirm() {
+    let mut a = insights_app();
+    assert!(a.on_key(ch('s')).is_none());
+    assert!(a.suggest_focus);
+    a.on_key(ch('j'));
+    assert_eq!(a.suggest_sel, 1);
+    assert!(a.on_key(ch('A')).is_none());
+    let Some(Modal::Confirm { prompt, .. }) = &a.modal else {
+        panic!("expected confirm")
+    };
+    assert_eq!(prompt, "Apply suggestion widen-complex? (y/n)");
+    let effect = a.on_key(ch('y'));
+    assert!(matches!(effect, Some(Effect::ApplySuggestion(ref id)) if id == "widen-complex"));
+    assert!(a.busy.is_some());
+}
+
+#[test]
+fn declining_the_apply_prompt_changes_nothing() {
+    let mut a = insights_app();
+    press(&mut a, &[ch('s'), key(KeyCode::Enter)]);
+    assert!(a.modal.is_some());
+    assert!(a.on_key(ch('n')).is_none());
+    assert!(a.modal.is_none());
+    assert!(a.busy.is_none());
+    assert!(a.suggest_focus);
+    a.on_key(key(KeyCode::Esc));
+    assert!(!a.suggest_focus);
+    assert!(!a.quit);
+}
+
+#[test]
+fn suggestion_keys_without_suggestions_do_nothing() {
+    let mut a = app();
+    a.on_key(ch('5'));
+    assert!(a.on_key(ch('s')).is_none());
+    assert!(!a.suggest_focus);
+    assert!(a.toast.is_some());
+    assert!(a.on_key(ch('A')).is_none());
+    assert!(a.modal.is_none());
+}
+
+#[test]
+fn applied_suggestion_leaves_the_selection_in_range() {
+    let mut a = insights_app();
+    press(&mut a, &[ch('s'), ch('j')]);
+    let mut s = a.snap.clone().unwrap();
+    s.insights.as_mut().unwrap().suggestions.truncate(1);
+    a.on_update(Update::Snapshot(Box::new(s)));
+    assert_eq!(a.suggest_sel, 0);
+    let mut s = a.snap.clone().unwrap();
+    s.insights.as_mut().unwrap().suggestions.clear();
+    a.on_update(Update::Snapshot(Box::new(s)));
+    assert!(!a.suggest_focus);
 }

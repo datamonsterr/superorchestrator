@@ -41,4 +41,4 @@ expression: "shot(&mut a, 120, 40)"
 
 
  updated 3s ago
- j/k move  Enter open  a/x model refs  J/K reorder  r range  n new  D delete  u reset  ? help  q quit
+ j/k move  Enter open  s suggestions  a/x model refs  J/K reorder  r range  n new  D delete  u reset  ? help  q quit

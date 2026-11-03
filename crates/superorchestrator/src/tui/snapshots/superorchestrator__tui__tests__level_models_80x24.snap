@@ -25,4 +25,4 @@ expression: "shot(&mut a, 80, 24)"
   │                                                                          │
   ╰──────────────────────────────────────────────────────────────────────────╯
  updated 3s ago
- j/k move  Enter open  a/x model refs  J/K reorder  r range  ? help  q back
+ j/k move  Enter open  s suggestions  a/x model refs  ? help  q back

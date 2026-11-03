@@ -167,6 +167,8 @@ pub enum Effect {
     Setup(SetupStep),
     SetupAll,
     Levels(LevelsCmd),
+    /// Writes the levels of the routing suggestion with this id.
+    ApplySuggestion(String),
 }
 
 impl Effect {
@@ -187,6 +189,7 @@ impl Effect {
             Effect::Join(_) => "preparing join",
             Effect::Setup(_) | Effect::SetupAll => "running setup",
             Effect::Levels(_) => "updating levels",
+            Effect::ApplySuggestion(_) => "applying suggestion",
         })
     }
 }
@@ -335,6 +338,9 @@ pub struct App {
     pub levels_sel: usize,
     pub models_sel: usize,
     pub level_open: Option<String>,
+    /// The Levels tab keys act on the suggestions list instead of the levels.
+    pub suggest_focus: bool,
+    pub suggest_sel: usize,
     pub levels_state: TableState,
     pub models_state: TableState,
     /// Scroll state of the two tables; the draw step keeps it on the selection.
@@ -362,6 +368,8 @@ impl App {
             levels_sel: 0,
             models_sel: 0,
             level_open: None,
+            suggest_focus: false,
+            suggest_sel: 0,
             levels_state: TableState::default(),
             models_state: TableState::default(),
             accounts_state: TableState::default(),
@@ -503,6 +511,8 @@ impl App {
     fn back_or_quit(&mut self) {
         if self.tab == Tab::Runs && self.detail.is_some() {
             self.detail = None;
+        } else if self.tab == Tab::Levels && self.suggest_focus {
+            self.suggest_focus = false;
         } else if self.tab == Tab::Levels && self.level_open.is_some() {
             self.level_open = None;
         } else {
@@ -683,6 +693,34 @@ impl App {
         self.snap.as_ref().map_or(&[], |s| s.levels.as_slice())
     }
 
+    pub fn suggestions(&self) -> &[so_router::suggest::Suggestion] {
+        self.snap
+            .as_ref()
+            .and_then(|s| s.insights.as_ref())
+            .map_or(&[], |i| i.suggestions.as_slice())
+    }
+
+    /// `s` focuses the suggestions; there, `j/k` select and `A` or `Enter` ask to apply.
+    fn suggest_key(&mut self, key: KeyEvent) -> Option<Effect> {
+        let len = self.suggestions().len();
+        if let Some(next) = Self::movement(key.code, self.suggest_sel, len) {
+            self.suggest_sel = next;
+            return None;
+        }
+        match key.code {
+            KeyCode::Char('s') => self.suggest_focus = false,
+            KeyCode::Char('A') | KeyCode::Enter => {
+                let id = self.suggestions().get(self.suggest_sel)?.id.clone();
+                self.modal = Some(Modal::Confirm {
+                    prompt: format!("Apply suggestion {id}? (y/n)"),
+                    effect: Effect::ApplySuggestion(id),
+                });
+            }
+            _ => {}
+        }
+        None
+    }
+
     pub fn focused_level(&self) -> Option<&super::data::LevelRow> {
         match &self.level_open {
             Some(name) => self.levels().iter().find(|l| &l.name == name),
@@ -723,6 +761,9 @@ impl App {
         if self.busy.is_some() {
             return None;
         }
+        if self.suggest_focus {
+            return self.suggest_key(key);
+        }
         let open = self.level_open.is_some();
         let len = if open {
             self.focused_level().map_or(0, |l| l.models.len())
@@ -749,6 +790,15 @@ impl App {
                     fields: [String::new(), "0".into(), "100".into()],
                     field: 0,
                 });
+                return None;
+            }
+            KeyCode::Char('s') if !open => {
+                if self.suggestions().is_empty() {
+                    self.say(ToastKind::Err, "no routing suggestions");
+                } else {
+                    self.suggest_focus = true;
+                    self.suggest_sel = self.suggest_sel.min(self.suggestions().len() - 1);
+                }
                 return None;
             }
             KeyCode::Char('u') => {
@@ -1212,6 +1262,22 @@ impl App {
                 self.level_open = None;
                 self.models_sel = 0;
             }
+        }
+        // Follow the selected suggestion by id; an applied one disappears.
+        let suggestions = snap
+            .insights
+            .as_ref()
+            .map_or(&[][..], |i| i.suggestions.as_slice());
+        let picked = self
+            .suggestions()
+            .get(self.suggest_sel)
+            .map(|s| s.id.clone());
+        self.suggest_sel = picked
+            .and_then(|id| suggestions.iter().position(|s| s.id == id))
+            .unwrap_or(self.suggest_sel)
+            .min(suggestions.len().saturating_sub(1));
+        if suggestions.is_empty() {
+            self.suggest_focus = false;
         }
         self.snap = Some(snap);
     }

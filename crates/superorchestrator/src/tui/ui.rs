@@ -294,10 +294,15 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
             ],
             "quit",
         ),
+        Tab::Levels if app.suggest_focus => (
+            vec![("j/k", "select"), ("A/Enter", "apply"), ("s", "levels")],
+            "levels",
+        ),
         Tab::Levels => (
             vec![
                 ("j/k", "move"),
                 ("Enter", "open"),
+                ("s", "suggestions"),
                 ("a/x", "model refs"),
                 ("J/K", "reorder"),
                 ("r", "range"),
@@ -697,7 +702,63 @@ fn draw_levels(f: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new("Config edits need a supervisor restart to apply.").style(t.muted()),
         intro,
     );
-    if let Some(l) = app.focused_level().filter(|_| app.level_open.is_some()) {
+    let open = app.level_open.is_some();
+    let insights = s.insights.as_ref().filter(|_| body.height >= 14);
+    let show_error = s.insights_error.is_some() && body.height >= 14;
+    let sugg_lines = insights.map_or(0, |i| suggestion_lines(app, i, body.width).0.len());
+    let sugg_h = if open || sugg_lines == 0 {
+        0
+    } else {
+        (sugg_lines as u16 + 2).min(body.height / 3).max(3)
+    };
+    let has_panel = insights.is_some() || show_error;
+    let main_h = match (has_panel, open) {
+        (false, _) => body.height,
+        (true, true) => (body.height / 3).max(4),
+        (true, false) => (s.levels.len() as u16 + 3).clamp(4, body.height / 3),
+    };
+    let [body, panel, sugg] = Layout::vertical([
+        Constraint::Length(main_h),
+        Constraint::Min(0),
+        Constraint::Length(sugg_h),
+    ])
+    .areas(body);
+    if has_panel {
+        let lines = match (insights, &s.insights_error) {
+            (_, Some(e)) => vec![Line::styled(super::data::clean(e), t.bad())],
+            (Some(i), None) => insight_lines(app, i, panel.width.saturating_sub(2)),
+            _ => Vec::new(),
+        };
+        let name = app
+            .focused_level()
+            .map_or(String::new(), |l| super::data::clean(&l.name));
+        let b = block(&t, Span::styled(format!(" insights · {name} "), t.bold()));
+        let inner = b.inner(panel);
+        f.render_widget(b, panel);
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+    if sugg_h > 0
+        && let Some(i) = insights
+    {
+        {
+            let (lines, starts) = suggestion_lines(app, i, sugg.width.saturating_sub(2));
+            let title = if app.suggest_focus {
+                " suggestions · j/k select, A apply "
+            } else {
+                " suggestions · s to focus "
+            };
+            let b = block(&t, Span::styled(title, t.bold()));
+            let inner = b.inner(sugg);
+            f.render_widget(b, sugg);
+            let end = starts
+                .get(app.suggest_sel + 1)
+                .copied()
+                .unwrap_or(lines.len());
+            let scroll = end.saturating_sub(usize::from(inner.height)) as u16;
+            f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
+        }
+    }
+    if let Some(l) = app.focused_level().filter(|_| open) {
         let title = format!(
             " {}  {}-{} · model refs (most preferred first) ",
             super::data::clean(&l.name),
@@ -772,6 +833,100 @@ fn draw_levels(f: &mut Frame, app: &mut App, area: Rect) {
         app.levels_state.select(Some(app.levels_sel));
         f.render_stateful_widget(table, body, &mut app.levels_state);
     }
+}
+
+/// Stats and example tasks of the focused level, cut to `width` columns.
+fn insight_lines(
+    app: &App,
+    report: &so_supervisor::services::insights::InsightsReport,
+    width: u16,
+) -> Vec<Line<'static>> {
+    use crate::cmd::levels::{number, percent};
+    let t = &app.theme;
+    let w = usize::from(width);
+    let cut = |s: String| Line::raw(truncate(&super::data::clean(&s), w, t.ellipsis()));
+    let Some(name) = app.focused_level().map(|l| &l.name) else {
+        return Vec::new();
+    };
+    let Some(l) = report.levels.iter().find(|l| &l.name == name) else {
+        return vec![Line::styled("no insights for this level yet", t.muted())];
+    };
+    let mut out = vec![
+        cut(format!(
+            "{} runs, complexity median {} (range {}-{}), median duration {} ms",
+            l.runs,
+            number(l.complexity_median),
+            number(l.complexity_min),
+            number(l.complexity_max),
+            number(l.median_duration_ms)
+        )),
+        cut(format!(
+            "accepted {} rejected {} failed {} failover {}",
+            percent(l.accepted_rate),
+            percent(l.rejected_rate),
+            percent(l.failed_rate),
+            percent(l.failover_rate)
+        )),
+    ];
+    for m in l.models.iter().take(3) {
+        out.push(cut(format!(
+            "model {}: {} runs, {} success",
+            m.choice_id.as_deref().unwrap_or("unknown"),
+            m.runs,
+            percent(m.success_rate)
+        )));
+    }
+    for e in &l.examples {
+        out.push(cut(format!(
+            "[{}] c={:.0} {} {}{}",
+            e.source,
+            e.complexity,
+            e.outcome.map_or("-", so_router::insights::Outcome::as_str),
+            e.excerpt,
+            if e.borderline { " (borderline)" } else { "" }
+        )));
+    }
+    out
+}
+
+/// One header line (id, rationale) and its diff lines per suggestion, plus where each starts.
+fn suggestion_lines(
+    app: &App,
+    report: &so_supervisor::services::insights::InsightsReport,
+    width: u16,
+) -> (Vec<Line<'static>>, Vec<usize>) {
+    let t = &app.theme;
+    let w = usize::from(width);
+    let mut lines = Vec::new();
+    let mut starts = Vec::new();
+    for (i, sg) in report.suggestions.iter().enumerate() {
+        starts.push(lines.len());
+        let picked = app.suggest_focus && i == app.suggest_sel;
+        let mark = if picked { t.pointer() } else { " " };
+        let head = truncate(
+            &super::data::clean(&format!("{mark} {}: {}", sg.id, sg.rationale)),
+            w,
+            t.ellipsis(),
+        );
+        lines.push(Line::styled(
+            head,
+            if picked { t.selected() } else { t.bold() },
+        ));
+        for c in &sg.diff {
+            lines.push(Line::styled(
+                truncate(
+                    &super::data::clean(&format!(
+                        "    {}.{}: {} -> {}",
+                        c.level, c.field, c.before, c.after
+                    )),
+                    w,
+                    t.ellipsis(),
+                ),
+                t.muted(),
+            ));
+        }
+    }
+    (lines, starts)
 }
 
 // ------------------------------------------------------------------------ runs
@@ -1173,6 +1328,7 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
             out.extend([
                 row("j k  g G", "move (arrows, PgUp/PgDn, Home/End too)"),
                 row("Enter", "open a level's model refs"),
+                row("s", "focus routing suggestions: j/k select, A or Enter apply (asks first), s or Esc back"),
                 row("a / x", "add from the catalog / remove the selected ref"),
                 row("J / K", "move the selected ref down / up"),
                 row("r", "edit min and max complexity (0-100)"),

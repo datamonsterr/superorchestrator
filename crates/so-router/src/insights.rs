@@ -55,6 +55,18 @@ pub enum Outcome {
     Succeeded,
     Other,
 }
+impl Outcome {
+    /// The snake_case name serde uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Outcome::Rejected => "rejected",
+            Outcome::Accepted => "accepted",
+            Outcome::Failed => "failed",
+            Outcome::Succeeded => "succeeded",
+            Outcome::Other => "other",
+        }
+    }
+}
 impl HistoryRecord {
     pub fn outcome(&self) -> Outcome {
         if self.reviews_rejected > 0 {

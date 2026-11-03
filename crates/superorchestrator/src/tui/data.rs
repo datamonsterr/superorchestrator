@@ -87,6 +87,9 @@ pub struct Snapshot {
     pub checks: Vec<Check>,
     pub levels: Vec<LevelRow>,
     pub levels_error: Option<String>,
+    /// Routing insights for the Levels tab; `None` while there is no state.db or it failed.
+    pub insights: Option<so_supervisor::services::insights::InsightsReport>,
+    pub insights_error: Option<String>,
     pub catalog_refs: Vec<String>,
     pub catalog_error: Option<String>,
 }
@@ -358,6 +361,10 @@ pub fn load_snapshot(
         Ok(rows) => (rows, None),
         Err(e) => (Vec::new(), Some(format!("{e:#}"))),
     };
+    let (insights, insights_error) = match insights(ctx) {
+        Ok(report) => (report, None),
+        Err(e) => (None, Some(format!("insights unavailable: {e:#}"))),
+    };
     let (catalog_refs, catalog_error) = match catalog_refs(ctx) {
         Ok(refs) => (refs, None),
         Err(e) => (
@@ -377,6 +384,8 @@ pub fn load_snapshot(
         pending_review,
         levels,
         levels_error,
+        insights,
+        insights_error,
         catalog_refs,
         catalog_error,
     }
@@ -396,6 +405,23 @@ fn level_rows(ctx: &Ctx) -> anyhow::Result<Vec<LevelRow>> {
             models: l.models.iter().map(|m| m.id()).collect(),
         })
         .collect())
+}
+
+/// The routing insights report; `None` when no state.db exists yet.
+fn insights(
+    ctx: &Ctx,
+) -> anyhow::Result<Option<so_supervisor::services::insights::InsightsReport>> {
+    if !ctx.paths.state_db().exists() {
+        return Ok(None);
+    }
+    let store = so_store::Store::open(ctx.paths.state_db())?;
+    let catalog = so_router::Catalog::load(&ctx.paths)?;
+    Ok(Some(so_supervisor::services::insights::insights_report(
+        &store,
+        &ctx.config()?,
+        &catalog,
+        chrono::Utc::now(),
+    )?))
 }
 
 /// Expand each catalog model into the model refs the picker can offer.
@@ -557,6 +583,23 @@ mod tests {
         // Offline: the config decides; unreadable config marks nothing.
         assert!(is_reserved("a", None, Some(&config)));
         assert!(!is_reserved("a", None, None));
+    }
+
+    #[test]
+    fn missing_state_db_gives_no_insights_and_no_error() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(Some(d.path().to_path_buf()), false, true).unwrap();
+        assert!(!ctx.paths.state_db().exists());
+        assert!(insights(&ctx).unwrap().is_none());
+    }
+
+    #[test]
+    fn existing_state_db_gives_a_report() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(Some(d.path().to_path_buf()), false, true).unwrap();
+        so_store::Store::open(ctx.paths.state_db()).unwrap();
+        let report = insights(&ctx).unwrap().unwrap();
+        assert_eq!(report.history_runs, 0);
     }
 
     #[test]

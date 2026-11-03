@@ -13,7 +13,7 @@ use so_store::Store;
 
 pub const HISTORY_LIMIT: usize = 5000;
 
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct InsightsReport {
     pub generated_at: DateTime<Utc>,
     pub history_runs: usize,
