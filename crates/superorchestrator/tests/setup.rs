@@ -109,7 +109,7 @@ fn counts_flags_add_that_many_and_claude_prints_the_orchestrator_note() {
         .success();
     let s = stdout(&out);
     assert_eq!(accounts(&e), ["claude-1", "codex-1", "codex-2"], "{s}");
-    assert!(s.contains("kept for the orchestrator"), "{s}");
+    assert!(s.contains("No level lists a claude model"), "{s}");
     assert!(s.contains("claude-sonnet"), "{s}");
     assert!(!s.contains("install:"), "{s}");
 }
@@ -345,4 +345,147 @@ fn install_output_uses_tilde_paths_and_names_the_claude_registration() {
         .assert()
         .success();
     assert!(stdout(&out).contains(e.home.to_str().unwrap()));
+}
+
+#[test]
+fn codex_orchestrator_reservation_is_idempotent() {
+    let e = env_with_harnesses();
+    let args = [
+        "setup",
+        "--yes",
+        "--no-login",
+        "--no-install",
+        "--orchestrator",
+        "codex",
+    ];
+    cmd(&e).args(args).assert().success();
+    assert_eq!(
+        accounts(&e),
+        ["claude-1", "codex-1", "codex-2", "opencode-1"]
+    );
+    let read = || std::fs::read_to_string(e.cfg.join("config.toml")).unwrap();
+    let cfg: toml::Value = toml::from_str(&read()).unwrap();
+    assert_eq!(
+        cfg["orchestrator"]["reserved_accounts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        cfg["orchestrator"]["reserved_accounts"][0].as_str(),
+        Some("codex-1")
+    );
+    let before = read();
+    cmd(&e).args(args).assert().success();
+    assert_eq!(read(), before);
+    let cfg: toml::Value = toml::from_str(&read()).unwrap();
+    assert_eq!(
+        cfg["orchestrator"]["reserved_accounts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn reservation_flags_and_dry_run() {
+    let e = env_with_harnesses();
+    let out = cmd(&e)
+        .args(["--json", "setup", "--dry-run", "--orchestrator", "codex"])
+        .assert()
+        .success();
+    let plan: Value = serde_json::from_str(&stdout(&out)).unwrap();
+    assert_eq!(plan["orchestrator"], "codex");
+    assert_eq!(plan["reserve"][0], "<account selected after setup>");
+    assert_eq!(plan["add"][0]["count"], 2);
+    assert!(!e.cfg.exists());
+    cmd(&e)
+        .args(["setup", "--dry-run", "--reserve", "missing"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("account missing does not exist"));
+    let args = [
+        "setup",
+        "--yes",
+        "--no-login",
+        "--no-install",
+        "--orchestrator",
+        "codex",
+        "--reserve",
+        "codex-2",
+        "--reserve",
+        "codex-2",
+    ];
+    cmd(&e).args(args).assert().success();
+    cmd(&e)
+        .args(["setup", "--dry-run", "--reserve", "codex-2"])
+        .assert()
+        .success();
+    let cfg: toml::Value =
+        toml::from_str(&std::fs::read_to_string(e.cfg.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(
+        cfg["orchestrator"]["reserved_accounts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        cfg["orchestrator"]["reserved_accounts"][0].as_str(),
+        Some("codex-2")
+    );
+    cmd(&e)
+        .args([
+            "setup",
+            "--yes",
+            "--no-login",
+            "--no-install",
+            "--reserve",
+            "missing",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn codex_home_takes_precedence_over_account_name() {
+    let e = env_with_harnesses();
+    cmd(&e)
+        .args([
+            "setup",
+            "--yes",
+            "--no-login",
+            "--no-install",
+            "--codex",
+            "2",
+        ])
+        .assert()
+        .success();
+    let file = e.cfg.join("accounts/codex-2.toml");
+    let data = std::fs::read_to_string(&file).unwrap();
+    let account: toml::Value = toml::from_str(&data).unwrap();
+    let home = account["home"]
+        .as_str()
+        .unwrap()
+        .replace('~', e.home.to_str().unwrap());
+    cmd(&e)
+        .env("CODEX_HOME", home)
+        .args([
+            "setup",
+            "--yes",
+            "--no-login",
+            "--no-install",
+            "--orchestrator",
+            "codex",
+        ])
+        .assert()
+        .success();
+    let cfg: toml::Value =
+        toml::from_str(&std::fs::read_to_string(e.cfg.join("config.toml")).unwrap()).unwrap();
+    assert_eq!(
+        cfg["orchestrator"]["reserved_accounts"][0].as_str(),
+        Some("codex-2")
+    );
 }

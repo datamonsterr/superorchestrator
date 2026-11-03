@@ -14,7 +14,7 @@ use so_accounts::{HostEnv, ImportCandidate, SignIn, manage, resolve_binary, sign
 use so_core::{AccountFile, Harness};
 use so_supervisor::doctor::{Status, run_checks};
 
-use crate::cli::SetupArgs;
+use crate::cli::{OrchestratorHarness, SetupArgs};
 use crate::cmd::account::{ask_and_import, login_json, run_login, write_login_hint};
 use crate::cmd::init;
 use crate::ctx::{Ctx, interactive};
@@ -84,6 +84,72 @@ pub(crate) fn default_count(info: &HarnessInfo) -> u32 {
     u32::from(info.binary.is_some() && !has_any && info.harness != Harness::Claude)
 }
 
+fn setup_default_count(info: &HarnessInfo, args: &SetupArgs) -> u32 {
+    if args.orchestrator == Some(OrchestratorHarness::Codex) {
+        let empty = info.binary.is_some() && info.accounts.is_empty() && info.importable == 0;
+        return if empty && info.harness == Harness::Codex {
+            2
+        } else {
+            u32::from(empty)
+        };
+    }
+    default_count(info)
+}
+
+fn reservation_names(
+    args: &SetupArgs,
+    accounts: &[AccountFile],
+    host: &HostEnv,
+) -> Result<Vec<String>> {
+    if !args.reserve.is_empty() {
+        for name in &args.reserve {
+            anyhow::ensure!(
+                accounts.iter().any(|a| &a.name == name),
+                "account {name} does not exist"
+            );
+        }
+        return Ok(args.reserve.clone());
+    }
+    let Some(harness) = args.orchestrator else {
+        return Ok(Vec::new());
+    };
+    let mut matching: Vec<_> = accounts
+        .iter()
+        .filter(|a| {
+            matches!(
+                (a.harness, harness),
+                (Harness::Codex, OrchestratorHarness::Codex)
+                    | (Harness::Claude, OrchestratorHarness::Claude)
+            )
+        })
+        .collect();
+    matching.sort_by(|a, b| a.name.cmp(&b.name));
+    let preferred = if harness == OrchestratorHarness::Codex {
+        let home = std::env::var_os("CODEX_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| host.home.join(".codex"));
+        matching
+            .iter()
+            .find(|a| {
+                host.expand(&a.home).is_ok_and(|p| {
+                    p == home
+                        || p.canonicalize()
+                            .ok()
+                            .zip(home.canonicalize().ok())
+                            .is_some_and(|(a, b)| a == b)
+                })
+            })
+            .copied()
+    } else {
+        None
+    };
+    Ok(preferred
+        .or_else(|| matching.first().copied())
+        .map(|a| vec![a.name.clone()])
+        .unwrap_or_default())
+}
+
 /// Accounts that are known to be signed out (unknown states are left alone).
 pub(crate) fn signed_out(ctx: &Ctx, host: &HostEnv) -> Result<Vec<AccountFile>> {
     Ok(AccountFile::list(&ctx.paths)?
@@ -93,7 +159,7 @@ pub(crate) fn signed_out(ctx: &Ctx, host: &HostEnv) -> Result<Vec<AccountFile>> 
 }
 
 /// The note printed after adding claude accounts.
-pub(crate) const CLAUDE_NOTE: &str = "claude accounts are kept for the orchestrator: no level lists a claude model, so auto routing never spends them. To let routing use them, run `superorchestrator config edit` and add a ref such as claude/claude-sonnet-5-5/medium to a level's models.";
+pub(crate) const CLAUDE_NOTE: &str = "No level lists a claude model by default. To enable routing, run `superorchestrator config edit` and add a ref such as claude/claude-sonnet-5-5/medium to a level's models.";
 
 /// Counts of doctor checks by status, plus the lines worth reading.
 pub(crate) struct DoctorSummary {
@@ -153,13 +219,34 @@ fn print_plan(
         .map(|i| {
             (
                 i.harness,
-                asked(args, i.harness).unwrap_or_else(|| default_count(i)),
+                asked(args, i.harness).unwrap_or_else(|| setup_default_count(i, args)),
             )
         })
         .collect();
+    let mut existing = AccountFile::list(&ctx.paths)?;
+    for candidate in candidates {
+        if let Ok(account) = AccountFile::new(
+            &candidate.name,
+            candidate.harness,
+            &candidate.home.to_string_lossy(),
+            candidate.harness.as_str(),
+        ) {
+            existing.push(account);
+        }
+    }
+    let planned_reserve = {
+        let names = reservation_names(args, &existing, host)?;
+        if names.is_empty() && args.orchestrator.is_some() {
+            vec!["<account selected after setup>".to_string()]
+        } else {
+            names
+        }
+    };
     let value = json!({
         "ok": true,
         "dry_run": true,
+        "orchestrator": args.orchestrator,
+        "reserve": planned_reserve,
         "harnesses": infos.iter().map(|i| json!({
             "harness": i.harness.as_str(), "installed": i.binary.is_some(), "accounts": i.accounts,
         })).collect::<Vec<_>>(),
@@ -214,7 +301,8 @@ fn print_plan(
             "register the MCP server and skill (install)"
         };
         writeln!(w, "  6. {install}")?;
-        writeln!(w, "  7. summarise doctor")?;
+        writeln!(w, "  7. reserve: {}", planned_reserve.join(", "))?;
+        writeln!(w, "  8. summarise doctor")?;
         writeln!(
             w,
             "\nAdjust with --codex N --claude N --opencode N --agy N."
@@ -253,7 +341,7 @@ fn run_steps(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
     // Read-only first: the plan is also what a run without a terminal prints.
     let candidates = scan_candidates(ctx, &host)?;
     let infos = detect_harnesses(ctx, &host, &candidates)?;
-    if !ctx.yes && !tty {
+    if args.dry_run || (!ctx.yes && !tty) {
         print_plan(ctx, &infos, &candidates, &args, &host)?;
         return Ok(ExitCode::SUCCESS);
     }
@@ -282,12 +370,17 @@ fn run_steps(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
     let imported = ask_and_import(ctx, &cfg, &host, &candidates)?;
     failed |= imported.failed;
     imported.names.iter().for_each(|n| say!("imported {n}"));
-    let infos = detect_harnesses(ctx, &host, &[])?;
+    let remaining_candidates = if args.orchestrator == Some(OrchestratorHarness::Codex) {
+        scan_candidates(ctx, &host)?
+    } else {
+        Vec::new()
+    };
+    let infos = detect_harnesses(ctx, &host, &remaining_candidates)?;
 
     let mut created: Vec<AccountFile> = Vec::new();
     for i in &infos {
         let flag = asked(&args, i.harness);
-        let default = flag.unwrap_or_else(|| default_count(i));
+        let default = flag.unwrap_or_else(|| setup_default_count(i, &args));
         let want = if i.binary.is_none() && flag.is_none() {
             0
         } else if ctx.yes || flag.is_some() {
@@ -345,6 +438,25 @@ fn run_steps(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
         );
     }
 
+    let reserve = reservation_names(&args, &AccountFile::list(&ctx.paths)?, &host)?;
+    if !reserve.is_empty() {
+        let original = ctx.config()?.orchestrator.reserved_accounts;
+        let mut reserved = original.clone();
+        let mut seen = std::collections::HashSet::new();
+        reserved.retain(|name| seen.insert(name.clone()));
+        for name in &reserve {
+            if !reserved.contains(name) {
+                reserved.push(name.clone());
+            }
+        }
+        if reserved != original {
+            let value = toml::Value::Array(reserved.into_iter().map(toml::Value::String).collect())
+                .to_string();
+            so_core::Config::set_in_file(&ctx.paths, "orchestrator.reserved_accounts", &value)?;
+        }
+        say!("reserved accounts: {}", reserve.join(", "));
+    }
+
     // Sign-in covers new accounts and old ones that are still signed out.
     let pending = signed_out(ctx, &host)?;
     let mut needed: Vec<Value> = Vec::new();
@@ -400,12 +512,19 @@ fn run_steps(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
     if !ctx.json {
         d.lines.iter().for_each(|l| println!("  {l}"));
     }
-    say!("\nnext: open Claude Code and ask it to delegate a task");
+    let orchestrator = if args.orchestrator == Some(OrchestratorHarness::Codex) {
+        "Codex"
+    } else {
+        "Claude Code"
+    };
+    say!("\nnext: open {orchestrator} and ask it to delegate a task");
 
     if ctx.json {
         ctx.emit(
             &json!({
                 "ok": !failed,
+                "orchestrator": args.orchestrator,
+                "reserve": reserve,
                 "created": created.iter().map(|a| a.name.clone()).collect::<Vec<_>>(),
                 "imported": imported.names,
                 "installed": installed,
