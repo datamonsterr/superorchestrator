@@ -96,6 +96,12 @@ export interface ApiErrorDetail {
   message: string;
 }
 
+export interface Bucket {
+  count: number;
+  from: number;
+  to: number;
+}
+
 export interface Caps {
   global: number;
 }
@@ -248,6 +254,26 @@ export interface ImportCandidate {
   name: string;
 }
 
+export interface InsightExample {
+  borderline: boolean;
+  complexity: number;
+  eval_id?: string | null;
+  excerpt: string;
+  outcome?: Outcome | null;
+  run_id?: string | null;
+  source: string;
+}
+
+export interface InsightsReport {
+  /** The `router.levels` this report was computed from; clients compare it with the live levels before applying a suggestion. */
+  base_levels: Level[];
+  generated_at: string;
+  history_runs: number;
+  levels: LevelInsight[];
+  suggestions: Suggestion[];
+  unassigned_models: ModelRef[];
+}
+
 export interface Jev {
   endpoint?: string;
   /** Tried only when the primary model cannot be reached; `none` or empty disables it. */
@@ -290,6 +316,35 @@ export interface Level {
   tier?: LevelTier | null;
 }
 
+export interface LevelChange {
+  after: string;
+  before: string;
+  field: string;
+  level: string;
+}
+
+export interface LevelInsight {
+  accepted_rate?: number | null;
+  buckets: Bucket[];
+  complexity_max?: number | null;
+  complexity_median?: number | null;
+  complexity_min?: number | null;
+  escalated_rate?: number | null;
+  examples: InsightExample[];
+  failed_rate?: number | null;
+  failover_rate?: number | null;
+  max: number;
+  median_duration_ms?: number | null;
+  min: number;
+  models: ModelInsight[];
+  name: string;
+  outcomes: OutcomeCounts;
+  rejected_rate?: number | null;
+  runs: number;
+  succeeded_rate?: number | null;
+  success_rate?: number | null;
+}
+
 /** Model class a level falls back to when it lists no models. Mirrors the catalog's tier, which lives in `so-router`. */
 export type LevelTier = "high" | "mid" | "fast";
 
@@ -326,6 +381,17 @@ export interface ModelCatalog {
   report?: unknown;
 }
 
+export interface ModelInsight {
+  choice_id?: string | null;
+  runs: number;
+  success_rate?: number | null;
+}
+
+export interface ModelRef {
+  harness: Harness;
+  model: string;
+}
+
 export interface ModelRow {
   cost: string;
   efforts: string[];
@@ -350,6 +416,18 @@ export type OnUnreachable = "error" | "heuristic";
 /** Accounts kept for the orchestrator. */
 export interface Orchestrator {
   reserved_accounts?: string[];
+}
+
+export type Outcome = "rejected" | "accepted" | "failed" | "succeeded" | "other";
+
+export interface OutcomeCounts {
+  accepted: number;
+  escalated: number;
+  failed: number;
+  failover: number;
+  other: number;
+  rejected: number;
+  succeeded: number;
 }
 
 export interface PatchAccountRequest {
@@ -454,6 +532,8 @@ export interface Router {
   priority?: Harness[];
   weights?: Weights;
 }
+
+export type Rule = "shift_boundary" | "promote_model" | "assign_model" | "close_gap" | "remove_empty";
 
 /** Lifecycle state of a run (SPEC 7.1). */
 export type RunState = "queued" | "starting" | "running" | "waiting" | "stalled" | "escalated" | "pending_review" | "succeeded" | "failed" | "cancelled";
@@ -612,6 +692,15 @@ export interface StreamHello {
   boot_id: string;
   seq: number;
   server_time: string;
+}
+
+export interface Suggestion {
+  diff: LevelChange[];
+  id: string;
+  level: string;
+  levels: Level[];
+  rationale: string;
+  rule: Rule;
 }
 
 export interface Supervisor {
