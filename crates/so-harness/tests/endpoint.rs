@@ -58,6 +58,34 @@ fn classification_table() {
     }
 }
 
+#[test]
+fn code_requires_an_explicit_label() {
+    for text in [
+        r#"{"status":1302,"message":"z.ai"}"#,
+        "z.ai returned 1308 bytes",
+        "MiniMax used 2056 bytes",
+        "invalid code:::1308",
+        "error: 1308",
+        "code\"1308",
+    ] {
+        assert_eq!(classify_endpoint(text), None, "{text}");
+    }
+    for text in [
+        r#"{"code": "1308"}"#,
+        r#"{"code":1308}"#,
+        "code: 1308",
+        "code 1308",
+        "error 1308",
+        "error code 1308",
+    ] {
+        assert_eq!(classify_endpoint(text), Some(ErrorKind::Quota), "{text}");
+    }
+    assert_eq!(
+        classify_endpoint("Usage limit reached for monthly window"),
+        Some(ErrorKind::Quota)
+    );
+}
+
 async fn server(status: StatusCode, body: &'static str, expected_header: &'static str) -> String {
     let app = Router::new()
         .route(

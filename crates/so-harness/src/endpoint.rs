@@ -4,6 +4,27 @@ use std::time::Duration;
 use chrono::{FixedOffset, NaiveDateTime, TimeZone};
 use so_core::ErrorKind;
 
+const CODES: &[(&str, ErrorKind)] = &[
+    ("1308", ErrorKind::Quota),
+    ("1309", ErrorKind::Quota),
+    ("1310", ErrorKind::Quota),
+    ("1316", ErrorKind::Quota),
+    ("1317", ErrorKind::Quota),
+    ("1318", ErrorKind::Quota),
+    ("1319", ErrorKind::Quota),
+    ("1320", ErrorKind::Quota),
+    ("1321", ErrorKind::Quota),
+    ("2056", ErrorKind::Quota),
+    ("1302", ErrorKind::RateLimit),
+    ("1305", ErrorKind::RateLimit),
+    ("1312", ErrorKind::RateLimit),
+    ("1002", ErrorKind::RateLimit),
+    ("1000", ErrorKind::Auth),
+    ("1001", ErrorKind::Auth),
+    ("1003", ErrorKind::Auth),
+    ("2049", ErrorKind::Auth),
+];
+
 /// Recognize provider-specific failures without changing other harnesses' classification.
 pub fn classify_endpoint(text: &str) -> Option<ErrorKind> {
     let text = text.to_lowercase();
@@ -11,6 +32,7 @@ pub fn classify_endpoint(text: &str) -> Option<ErrorKind> {
         (
             &[
                 "limit exhausted",
+                "usage limit reached for",
                 "5-hour usage limit",
                 "weekly (7-day) usage limit",
                 "monthly usage limit",
@@ -31,14 +53,10 @@ pub fn classify_endpoint(text: &str) -> Option<ErrorKind> {
             return Some(kind);
         }
     }
-    match endpoint_code(&text)? {
-        "1308" | "1309" | "1310" | "1316" | "1317" | "1318" | "1319" | "1320" | "1321" | "2056" => {
-            Some(ErrorKind::Quota)
-        }
-        "1302" | "1305" | "1312" | "1002" => Some(ErrorKind::RateLimit),
-        "1000" | "1001" | "1003" | "2049" => Some(ErrorKind::Auth),
-        _ => None,
-    }
+    let code = endpoint_code(&text)?;
+    CODES
+        .iter()
+        .find_map(|&(candidate, kind)| (candidate == code).then_some(kind))
 }
 
 // The input is lowercased so the same contextual number rules apply everywhere.
@@ -54,55 +72,44 @@ fn endpoint_code(text: &str) -> Option<&str> {
         while i < bytes.len() && bytes[i].is_ascii_digit() {
             i += 1;
         }
-        let before = text[..start]
-            .trim_end_matches(|c: char| c.is_ascii_whitespace() || matches!(c, ':' | '"'));
-        let separated = before.len() < start;
-        let named = separated
-            && ["code", "error"].iter().any(|name| {
-                before.strip_suffix(name).is_some_and(|prefix| {
+        let before = &text[..start];
+        let trimmed = before.trim_end_matches(|c: char| c.is_ascii_whitespace());
+        let whitespace = trimmed.len() < before.len();
+        let (without_quote, quoted_value) = match trimmed.strip_suffix('"') {
+            Some(prefix) => (
+                prefix.trim_end_matches(|c: char| c.is_ascii_whitespace()),
+                true,
+            ),
+            None => (trimmed, false),
+        };
+        let json_code = without_quote.strip_suffix(':').is_some_and(|prefix| {
+            prefix
+                .trim_end_matches(|c: char| c.is_ascii_whitespace())
+                .ends_with("\"code\"")
+        }) && (!quoted_value || text[i..].starts_with('"'));
+        let plain_code = !quoted_value && {
+            let (label, has_colon) = match trimmed.strip_suffix(':') {
+                Some(prefix) => (
+                    prefix.trim_end_matches(|c: char| c.is_ascii_whitespace()),
+                    true,
+                ),
+                None => (trimmed, false),
+            };
+            ["code", "error"].iter().any(|name| {
+                (if has_colon {
+                    *name == "code"
+                } else {
+                    whitespace
+                }) && label.strip_suffix(name).is_some_and(|prefix| {
                     prefix
                         .chars()
                         .next_back()
                         .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_')
                 })
-            });
-        let provider_message = ["usage limit reached for 5 hour", "z.ai", "minimax"]
-            .iter()
-            .any(|p| {
-                text.match_indices(p).any(|(pos, phrase)| {
-                    let distance = if pos >= i {
-                        pos - i
-                    } else {
-                        start.saturating_sub(pos + phrase.len())
-                    };
-                    distance <= 80 && !text[pos.min(start)..pos.max(start)].contains('\n')
-                })
-            });
-        if !named && !provider_message {
-            continue;
-        }
+            })
+        };
         let code = &text[start..i];
-        if matches!(
-            code,
-            "1308"
-                | "1309"
-                | "1310"
-                | "1316"
-                | "1317"
-                | "1318"
-                | "1319"
-                | "1320"
-                | "1321"
-                | "2056"
-                | "1302"
-                | "1305"
-                | "1312"
-                | "1002"
-                | "1000"
-                | "1001"
-                | "1003"
-                | "2049"
-        ) {
+        if (json_code || plain_code) && CODES.iter().any(|&(candidate, _)| candidate == code) {
             return Some(code);
         }
     }
@@ -119,8 +126,15 @@ pub(crate) fn weekly_reset(text: &str) -> bool {
 
 /// Extract the reset time reported by Z.ai, whose timestamp is in UTC+8.
 pub(crate) fn reset_time(text: &str) -> Option<i64> {
-    let (_, tail) = text.split_once("Your limit will reset at ")?;
-    let timestamp = tail.get(..19)?;
+    let lower = text.to_ascii_lowercase();
+    let timestamp = ["your limit will reset at ", "resets at "]
+        .iter()
+        .find_map(|marker| {
+            lower
+                .find(marker)
+                .and_then(|start| text.get(start + marker.len()..))
+        })?
+        .get(..19)?;
     let local = NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%d %H:%M:%S").ok()?;
     FixedOffset::east_opt(8 * 3600)?
         .from_local_datetime(&local)
@@ -195,4 +209,25 @@ pub async fn validate(
         status: Some(status.as_u16()),
         detail,
     })
+}
+
+#[cfg(test)]
+mod reset_tests {
+    use super::reset_time;
+
+    #[test]
+    fn reset_marker_is_case_insensitive() {
+        for marker in [
+            "your limit will reset at",
+            "YOUR LIMIT WILL RESET AT",
+            "resets at",
+            "RESETS AT",
+        ] {
+            assert_eq!(
+                reset_time(&format!("{marker} 2026-11-03 18:00:00")),
+                Some(1793700000),
+                "{marker}"
+            );
+        }
+    }
 }
