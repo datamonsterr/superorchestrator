@@ -126,6 +126,12 @@ Suggestions use these rules:
 
 Invalid proposed level sets are omitted.
 
+The web Routing page shows the same report in its Insights panel, and the TUI Levels tab shows it under the level list:
+
+![Insights panel on the web Routing page](../img/web-insights.png)
+
+![Insights and suggestions in the TUI Levels tab](../img/tui-levels-insights.png)
+
 ### Level ranges
 
 - `min` and `max` are integers from 0 to 100. The range covers complexity from `min` up to, but not including, `max + 1`, so a complexity of 37.5 is in a level `0-37`. A level with `max = 100` also includes 100.
