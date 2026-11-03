@@ -85,6 +85,15 @@ describe('AccountsPage', () => {
   })
 
   describe('add', () => {
+    it('lists all nine supported harnesses', async () => {
+      renderWithProviders(<AccountsPage />)
+      await userEvent.click(await screen.findByRole('button', { name: /Add account/ }))
+      await userEvent.click(await screen.findByRole('combobox', { name: 'Harness' }))
+      for (const label of ['Codex', 'Antigravity (agy)', 'OpenCode', 'Claude', 'GitHub Copilot CLI', 'Gemini CLI', 'Kimi Code', 'Cursor CLI', 'Qwen Code']) {
+        expect(await screen.findByRole('option', { name: label })).toBeInTheDocument()
+      }
+    })
+
     it('validates the name, creates the account and opens sign-in', async () => {
       let created: unknown
       server.use(

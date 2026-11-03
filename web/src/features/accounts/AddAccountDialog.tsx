@@ -21,7 +21,16 @@ interface Props {
   onCreated: (name: string) => void
 }
 
-const LABEL: Record<(typeof HARNESSES)[number], string> = { codex: 'Codex', agy: 'Antigravity (agy)', opencode: 'OpenCode', claude: 'Claude' }
+const LABEL: Record<(typeof HARNESSES)[number], string> = {
+  codex: 'Codex', agy: 'Antigravity (agy)', opencode: 'OpenCode', claude: 'Claude',
+  copilot: 'GitHub Copilot CLI', gemini: 'Gemini CLI', kimi: 'Kimi Code', cursor: 'Cursor CLI', qwen: 'Qwen Code',
+}
+const SIGN_IN: Record<(typeof HARNESSES)[number], string> = {
+  codex: 'Sign in with the Codex browser flow.', agy: 'Sign in with the Antigravity browser flow.',
+  opencode: 'Sign in with the OpenCode provider flow.', claude: 'Sign in with the Claude browser flow.',
+  copilot: 'Run copilot login to sign in.', gemini: 'Sign in inside an interactive Gemini CLI session.',
+  kimi: 'Run kimi login to sign in.', cursor: 'Run agent login to sign in.', qwen: 'Sign in inside an interactive Qwen Code session.',
+}
 
 export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Props) {
   const config = useConfig()
@@ -62,7 +71,7 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
         <form onSubmit={handleSubmit(onSubmit)} noValidate className="flex flex-col gap-4">
           <DialogHeader>
             <DialogTitle>Add account</DialogTitle>
-            <DialogDescription>Creates the credential home and wrapper, then starts sign-in.</DialogDescription>
+          <DialogDescription>Creates the credential home and wrapper. {SIGN_IN[harness]}</DialogDescription>
           </DialogHeader>
           <FieldGroup>
             <Field data-invalid={!!formState.errors.harness}>
@@ -105,7 +114,7 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
                 <Field data-invalid={!!formState.errors.home}>
                   <FieldLabel htmlFor="add-home">Credential home</FieldLabel>
                   <Input id="add-home" autoComplete="off" placeholder="default location" {...register('home')} />
-                  <FieldDescription>Leave empty to use the default path. Only the path is stored, never its contents.</FieldDescription>
+                  <FieldDescription>Leave empty to use the default path under ~/.&lt;account-name&gt;. Only the path is stored, never its contents.</FieldDescription>
                   <FieldError errors={[formState.errors.home]} />
                 </Field>
               </CollapsibleContent>
