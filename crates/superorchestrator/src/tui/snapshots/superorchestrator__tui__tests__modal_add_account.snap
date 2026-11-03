@@ -11,14 +11,14 @@ expression: "shot(&mut a, 80, 24)"
     claude-1 (off)     claude    ? unknown  0
       ╭ Add accounts ────────────────────────────────────────────────────╮
       │                                                                  │
-      │ ▸ Harness   codex   opencode   agy   claude                      │
+      │ ▸ Harness   codex   opencode   agy   claude   copilot            │
+      │             gemini   kimi   cursor   qwen                        │
       │                                                                  │
       │   Count    1  (1-99, numbered from the lowest free number)       │
       │                                                                  │
       │ ←/→ harness   Tab next field   Enter add   Esc cancel            │
       │                                                                  │
       ╰──────────────────────────────────────────────────────────────────╯
-
 
 
 

@@ -512,7 +512,7 @@ fn add_form_wraps_the_harness_choice() {
     press(&mut a, &[ch('2'), ch('a'), key(KeyCode::Left)]);
     assert!(matches!(
         a.modal,
-        Some(Modal::AddAccount { harness: 3, .. })
+        Some(Modal::AddAccount { harness: 8, .. })
     ));
     a.on_key(key(KeyCode::Right));
     assert!(matches!(
