@@ -28,25 +28,38 @@ impl Store {
     /// Returns routed runs newest first, with their latest decision and event totals.
     pub fn routing_history(&self, limit: usize) -> Result<Vec<HistoryRow>> {
         let conn = self.conn();
-        let mut stmt = conn.prepare(r#"
-            WITH ranked AS (
-                SELECT run_id, data_json, ROW_NUMBER() OVER (PARTITION BY run_id ORDER BY ts DESC, id DESC) AS rn
-                FROM events WHERE type = 'route_decision'
-            ), totals AS (
-                SELECT run_id, SUM(type = 'review_accepted') AS accepted,
-                    SUM(type = 'review_rejected') AS rejected, SUM(type = 'failover') AS failovers,
-                    SUM(type = 'escalated') AS escalations
-                FROM events GROUP BY run_id
+        let mut stmt = conn.prepare(
+            r#"
+            WITH selected AS MATERIALIZED (
+                SELECT r.*, (SELECT e.data_json FROM events e
+                    WHERE e.run_id = r.id AND e.type = 'route_decision'
+                    ORDER BY e.ts DESC, e.id DESC LIMIT 1) AS decision_json
+                FROM runs r
+                WHERE EXISTS (SELECT 1 FROM events e
+                    WHERE e.run_id = r.id AND e.type = 'route_decision')
+                ORDER BY r.created_at DESC, r.id DESC LIMIT ?1
             )
             SELECT r.id, r.prompt, r.state, r.error_kind, r.choice_id, r.created_at, r.started_at,
-                r.finished_at, d.data_json, t.accepted, t.rejected, t.failovers, t.escalations
-            FROM runs r JOIN ranked d ON d.run_id = r.id AND d.rn = 1
-                JOIN totals t ON t.run_id = r.id
-            ORDER BY r.created_at DESC, r.id DESC LIMIT ?1
-        "#)?;
+                r.finished_at, r.decision_json,
+                COALESCE(SUM(e.type = 'review_accepted'), 0),
+                COALESCE(SUM(e.type = 'review_rejected'), 0),
+                COALESCE(SUM(e.type = 'failover'), 0),
+                COALESCE(SUM(e.type = 'escalated'), 0)
+            FROM selected r LEFT JOIN events e ON e.run_id = r.id
+                AND e.type IN ('review_accepted', 'review_rejected', 'failover', 'escalated')
+            GROUP BY r.id
+            ORDER BY r.created_at DESC, r.id DESC
+        "#,
+        )?;
         let rows = stmt.query_map([i64::try_from(limit).unwrap_or(i64::MAX)], |r| {
             let data: String = r.get(8)?;
-            let value: serde_json::Value = serde_json::from_str(&data).unwrap_or_default();
+            let value: serde_json::Value = serde_json::from_str(&data).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    8,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?;
             let decision = if value.get("complexity").is_some() {
                 &value
             } else {
@@ -94,7 +107,9 @@ mod tests {
         let old = crate::runs::tests::run(&session.id, None);
         let mut new = crate::runs::tests::run(&session.id, None);
         new.created_at = old.created_at + Duration::seconds(1);
-        for run in [&old, &new] {
+        let mut unrouted = crate::runs::tests::run(&session.id, None);
+        unrouted.created_at = new.created_at + Duration::seconds(1);
+        for run in [&old, &new, &unrouted] {
             store.insert_run(run).unwrap();
         }
         let append = |run: &str, ty, seconds, data| {
@@ -150,7 +165,48 @@ mod tests {
             ),
             (1, 2, 1, 1)
         );
-        assert_eq!(store.routing_history(10).unwrap()[1].run_id, old.id);
+        let all = store.routing_history(10).unwrap();
+        assert_eq!(all[1].run_id, old.id);
+        assert_eq!(
+            (
+                all[1].reviews_accepted,
+                all[1].reviews_rejected,
+                all[1].failovers,
+                all[1].escalations
+            ),
+            (0, 0, 0, 0)
+        );
         assert!(store.routing_history(0).unwrap().is_empty());
+    }
+    #[test]
+    fn malformed_decision_json_returns_error() {
+        let store = Store::open_in_memory().unwrap();
+        let session = crate::sessions::tests::session(None);
+        store.insert_session(&session).unwrap();
+        let run = crate::runs::tests::run(&session.id, None);
+        store.insert_run(&run).unwrap();
+        store
+            .append_event(&Event {
+                id: new_id(),
+                session_id: session.id,
+                run_id: Some(run.id),
+                ts: run.created_at,
+                event_type: EventType::RouteDecision,
+                data: serde_json::json!({}),
+            })
+            .unwrap();
+        store
+            .conn()
+            .execute(
+                "UPDATE events SET data_json = 'invalid' WHERE type = 'route_decision'",
+                [],
+            )
+            .unwrap();
+        assert!(matches!(
+            store.routing_history(10),
+            Err(crate::StoreError::Sqlite(
+                rusqlite::Error::FromSqlConversionFailure(8, _, _)
+            ))
+        ));
     }
 }
