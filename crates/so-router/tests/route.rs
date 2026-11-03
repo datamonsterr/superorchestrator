@@ -200,6 +200,19 @@ fn answer(score: f64, conf: f64) -> Value {
 }
 
 #[tokio::test]
+async fn routes_an_acp_choice_with_unknown_headroom() {
+    let mut w = world("http://127.0.0.1:1", false);
+    w.config = cfg_with_models(&[("all", 0, 100, &["gemini/gemini-2.5-pro"])]);
+    w.accounts =
+        vec![AccountFile::new("gemini-1", Harness::Gemini, "/tmp/gemini-1", "gemini").unwrap()];
+    let out = route_detailed(&w.inputs(), &params("fix typo"))
+        .await
+        .unwrap();
+    assert_eq!(out.result.harness, Harness::Gemini);
+    assert_eq!(out.result.choice_id, "gemini/gemini-2.5-pro");
+}
+
+#[tokio::test]
 async fn valid_answer_is_source_jev_and_request_has_the_score_shape() {
     // Anchor index 3.4 is complexity 85: the default high level, whose tier is high.
     let (url, fake) = serve(vec![(200, answer(3.4, 0.9), 0)]).await;
