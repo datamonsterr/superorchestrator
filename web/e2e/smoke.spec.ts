@@ -41,12 +41,12 @@ test('dark mode toggle', async ({ page }) => {
 
 test('routing insights show examples and apply a suggestion', async ({ page }) => {
   await page.goto('/routing')
-  const panel = page.getByRole('region', { name: 'Insights' })
+  const panel = page.getByRole('region', { name: 'Insights', exact: true })
   await expect(panel).toBeVisible()
   await expect(panel.getByText('Refactor the session store to stream events')).toBeVisible()
   await panel.getByRole('button', { name: /^Apply suggestion / }).click()
   await page.getByRole('alertdialog').getByRole('button', { name: 'Apply suggestion' }).click()
-  await expect(panel.getByRole('status')).toContainText('Applied suggestion')
+  await expect(page.getByText('Applied suggestion for complex')).toBeVisible()
 })
 
 test('routing page lists levels and adds a model', async ({ page }) => {

@@ -13,7 +13,7 @@ import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { RelativeTime } from '@/components/common/RelativeTime'
 import { ScrollTable } from '@/components/common/ScrollTable'
 import { useInsights, useLevels, usePutLevels } from '@/api/queries'
-import type { InsightExample, LevelInsight, Suggestion } from '@/api/types'
+import type { InsightExample, Level, LevelInsight, Suggestion } from '@/api/types'
 
 const pct = (v: number | null | undefined) => (v == null ? '-' : `${Math.round(v * 100)}%`)
 
@@ -56,9 +56,9 @@ function LevelSection({ level }: { level: LevelInsight }) {
   ]
   const hasHistory = level.runs > 0
   return (
-    <Collapsible defaultOpen className="rounded-md border" data-insight-level={level.name}>
+    <Collapsible defaultOpen role="region" aria-label={`${level.name} level insights`} className="rounded-md border">
       <CollapsibleTrigger asChild>
-        <Button variant="ghost" className="flex h-auto w-full flex-wrap justify-start gap-2 px-3 py-2" aria-label={`Insights for level ${level.name}`}>
+        <Button variant="ghost" className="flex h-auto w-full flex-wrap justify-start gap-2 px-3 py-2">
           <ChevronDown aria-hidden />
           <span className="font-semibold">{level.name}</span>
           <span className="text-sm font-normal tabular-nums text-muted-foreground">
@@ -153,6 +153,20 @@ function SuggestionCard({ s, onApply }: { s: Suggestion; onApply: (s: Suggestion
   )
 }
 
+const STALE = 'Levels changed since this suggestion was made; refresh insights'
+
+/** True when a diff entry's `before` no longer matches the current levels (formatted as the server does). */
+function isStale(s: Suggestion, current: Level[]): boolean {
+  return s.diff.some((d) => {
+    const l = current.find((x) => x.name === d.level)
+    if (!l) return true
+    if (d.field === 'min') return String(l.min) !== d.before
+    if (d.field === 'max') return String(l.max) !== d.before
+    if (d.field === 'models') return l.models.join(', ') !== d.before
+    return false
+  })
+}
+
 /** Level insights from run history and the eval set, with suggested level changes the user can apply. */
 export function InsightsPanel() {
   const insights = useInsights()
@@ -160,19 +174,22 @@ export function InsightsPanel() {
   const put = usePutLevels()
   const [target, setTarget] = useState<Suggestion | null>(null)
   const [error, setError] = useState<unknown>(null)
-  const [applied, setApplied] = useState<{ id: string; restart: boolean } | null>(null)
   const report = insights.data
 
   const apply = () => {
-    if (!target || !levels.data) return
+    if (put.isPending || !target || !levels.data) return
     const s = target
+    const current = levels.data
     setError(null)
+    if (isStale(s, current.levels)) {
+      setError(new Error(STALE))
+      setTarget(null)
+      void insights.refetch()
+      return
+    }
     put
-      .mutateAsync({ levels: s.levels.map((l) => ({ ...l, models: l.models ?? [] })), routing_instruction: levels.data.routing_instruction })
-      .then((view) => {
-        setApplied({ id: s.id, restart: view.restart_required })
-        toast.success(`Applied suggestion for ${s.level}`)
-      })
+      .mutateAsync({ levels: s.levels.map((l) => ({ ...l, models: l.models ?? [] })), routing_instruction: current.routing_instruction })
+      .then((view) => toast.success(`Applied suggestion for ${s.level}${view.restart_required ? '. Restart the supervisor for routing changes to take effect.' : ''}`))
       .catch(setError)
       .finally(() => setTarget(null))
   }
@@ -205,18 +222,13 @@ export function InsightsPanel() {
             </div>
             <section aria-label="Suggestions" className="flex flex-col gap-2">
               <h2 className="text-sm font-semibold">Suggestions</h2>
-              {applied && (
-                <p role="status" className="text-sm">
-                  Applied suggestion {applied.id}.{applied.restart ? ' Restart the supervisor for routing changes to take effect.' : ''}
-                </p>
-              )}
               {error !== null && <ErrorAlert error={error} title="Could not apply the suggestion" />}
               {report.suggestions.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No suggestions: the levels look consistent with the data.</p>
               ) : (
                 <ul className="flex flex-col gap-2">
                   {report.suggestions.map((s) => (
-                    <SuggestionCard key={s.id} s={s} onApply={(x) => (setApplied(null), setError(null), setTarget(x))} />
+                    <SuggestionCard key={s.id} s={s} onApply={(x) => (setError(null), setTarget(x))} />
                   ))}
                 </ul>
               )}
@@ -228,7 +240,11 @@ export function InsightsPanel() {
         open={target !== null}
         onOpenChange={(o) => !o && setTarget(null)}
         title={`Apply suggestion for ${target?.level ?? ''}?`}
-        description={`${target?.rationale ?? ''} This replaces the levels with the suggested set and keeps the routing instruction.`}
+        description={
+          levels.data
+            ? `${target?.rationale ?? ''} This replaces the levels with the suggested set and keeps the routing instruction.`
+            : 'The current levels could not be loaded, so the suggestion cannot be checked or applied. Reload the page and try again.'
+        }
         confirmLabel="Apply suggestion"
         pending={put.isPending || !levels.data}
         onConfirm={apply}

@@ -106,6 +106,7 @@ export function useRunMessages(id: string) {
 export function useInsights() {
   return useQuery({ queryKey: qk.insights(), queryFn: ({ signal }) => endpoints.getInsights({ signal }) })
 }
+
 export function useLevels() {
   return useQuery({ queryKey: qk.levels(), queryFn: ({ signal }) => endpoints.getLevels({ signal }) })
 }
