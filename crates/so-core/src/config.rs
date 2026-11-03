@@ -1107,7 +1107,7 @@ mod tests {
         ));
         assert!(c.set("limits.global_cap", "-1").is_err());
         assert!(c.set("runs.ask_timeout", "soon").is_err());
-        assert!(c.set("defaults.harness", "gemini").is_err());
+        assert!(c.set("defaults.harness", "unknown-harness").is_err());
         assert!(matches!(
             c.set("limits.nope", "1"),
             Err(CoreError::InvalidConfigKey(_))

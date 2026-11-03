@@ -172,6 +172,19 @@ mod tests {
     }
 
     #[test]
+    fn scans_verified_acp_default_homes() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), ".gemini/oauth_creds.json");
+        touch(d.path(), ".kimi-code/credentials/kimi-code.json");
+        touch(d.path(), ".qwen/oauth_creds.json");
+        mk(d.path(), ".copilot/projects");
+        mk(d.path(), ".cursor/projects");
+        let c = scan_at(d.path());
+        assert_eq!(names(&c), ["gemini-acc1", "kimi-acc1", "qwen-acc1"]);
+        assert_eq!(c[0].home, d.path());
+    }
+
+    #[test]
     fn mirrors_real_layout_with_symlinked_acc1() {
         let d = tempfile::tempdir().unwrap();
         let r = d.path();

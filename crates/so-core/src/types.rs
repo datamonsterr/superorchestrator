@@ -734,7 +734,7 @@ mod tests {
             assert_eq!(h.to_string().parse::<Harness>().unwrap(), h);
         }
         assert_eq!("agy".parse::<Harness>().unwrap(), Harness::Agy);
-        assert!("gemini".parse::<Harness>().is_err());
+        assert!("unknown-harness".parse::<Harness>().is_err());
         assert_eq!(
             serde_json::to_string(&Harness::Opencode).unwrap(),
             "\"opencode\""

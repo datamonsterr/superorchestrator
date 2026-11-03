@@ -686,6 +686,18 @@ mod tests {
 
     #[test]
     fn resume_ids_follow_native_formats() {
+        for h in [
+            Harness::Copilot,
+            Harness::Gemini,
+            Harness::Kimi,
+            Harness::Cursor,
+            Harness::Qwen,
+        ] {
+            check_launch_values(h, None, None, Some("session_1:part.2-3")).unwrap();
+            for bad in ["", "-bad", "a/b", "a b", "é"] {
+                assert!(check_launch_values(h, None, None, Some(bad)).is_err());
+            }
+        }
         let uuid = "01a162ee-5ba3-7400-be98-4eb69d75fead";
         for h in [Harness::Agy, Harness::Claude, Harness::Codex] {
             check_launch_values(h, None, None, Some(uuid)).unwrap();
