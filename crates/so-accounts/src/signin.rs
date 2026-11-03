@@ -20,8 +20,10 @@ pub enum SignIn {
 /// (isolated home), agy `.gemini/antigravity-cli/antigravity-oauth-token`
 /// (plus the older `.gemini/oauth_creds.json` and `google_accounts.json`).
 pub fn sign_in_state(account: &AccountFile, host: &HostEnv) -> Result<SignIn> {
-    if account.endpoint.is_some() {
-        return Ok(bool_state(crate::env::resolve_token(account, host).is_ok()));
+    if let Some(endpoint) = &account.endpoint {
+        return Ok(bool_state(
+            crate::env::resolve_token(account, endpoint, host).is_ok(),
+        ));
     }
     let home = host.expand(&account.home)?;
     let present = |rels: &[&str]| rels.iter().any(|r| home.join(r).exists());

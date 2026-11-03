@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use so_core::{AccountFile, Harness, Platform, Slot};
+use so_core::{AccountFile, Endpoint, Harness, Platform, Slot};
 
 use crate::error::{AccountsError, Result};
 use crate::host::{HostEnv, same_path};
@@ -47,9 +47,12 @@ impl std::fmt::Debug for Launch {
     }
 }
 
-pub(crate) fn resolve_token(account: &AccountFile, host: &HostEnv) -> Result<String> {
+pub(crate) fn resolve_token(
+    account: &AccountFile,
+    endpoint: &Endpoint,
+    host: &HostEnv,
+) -> Result<String> {
     use std::os::unix::fs::PermissionsExt;
-    let endpoint = account.endpoint.as_ref().expect("endpoint account");
     if let Some(var) = &endpoint.token_env {
         return host
             .vars
@@ -67,9 +70,14 @@ pub(crate) fn resolve_token(account: &AccountFile, host: &HostEnv) -> Result<Str
         path: source.to_string(),
     };
     let path = host.expand(source).map_err(|_| err())?;
+    // Avoid blocking on a FIFO before opening. Recheck the opened target below.
+    if !std::fs::metadata(&path).map_err(|_| err())?.is_file() {
+        return Err(err());
+    }
     let mut file = std::fs::File::open(path).map_err(|_| err())?;
-    let mode = file.metadata().map_err(|_| err())?.permissions().mode() & 0o777;
-    if mode != 0o600 && mode != 0o400 {
+    let metadata = file.metadata().map_err(|_| err())?;
+    let mode = metadata.permissions().mode() & 0o777;
+    if !metadata.is_file() || (mode != 0o600 && mode != 0o400) {
         return Err(err());
     }
     let mut token = String::new();
@@ -132,7 +140,7 @@ pub(crate) fn build_launch_vars(
     let home = host.expand(&account.home)?;
     let mut vars = harness_vars(account, host, &home);
     if let Some(endpoint) = &account.endpoint {
-        let token = resolve_token(account, host)?;
+        let token = resolve_token(account, endpoint, host)?;
         vars.extend([
             ("ANTHROPIC_BASE_URL".into(), endpoint.base_url().into()),
             (endpoint.token_var().into(), token),
@@ -255,6 +263,32 @@ mod tests {
                 .contains(&("ANTHROPIC_API_KEY".into(), "secret-value".into()))
         );
         assert!(!format!("{launch:?}").contains("secret-value"));
+        let link = d.path().join("key-link");
+        std::os::unix::fs::symlink(&key, &link).unwrap();
+        a.endpoint.as_mut().unwrap().token_file = Some(link.display().to_string());
+        assert!(build_launch(&a, &host(d.path(), Platform::Linux)).is_ok());
+    }
+
+    #[test]
+    fn endpoint_rejects_directory_as_token_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let key = d.path().join("key-directory");
+        std::fs::create_dir(&key).unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut a = acct("endpoint", Harness::Claude, "~/.endpoint");
+        let endpoint = so_core::Endpoint {
+            preset: so_core::EndpointPreset::Kimi,
+            base_url: None,
+            token_env: None,
+            token_file: Some(key.display().to_string()),
+            token_var: None,
+            models: vec![],
+            slots: Default::default(),
+        };
+        a.endpoint = Some(endpoint.clone());
+        let error = resolve_token(&a, &endpoint, &host(d.path(), Platform::Linux)).unwrap_err();
+        assert!(matches!(error, AccountsError::TokenFile { .. }));
     }
 
     fn acct(name: &str, h: Harness, home: &str) -> AccountFile {
