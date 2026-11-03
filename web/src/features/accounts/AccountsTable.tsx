@@ -10,6 +10,8 @@ import { SignInState } from '@/components/common/SignInState'
 import { RelativeTime } from '@/components/common/RelativeTime'
 import type { AccountView } from '@/api/types'
 
+const PRESET_SHORT: Record<string, string> = { zai: 'Z.ai', kimi: 'Kimi', minimax: 'MiniMax', custom: 'Custom' }
+
 export interface AccountActions {
   onToggle: (account: AccountView, enabled: boolean) => void
   onEdit: (account: AccountView) => void
@@ -51,6 +53,11 @@ export function AccountsTable({ accounts, actions }: { accounts: AccountView[]; 
             </TableCell>
             <TableCell>
               <HarnessBadge harness={a.harness} />
+              {a.endpoint && (
+                <Badge variant="outline" className="ml-1" title={`${a.endpoint.base_url} (${a.endpoint.token_source})`}>
+                  {PRESET_SHORT[a.endpoint.preset] ?? a.endpoint.preset}
+                </Badge>
+              )}
             </TableCell>
             <TableCell>
               <SignInState state={a.signed_in} />

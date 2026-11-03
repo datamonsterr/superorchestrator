@@ -41,6 +41,11 @@ function EditForm({ account, onClose }: { account: AccountView; onClose: () => v
           <FieldDescription>Lower numbers are tried first.</FieldDescription>
           <FieldError errors={[formState.errors.priority]} />
         </Field>
+        {account.endpoint && (
+          <p className="text-sm text-muted-foreground">
+            Endpoint: {account.endpoint.preset} ({account.endpoint.base_url}). API key source: {account.endpoint.token_source}.
+          </p>
+        )}
         {account.harness === 'agy' && (
           <FieldSet>
             <FieldLegend variant="label">Pools</FieldLegend>

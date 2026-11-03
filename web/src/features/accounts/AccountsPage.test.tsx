@@ -134,6 +134,139 @@ describe('AccountsPage', () => {
     })
   })
 
+  describe('endpoint accounts', () => {
+    async function openAdd() {
+      renderWithProviders(<AccountsPage />)
+      await userEvent.click(await screen.findByRole('button', { name: /Add account/ }))
+      const dialog = await screen.findByRole('dialog', { name: 'Add account' })
+      await userEvent.click(within(dialog).getByRole('combobox', { name: 'Harness' }))
+      await userEvent.click(await screen.findByRole('option', { name: 'Claude' }))
+      await userEvent.type(within(dialog).getByLabelText('Name'), 'zai-1')
+      return dialog
+    }
+    async function pickPreset(dialog: HTMLElement, label: string) {
+      await userEvent.click(within(dialog).getByRole('combobox', { name: 'Endpoint' }))
+      await userEvent.click(await screen.findByRole('option', { name: label }))
+    }
+    const capture = (sink: { body?: unknown }) =>
+      server.use(
+        http.post('/api/v1/accounts', async ({ request }) => {
+          sink.body = await request.json()
+          return HttpResponse.json({ ...fx.accounts[0], name: 'zai-1', harness: 'claude', signed_in: 'signed_out' }, { status: 201 })
+        }),
+      )
+
+    it('hides endpoint fields for other harnesses and for None', async () => {
+      renderWithProviders(<AccountsPage />)
+      await userEvent.click(await screen.findByRole('button', { name: /Add account/ }))
+      const dialog = await screen.findByRole('dialog', { name: 'Add account' })
+      expect(within(dialog).queryByRole('combobox', { name: 'Endpoint' })).not.toBeInTheDocument()
+      await userEvent.click(within(dialog).getByRole('combobox', { name: 'Harness' }))
+      await userEvent.click(await screen.findByRole('option', { name: 'Claude' }))
+      expect(within(dialog).getByRole('combobox', { name: 'Endpoint' })).toHaveTextContent('None')
+      expect(within(dialog).queryByLabelText('API key')).not.toBeInTheDocument()
+    })
+
+    it('sends a preset with a pasted key and shows the read-only base URL', async () => {
+      const sink: { body?: unknown } = {}
+      capture(sink)
+      const dialog = await openAdd()
+      await pickPreset(dialog, 'Z.ai GLM')
+      const base = within(dialog).getByLabelText('Base URL')
+      expect(base).toHaveValue('https://api.z.ai/api/anthropic')
+      expect(base).toHaveAttribute('readonly')
+      const key = within(dialog).getByLabelText('API key', { selector: 'input' })
+      expect(key).toHaveAttribute('type', 'password')
+      expect(key).toHaveAttribute('autocomplete', 'off')
+      await userEvent.type(key, 'sk-secret')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Add and sign in' }))
+      await waitFor(() => expect(sink.body).toEqual({ harness: 'claude', name: 'zai-1', endpoint: { preset: 'zai' }, token: 'sk-secret' }))
+    })
+
+    it('requires a key and sends token_env without a token for the env variant', async () => {
+      const sink: { body?: unknown } = {}
+      capture(sink)
+      const dialog = await openAdd()
+      await pickPreset(dialog, 'Kimi Code')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Add and sign in' }))
+      expect(await within(dialog).findByText('Paste the API key')).toBeInTheDocument()
+      expect(sink.body).toBeUndefined()
+      await userEvent.click(within(dialog).getByRole('radio', { name: 'Environment variable' }))
+      await userEvent.type(within(dialog).getByLabelText('Variable name'), 'KIMI_API_KEY')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Add and sign in' }))
+      await waitFor(() => expect(sink.body).toEqual({ harness: 'claude', name: 'zai-1', endpoint: { preset: 'kimi', token_env: 'KIMI_API_KEY' } }))
+    })
+
+    it('custom shows and requires its fields', async () => {
+      const sink: { body?: unknown } = {}
+      capture(sink)
+      const dialog = await openAdd()
+      await pickPreset(dialog, 'Custom')
+      await userEvent.type(within(dialog).getByLabelText('API key', { selector: 'input' }), 'k')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Add and sign in' }))
+      expect(await within(dialog).findByText('Enter the base URL')).toBeInTheDocument()
+      expect(within(dialog).getByText('Enter at least one model')).toBeInTheDocument()
+      expect(within(dialog).getByText('Enter the haiku model')).toBeInTheDocument()
+      expect(sink.body).toBeUndefined()
+      await userEvent.type(within(dialog).getByLabelText('Base URL'), 'https://llm.example.com/v1')
+      await userEvent.type(within(dialog).getByLabelText('Models'), 'm1, m2')
+      await userEvent.type(within(dialog).getByLabelText('Opus model'), 'm1')
+      await userEvent.type(within(dialog).getByLabelText('Sonnet model'), 'm1')
+      await userEvent.type(within(dialog).getByLabelText('Haiku model'), 'm2')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Add and sign in' }))
+      await waitFor(() =>
+        expect(sink.body).toEqual({
+          harness: 'claude',
+          name: 'zai-1',
+          endpoint: { preset: 'custom', base_url: 'https://llm.example.com/v1', models: ['m1', 'm2'], slots: { opus: 'm1', sonnet: 'm1', haiku: 'm2' } },
+          token: 'k',
+        }),
+      )
+    })
+
+    it('does not keep the key after close and reopen', async () => {
+      const dialog = await openAdd()
+      await pickPreset(dialog, 'MiniMax')
+      await userEvent.type(within(dialog).getByLabelText('API key', { selector: 'input' }), 'sk-secret')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add account' })).not.toBeInTheDocument())
+      await userEvent.click(screen.getByRole('button', { name: /Add account/ }))
+      const again = await screen.findByRole('dialog', { name: 'Add account' })
+      await userEvent.click(within(again).getByRole('combobox', { name: 'Harness' }))
+      await userEvent.click(await screen.findByRole('option', { name: 'Claude' }))
+      await pickPreset(again, 'MiniMax')
+      expect(within(again).getByLabelText('API key', { selector: 'input' })).toHaveValue('')
+      expect(screen.queryByDisplayValue('sk-secret')).not.toBeInTheDocument()
+    })
+
+    it('renders API field errors', async () => {
+      server.use(
+        http.post('/api/v1/accounts', () =>
+          HttpResponse.json(
+            { error: { code: -32602, message: 'bad', data: { 'endpoint.token_env': 'not set in the daemon environment', 'endpoint.base_url': 'unreachable', token: 'rejected' } } },
+            { status: 422 },
+          ),
+        ),
+      )
+      const dialog = await openAdd()
+      await pickPreset(dialog, 'Z.ai GLM')
+      await userEvent.type(within(dialog).getByLabelText('API key', { selector: 'input' }), 'k')
+      await userEvent.click(within(dialog).getByRole('button', { name: 'Add and sign in' }))
+      expect(await within(dialog).findByText('rejected')).toBeInTheDocument()
+      expect(within(dialog).getByText('unreachable')).toBeInTheDocument()
+      expect(within(dialog).getByLabelText('API key', { selector: 'input' })).toHaveValue('')
+    })
+
+    it('shows the preset badge and token source for endpoint accounts', async () => {
+      const ep = { preset: 'zai', base_url: 'https://api.z.ai/api/anthropic', models: ['glm-4.6'], token_source: 'env:ZAI_API_KEY' }
+      server.use(http.get('/api/v1/accounts', () => HttpResponse.json([{ ...fx.accounts[0], name: 'zai-1', harness: 'claude', endpoint: ep }, fx.accounts[0]])))
+      renderWithProviders(<AccountsPage />)
+      expect(within(await row('zai-1')).getByText('Z.ai')).toBeInTheDocument()
+      await openMenu('zai-1', 'Edit')
+      expect(await screen.findByText(/API key source: env:ZAI_API_KEY/)).toBeInTheDocument()
+    })
+  })
+
   it('imports scanned accounts with per-row status', async () => {
     let imported: unknown
     server.use(
