@@ -49,6 +49,10 @@ fn roots(g: &mut SchemaGenerator) {
     add::<PruneResult>(g);
     add::<LevelsView>(g);
     add::<ConfigView>(g);
+    add::<so_supervisor::services::decider::DeciderView>(g);
+    add::<so_supervisor::services::decider::DeciderPatch>(g);
+    add::<so_supervisor::services::decider::DeciderTestRequest>(g);
+    add::<so_supervisor::services::decider::DeciderTestResult>(g);
     add::<AddAccountRequest>(g);
     add::<ImportAccountRequest>(g);
     add::<ImportCandidate>(g);

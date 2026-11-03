@@ -12,7 +12,7 @@ static COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Writes `bytes` to `path` atomically: a mode-0600 temp file with a unique name is
 /// created in the same directory (`create_new`), written, fsynced and renamed over the
 /// target, then the directory is fsynced (errors ignored where a directory cannot be opened).
-pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     let name = path
         .file_name()
