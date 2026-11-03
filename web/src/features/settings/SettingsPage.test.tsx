@@ -305,7 +305,7 @@ describe('SettingsPage decider tab', () => {
           ...fx.decider,
           env_overrides: [
             { name: 'SUPERORCHESTRATOR_ROUTER_MODEL', field: 'model', value: 'x/forced' },
-            { name: 'SUPERORCHESTRATOR_ROUTER_ENDPOINT', field: 'endpoint' },
+            { name: 'SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL', field: 'fallback_model' },
           ],
           effective: { ...fx.decider.effective, primary: 'x/forced', primary_source: 'env' },
         }),
@@ -313,7 +313,7 @@ describe('SettingsPage decider tab', () => {
     )
     await openDecider()
     expect(screen.getByTestId('env-override-model')).toHaveTextContent('SUPERORCHESTRATOR_ROUTER_MODEL is set (x/forced) and wins over this setting until it is unset.')
-    expect(screen.getByTestId('env-override-endpoint')).toHaveTextContent('SUPERORCHESTRATOR_ROUTER_ENDPOINT is set and wins')
+    expect(screen.getByTestId('env-override-fallback_model')).toHaveTextContent('SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL is set and wins')
     expect(screen.getByTestId('decider-effective')).toHaveTextContent('x/forced (env)')
   })
 
