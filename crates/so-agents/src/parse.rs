@@ -588,7 +588,7 @@ body
             "description required"
         );
         assert!(parse("---\nname: a:b\ndescription: d\n---\n").is_err());
-        assert!(parse("---\ndescription: d\nharness: gemini\n---\n").is_err());
+        assert!(parse("---\ndescription: d\nharness: unknown-harness\n---\n").is_err());
         assert!(parse("---\ndescription: d\nmemory: team\n---\n").is_err());
         assert!(parse("---\ndescription: d\n").is_err(), "unterminated");
         let a = parse("---\ndescription: d\n---\n").unwrap();
