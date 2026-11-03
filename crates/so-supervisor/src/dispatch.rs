@@ -397,8 +397,13 @@ async fn handle_decider(
     use crate::services::decider;
     match method {
         METHOD_DECIDER_GET => {
-            serde_json::to_value(decider::view(&state.paths, &state.config).map_err(internal)?)
-                .map_err(internal)
+            let state = Arc::clone(state);
+            let view =
+                tokio::task::spawn_blocking(move || decider::view(&state.paths, &state.config))
+                    .await
+                    .map_err(internal)?
+                    .map_err(internal)?;
+            serde_json::to_value(view).map_err(internal)
         }
         METHOD_DECIDER_SET => {
             // Deserialize each known field separately so malformed types identify the field
@@ -429,8 +434,13 @@ async fn handle_decider(
             }
             let patch: decider::DeciderPatch = serde_json::from_value(params)
                 .map_err(|_| RpcError::new(INVALID_PARAMS, "invalid decider patch"))?;
-            let view = decider::set(&state.paths, &state.config, patch)
-                .map_err(|e| RpcError::new(INVALID_PARAMS, e))?;
+            let state = Arc::clone(state);
+            let view = tokio::task::spawn_blocking(move || {
+                decider::set(&state.paths, &state.config, patch)
+            })
+            .await
+            .map_err(internal)?
+            .map_err(|e| RpcError::new(INVALID_PARAMS, e))?;
             serde_json::to_value(view).map_err(internal)
         }
         METHOD_DECIDER_TEST => {

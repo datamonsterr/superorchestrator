@@ -188,25 +188,38 @@ fn valid_model(s: &str) -> bool {
 }
 
 pub fn set(paths: &Paths, running: &Config, patch: DeciderPatch) -> Result<DeciderView, String> {
+    set_with_writer(paths, running, patch, |paths, refs| {
+        Config::set_many_in_file(paths, refs)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    })
+}
+
+fn set_with_writer(
+    paths: &Paths,
+    running: &Config,
+    patch: DeciderPatch,
+    write_config: impl FnOnce(&Paths, &[(&str, &str)]) -> Result<(), String>,
+) -> Result<DeciderView, String> {
     let mut entries: Vec<(String, String)> = Vec::new();
     let mut push_string = |key: &str, value: &str| {
         entries.push((key.into(), serde_json::to_string(value).unwrap_or_default()))
     };
     if let Some(v) = &patch.endpoint {
         if !jev::endpoint_allowed(v) {
-            return Err("endpoint: invalid endpoint".into());
+            return Err("endpoint: must be https, or http only to a loopback host".into());
         }
         push_string("router.jev.endpoint", v);
     }
     if let Some(v) = &patch.model {
         if !valid_model(v) {
-            return Err("model: invalid model".into());
+            return Err("model: must be a non-empty model id without spaces".into());
         }
         push_string("router.jev.model", v);
     }
     if let Some(v) = &patch.fallback_model {
         if !v.is_empty() && !valid_model(v) {
-            return Err("fallback_model: invalid model".into());
+            return Err("fallback_model: must be empty, none, or a model id without spaces".into());
         }
         push_string("router.jev.fallback_model", v);
     }
@@ -219,7 +232,7 @@ pub fn set(paths: &Paths, running: &Config, patch: DeciderPatch) -> Result<Decid
     if let Some(v) = &patch.timeout {
         let duration = v
             .parse::<so_core::duration::HumanDuration>()
-            .map_err(|_| "timeout: invalid duration")?;
+            .map_err(|_| "timeout: must be a duration from 1s to 120s")?;
         if !(std::time::Duration::from_secs(1)..=std::time::Duration::from_secs(120))
             .contains(&duration.as_duration())
         {
@@ -232,22 +245,21 @@ pub fn set(paths: &Paths, running: &Config, patch: DeciderPatch) -> Result<Decid
     match &patch.key {
         Some(KeyPatch::Env(v)) => {
             if !valid_env(v) {
-                return Err("key.env: invalid environment name".into());
+                return Err("key.env: must start with an uppercase letter or underscore and contain only uppercase letters, digits, or underscores".into());
             }
             push_string("router.jev.key_env", v);
         }
         Some(KeyPatch::File(v)) => {
             if v.is_empty() {
-                return Err("key.file: empty path".into());
+                return Err("key.file: must be a non-empty path".into());
             }
             push_string("router.jev.key_file", v);
         }
         Some(KeyPatch::Paste(v)) => {
             if !valid_model(v) || v.starts_with(['\"', '\'']) || v.ends_with(['\"', '\'']) {
-                return Err("key.paste: invalid secret".into());
-            }
-            if !valid_env(&disk.router.jev.key_env) {
-                return Err("key.env: invalid environment name".into());
+                return Err(
+                    "key.paste: must be non-empty, without spaces or surrounding quotes".into(),
+                );
             }
             let path = paths.config_dir.join("decider.env");
             let path = path.to_str().ok_or("key.file: invalid path")?;
@@ -271,10 +283,22 @@ pub fn set(paths: &Paths, running: &Config, patch: DeciderPatch) -> Result<Decid
     for (k, v) in &entries {
         trial.set(k, v).map_err(|e| e.to_string())?;
     }
+    let key_path = paths.config_dir.join("decider.env");
+    let mut previous = None;
     if let Some(secret) = paste {
         so_core::fsutil::create_private_dirs(&paths.config_dir).map_err(|e| e.to_string())?;
+        previous = Some(match std::fs::read(&key_path) {
+            Ok(bytes) => Some((
+                bytes,
+                std::fs::metadata(&key_path)
+                    .map_err(|e| e.to_string())?
+                    .permissions(),
+            )),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.to_string()),
+        });
         so_core::fsutil::write_atomic(
-            &paths.config_dir.join("decider.env"),
+            &key_path,
             format!("{}={}\n", trial.router.jev.key_env, secret).as_bytes(),
         )
         .map_err(|e| e.to_string())?;
@@ -283,7 +307,24 @@ pub fn set(paths: &Paths, running: &Config, patch: DeciderPatch) -> Result<Decid
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))
         .collect();
-    Config::set_many_in_file(paths, &refs).map_err(|e| e.to_string())?;
+    if let Err(error) = write_config(paths, &refs) {
+        if let Some(previous) = previous {
+            let rollback = match previous {
+                Some((bytes, permissions)) => so_core::fsutil::write_atomic(&key_path, &bytes)
+                    .map_err(|e| e.to_string())
+                    .and_then(|()| {
+                        std::fs::set_permissions(&key_path, permissions).map_err(|e| e.to_string())
+                    }),
+                None => std::fs::remove_file(&key_path).map_err(|e| e.to_string()),
+            };
+            if let Err(rollback_error) = rollback {
+                return Err(format!(
+                    "{error}; failed to restore decider.env: {rollback_error}"
+                ));
+            }
+        }
+        return Err(error);
+    }
     view(paths, running)
 }
 
@@ -345,4 +386,44 @@ pub async fn test_decider(
             error: Some(error),
         },
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_write_failure_restores_previous_key_or_removes_new_key() {
+        for existing in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = Paths::from_dir(dir.path().to_path_buf());
+            let key_path = paths.config_dir.join("decider.env");
+            if existing {
+                std::fs::write(&key_path, b"old key\n").unwrap();
+            }
+            let result = set_with_writer(
+                &paths,
+                &Config::default(),
+                DeciderPatch {
+                    key: Some(KeyPatch::Paste("new-key".into())),
+                    ..Default::default()
+                },
+                |_, _| {
+                    assert!(key_path.exists());
+                    Err("simulated config write failure".into())
+                },
+            );
+            assert!(
+                result
+                    .unwrap_err()
+                    .contains("simulated config write failure")
+            );
+            if existing {
+                assert_eq!(std::fs::read(&key_path).unwrap(), b"old key\n");
+            } else {
+                assert!(!key_path.exists());
+            }
+        }
+    }
 }

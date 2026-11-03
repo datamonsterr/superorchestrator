@@ -4,28 +4,118 @@ use so_core::{Config, Paths};
 use so_supervisor::services::decider::{self, DeciderPatch, KeyPatch};
 
 #[test]
-fn invalid_patches_do_not_write() {
+fn validation_accepts_and_rejects_each_field_without_writes_on_error() {
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::from_dir(dir.path().to_path_buf());
-    std::fs::write(paths.config_toml(), "# keep\n").unwrap();
-    for (field, value) in [
-        ("endpoint", serde_json::json!("http://example.com")),
-        ("model", serde_json::json!("a b")),
-        ("fallback_model", serde_json::json!("a b")),
-        ("on_unreachable", serde_json::json!("bad")),
-        ("timeout", serde_json::json!("121s")),
-        ("min_confidence", serde_json::json!(1.1)),
-        ("min_margin", serde_json::json!(-0.1)),
-        ("key", serde_json::json!({"env":"invalid"})),
-        ("key", serde_json::json!({"file":""})),
-        ("key", serde_json::json!({"paste":"bad key"})),
-        ("key", serde_json::json!({"paste":"\"quoted\""})),
-    ] {
+    let key_path = paths.config_dir.join("decider.env");
+    let config = b"# keep config bytes\n";
+    let key = b"existing secret bytes\n";
+    let cases = [
+        (
+            "endpoint",
+            serde_json::json!("https://example.com/decisions"),
+            true,
+        ),
+        (
+            "endpoint",
+            serde_json::json!("http://127.0.0.1:1234/"),
+            true,
+        ),
+        ("endpoint", serde_json::json!("http://example.com"), false),
+        ("model", serde_json::json!("example/model"), true),
+        ("model", serde_json::json!(""), false),
+        ("model", serde_json::json!("a b"), false),
+        ("fallback_model", serde_json::json!(""), true),
+        ("fallback_model", serde_json::json!("none"), true),
+        ("fallback_model", serde_json::json!("example/model"), true),
+        ("fallback_model", serde_json::json!("a b"), false),
+        ("on_unreachable", serde_json::json!("error"), true),
+        ("on_unreachable", serde_json::json!("heuristic"), true),
+        ("on_unreachable", serde_json::json!("bad"), false),
+        ("timeout", serde_json::json!("1s"), true),
+        ("timeout", serde_json::json!("120s"), true),
+        ("timeout", serde_json::json!("0s"), false),
+        ("timeout", serde_json::json!("500ms"), false),
+        ("timeout", serde_json::json!("121s"), false),
+        ("timeout", serde_json::json!("garbage"), false),
+        ("key", serde_json::json!({"env":"TEST_KEY_1"}), true),
+        ("key", serde_json::json!({"env":"invalid"}), false),
+        ("key", serde_json::json!({"file":"/tmp/key.env"}), true),
+        ("key", serde_json::json!({"file":""}), false),
+        ("key", serde_json::json!({"paste":"sk-valid"}), true),
+        ("key", serde_json::json!({"paste":""}), false),
+        ("key", serde_json::json!({"paste":"bad key"}), false),
+        ("key", serde_json::json!({"paste":"\"quoted\""}), false),
+        ("key", serde_json::json!({"paste":"'quoted'"}), false),
+    ];
+    for (field, value, accepted) in cases {
+        std::fs::write(paths.config_toml(), config).unwrap();
+        std::fs::write(&key_path, key).unwrap();
         let patch: DeciderPatch =
             serde_json::from_value(serde_json::json!({(field):value})).unwrap();
-        let error = decider::set(&paths, &Config::default(), patch).unwrap_err();
-        assert!(error.contains(field), "{field}: {error}");
-        assert_eq!(std::fs::read(paths.config_toml()).unwrap(), b"# keep\n");
+        let result = decider::set(&paths, &Config::default(), patch);
+        assert_eq!(result.is_ok(), accepted, "{field}: {value}: {result:?}");
+        if !accepted {
+            assert!(result.unwrap_err().contains(field));
+            assert_eq!(std::fs::read(paths.config_toml()).unwrap(), config);
+            assert_eq!(std::fs::read(&key_path).unwrap(), key);
+        }
+    }
+    for field in ["min_confidence", "min_margin"] {
+        for (value, accepted) in [
+            (0.0, true),
+            (1.0, true),
+            (-0.1, false),
+            (1.1, false),
+            (f64::NAN, false),
+            (f64::INFINITY, false),
+        ] {
+            std::fs::write(paths.config_toml(), config).unwrap();
+            std::fs::write(&key_path, key).unwrap();
+            let mut patch = DeciderPatch::default();
+            if field == "min_confidence" {
+                patch.min_confidence = Some(value);
+            } else {
+                patch.min_margin = Some(value);
+            }
+            let result = decider::set(&paths, &Config::default(), patch);
+            assert_eq!(result.is_ok(), accepted, "{field}: {value}: {result:?}");
+            if !accepted {
+                assert!(result.unwrap_err().contains(field));
+                assert_eq!(std::fs::read(paths.config_toml()).unwrap(), config);
+                assert_eq!(std::fs::read(&key_path).unwrap(), key);
+            }
+        }
+    }
+}
+
+#[test]
+fn paste_rolls_back_if_config_edit_fails() {
+    // This valid TOML inline table can be loaded, but cannot be edited as a table.
+    for existing in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(dir.path().to_path_buf());
+        let config = b"router = {}\n";
+        std::fs::write(paths.config_toml(), config).unwrap();
+        let key_path = paths.config_dir.join("decider.env");
+        if existing {
+            std::fs::write(&key_path, b"previous key\n").unwrap();
+        }
+        let result = decider::set(
+            &paths,
+            &Config::default(),
+            DeciderPatch {
+                key: Some(KeyPatch::Paste("new-secret".into())),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(paths.config_toml()).unwrap(), config);
+        if existing {
+            assert_eq!(std::fs::read(&key_path).unwrap(), b"previous key\n");
+        } else {
+            assert!(!key_path.exists());
+        }
     }
 }
 
