@@ -433,3 +433,45 @@ cost = "paid"
 id = "opencode-go/step-5-preview"
 tier = "mid"
 cost = "paid"
+
+[[claude.models]]
+id = "glm-5.3"
+tier = "high"
+cost = "included"
+endpoint = "zai"
+
+[[claude.models]]
+id = "glm-5.3-flash"
+tier = "fast"
+cost = "included"
+endpoint = "zai"
+
+[[claude.models]]
+id = "k3.1-pro"
+tier = "high"
+cost = "included"
+endpoint = "kimi"
+
+[[claude.models]]
+id = "k3.1-pro-highspeed"
+tier = "mid"
+cost = "included"
+endpoint = "kimi"
+
+[[claude.models]]
+id = "k3"
+tier = "mid"
+cost = "included"
+endpoint = "kimi"
+
+[[claude.models]]
+id = "kimi-for-coding"
+tier = "mid"
+cost = "included"
+endpoint = "kimi"
+
+[[claude.models]]
+id = "MiniMax-M3.1-Flash"
+tier = "mid"
+cost = "included"
+endpoint = "minimax"

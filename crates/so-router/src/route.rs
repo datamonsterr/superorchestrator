@@ -10,14 +10,15 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use so_core::config::{JevModels, OnUnreachable};
 use so_core::proto::{RouteAlternative, RouteParams, RouteResult, RouteSource, RouteUsage};
-use so_core::{AccountFile, Choice, Config, Harness};
+use so_core::{AccountFile, Choice, Config, Harness, Slot};
 use so_store::Store;
 
 use crate::catalog::Catalog;
-use crate::eligible::{Candidate, Snapshot, apply_claude_rank, candidate, eligible};
+use crate::eligible::{Candidate, Snapshot, apply_claude_rank, candidate, eligible, serves};
 use crate::error::{Result, RouterError};
 use crate::heuristic::{
-    Complexity, ScoreInputs, effort_gap, estimate_complexity_score, harness_priority, score,
+    Complexity, PRIORITY_STEP, ScoreInputs, effort_gap, estimate_complexity_score,
+    harness_priority, score,
 };
 use crate::jev::{EnvFn, JevFailure, JevRequest, decide, process_env, resolve_key};
 use crate::levels;
@@ -113,12 +114,10 @@ pub async fn route_detailed(
 
 /// Ids of the choices the decider would be offered.
 pub fn eligible_choice_ids(ctx: &RouteCtx<'_>, exclude: &[String]) -> Vec<String> {
-    apply_claude_rank(eligible(
-        &ctx.config.choices(),
+    apply_claude_rank(
+        eligible(&ctx.config.choices(), ctx.catalog, ctx.snapshot, exclude),
         ctx.catalog,
-        ctx.snapshot,
-        exclude,
-    ))
+    )
     .into_iter()
     .map(|c| c.choice.id())
     .collect()
@@ -239,7 +238,18 @@ fn heuristic_rank<'a>(
                 headroom: (headroom_of(account, &cand.pool) / 100.0).clamp(0.0, 1.0),
                 active_runs: account.active,
                 cost: cand.cost,
-                priority: harness_priority(&ctx.config.router.priority, cand.choice.harness),
+                priority: harness_priority(&ctx.config.router.priority, cand.choice.harness)
+                    + if cand.choice.harness == Harness::Claude
+                        && ctx
+                            .catalog
+                            .endpoint(cand.choice.harness, &cand.choice.model)
+                            .is_some()
+                        && ctx.config.router.priority.contains(&Harness::Claude)
+                    {
+                        PRIORITY_STEP / 2.0
+                    } else {
+                        0.0
+                    },
                 effort_gap: effort_gap(complexity, cand.choice.effort.as_deref()),
             };
             Some(Ranked {
@@ -271,7 +281,29 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
     if agent.trim().is_empty() {
         return Err(RouterError::Invalid("agent must not be empty".into()));
     }
-    let pins = parse_pins(params)?;
+    let mut pins = parse_pins(params)?;
+    if let Some(account) = pins
+        .account
+        .as_ref()
+        .and_then(|name| ctx.snapshot.accounts.iter().find(|a| &a.file.name == name))
+    {
+        if pins.model.is_none()
+            && let Some(endpoint) = &account.file.endpoint
+        {
+            pins.harness = pins.harness.or(Some(account.file.harness));
+            pins.model = Some(endpoint.slot(Slot::Opus).to_string());
+        }
+        if let Some(model) = &pins.model {
+            let harness = pins.harness.unwrap_or(account.file.harness);
+            if !serves(&account.file, harness, model, ctx.catalog) {
+                return Err(RouterError::Invalid(format!(
+                    "account {} does not serve model {model} on {harness}",
+                    account.file.name
+                )));
+            }
+            pins.harness = Some(harness);
+        }
+    }
     let pinned = pins.any();
     let mut cands: Vec<Candidate<'_>> = if pinned {
         pinned_candidates(ctx, params, &pins)?
@@ -292,7 +324,7 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
         cands.retain(|c| !c.accounts.is_empty());
     }
     if !pinned {
-        cands = apply_claude_rank(cands);
+        cands = apply_claude_rank(cands, ctx.catalog);
     }
     if cands.is_empty() {
         return Err(RouterError::NoEligible(if pinned {

@@ -231,7 +231,7 @@ impl RunManager {
             params.model.clone(),
         );
         let ranked = self
-            .blocking(move || -> Result<Vec<String>, String> {
+            .blocking(move || -> Result<Vec<(String, Option<String>)>, String> {
                 let accounts = AccountFile::list(&paths).map_err(|e| e.to_string())?;
                 let catalog = Catalog::load(&paths).map_err(|e| e.to_string())?;
                 let mut snap = Snapshot::collect(&store, &accounts, low, Utc::now())
@@ -239,23 +239,66 @@ impl RunManager {
                 if queue_over_cap {
                     snap.accounts.iter_mut().for_each(|a| a.active = 0);
                 }
+                let (_, model, _) =
+                    so_core::resolve_model_ref(harness.into(), model.as_deref(), None)
+                        .map_err(|e| e.to_string())?;
                 let pool = catalog.pool_for(harness, model.as_deref().unwrap_or_default());
-                let usable: Vec<_> = so_router::eligible::usable_accounts(&snap, harness, &pool)
-                    .into_iter()
+                let usable: Vec<_> = snap
+                    .accounts
+                    .iter()
+                    .filter(|a| {
+                        let effective_model = model.as_deref().unwrap_or_else(|| {
+                            a.file
+                                .endpoint
+                                .as_ref()
+                                .map_or("", |e| e.slot(so_core::Slot::Opus))
+                        });
+                        a.file.enabled
+                            && so_router::eligible::serves(
+                                &a.file,
+                                harness,
+                                effective_model,
+                                &catalog,
+                            )
+                            && a.active < a.file.cap
+                            && a.pools.get(&pool).is_some_and(|p| p.available)
+                    })
                     .filter(|a| !exclude.contains(&a.file.name))
                     .filter(|a| pin_account.as_ref().is_none_or(|n| n == &a.file.name))
                     .collect();
-                Ok(so_router::select::rank_accounts(&usable, &pool)
+                let ordered = so_router::select::rank_accounts(&usable, &pool);
+                let selected_model = model
+                    .as_deref()
+                    .unwrap_or_else(|| {
+                        ordered
+                            .first()
+                            .and_then(|a| a.file.endpoint.as_ref())
+                            .map_or("", |e| e.slot(so_core::Slot::Opus))
+                    })
+                    .to_string();
+                Ok(ordered
                     .into_iter()
-                    .map(|a| a.file.name.clone())
+                    .filter(|a| {
+                        so_router::eligible::serves(&a.file, harness, &selected_model, &catalog)
+                    })
+                    .map(|a| {
+                        (
+                            a.file.name.clone(),
+                            a.file
+                                .endpoint
+                                .as_ref()
+                                .map(|e| e.slot(so_core::Slot::Opus).to_string()),
+                        )
+                    })
                     .collect())
             })
             .await?
             .map_err(|e| rpc(UNAVAILABLE, e))?;
-        let Some(first) = ranked.first().cloned() else {
+        let Some((first, opus)) = ranked.first().cloned() else {
             return Err(why.clone());
         };
-        let model = params.model.clone().unwrap_or_default();
+        let ranked: Vec<String> = ranked.into_iter().map(|(name, _)| name).collect();
+        let model = params.model.clone().or(opus).unwrap_or_default();
         // No level lists this pin, so its id is a ref built from what was pinned; with no model
         // named there is no ref to form and the id is the harness name.
         let choice_id = if model.is_empty() {

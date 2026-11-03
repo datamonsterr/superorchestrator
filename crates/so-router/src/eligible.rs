@@ -103,18 +103,35 @@ pub struct Candidate<'a> {
     pub accounts: Vec<&'a AccountState>,
 }
 
-/// Accounts of `harness` that can take a run in `pool`: enabled, pool available, below cap.
+/// Whether the account can serve this model under the endpoint routing rule.
+pub fn serves(account: &AccountFile, harness: Harness, model: &str, catalog: &Catalog) -> bool {
+    if account.harness != harness {
+        return false;
+    }
+    if harness != Harness::Claude {
+        return true;
+    }
+    match &account.endpoint {
+        None => catalog.endpoint(harness, model).is_none(),
+        Some(endpoint) if !endpoint.models.is_empty() => endpoint.models.iter().any(|m| m == model),
+        Some(endpoint) => catalog.endpoint(harness, model) == Some(endpoint.preset),
+    }
+}
+
+/// Accounts that can serve the model with an available pool and capacity.
 pub fn usable_accounts<'a>(
     snapshot: &'a Snapshot,
     harness: Harness,
     pool: &str,
+    model: &str,
+    catalog: &Catalog,
 ) -> Vec<&'a AccountState> {
     snapshot
         .accounts
         .iter()
         .filter(|a| {
             a.file.enabled
-                && a.file.harness == harness
+                && serves(&a.file, harness, model, catalog)
                 && a.active < a.file.cap
                 && a.pools.get(pool).is_some_and(|p| p.available)
         })
@@ -128,7 +145,7 @@ pub fn candidate<'a>(
     snapshot: &'a Snapshot,
 ) -> Option<Candidate<'a>> {
     let pool = catalog.pool_for(choice.harness, &choice.model);
-    let accounts = usable_accounts(snapshot, choice.harness, &pool);
+    let accounts = usable_accounts(snapshot, choice.harness, &pool, &choice.model, catalog);
     if accounts.is_empty() {
         return None;
     }
@@ -158,14 +175,17 @@ pub fn eligible<'a>(
 
 /// Claude rank (SPEC 8.4): Claude choices stay in only when no other choice is eligible.
 /// An explicit call pins instead and never reaches this.
-pub fn apply_claude_rank(cands: Vec<Candidate<'_>>) -> Vec<Candidate<'_>> {
-    if cands.iter().all(|c| c.choice.harness == Harness::Claude) {
+pub fn apply_claude_rank<'a>(cands: Vec<Candidate<'a>>, catalog: &Catalog) -> Vec<Candidate<'a>> {
+    let plain = |c: &Candidate<'_>| {
+        c.choice.harness == Harness::Claude
+            && catalog
+                .endpoint(c.choice.harness, &c.choice.model)
+                .is_none()
+    };
+    if cands.iter().all(plain) {
         return cands;
     }
-    cands
-        .into_iter()
-        .filter(|c| c.choice.harness != Harness::Claude)
-        .collect()
+    cands.into_iter().filter(|c| !plain(c)).collect()
 }
 
 #[cfg(test)]
@@ -253,10 +273,13 @@ pub(crate) mod tests {
             ids(&all),
             ["claude/claude-haiku-5-5/medium", "codex/gpt-6.1-sol/high"]
         );
-        assert_eq!(ids(&apply_claude_rank(all)), ["codex/gpt-6.1-sol/high"]);
+        assert_eq!(
+            ids(&apply_claude_rank(all, &cat)),
+            ["codex/gpt-6.1-sol/high"]
+        );
         let only = eligible(&choices, &cat, &snap, &["codex/gpt-6.1-sol/high".into()]);
         assert_eq!(
-            ids(&apply_claude_rank(only)),
+            ids(&apply_claude_rank(only, &cat)),
             ["claude/claude-haiku-5-5/medium"]
         );
     }
