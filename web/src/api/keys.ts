@@ -35,6 +35,7 @@ export const qk = {
   workflowRuns: () => ['workflow-runs'] as const,
   workflowRun: (id: string) => ['workflow-run', id] as const,
   config: () => ['config'] as const,
+  decider: () => ['decider'] as const,
 }
 
 export interface SessionFilter {

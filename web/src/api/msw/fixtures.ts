@@ -1,4 +1,6 @@
 import type {
+  DeciderTestResult,
+  DeciderView,
   AccountView,
   AgentDetail,
   AgentView,
@@ -306,3 +308,20 @@ export const config: ConfigView = {
     defaults: { harness: null, model: null, effort: null },
   },
 }
+
+export const decider: DeciderView = {
+  endpoint: 'https://openrouter.ai/api/v1',
+  model: 'openai/gpt-5-mini',
+  fallback_model: 'google/gemini-3-flash',
+  on_unreachable: 'heuristic',
+  timeout: '20s',
+  min_confidence: 0.45,
+  min_margin: 0.15,
+  effective: { primary: 'openai/gpt-5-mini', primary_source: 'config', fallback: 'google/gemini-3-flash', fallback_source: 'config' },
+  env_overrides: [],
+  key: { source: 'file', name: '/home/dev/.config/superorchestrator/decider.env', masked: '...a1b2' },
+  suggestions: { model: 'openai/gpt-5-mini', fallback_model: 'google/gemini-3-flash' },
+  restart_required: false,
+}
+
+export const deciderTest: DeciderTestResult = { ok: true, complexity: 62.5, level: 'high', confidence: 0.81, model: 'openai/gpt-5-mini', latency_ms: 412 }

@@ -135,7 +135,7 @@ export type {
   Worktrees,
 } from './generated'
 
-export type { ModelCatalog } from './generated'
+export type { ModelCatalog, DeciderView, DeciderPatch, DeciderTestRequest, DeciderTestResult, KeyPatch, KeyView, EnvOverride } from './generated'
 export type DoctorCheck = Check
 export type ModelEntry = ModelRow
 /** Body of `PATCH /config`: a partial config object (each leaf is a dotted key on the server). */

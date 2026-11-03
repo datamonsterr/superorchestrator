@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import * as fx from '@/api/msw/fixtures'
-import { diffToPatch, FIELD_PATHS, KEY_FILE_CLEARED, settingsSchema, valuesFromConfig } from './schemas'
+import { deciderPatch, deciderSchema, diffToPatch, durationSeconds, endpointError, FIELD_PATHS, settingsSchema, valuesFromConfig, valuesFromDecider } from './schemas'
 
 describe('settings schemas', () => {
   const base = valuesFromConfig(fx.config)
 
   it('builds valid form values from the config view', () => {
-    expect(settingsSchema().safeParse(base).success).toBe(true)
+    expect(settingsSchema.safeParse(base).success).toBe(true)
     expect(base.limits.global_cap).toBe(8)
   })
 
@@ -18,51 +18,54 @@ describe('settings schemas', () => {
     expect(diffToPatch(base, base)).toEqual({})
   })
 
-  it('does not send a cleared key_file', () => {
-    const withFile = structuredClone(base)
-    withFile.router.jev.key_file = '/etc/or.env'
-    const cleared = structuredClone(withFile)
-    cleared.router.jev.key_file = ''
-    expect(diffToPatch(withFile, cleared)).toEqual({})
-  })
-
   it('rejects out-of-range values', () => {
     const bad = structuredClone(base)
-    bad.router.policy.min_confidence = 1.5
+    bad.limits.global_cap = 0
     bad.ui.port = 70000
-    const r = settingsSchema().safeParse(bad)
+    const r = settingsSchema.safeParse(bad)
     expect(r.success).toBe(false)
-  })
-
-  it('rejects clearing a saved key_file, and allows an empty one that was never set', () => {
-    const withFile = structuredClone(base)
-    withFile.router.jev.key_file = '/etc/or.env'
-    const cleared = structuredClone(withFile)
-    cleared.router.jev.key_file = ''
-    const r = settingsSchema('/etc/or.env').safeParse(cleared)
-    expect(r.success).toBe(false)
-    expect(!r.success && r.error.issues[0]).toMatchObject({ path: ['router', 'jev', 'key_file'], message: KEY_FILE_CLEARED })
-    expect(settingsSchema('').safeParse(cleared).success).toBe(true)
-  })
-
-  it('matches the key_file rule by path, not by leaf name', () => {
-    const a = structuredClone(base)
-    const b = structuredClone(base)
-    b.router.jev.key_file = '/x'
-    expect(diffToPatch(a, b)).toEqual({ router: { jev: { key_file: '/x' } } })
   })
 
   it('leaves router.levels out of the form and out of every patch', () => {
     expect(fx.config.config.router?.levels).toHaveLength(2)
     expect(JSON.stringify(base)).not.toContain('levels')
     const next = structuredClone(base)
-    next.router.policy.min_confidence = 0.7
-    expect(diffToPatch(base, next)).toEqual({ router: { policy: { min_confidence: 0.7 } } })
+    expect(diffToPatch(base, next)).toEqual({})
   })
 
   it('lists every field path from the schema', () => {
-    expect(FIELD_PATHS).toContain('router.jev.key_file')
+    expect(FIELD_PATHS).not.toContain('router.jev.key_file')
     expect(FIELD_PATHS).toContain('limits.global_cap')
-    expect(FIELD_PATHS).toHaveLength(15)
+    expect(FIELD_PATHS).toHaveLength(11)
+  })
+})
+
+describe('decider schema', () => {
+  const base = valuesFromDecider(fx.decider)
+  it('accepts the fixture and mirrors the server rules', () => {
+    expect(deciderSchema.safeParse(base).success).toBe(true)
+    expect(endpointError('https://x.test/v1')).toBeNull()
+    expect(endpointError('http://127.0.0.1:1/v1')).toBeNull()
+    expect(endpointError('http://[::1]:1/v1')).toBeNull()
+    expect(endpointError('http://evil.test')).not.toBeNull()
+    expect(endpointError('ftp://localhost')).not.toBeNull()
+    expect(endpointError('nope')).not.toBeNull()
+    expect(durationSeconds('1m30s')).toBe(90)
+    expect(durationSeconds('500ms')).toBe(0.5)
+    expect(durationSeconds('20')).toBeNull()
+  })
+  it('never prefills the pasted key', () => {
+    expect(base.key_paste).toBe('')
+    expect(base.key_mode).toBe('file')
+  })
+  it('requires the chosen key source value', () => {
+    expect(deciderSchema.safeParse({ ...base, key_mode: 'env', key_env: '' }).success).toBe(false)
+    expect(deciderSchema.safeParse({ ...base, key_mode: 'file', key_file: '' }).success).toBe(false)
+  })
+  it('diffs to only the changed fields and the active key source', () => {
+    expect(deciderPatch(base, base)).toEqual({})
+    expect(deciderPatch(base, { ...base, timeout: '30s', key_mode: 'paste', key_paste: 'k' })).toEqual({ timeout: '30s', key: { paste: 'k' } })
+    expect(deciderPatch(base, { ...base, key_mode: 'paste', key_paste: '' })).toEqual({})
+    expect(deciderPatch(base, { ...base, key_env: 'ignored-in-file-mode' })).toEqual({})
   })
 })

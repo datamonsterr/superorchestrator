@@ -82,7 +82,7 @@ describe('axe: every page in its main state', () => {
   it('settings tabs and the system tab', { timeout: HEAVY }, async () => {
     renderAt('/settings')
     await screen.findByLabelText('Global run cap')
-    for (const tab of ['Notifications', 'Worktrees', 'Routing', 'UI']) {
+    for (const tab of ['Notifications', 'Worktrees', 'Decider', 'UI']) {
       await userEvent.click(screen.getByRole('tab', { name: tab }))
       await expectNoViolations()
     }

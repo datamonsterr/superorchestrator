@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect } from 'react'
 import { useForm, useWatch, type FieldPath } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { toast } from 'sonner'
@@ -20,8 +20,7 @@ type Name = FieldPath<SettingsValues>
 export function ConfigForm({ view, hidden = false }: { view: ConfigView; hidden?: boolean }) {
   const patch = usePatchConfig()
   const initial = valuesFromConfig(view)
-  const schema = useMemo(() => settingsSchema(valuesFromConfig(view).router.jev.key_file), [view])
-  const form = useForm<SettingsValues>({ resolver: zodResolver(schema), defaultValues: initial })
+  const form = useForm<SettingsValues>({ resolver: zodResolver(settingsSchema), defaultValues: initial })
   const { control, register, handleSubmit, reset, setError, setValue, formState } = form
   const switches = { 'notifications.desktop': useWatch({ control, name: 'notifications.desktop' }), 'ui.enabled': useWatch({ control, name: 'ui.enabled' }) }
   const { errors, isDirty } = formState
@@ -34,7 +33,7 @@ export function ConfigForm({ view, hidden = false }: { view: ConfigView; hidden?
   async function onSubmit(values: SettingsValues) {
     const body = diffToPatch(valuesFromConfig(view), values)
     if (Object.keys(body).length === 0) {
-      // Nothing the API can store (for example only an unset key file): do not stay dirty.
+      // Nothing the API can store (for example only whitespace): do not stay dirty.
       toast('Nothing to save')
       reset(valuesFromConfig(view))
       return
@@ -98,15 +97,6 @@ export function ConfigForm({ view, hidden = false }: { view: ConfigView; hidden?
         <FieldGroup className="max-w-xl">
           {text('worktrees.dir', 'Worktree folder', 'Where run worktrees are created. Empty uses the default.', { mono: true })}
           {text('worktrees.branch_prefix', 'Branch prefix', 'Prefix for the branches runs work on.', { mono: true })}
-        </FieldGroup>
-      </TabsContent>
-      <TabsContent value="routing">
-        <FieldGroup className="max-w-xl">
-          {text('router.policy.min_confidence', 'Minimum confidence', 'Below this the decider\'s complexity score is ignored and the heuristic estimates it (0 to 1).', { number: true })}
-          {text('router.policy.min_margin', 'Minimum margin', 'Deprecated: routing no longer uses it. Kept so older configs still load (0 to 1).', { number: true })}
-          <KeySource label="OpenRouter key" source={view.openrouter_key} />
-          {text('router.jev.key_env', 'Key environment variable', 'The variable the key is read from. Pasting a key here is not supported.', { mono: true })}
-          {text('router.jev.key_file', 'Key file', 'Optional dotenv file holding the key. Clearing it here does not remove the saved path.', { mono: true })}
         </FieldGroup>
       </TabsContent>
       <TabsContent value="ui">
