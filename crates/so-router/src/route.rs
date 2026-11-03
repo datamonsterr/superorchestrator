@@ -264,60 +264,6 @@ fn heuristic_rank<'a>(
     out
 }
 
-#[cfg(test)]
-mod endpoint_priority_tests {
-    use super::*;
-    use crate::eligible::tests::{account, choice};
-
-    #[test]
-    fn endpoint_priority_sits_between_claude_and_preceding_harness() {
-        let mut config = Config::default();
-        config.router.priority = vec![Harness::Codex, Harness::Claude, Harness::Agy];
-        let mut endpoint = account("endpoint", Harness::Claude, 2, 0);
-        endpoint.file.endpoint = Some(
-            serde_json::from_value(serde_json::json!({"preset": "zai", "token_env": "TEST_TOKEN"}))
-                .unwrap(),
-        );
-        let snapshot = Snapshot {
-            accounts: vec![
-                account("plain", Harness::Claude, 2, 0),
-                endpoint,
-                account("codex-test", Harness::Codex, 2, 0),
-            ],
-        };
-        let catalog = Catalog::default_catalog();
-        let choices: Vec<_> = [
-            "claude/claude-opus-5-5",
-            "claude/glm-5.3",
-            "codex/gpt-6.1-sol",
-        ]
-        .into_iter()
-        .map(choice)
-        .collect();
-        let candidates = eligible(&choices, &catalog, &snapshot, &[]);
-        let http = reqwest::Client::new();
-        let ctx = RouteCtx {
-            config: &config,
-            catalog: &catalog,
-            snapshot: &snapshot,
-            http: &http,
-            env: |_| None,
-        };
-        let ranked = heuristic_rank(&ctx, &candidates, Complexity::High);
-        assert_eq!(
-            ranked
-                .iter()
-                .map(|r| r.cand.choice.id())
-                .collect::<Vec<_>>(),
-            [
-                "codex/gpt-6.1-sol",
-                "claude/glm-5.3",
-                "claude/claude-opus-5-5"
-            ]
-        );
-    }
-}
-
 fn alternative(cand: &Candidate<'_>, score: Option<f64>) -> RouteAlternative {
     RouteAlternative {
         choice_id: cand.choice.id(),
@@ -601,5 +547,59 @@ fn finish(
         decider_model: rated.decider_model,
         decider_models: rated.decider_models,
         ranked_accounts,
+    }
+}
+
+#[cfg(test)]
+mod endpoint_priority_tests {
+    use super::*;
+    use crate::eligible::tests::{account, choice};
+
+    #[test]
+    fn endpoint_priority_sits_between_claude_and_preceding_harness() {
+        let mut config = Config::default();
+        config.router.priority = vec![Harness::Codex, Harness::Claude, Harness::Agy];
+        let mut endpoint = account("endpoint", Harness::Claude, 2, 0);
+        endpoint.file.endpoint = Some(
+            serde_json::from_value(serde_json::json!({"preset": "zai", "token_env": "TEST_TOKEN"}))
+                .unwrap(),
+        );
+        let snapshot = Snapshot {
+            accounts: vec![
+                account("plain", Harness::Claude, 2, 0),
+                endpoint,
+                account("codex-test", Harness::Codex, 2, 0),
+            ],
+        };
+        let catalog = Catalog::default_catalog();
+        let choices: Vec<_> = [
+            "claude/claude-opus-5-5",
+            "claude/glm-5.3",
+            "codex/gpt-6.1-sol",
+        ]
+        .into_iter()
+        .map(choice)
+        .collect();
+        let candidates = eligible(&choices, &catalog, &snapshot, &[]);
+        let http = reqwest::Client::new();
+        let ctx = RouteCtx {
+            config: &config,
+            catalog: &catalog,
+            snapshot: &snapshot,
+            http: &http,
+            env: |_| None,
+        };
+        let ranked = heuristic_rank(&ctx, &candidates, Complexity::High);
+        assert_eq!(
+            ranked
+                .iter()
+                .map(|r| r.cand.choice.id())
+                .collect::<Vec<_>>(),
+            [
+                "codex/gpt-6.1-sol",
+                "claude/glm-5.3",
+                "claude/claude-opus-5-5"
+            ]
+        );
     }
 }
