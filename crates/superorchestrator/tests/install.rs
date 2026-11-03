@@ -789,3 +789,31 @@ fn codex_agents_opt_out_and_symlink() {
     assert!(link.is_symlink());
     assert_eq!(read(&target), "");
 }
+
+#[test]
+fn dangling_codex_agents_symlink_chains_are_deduplicated_and_written_through() {
+    let e = Env::new();
+    e.init();
+    let global = e.home.join(".codex");
+    let account_home = e.home.join("codex-account");
+    std::fs::create_dir_all(&global).unwrap();
+    account(&e, "codex-account", Harness::Codex, &account_home, "codex");
+    let target = e.home.join("instructions.md");
+    let intermediate1 = e.home.join("first-link");
+    let intermediate2 = e.home.join("second-link");
+    std::os::unix::fs::symlink(&target, &intermediate1).unwrap();
+    std::os::unix::fs::symlink(&intermediate1, &intermediate2).unwrap();
+    let global_link = global.join("AGENTS.md");
+    let account_link = account_home.join("AGENTS.md");
+    std::os::unix::fs::symlink(&intermediate2, &global_link).unwrap();
+    std::os::unix::fs::symlink(&intermediate1, &account_link).unwrap();
+    let result = cmd(&e).args(["install", "--dry-run"]).assert().success();
+    assert_eq!(stdout(&result).matches("agents.md").count(), 1);
+    cmd(&e).arg("install").assert().success();
+    assert!(global_link.is_symlink() && account_link.is_symlink());
+    assert!(intermediate1.is_symlink() && intermediate2.is_symlink());
+    assert!(read(&target).contains(BEGIN));
+    cmd(&e).arg("uninstall").assert().success();
+    assert!(global_link.is_symlink() && account_link.is_symlink());
+    assert_eq!(read(&target), "");
+}

@@ -182,14 +182,14 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "spawn_agent",
-        "Start a run; unpinned harness/account/model are auto-routed. wait=true blocks to finish or review gate. cmd: checks require depth 0; subagents may use only ci/pr_threads and cwd inside their run worktree/cwd.",
+        "Start a run; unpinned fields auto-route. wait=true waits at most 30 minutes for finish or review, returns current state; run continues (use wait_agent). cmd checks require depth 0; subagents may use only ci/pr_threads and cwd inside their run worktree/cwd.",
         true,
         false,
         schema_of::<SpawnParams>,
     ),
     spec(
         "wait_agent",
-        "Wait for a run to finish or post a question or progress, up to timeout_ms (max 30 minutes). Returns finished, updates (answer with send_message kind=answer), timed_out.",
+        "Wait for finish, question or progress (max 30 minutes). Returns finished, updates (send_message kind=answer), timed_out.",
         true,
         true,
         schema_of::<WaitParams>,
