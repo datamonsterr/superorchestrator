@@ -71,6 +71,8 @@ To opt out of the `CLAUDE.md` block, pass `--no-claude-md` to `setup` or `instal
 
 If you use the [Claude Code plugin](../../plugin/README.md), it registers the MCP server and skills itself. Do not also run `install` for Claude Code.
 
+To use Codex CLI as the orchestrator instead of Claude Code, run `superorchestrator setup --orchestrator codex`. See [Codex as orchestrator](codex-orchestrator.md).
+
 ## 5. Check
 
 ```sh

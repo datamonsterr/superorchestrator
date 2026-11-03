@@ -161,6 +161,10 @@ The check only tests that the harness's auth file exists:
 
 For Claude on macOS, and for the default `~/.claude`, credentials may live in the system keyring. The state is then `unknown` and the account stays usable. Auth file contents are never read, logged or served.
 
+## Reserved accounts
+
+A reserved account is kept for the orchestrator. List names in `[orchestrator] reserved_accounts` ([config](config.md#orchestrator)). Auto routing never picks a reserved account, but a call that pins `account` may. The web accounts table and the TUI accounts view mark reserved accounts. `setup --orchestrator codex|claude [--reserve NAME]` sets the list; see [Codex as orchestrator](codex-orchestrator.md).
+
 ## Caps and pools
 
 `cap` limits how many runs one account has at once. The global cap is `limits.global_cap` (default 16). A spawn over a cap waits in a queue. agy accounts have two pools, `gemini` and `claude`, metered separately.

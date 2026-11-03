@@ -52,6 +52,7 @@ Watch runs from the shell with `superorchestrator runs list` and `superorchestra
 - [Web UI](docs/guide/web-ui.md): sessions, accounts, routing levels, settings and live run timelines.
 - [Terminal UI](docs/guide/tui.md): monitor runs and manage levels.
 - [Claude Code plugin](plugin/README.md): MCP setup and the `/so-monitor` pane.
+- [Codex as orchestrator](docs/guide/codex-orchestrator.md): setup, plugin, reserved accounts and hooks for Codex CLI.
 
 ## Guides
 

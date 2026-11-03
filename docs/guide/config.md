@@ -151,6 +151,14 @@ The file is refused at load when:
 | `token` | unset | Shared-secret override for the UI (plain text). When unset, the supervisor reuses or creates the private `ui-token` file. The API cannot set it. |
 | `enabled` | `false` | Start the UI whenever the supervisor starts. `ui --install-service` sets it. |
 
+### `[orchestrator]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `reserved_accounts` | `[]` | Account names kept for the orchestrator. Auto routing never picks them. A `spawn_agent` or `route` call that pins `account` may. |
+
+`list_harnesses` marks reserved accounts `reserved: true`, and models reachable only through them show `why: "account reserved"`. Set it with `superorchestrator config set orchestrator.reserved_accounts '["codex-1"]'`, the Settings "Orchestrator" tab in the web UI, or `setup --orchestrator`. See [Codex as orchestrator](codex-orchestrator.md).
+
 ### `[supervisor]`
 
 | Key | Default | Meaning |
