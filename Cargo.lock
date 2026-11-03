@@ -3343,6 +3343,7 @@ dependencies = [
  "toml",
  "tower",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
