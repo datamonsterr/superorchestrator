@@ -90,6 +90,7 @@ fn codex_plugin_and_marketplace_are_wired() {
         assert!(ext["interface"][field].is_string(), "{field}");
     }
     assert!(ext["interface"]["capabilities"].is_array());
+    assert_eq!(ext["interface"]["category"], "Developer Tools");
     assert!(ext["interface"]["defaultPrompt"].is_array());
     let root = plugin_dir().parent().unwrap().to_path_buf();
     let market: Value = serde_json::from_slice(
@@ -110,7 +111,7 @@ fn codex_plugin_and_marketplace_are_wired() {
         entry["policy"],
         json!({"installation":"AVAILABLE", "authentication":"ON_INSTALL"})
     );
-    assert_eq!(entry["category"], "Coding");
+    assert_eq!(entry["category"], "Developer Tools");
     assert!(
         root.join(entry["source"]["path"].as_str().unwrap())
             .join(".codex-plugin/plugin.json")
@@ -152,4 +153,30 @@ fn hook_stop_without_supervisor_is_silent() {
         .unwrap();
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn hook_stop_returns_when_stdin_remains_open() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_superorchestrator"))
+        .args(["hook", "stop"])
+        .env_remove("SUPERORCHESTRATOR_SOCKET")
+        .env("XDG_RUNTIME_DIR", dir.path())
+        .env("SUPERORCHESTRATOR_CONFIG_DIR", dir.path())
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success());
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("hook stop did not exit with stdin open");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
 }

@@ -1,6 +1,6 @@
 //! Quiet, best-effort lifecycle notifications for harnesses.
 
-use std::io::Read;
+use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -15,15 +15,12 @@ use crate::views::open_existing_store;
 struct WaitingRun {
     id: String,
     name: String,
-    cwd: PathBuf,
     review: bool,
     question: bool,
 }
 
-fn relevant<'a>(runs: &'a [WaitingRun], root: &Path) -> Vec<&'a WaitingRun> {
-    runs.iter()
-        .filter(|run| run.cwd.starts_with(root))
-        .collect()
+fn relevant(cwd: &Path, root: &Path) -> bool {
+    cwd.starts_with(root)
 }
 
 fn format_output(event: HookCmd, runs: &[&WaitingRun]) -> Option<Value> {
@@ -95,7 +92,7 @@ async fn collect(ctx: &Ctx, cwd: &Path, event: HookCmd) -> Option<Value> {
             continue;
         };
         let cwd = cwd.canonicalize().unwrap_or(cwd);
-        if !cwd.starts_with(&root) {
+        if !relevant(&cwd, &root) {
             continue;
         }
         let mut question = false;
@@ -111,25 +108,14 @@ async fn collect(ctx: &Ctx, cwd: &Path, event: HookCmd) -> Option<Value> {
         runs.push(WaitingRun {
             id: row.id,
             name: row.name.unwrap_or_default(),
-            cwd,
             review: row.state == RunState::PendingReview,
             question,
         });
     }
-    format_output(event, &relevant(&runs, &root))
+    format_output(event, &runs.iter().collect::<Vec<_>>())
 }
 
 pub fn run(config_dir: Option<PathBuf>, event: HookCmd) {
-    let mut input = String::new();
-    let _ = std::io::stdin().read_to_string(&mut input);
-    let cwd = serde_json::from_str::<Value>(&input)
-        .ok()
-        .and_then(|v| v.get("cwd").and_then(Value::as_str).map(PathBuf::from))
-        .or_else(|| std::env::current_dir().ok());
-    let Some(cwd) = cwd else { return };
-    let Ok(ctx) = Ctx::new(config_dir, false, false) else {
-        return;
-    };
     let Ok(rt) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -137,10 +123,28 @@ pub fn run(config_dir: Option<PathBuf>, event: HookCmd) {
         return;
     };
     let result = rt.block_on(async {
-        tokio::time::timeout(Duration::from_secs(2), collect(&ctx, &cwd, event))
-            .await
-            .ok()
-            .flatten()
+        tokio::time::timeout(Duration::from_secs(2), async {
+            let input = if std::io::stdin().is_terminal() {
+                String::new()
+            } else {
+                let (tx, rx) = tokio::sync::oneshot::channel();
+                std::thread::spawn(move || {
+                    let mut input = String::new();
+                    let _ = std::io::stdin().read_to_string(&mut input);
+                    let _ = tx.send(input);
+                });
+                rx.await.unwrap_or_default()
+            };
+            let cwd = serde_json::from_str::<Value>(&input)
+                .ok()
+                .and_then(|v| v.get("cwd").and_then(Value::as_str).map(PathBuf::from))
+                .or_else(|| std::env::current_dir().ok())?;
+            let ctx = Ctx::new(config_dir, false, false).ok()?;
+            collect(&ctx, &cwd, event).await
+        })
+        .await
+        .ok()
+        .flatten()
     });
     if let Some(value) = result {
         println!("{value}");
@@ -150,11 +154,10 @@ pub fn run(config_dir: Option<PathBuf>, event: HookCmd) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn run(id: &str, cwd: &str, review: bool, question: bool) -> WaitingRun {
+    fn run(id: &str, review: bool, question: bool) -> WaitingRun {
         WaitingRun {
             id: id.into(),
             name: format!("name-{id}"),
-            cwd: cwd.into(),
             review,
             question,
         }
@@ -162,12 +165,17 @@ mod tests {
     #[test]
     fn filters_by_path_components_and_formats_both_events() {
         let runs = [
-            run("r1", "/repo/a", true, false),
-            run("r2", "/repo/b", false, true),
-            run("r3", "/repo-other", true, true),
-            run("r4", "/repo", false, false),
+            run("r1", true, false),
+            run("r2", false, true),
+            run("r3", true, true),
+            run("r4", false, false),
         ];
-        let selected = relevant(&runs, Path::new("/repo"));
+        let selected: Vec<_> = runs
+            .iter()
+            .zip(["/repo/a", "/repo/b", "/repo-other", "/repo"])
+            .filter(|(_, cwd)| relevant(Path::new(cwd), Path::new("/repo")))
+            .map(|(run, _)| run)
+            .collect();
         assert_eq!(selected.len(), 3);
         let start = format_output(HookCmd::SessionStart, &selected).unwrap();
         let text = start["hookSpecificOutput"]["additionalContext"]
