@@ -13,7 +13,7 @@ pub const BAD_RATE: f64 = 0.5;
 pub const SHIFT: u8 = 5;
 pub const PROMOTE_MARGIN: f64 = 0.2;
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Rule {
     ShiftBoundary,
@@ -22,14 +22,14 @@ pub enum Rule {
     CloseGap,
     RemoveEmpty,
 }
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct LevelChange {
     pub level: String,
     pub field: String,
     pub before: String,
     pub after: String,
 }
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Suggestion {
     pub id: String,
     pub rule: Rule,

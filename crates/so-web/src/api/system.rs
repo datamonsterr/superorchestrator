@@ -185,6 +185,26 @@ pub async fn routing_records(
     }))
 }
 
+pub async fn routing_insights(
+    State(st): State<AppState>,
+) -> ApiResult<Json<so_supervisor::services::insights::InsightsReport>> {
+    let s = st.clone();
+    st.blocking(move || {
+        let config = Config::load(&s.sup.paths)?;
+        let catalog = so_router::Catalog::load(&s.sup.paths).map_err(|e| {
+            tracing::warn!("model catalog unreadable: {e}");
+            ApiError::internal("the model catalog could not be read")
+        })?;
+        Ok(Json(so_supervisor::services::insights::insights_report(
+            &s.sup.store,
+            &config,
+            &catalog,
+            Utc::now(),
+        )?))
+    })
+    .await
+}
+
 // ------------------------------------------------------------------ config
 
 fn restart_required(st: &AppState, disk: &Config) -> bool {

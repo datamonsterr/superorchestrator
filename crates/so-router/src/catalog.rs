@@ -363,7 +363,7 @@ pub struct SourceReport {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct ModelRef {
     pub harness: Harness,
     pub model: String,

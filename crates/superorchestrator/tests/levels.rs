@@ -463,3 +463,40 @@ fn list_json_for_a_tier_only_level_has_no_models() {
     assert_eq!(low["tier"], "fast");
     assert_eq!(low["models"], serde_json::json!([]));
 }
+
+#[test]
+fn suggest_reports_and_applies_a_suggestion() {
+    let e = env_with(
+        "[[router.levels]]\nname = 'low'\nmin = 0\nmax = 40\ntier = 'fast'\n[[router.levels]]\nname = 'high'\nmin = 50\nmax = 100\ntier = 'high'\n",
+    );
+    let report = json_of(&e, &["levels", "suggest"]);
+    assert!(report["levels"].is_array());
+    let id = report["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find_map(|s| s["id"].as_str().filter(|id| id.starts_with("close-gap:")))
+        .unwrap();
+    let out = stdout(&e.cmd().args(["levels", "suggest"]).assert().success());
+    assert!(
+        out.contains("low 0-40")
+            && out.contains("runs")
+            && out.contains("[eval]")
+            && out.contains(id),
+        "{out}"
+    );
+    e.cmd()
+        .args(["levels", "suggest", "--apply", "unknown"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(id));
+    let out = stdout(
+        &e.cmd()
+            .args(["levels", "suggest", "--apply", id])
+            .assert()
+            .success(),
+    );
+    assert!(out.contains(&format!("applied {id}")) && out.contains("restart the supervisor"));
+    let out = stdout(&e.cmd().args(["levels", "list"]).assert().success());
+    assert!(out.contains("0-49"), "{out}");
+}

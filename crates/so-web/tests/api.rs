@@ -2663,3 +2663,32 @@ async fn mutations_refresh_an_installed_skill_and_only_an_installed_one() {
     // Both files follow.
     assert_eq!(skill(), std::fs::read_to_string(&files[1]).unwrap());
 }
+
+#[tokio::test]
+async fn routing_insights_are_authenticated_and_redacted() {
+    let f = fx().await;
+    let mut run = run_row(&f.session, RunState::Failed);
+    run.prompt = Some(format!("task {SECRET}"));
+    f.handle.state().store.insert_run(&run).unwrap();
+    f.handle
+        .state()
+        .store
+        .append_event(&event(
+            &f.session,
+            Some(&run.id),
+            EventType::RouteDecision,
+            json!({"complexity": 30}),
+            0,
+        ))
+        .unwrap();
+    let (status, body) = get(&f.app, "/api/v1/routing/insights").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["levels"].is_array() && body["suggestions"].is_array());
+    assert!(body.to_string().contains("[REDACTED]") && !body.to_string().contains(SECRET));
+    let (status, _, _) = send(
+        &f.app,
+        anonymous_request("GET", "/api/v1/routing/insights", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}

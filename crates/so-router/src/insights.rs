@@ -46,7 +46,7 @@ impl TryFrom<so_store::HistoryRow> for HistoryRecord {
         })
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
     Rejected,
@@ -81,13 +81,13 @@ pub struct EvalExample {
     pub task: String,
     pub expected_complexity: (u8, u8),
 }
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct Bucket {
     pub from: u8,
     pub to: u8,
     pub count: usize,
 }
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct OutcomeCounts {
     pub accepted: usize,
     pub rejected: usize,
@@ -97,13 +97,13 @@ pub struct OutcomeCounts {
     pub failover: usize,
     pub escalated: usize,
 }
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct ModelInsight {
     pub choice_id: Option<String>,
     pub runs: usize,
     pub success_rate: Option<f64>,
 }
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct InsightExample {
     pub run_id: Option<String>,
     pub eval_id: Option<String>,
@@ -113,7 +113,7 @@ pub struct InsightExample {
     pub source: String,
     pub borderline: bool,
 }
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 pub struct LevelInsight {
     pub name: String,
     pub min: u8,
