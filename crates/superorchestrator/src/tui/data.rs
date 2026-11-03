@@ -75,7 +75,28 @@ pub struct LevelRow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SessionItem {
+    pub id: String,
+    pub started_at: DateTime<Utc>,
+    pub title: String,
+    pub run_count: i64,
+    pub active_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelItem {
+    pub harness: Harness,
+    pub model: String,
+    pub efforts: Vec<String>,
+    pub free: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub sessions: Vec<SessionItem>,
+    pub sessions_error: Option<String>,
+    pub models: Vec<ModelItem>,
+    pub models_refreshed_at: Option<DateTime<Utc>>,
     pub at: DateTime<Utc>,
     pub config_dir: String,
     pub supervisor: Option<SupInfo>,
@@ -163,6 +184,14 @@ fn recent_runs(store: &Store) -> so_store::Result<(Vec<RunRow>, usize)> {
     let rows = store.list_recent_runs(RECENT_RUNS)?;
     let active = usize::try_from(store.count_active_runs()?).unwrap_or(0);
     Ok((rows, active))
+}
+
+pub fn load_session_runs(ctx: &Ctx, id: &str) -> Result<Vec<RunItem>, String> {
+    let store = open_existing_store(&ctx.paths).ok_or("no run history yet")?;
+    store
+        .list_recent_runs_by_session(id, RECENT_RUNS)
+        .map(|rows| rows.iter().map(run_item).collect())
+        .map_err(|e| e.to_string())
 }
 
 fn checklist(ctx: &Ctx, host: &HostEnv, accounts: &[AccountRow]) -> Vec<Check> {
@@ -363,7 +392,46 @@ pub fn load_snapshot(
         Some(Err(e)) => (Vec::new(), Some(e.to_string())),
         None => (Vec::new(), None),
     };
+    let sessions_result =
+        open_existing_store(&ctx.paths).map(|store| -> so_store::Result<Vec<SessionItem>> {
+            store
+                .list_sessions(so_store::SessionFilter::All, RECENT_RUNS)?
+                .into_iter()
+                .map(|row| {
+                    let stats = so_supervisor::services::sessions::summarize(&store, &row)?.stats;
+                    Ok(SessionItem {
+                        id: row.id.clone(),
+                        started_at: row.started_at,
+                        title: row.cwd.unwrap_or(row.client),
+                        run_count: stats.runs,
+                        active_count: store.count_active_runs_by_session(&row.id)?,
+                    })
+                })
+                .collect()
+        });
+    let (sessions, sessions_error) = match sessions_result {
+        Some(Ok(s)) => (s, None),
+        Some(Err(e)) => (Vec::new(), Some(e.to_string())),
+        None => (Vec::new(), None),
+    };
+    let models = so_router::Catalog::load(&ctx.paths)
+        .map(|c| {
+            c.entries()
+                .into_iter()
+                .map(|(h, m)| ModelItem {
+                    harness: h,
+                    model: m.id.clone(),
+                    efforts: m.efforts.clone(),
+                    free: c.is_free(h, &m.id),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Snapshot {
+        sessions,
+        sessions_error,
+        models,
+        models_refreshed_at: so_supervisor::services::models::last_refresh(&ctx.paths),
         daily_usage,
         usage_error,
         at: now,

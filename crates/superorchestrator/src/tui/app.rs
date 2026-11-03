@@ -156,6 +156,10 @@ pub struct StepRow {
 #[derive(Debug, Clone)]
 pub enum Effect {
     Refresh,
+    RefreshModels,
+    SessionRuns {
+        id: String,
+    },
     /// `diff` also asks the supervisor for the run's diff (only done for runs waiting for review).
     Detail {
         id: String,
@@ -197,7 +201,7 @@ impl Effect {
     /// Short phrase for the status line while the effect runs; `None` for reads.
     pub fn busy_label(&self) -> Option<&'static str> {
         Some(match self {
-            Effect::Refresh | Effect::Detail { .. } => return None,
+            Effect::Refresh | Effect::Detail { .. } | Effect::SessionRuns { .. } => return None,
             Effect::AddAccounts { .. } => "adding accounts",
             Effect::Login(_) => "preparing sign-in",
             Effect::SetEnabled { .. } => "updating account",
@@ -211,6 +215,7 @@ impl Effect {
             Effect::Join(_) => "preparing join",
             Effect::Setup(_) | Effect::SetupAll => "running setup",
             Effect::Levels(_) => "updating levels",
+            Effect::RefreshModels => "refreshing models",
         })
     }
 }
@@ -231,6 +236,10 @@ pub struct Launch {
 #[derive(Debug)]
 pub enum Update {
     Snapshot(Box<Snapshot>),
+    SessionRuns {
+        id: String,
+        runs: Result<Vec<RunItem>, String>,
+    },
     Detail(Result<Box<RunDetail>, String>),
     /// A read on the reader thread panicked or failed outright.
     ReadFailed(String),
@@ -498,9 +507,18 @@ impl App {
             _ => {
                 return match self.tab {
                     Tab::Dashboard => None,
-                    Tab::Sessions => self.sessions_tab.on_key(key),
+                    Tab::Sessions => self.sessions_key(key),
                     Tab::Usage => self.usage_tab.on_key(key),
-                    Tab::Models => self.models_tab.on_key(key),
+                    Tab::Models => {
+                        let effect = self.models_tab.on_key(key);
+                        effect.and_then(|e| {
+                            if self.busy.is_none() {
+                                self.start(e)
+                            } else {
+                                None
+                            }
+                        })
+                    }
                     Tab::Settings => self.settings_tab.on_key(key),
                     Tab::Accounts => self.accounts_key(key),
                     Tab::Runs => self.runs_key(key),
@@ -532,13 +550,19 @@ impl App {
     }
 
     fn switch(&mut self, tab: Tab) {
+        if tab != self.tab && matches!(self.tab, Tab::Runs | Tab::Sessions) {
+            self.detail = None;
+        }
         self.tab = tab;
     }
 
     /// `q` and `Esc`: close what is open, else leave.
     fn back_or_quit(&mut self) {
-        if self.tab == Tab::Runs && self.detail.is_some() {
+        if matches!(self.tab, Tab::Runs | Tab::Sessions) && self.detail.is_some() {
             self.detail = None;
+        } else if self.tab == Tab::Sessions && self.sessions_tab.open.is_some() {
+            self.sessions_tab.open = None;
+            self.sessions_tab.runs = None;
         } else if self.tab == Tab::Levels && self.level_open.is_some() {
             self.level_open = None;
         } else {
@@ -547,7 +571,7 @@ impl App {
     }
 
     /// Moves a selection for a list key; `None` when the key is not a movement.
-    fn movement(code: KeyCode, sel: usize, len: usize) -> Option<usize> {
+    pub(super) fn movement(code: KeyCode, sel: usize, len: usize) -> Option<usize> {
         let last = len.saturating_sub(1);
         Some(match code {
             KeyCode::Down | KeyCode::Char('j') => (sel + 1).min(last),
@@ -612,19 +636,42 @@ impl App {
         }
     }
 
+    fn sessions_key(&mut self, key: KeyEvent) -> Option<Effect> {
+        if let Some(detail) = &mut self.detail {
+            Self::scroll_detail(detail, key.code);
+            return None;
+        }
+        let effect = self
+            .sessions_tab
+            .on_key(key, &self.snap.as_ref()?.sessions)?;
+        if let Effect::Detail { id, .. } = &effect {
+            self.detail = Some(DetailView {
+                id: id.clone(),
+                data: None,
+                scroll: 0,
+                diff: None,
+                diff_key: None,
+                force_diff: false,
+            });
+        }
+        Some(effect)
+    }
+
+    fn scroll_detail(d: &mut DetailView, code: KeyCode) {
+        match code {
+            KeyCode::Down | KeyCode::Char('j') => d.scroll = d.scroll.saturating_add(1),
+            KeyCode::Up | KeyCode::Char('k') => d.scroll = d.scroll.saturating_sub(1),
+            KeyCode::PageDown => d.scroll = d.scroll.saturating_add(PAGE as u16),
+            KeyCode::PageUp => d.scroll = d.scroll.saturating_sub(PAGE as u16),
+            KeyCode::Home | KeyCode::Char('g') => d.scroll = 0,
+            KeyCode::End | KeyCode::Char('G') => d.scroll = u16::MAX,
+            _ => {}
+        }
+    }
+
     fn runs_key(&mut self, key: KeyEvent) -> Option<Effect> {
         if let Some(d) = &mut self.detail {
-            // The detail pane scrolls instead of moving the selection.
-            match key.code {
-                KeyCode::Down | KeyCode::Char('j') => d.scroll = d.scroll.saturating_add(1),
-                KeyCode::Up | KeyCode::Char('k') => d.scroll = d.scroll.saturating_sub(1),
-                KeyCode::PageDown => d.scroll = d.scroll.saturating_add(PAGE as u16),
-                KeyCode::PageUp => d.scroll = d.scroll.saturating_sub(PAGE as u16),
-                KeyCode::Home | KeyCode::Char('g') => d.scroll = 0,
-                // The draw step clamps this to the end of the content.
-                KeyCode::End | KeyCode::Char('G') => d.scroll = u16::MAX,
-                _ => {}
-            }
+            Self::scroll_detail(d, key.code);
         } else if let Some(s) = Self::movement(key.code, self.runs_sel, self.runs().len()) {
             self.runs_sel = s;
             return None;
@@ -1148,6 +1195,16 @@ impl App {
                 self.apply_snapshot(*s);
                 Next::Nothing
             }
+            Update::SessionRuns { id, runs } => {
+                if self.sessions_tab.open.as_deref() == Some(&id) {
+                    if let Ok(rows) = &runs {
+                        self.sessions_tab.run_sel =
+                            self.sessions_tab.run_sel.min(rows.len().saturating_sub(1));
+                    }
+                    self.sessions_tab.runs = Some(runs);
+                }
+                Next::Nothing
+            }
             Update::Detail(r) => {
                 if let Some(d) = &mut self.detail {
                     match r {
@@ -1217,7 +1274,7 @@ impl App {
         }
     }
 
-    /// Keeps each selection on the same account or run when the lists change.
+    /// Keeps selections on the same items when the lists change.
     fn apply_snapshot(&mut self, snap: Snapshot) {
         let acc = self.selected_account().map(|a| a.name.clone());
         let run = self.selected_run().map(|r| r.id.clone());
@@ -1229,6 +1286,25 @@ impl App {
             .and_then(|id| snap.runs.iter().position(|r| r.id == id))
             .unwrap_or(self.runs_sel)
             .min(snap.runs.len().saturating_sub(1));
+        let session = self
+            .snap
+            .as_ref()
+            .and_then(|s| s.sessions.get(self.sessions_tab.sel))
+            .map(|s| &s.id);
+        self.sessions_tab.sel = session
+            .and_then(|id| snap.sessions.iter().position(|s| &s.id == id))
+            .unwrap_or(self.sessions_tab.sel)
+            .min(snap.sessions.len().saturating_sub(1));
+        if let Some(id) = &self.sessions_tab.open
+            && !snap.sessions.iter().any(|s| &s.id == id)
+        {
+            self.sessions_tab.open = None;
+            self.sessions_tab.runs = None;
+            self.sessions_tab.run_sel = 0;
+            if self.tab == Tab::Sessions {
+                self.detail = None;
+            }
+        }
         let level = self.levels().get(self.levels_sel).map(|l| l.name.clone());
         self.levels_sel = level
             .and_then(|n| snap.levels.iter().position(|l| l.name == n))
