@@ -99,6 +99,7 @@ const zeroOutcomes = { accepted: 0, rejected: 0, failed: 0, succeeded: 0, other:
 export const insights: InsightsReport = {
   generated_at: at(-5),
   history_runs: 12,
+  base_levels: levels.levels,
   levels: [
     {
       name: 'trivial', min: 0, max: 12, runs: 7,

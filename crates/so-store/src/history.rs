@@ -8,6 +8,7 @@ use so_core::{ErrorKind, RunState};
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HistoryRow {
     pub run_id: String,
+    #[serde(skip)]
     pub prompt: Option<String>,
     pub state: RunState,
     pub error_kind: Option<ErrorKind>,

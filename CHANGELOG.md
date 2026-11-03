@@ -65,6 +65,9 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Changed
 
+- `models refresh --json` renames `unused_models` to `unassigned_models`.
+- `models list` gains a `LEVELS` column and a `levels` field in `--json`.
+- `levels suggest` prints deterministic level suggestions, and the TUI Levels tab shows insights and suggestions (`s` focuses the suggestions, `A` or Enter asks to apply the selected one).
 - Seeded complexity levels route harder work to Codex first: `moderate` leads with `codex/gpt-6-luna/medium`, `complex` with `codex/gpt-6.1-sol/high` and `expert` with `codex/gpt-6.1-sol/xhigh`. `simple` also lists `gpt-6-luna`, which is seeded only for `moderate` and below. The seed no longer lists `opencode/opencode/muse-spark-1.3`. `gpt-6-luna` is added to the bundled catalog and the bundled eval labels follow the new seed. Existing configs are not changed; copy the levels from `seed/` to adopt them.
 
 - The seeded choice `opencode-muse-long` uses `opencode/muse-spark-1.3`; the old model id

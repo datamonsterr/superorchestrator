@@ -17,6 +17,8 @@ pub const HISTORY_LIMIT: usize = 5000;
 pub struct InsightsReport {
     pub generated_at: DateTime<Utc>,
     pub history_runs: usize,
+    /// The `router.levels` this report was computed from; clients compare it with the live levels before applying a suggestion.
+    pub base_levels: Vec<so_core::config::Level>,
     pub levels: Vec<LevelInsight>,
     pub suggestions: Vec<Suggestion>,
     pub unassigned_models: Vec<ModelRef>,
@@ -38,6 +40,7 @@ pub fn insights_report(
     Ok(InsightsReport {
         generated_at: now,
         history_runs: records.len(),
+        base_levels: config.router.levels.clone(),
         levels,
         suggestions,
         unassigned_models: unassigned_models(catalog, &config.choices()),

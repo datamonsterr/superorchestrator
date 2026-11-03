@@ -1803,6 +1803,7 @@ fn insights_fixture() -> so_supervisor::services::insights::InsightsReport {
     so_supervisor::services::insights::InsightsReport {
         generated_at: now(),
         history_runs: 8,
+        base_levels: Vec::new(),
         levels: vec![level("simple", 13, 37, 8), level("complex", 63, 87, 0)],
         suggestions: vec![
             suggestion("narrow-simple", "simple"),

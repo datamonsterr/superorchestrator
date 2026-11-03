@@ -9,6 +9,7 @@ pub const BOUNDARY_BAND: f64 = 5.0;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HistoryRecord {
     pub run_id: String,
+    #[serde(skip)]
     pub prompt: Option<String>,
     pub state: RunState,
     pub error_kind: Option<ErrorKind>,

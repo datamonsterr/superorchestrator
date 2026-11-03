@@ -195,8 +195,17 @@ pub async fn routing_insights(
             tracing::warn!("model catalog unreadable: {e}");
             ApiError::internal("the model catalog could not be read")
         })?;
+        // Read history on a short-lived read-only connection so the supervisor's shared
+        // store stays free; fall back to it when the state DB file cannot be opened.
+        let db = s.sup.paths.state_db();
+        let ro = if db.exists() {
+            so_store::Store::open_read_only(&db).ok()
+        } else {
+            None
+        };
+        let store = ro.as_ref().unwrap_or(&s.sup.store);
         Ok(Json(so_supervisor::services::insights::insights_report(
-            &s.sup.store,
+            store,
             &config,
             &catalog,
             Utc::now(),

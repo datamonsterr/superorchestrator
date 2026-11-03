@@ -108,6 +108,26 @@ describe('Insights panel', () => {
     expect(puts).toHaveLength(0)
   })
 
+  it('refuses to apply when an unrelated level changed after the report', async () => {
+    const puts = capturePut()
+    const changed = { ...fx.levels, levels: fx.levels.levels.map((l) => (l.name === 'trivial' ? { ...l, max: 10 } : l)) }
+    server.use(http.get('/api/v1/levels', () => HttpResponse.json(changed)))
+    renderWithProviders(<RoutingPage />, { route: '/routing' })
+    const panel = await insightsRegion()
+    await userEvent.click(await openApply(panel))
+    expect(await within(panel).findByText(/Levels changed since this suggestion was made/)).toBeInTheDocument()
+    expect(puts).toHaveLength(0)
+  })
+
+  it('applies when the fresh levels equal the report base levels, even with models or tier omitted', async () => {
+    const puts = capturePut()
+    const same = { ...fx.levels, levels: fx.levels.levels.map((l) => ({ ...l, tier: null })) }
+    server.use(http.get('/api/v1/levels', () => HttpResponse.json(same)))
+    renderWithProviders(<RoutingPage />, { route: '/routing' })
+    await userEvent.click(await openApply(await insightsRegion()))
+    await waitFor(() => expect(puts).toHaveLength(1))
+  })
+
   it('explains in the dialog when the current levels could not be loaded', async () => {
     server.use(http.get('/api/v1/levels', () => HttpResponse.json({ error: { code: -32004, message: 'down' } }, { status: 500 })))
     renderWithProviders(<RoutingPage />, { route: '/routing' })

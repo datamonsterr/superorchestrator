@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { ChevronDown, Lightbulb } from 'lucide-react'
 import { toast } from 'sonner'
 import { Badge } from '@/components/ui/badge'
@@ -13,7 +13,7 @@ import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { RelativeTime } from '@/components/common/RelativeTime'
 import { ScrollTable } from '@/components/common/ScrollTable'
 import { useInsights, useLevels, usePutLevels } from '@/api/queries'
-import type { InsightExample, Level, LevelInsight, Suggestion } from '@/api/types'
+import type { InsightExample, InsightsReport, LevelInsight, Suggestion } from '@/api/types'
 
 const pct = (v: number | null | undefined) => (v == null ? '-' : `${Math.round(v * 100)}%`)
 
@@ -155,16 +155,13 @@ function SuggestionCard({ s, onApply }: { s: Suggestion; onApply: (s: Suggestion
 
 const STALE = 'Levels changed since this suggestion was made; refresh insights'
 
-/** True when a diff entry's `before` no longer matches the current levels (formatted as the server does). */
-function isStale(s: Suggestion, current: Level[]): boolean {
-  return s.diff.some((d) => {
-    const l = current.find((x) => x.name === d.level)
-    if (!l) return true
-    if (d.field === 'min') return String(l.min) !== d.before
-    if (d.field === 'max') return String(l.max) !== d.before
-    if (d.field === 'models') return l.models.join(', ') !== d.before
-    return false
-  })
+/** Normalises a level the way the PUT body does, so a missing `models` or `tier` compares equal to an empty one. */
+type AnyLevel = InsightsReport['base_levels'][number]
+const norm = (l: AnyLevel) => ({ name: l.name, min: l.min, max: l.max, tier: l.tier ?? null, models: l.models ?? [] })
+
+/** True when the live levels differ from the levels the report was computed from (name, range, tier, model order). */
+function isStale(base: AnyLevel[], current: AnyLevel[]): boolean {
+  return JSON.stringify(base.map(norm)) !== JSON.stringify(current.map(norm))
 }
 
 /** Level insights from run history and the eval set, with suggested level changes the user can apply. */
@@ -174,24 +171,35 @@ export function InsightsPanel() {
   const put = usePutLevels()
   const [target, setTarget] = useState<Suggestion | null>(null)
   const [error, setError] = useState<unknown>(null)
+  const checking = useRef(false)
   const report = insights.data
 
-  const apply = () => {
-    if (put.isPending || !target || !levels.data) return
+  const apply = async () => {
+    if (checking.current || put.isPending || !target || !report) return
+    checking.current = true
     const s = target
-    const current = levels.data
     setError(null)
-    if (isStale(s, current.levels)) {
-      setError(new Error(STALE))
+    try {
+      // Applying replaces every level, so compare the fresh levels with the ones the report was built from.
+      const fresh = (await levels.refetch()).data
+      if (!fresh) throw new Error('The current levels could not be loaded')
+      if (isStale(report.base_levels, fresh.levels)) {
+        setError(new Error(STALE))
+        setTarget(null)
+        void insights.refetch()
+        return
+      }
+      const view = await put.mutateAsync({
+        levels: s.levels.map((l) => ({ ...l, models: l.models ?? [] })),
+        routing_instruction: fresh.routing_instruction,
+      })
+      toast.success(`Applied suggestion for ${s.level}${view.restart_required ? '. Restart the supervisor for routing changes to take effect.' : ''}`)
+    } catch (e) {
+      setError(e)
+    } finally {
+      checking.current = false
       setTarget(null)
-      void insights.refetch()
-      return
     }
-    put
-      .mutateAsync({ levels: s.levels.map((l) => ({ ...l, models: l.models ?? [] })), routing_instruction: current.routing_instruction })
-      .then((view) => toast.success(`Applied suggestion for ${s.level}${view.restart_required ? '. Restart the supervisor for routing changes to take effect.' : ''}`))
-      .catch(setError)
-      .finally(() => setTarget(null))
   }
 
   return (
@@ -247,7 +255,7 @@ export function InsightsPanel() {
         }
         confirmLabel="Apply suggestion"
         pending={put.isPending || !levels.data}
-        onConfirm={apply}
+        onConfirm={() => void apply()}
       />
     </Card>
   )
