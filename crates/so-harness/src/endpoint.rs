@@ -31,6 +31,18 @@ pub fn classify_endpoint(text: &str) -> Option<ErrorKind> {
             return Some(kind);
         }
     }
+    match endpoint_code(&text)? {
+        "1308" | "1309" | "1310" | "1316" | "1317" | "1318" | "1319" | "1320" | "1321" | "2056" => {
+            Some(ErrorKind::Quota)
+        }
+        "1302" | "1305" | "1312" | "1002" => Some(ErrorKind::RateLimit),
+        "1000" | "1001" | "1003" | "2049" => Some(ErrorKind::Auth),
+        _ => None,
+    }
+}
+
+// The input is lowercased so the same contextual number rules apply everywhere.
+fn endpoint_code(text: &str) -> Option<&str> {
     let bytes = text.as_bytes();
     let mut i = 0;
     while i < bytes.len() {
@@ -69,16 +81,40 @@ pub fn classify_endpoint(text: &str) -> Option<ErrorKind> {
         if !named && !provider_message {
             continue;
         }
-        let kind = match &text[start..i] {
-            "1308" | "1309" | "1310" | "1316" | "1317" | "1318" | "1319" | "1320" | "1321"
-            | "2056" => ErrorKind::Quota,
-            "1302" | "1305" | "1312" | "1002" => ErrorKind::RateLimit,
-            "1000" | "1001" | "1003" | "2049" => ErrorKind::Auth,
-            _ => continue,
-        };
-        return Some(kind);
+        let code = &text[start..i];
+        if matches!(
+            code,
+            "1308"
+                | "1309"
+                | "1310"
+                | "1316"
+                | "1317"
+                | "1318"
+                | "1319"
+                | "1320"
+                | "1321"
+                | "2056"
+                | "1302"
+                | "1305"
+                | "1312"
+                | "1002"
+                | "1000"
+                | "1001"
+                | "1003"
+                | "2049"
+        ) {
+            return Some(code);
+        }
     }
     None
+}
+
+/// Whether a Z.ai reset describes the weekly or monthly window.
+pub(crate) fn weekly_reset(text: &str) -> bool {
+    matches!(
+        endpoint_code(&text.to_lowercase()),
+        Some("1310" | "1317" | "1319" | "1321")
+    )
 }
 
 /// Extract the reset time reported by Z.ai, whose timestamp is in UTC+8.
@@ -116,7 +152,14 @@ pub async fn validate(
             status: None,
             detail: "Failed to create HTTP client".into(),
         })?;
-    let request = client.post(format!("{}/v1/messages", base_url.trim_end_matches('/'))).header("anthropic-version", "2023-06-01").json(&serde_json::json!({"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "ping"}]}));
+    let request = client
+        .post(format!("{}/v1/messages", base_url.trim_end_matches('/')))
+        .header("anthropic-version", "2023-06-01")
+        .json(&serde_json::json!({
+            "model": model,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ping"}],
+        }));
     let request = if token_var == "ANTHROPIC_API_KEY" {
         request.header("x-api-key", token)
     } else {

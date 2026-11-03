@@ -59,13 +59,38 @@ fn classification_table() {
 }
 
 async fn server(status: StatusCode, body: &'static str, expected_header: &'static str) -> String {
-    let app = Router::new().route("/v1/messages", post(|State((status, body, expected_header)): State<(StatusCode, &'static str, &'static str)>, uri: OriginalUri, headers: HeaderMap, Json(data): Json<Value>| async move {
-        assert_eq!(uri.path(), "/v1/messages");
-        assert_eq!(headers["anthropic-version"], "2023-06-01");
-        if expected_header == "key" { assert_eq!(headers["x-api-key"], "secret-token"); } else { assert_eq!(headers["authorization"], "Bearer secret-token"); }
-        assert_eq!(data, json!({"model":"test-model","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}));
-        (status, body)
-    })).with_state((status, body, expected_header));
+    let app = Router::new()
+        .route(
+            "/v1/messages",
+            post(
+                |State((status, body, expected_header)): State<(
+                    StatusCode,
+                    &'static str,
+                    &'static str,
+                )>,
+                 uri: OriginalUri,
+                 headers: HeaderMap,
+                 Json(data): Json<Value>| async move {
+                    assert_eq!(uri.path(), "/v1/messages");
+                    assert_eq!(headers["anthropic-version"], "2023-06-01");
+                    if expected_header == "key" {
+                        assert_eq!(headers["x-api-key"], "secret-token");
+                    } else {
+                        assert_eq!(headers["authorization"], "Bearer secret-token");
+                    }
+                    assert_eq!(
+                        data,
+                        json!({
+                            "model": "test-model",
+                            "max_tokens": 1,
+                            "messages": [{"role": "user", "content": "ping"}],
+                        })
+                    );
+                    (status, body)
+                },
+            ),
+        )
+        .with_state((status, body, expected_header));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });

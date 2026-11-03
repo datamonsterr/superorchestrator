@@ -418,8 +418,16 @@ impl ClaudeParser {
         let mut rate_limits = self.rate_limits.take();
         if let Some(reset) = reset {
             let limits = rate_limits.get_or_insert_with(RateLimits::default);
-            limits.five_hour_used_pct = Some(100.0);
-            limits.five_hour_resets_at = Some(reset);
+            if result_text
+                .as_deref()
+                .is_some_and(crate::endpoint::weekly_reset)
+            {
+                limits.weekly_used_pct = Some(100.0);
+                limits.weekly_resets_at = Some(reset);
+            } else {
+                limits.five_hour_used_pct = Some(100.0);
+                limits.five_hour_resets_at = Some(reset);
+            }
         }
         let usage = HarnessEvent::Usage {
             input_tokens: n("input_tokens")
@@ -577,6 +585,49 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn endpoint_reset_uses_the_correct_quota_window() {
+        for (code, weekly) in [
+            (1308, false),
+            (1316, false),
+            (1318, false),
+            (1320, false),
+            (1310, true),
+            (1317, true),
+            (1319, true),
+            (1321, true),
+        ] {
+            let mut parser = ClaudeParser::default();
+            let body = serde_json::json!({"error": {"code": code.to_string(), "message": "Your limit will reset at 2026-11-03 18:00:00"}}).to_string();
+            let events = parser.parse_line(
+                &serde_json::json!({"type": "result", "is_error": true, "result": body})
+                    .to_string(),
+            );
+            let HarnessEvent::Usage {
+                rate_limits: Some(limits),
+                ..
+            } = &events[0]
+            else {
+                panic!("missing limits for {code}")
+            };
+            if weekly {
+                assert_eq!(
+                    (limits.weekly_used_pct, limits.weekly_resets_at),
+                    (Some(100.0), Some(1793700000)),
+                    "{code}"
+                );
+                assert_eq!(limits.five_hour_used_pct, None, "{code}");
+            } else {
+                assert_eq!(
+                    (limits.five_hour_used_pct, limits.five_hour_resets_at),
+                    (Some(100.0), Some(1793700000)),
+                    "{code}"
+                );
+                assert_eq!(limits.weekly_used_pct, None, "{code}");
+            }
+        }
     }
 
     #[test]
