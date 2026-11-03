@@ -4,6 +4,7 @@
 mod codec;
 mod error;
 mod events;
+mod history;
 mod messages;
 mod migrations;
 mod rows;
@@ -14,6 +15,7 @@ mod usage;
 mod workflows;
 
 pub use error::{Result, StoreError};
+pub use history::HistoryRow;
 pub use migrations::latest_version;
 pub use rows::*;
 pub use store::Store;

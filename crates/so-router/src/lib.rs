@@ -7,6 +7,7 @@ pub mod error;
 pub mod eval;
 pub mod heuristic;
 mod http;
+pub mod insights;
 pub mod jev;
 pub mod levels;
 pub mod route;
