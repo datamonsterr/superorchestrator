@@ -76,6 +76,9 @@ pub enum Command {
     /// Manage run worktrees
     #[command(subcommand)]
     Worktrees(WorktreesCmd),
+    /// Handle a harness lifecycle event
+    #[command(subcommand, hide = true)]
+    Hook(HookCmd),
     /// Run the supervisor
     #[command(hide = true)]
     Daemon(DaemonArgs),
@@ -539,4 +542,10 @@ mod tests {
         assert!(a.sub.is_none());
         assert!(matches!(route(&["eval"]).sub, Some(RouteSub::Eval { .. })));
     }
+}
+
+#[derive(Subcommand, Debug, Clone, Copy)]
+pub enum HookCmd {
+    SessionStart,
+    Stop,
 }

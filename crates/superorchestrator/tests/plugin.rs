@@ -61,3 +61,95 @@ fn skills_are_the_generated_plugin_skills() {
     }
     assert!(!plugin_dir().join("skills/superorchestrator").exists());
 }
+
+#[test]
+fn codex_plugin_and_marketplace_are_wired() {
+    let m = json_file(".codex-plugin/plugin.json");
+    assert_eq!(m["name"], "superorchestrator");
+    assert_eq!(
+        m["version"],
+        json_file(".claude-plugin/plugin.json")["version"]
+    );
+    assert_eq!(m["skills"], "./skills/");
+    assert_eq!(m["mcpServers"], "./.mcp.json");
+    for field in ["description", "homepage", "repository", "license"] {
+        assert!(m[field].as_str().is_some_and(|s| !s.is_empty()));
+    }
+    assert!(m["author"]["name"].is_string());
+    assert!(m["keywords"].is_array());
+    let ext = &m["extensions"]["com.openai"];
+    assert_eq!(ext["hooks"], "./hooks/codex-hooks.json");
+    for field in [
+        "displayName",
+        "shortDescription",
+        "longDescription",
+        "developerName",
+        "category",
+        "websiteURL",
+    ] {
+        assert!(ext["interface"][field].is_string(), "{field}");
+    }
+    assert!(ext["interface"]["capabilities"].is_array());
+    assert!(ext["interface"]["defaultPrompt"].is_array());
+    let root = plugin_dir().parent().unwrap().to_path_buf();
+    let market: Value = serde_json::from_slice(
+        &std::fs::read(root.join(".agents/plugins/marketplace.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(market["name"], "superorchestrator");
+    assert!(market["interface"]["displayName"].is_string());
+    let entries = market["plugins"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    let entry = &entries[0];
+    assert_eq!(entry["name"], "superorchestrator");
+    assert_eq!(
+        entry["source"],
+        json!({"source":"local", "path":"./plugin"})
+    );
+    assert_eq!(
+        entry["policy"],
+        json!({"installation":"AVAILABLE", "authentication":"ON_INSTALL"})
+    );
+    assert_eq!(entry["category"], "Coding");
+    assert!(
+        root.join(entry["source"]["path"].as_str().unwrap())
+            .join(".codex-plugin/plugin.json")
+            .is_file()
+    );
+    let hooks = json_file("hooks/codex-hooks.json");
+    assert_eq!(hooks["hooks"].as_object().unwrap().len(), 2);
+    for (event, command) in [("SessionStart", "session-start"), ("Stop", "stop")] {
+        assert_eq!(hooks["hooks"][event].as_array().unwrap().len(), 1);
+        assert_eq!(
+            hooks["hooks"][event][0]["hooks"].as_array().unwrap().len(),
+            1
+        );
+        let h = &hooks["hooks"][event][0]["hooks"][0];
+        assert_eq!(h["type"], "command");
+        assert_eq!(h["command"], format!("superorchestrator hook {command}"));
+        assert!(
+            std::process::Command::new(env!("CARGO_BIN_EXE_superorchestrator"))
+                .args(["hook", command, "--help"])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        assert!(h["timeout"].as_u64().is_some_and(|n| n > 0 && n <= 10));
+        assert!(h["statusMessage"].is_string());
+    }
+}
+
+#[test]
+fn hook_stop_without_supervisor_is_silent() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_superorchestrator"))
+        .args(["hook", "stop"])
+        .env_remove("SUPERORCHESTRATOR_SOCKET")
+        .env("XDG_RUNTIME_DIR", dir.path())
+        .env("SUPERORCHESTRATOR_CONFIG_DIR", dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+}

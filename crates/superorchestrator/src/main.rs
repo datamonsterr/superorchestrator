@@ -42,6 +42,10 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
         yes,
         command,
     } = cli;
+    if let Some(Command::Hook(event)) = command {
+        cmd::hook::run(config_dir, event);
+        return Ok(ExitCode::SUCCESS);
+    }
     let ctx = Ctx::new(config_dir, json, yes)?;
     let Some(command) = command else {
         if interactive() {
@@ -54,6 +58,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
     };
     let ok = |r: Result<()>| r.map(|()| ExitCode::SUCCESS);
     match command {
+        Command::Hook(_) => Ok(ExitCode::SUCCESS),
         Command::Setup(a) => cmd::setup::run(&ctx, a),
         Command::Tui => ok(tui::run(&ctx)),
         Command::Init => ok(cmd::init::run(&ctx)),

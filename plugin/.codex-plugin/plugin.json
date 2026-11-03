@@ -1,0 +1,27 @@
+{
+  "name": "superorchestrator",
+  "version": "0.1.0",
+  "description": "Delegate coding work across harnesses and accounts, with every run recorded.",
+  "author": { "name": "datamonsterr" },
+  "homepage": "https://github.com/datamonsterr/superorchestrator",
+  "repository": "https://github.com/datamonsterr/superorchestrator",
+  "license": "MIT",
+  "keywords": ["delegation", "subagents", "codex", "opencode", "mcp"],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Superorchestrator",
+        "shortDescription": "Delegate coding work across harnesses",
+        "longDescription": "Delegate coding work across accounts and harnesses and track every run.",
+        "developerName": "datamonsterr",
+        "category": "Coding",
+        "capabilities": ["Interactive"],
+        "websiteURL": "https://github.com/datamonsterr/superorchestrator",
+        "defaultPrompt": ["Delegate a coding task with superorchestrator."]
+      },
+      "hooks": "./hooks/codex-hooks.json"
+    }
+  }
+}
