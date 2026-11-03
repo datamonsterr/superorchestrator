@@ -5,6 +5,7 @@ pub mod agy;
 pub mod claude;
 pub mod codex;
 pub mod driver;
+pub mod endpoint;
 pub mod opencode;
 pub mod process;
 pub mod transcript;

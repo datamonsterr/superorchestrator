@@ -178,7 +178,7 @@ impl Driver for ClaudeDriver {
     }
 
     fn classify_error(&self, text: &str) -> ErrorKind {
-        classify_common(text)
+        crate::endpoint::classify_endpoint(text).unwrap_or_else(|| classify_common(text))
     }
 }
 
@@ -403,23 +403,41 @@ impl ClaudeParser {
         self.turn_open = false;
         let u = &v["usage"];
         let n = |k: &str| u[k].as_u64().unwrap_or(0);
+        let is_error = v["is_error"].as_bool().unwrap_or(false);
+        let result_text = v["result"].as_str().map(String::from);
+        let reset = is_error
+            .then(|| {
+                result_text
+                    .as_deref()
+                    .filter(|text| {
+                        crate::endpoint::classify_endpoint(text) == Some(ErrorKind::Quota)
+                    })
+                    .and_then(crate::endpoint::reset_time)
+            })
+            .flatten();
+        let mut rate_limits = self.rate_limits.take();
+        if let Some(reset) = reset {
+            let limits = rate_limits.get_or_insert_with(RateLimits::default);
+            limits.five_hour_used_pct = Some(100.0);
+            limits.five_hour_resets_at = Some(reset);
+        }
         let usage = HarnessEvent::Usage {
             input_tokens: n("input_tokens")
                 + n("cache_creation_input_tokens")
                 + n("cache_read_input_tokens"),
             output_tokens: n("output_tokens"),
             cost: v["total_cost_usd"].as_f64(),
-            rate_limits: self.rate_limits.take(),
+            rate_limits,
         };
-        let is_error = v["is_error"].as_bool().unwrap_or(false);
-        let result_text = v["result"].as_str().map(String::from);
         let error_text = is_error.then(|| {
             result_text
                 .clone()
                 .or_else(|| v["subtype"].as_str().map(String::from))
                 .unwrap_or_else(|| "claude reported an error".into())
         });
-        let error_kind = error_text.as_deref().map(classify_common);
+        let error_kind = error_text.as_deref().map(|text| {
+            crate::endpoint::classify_endpoint(text).unwrap_or_else(|| classify_common(text))
+        });
         vec![
             usage,
             HarnessEvent::TurnFinished {
@@ -543,6 +561,22 @@ mod tests {
         assert!(
             matches!(&events[6], TurnFinished { is_error: false, error_kind: None, result_text: Some(t), .. } if t == "done")
         );
+    }
+
+    #[test]
+    fn endpoint_quota_result_supplies_reset_to_usage() {
+        let mut p = ClaudeParser::default();
+        let events = p.parse_line(&serde_json::json!({"type":"result", "is_error":true, "result":"code: 1308 Usage limit reached for 5 hour. Your limit will reset at 2026-11-03 18:00:00"}).to_string());
+        assert!(
+            matches!(&events[0], HarnessEvent::Usage { rate_limits: Some(r), .. } if r.five_hour_used_pct == Some(100.0) && r.five_hour_resets_at == Some(1793700000))
+        );
+        assert!(matches!(
+            &events[1],
+            HarnessEvent::TurnFinished {
+                error_kind: Some(ErrorKind::Quota),
+                ..
+            }
+        ));
     }
 
     #[test]
