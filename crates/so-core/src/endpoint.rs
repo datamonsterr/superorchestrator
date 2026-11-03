@@ -1,4 +1,5 @@
 //! Endpoint account configuration and provider defaults.
+
 use crate::error::CoreError;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
@@ -10,16 +11,25 @@ const ZAI_ENV: &[(&str, &str)] = &[
     ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
 ];
 
+/// Supported endpoint provider presets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum EndpointPreset {
+    /// Z.ai coding plan.
     Zai,
+    /// Kimi Code plan.
     Kimi,
+    /// MiniMax coding plan.
     Minimax,
+    /// User-defined compatible endpoint.
     Custom,
 }
+
 impl EndpointPreset {
+    /// All supported presets.
     pub const ALL: [Self; 4] = [Self::Zai, Self::Kimi, Self::Minimax, Self::Custom];
+
+    /// Preset name used in account files.
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Zai => "zai",
@@ -28,12 +38,15 @@ impl EndpointPreset {
             Self::Custom => "custom",
         }
     }
+
     fn defaults(self) -> &'static Defaults {
         &DEFAULTS[self as usize]
     }
 }
+
 impl FromStr for EndpointPreset {
     type Err = CoreError;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         Self::ALL
             .into_iter()
@@ -44,12 +57,14 @@ impl FromStr for EndpointPreset {
             })
     }
 }
+
 struct Defaults {
     base: &'static str,
     token: &'static str,
     slots: [&'static str; 3],
     env: &'static [(&'static str, &'static str)],
 }
+
 const DEFAULTS: [Defaults; 4] = [
     Defaults {
         base: "https://api.z.ai/api/anthropic",
@@ -76,55 +91,81 @@ const DEFAULTS: [Defaults; 4] = [
         env: &[],
     },
 ];
+
+/// Claude model slot to resolve for an endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Slot {
+    /// Opus model slot.
     Opus,
+    /// Sonnet model slot.
     Sonnet,
+    /// Haiku model slot.
     Haiku,
 }
+
+/// Optional model overrides for Claude slots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Slots {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Opus model override.
     pub opus: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Sonnet model override.
     pub sonnet: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Haiku model override.
     pub haiku: Option<String>,
 }
+
 impl Slots {
     fn is_empty(&self) -> bool {
         self.opus.is_none() && self.sonnet.is_none() && self.haiku.is_none()
     }
 }
+
+/// Endpoint configuration attached to a Claude account.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Endpoint {
+    /// Provider preset supplying defaults.
     pub preset: EndpointPreset,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Optional API base URL override.
     pub base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Environment variable holding the token.
     pub token_env: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Path to a file holding the token.
     pub token_file: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Override for the child process token variable.
     pub token_var: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Model IDs explicitly served by this endpoint.
     pub models: Vec<String>,
     #[serde(default, skip_serializing_if = "Slots::is_empty")]
+    /// Model overrides for Claude slots.
     pub slots: Slots,
 }
+
 impl Endpoint {
+    /// Resolve the API base URL.
     pub fn base_url(&self) -> &str {
         self.base_url
             .as_deref()
             .unwrap_or(self.preset.defaults().base)
     }
+
+    /// Resolve the child process token variable.
     pub fn token_var(&self) -> &str {
         self.token_var
             .as_deref()
             .unwrap_or(self.preset.defaults().token)
     }
+
+    /// Return the alternate Anthropic token variable.
     pub fn other_token_var(&self) -> &str {
         if self.token_var() == AUTH {
             API_KEY
@@ -132,6 +173,8 @@ impl Endpoint {
             AUTH
         }
     }
+
+    /// Resolve a Claude slot to a model ID.
     pub fn slot(&self, slot: Slot) -> &str {
         let (value, index) = match slot {
             Slot::Opus => (&self.slots.opus, 0),
@@ -142,9 +185,12 @@ impl Endpoint {
             .as_deref()
             .unwrap_or(self.preset.defaults().slots[index])
     }
+
+    /// Return the preset-specific environment variables.
     pub fn extra_env(&self) -> &[(&str, &str)] {
         self.preset.defaults().env
     }
+
     pub(crate) fn validate(&self) -> std::result::Result<(), &'static str> {
         if self.token_env.is_some() == self.token_file.is_some() {
             return Err("endpoint requires exactly one token source");

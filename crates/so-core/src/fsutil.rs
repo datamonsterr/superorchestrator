@@ -44,6 +44,8 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 pub fn write_key_file(path: &Path, token: &str) -> Result<()> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
     create_private_dirs(dir).map_err(|e| CoreError::io(dir, e))?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| CoreError::io(dir, e))?;
     write_atomic(path, format!("{token}\n").as_bytes())
 }
 
@@ -95,6 +97,25 @@ pub fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn key_file_restricts_existing_directory() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("keys");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.join("account.key");
+        write_key_file(&path, "secret").unwrap();
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "secret\n");
+    }
 
     #[test]
     fn file_atomic_creates_private_dirs_and_files_and_keeps_mode_and_symlinks() {
