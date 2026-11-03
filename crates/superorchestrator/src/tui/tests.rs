@@ -460,6 +460,30 @@ fn add_form_picks_a_harness_and_a_count() {
 }
 
 #[test]
+fn add_form_can_select_each_acp_harness() {
+    for (offset, expected) in [
+        Harness::Copilot,
+        Harness::Gemini,
+        Harness::Kimi,
+        Harness::Cursor,
+        Harness::Qwen,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut a = app();
+        press(&mut a, &[ch('2'), ch('a')]);
+        for _ in 0..(4 + offset) {
+            a.on_key(key(KeyCode::Right));
+        }
+        let Some(Effect::AddAccounts { harness, count }) = a.on_key(key(KeyCode::Enter)) else {
+            panic!("expected AddAccounts for {expected}");
+        };
+        assert_eq!((harness, count), (expected, 1));
+    }
+}
+
+#[test]
 fn add_form_rejects_a_bad_count_and_stays_open() {
     let mut a = app();
     press(
