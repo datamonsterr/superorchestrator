@@ -14,7 +14,7 @@ use so_accounts::{HostEnv, ImportCandidate, SignIn, manage, resolve_binary, sign
 use so_core::{AccountFile, Harness};
 use so_supervisor::doctor::{Status, run_checks};
 
-use crate::cli::SetupArgs;
+use crate::cli::{OrchestratorHarness, SetupArgs};
 use crate::cmd::account::{ask_and_import, login_json, run_login, write_login_hint};
 use crate::cmd::init;
 use crate::ctx::{Ctx, interactive};
@@ -85,7 +85,7 @@ pub(crate) fn default_count(info: &HarnessInfo) -> u32 {
 }
 
 fn setup_default_count(info: &HarnessInfo, args: &SetupArgs) -> u32 {
-    if args.orchestrator.as_deref() == Some("codex") {
+    if args.orchestrator == Some(OrchestratorHarness::Codex) {
         let empty = info.binary.is_some() && info.accounts.is_empty() && info.importable == 0;
         return if empty && info.harness == Harness::Codex {
             2
@@ -110,15 +110,21 @@ fn reservation_names(
         }
         return Ok(args.reserve.clone());
     }
-    let Some(harness) = args.orchestrator.as_deref() else {
+    let Some(harness) = args.orchestrator else {
         return Ok(Vec::new());
     };
     let mut matching: Vec<_> = accounts
         .iter()
-        .filter(|a| a.harness.as_str() == harness)
+        .filter(|a| {
+            matches!(
+                (a.harness, harness),
+                (Harness::Codex, OrchestratorHarness::Codex)
+                    | (Harness::Claude, OrchestratorHarness::Claude)
+            )
+        })
         .collect();
     matching.sort_by(|a, b| a.name.cmp(&b.name));
-    let preferred = if harness == "codex" {
+    let preferred = if harness == OrchestratorHarness::Codex {
         let home = std::env::var_os("CODEX_HOME")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
@@ -228,9 +234,7 @@ fn print_plan(
             existing.push(account);
         }
     }
-    let planned_reserve = if !args.reserve.is_empty() {
-        args.reserve.clone()
-    } else {
+    let planned_reserve = {
         let names = reservation_names(args, &existing, host)?;
         if names.is_empty() && args.orchestrator.is_some() {
             vec!["<account selected after setup>".to_string()]
@@ -366,7 +370,7 @@ fn run_steps(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
     let imported = ask_and_import(ctx, &cfg, &host, &candidates)?;
     failed |= imported.failed;
     imported.names.iter().for_each(|n| say!("imported {n}"));
-    let remaining_candidates = if args.orchestrator.as_deref() == Some("codex") {
+    let remaining_candidates = if args.orchestrator == Some(OrchestratorHarness::Codex) {
         scan_candidates(ctx, &host)?
     } else {
         Vec::new()
@@ -436,7 +440,8 @@ fn run_steps(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
 
     let reserve = reservation_names(&args, &AccountFile::list(&ctx.paths)?, &host)?;
     if !reserve.is_empty() {
-        let mut reserved = ctx.config()?.orchestrator.reserved_accounts;
+        let original = ctx.config()?.orchestrator.reserved_accounts;
+        let mut reserved = original.clone();
         let mut seen = std::collections::HashSet::new();
         reserved.retain(|name| seen.insert(name.clone()));
         for name in &reserve {
@@ -444,9 +449,11 @@ fn run_steps(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
                 reserved.push(name.clone());
             }
         }
-        let value =
-            toml::Value::Array(reserved.into_iter().map(toml::Value::String).collect()).to_string();
-        so_core::Config::set_in_file(&ctx.paths, "orchestrator.reserved_accounts", &value)?;
+        if reserved != original {
+            let value = toml::Value::Array(reserved.into_iter().map(toml::Value::String).collect())
+                .to_string();
+            so_core::Config::set_in_file(&ctx.paths, "orchestrator.reserved_accounts", &value)?;
+        }
         say!("reserved accounts: {}", reserve.join(", "));
     }
 
@@ -505,7 +512,7 @@ fn run_steps(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
     if !ctx.json {
         d.lines.iter().for_each(|l| println!("  {l}"));
     }
-    let orchestrator = if args.orchestrator.as_deref() == Some("codex") {
+    let orchestrator = if args.orchestrator == Some(OrchestratorHarness::Codex) {
         "Codex"
     } else {
         "Claude Code"

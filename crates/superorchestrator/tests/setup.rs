@@ -376,7 +376,9 @@ fn codex_orchestrator_reservation_is_idempotent() {
         cfg["orchestrator"]["reserved_accounts"][0].as_str(),
         Some("codex-1")
     );
+    let before = read();
     cmd(&e).args(args).assert().success();
+    assert_eq!(read(), before);
     let cfg: toml::Value = toml::from_str(&read()).unwrap();
     assert_eq!(
         cfg["orchestrator"]["reserved_accounts"]
@@ -399,6 +401,11 @@ fn reservation_flags_and_dry_run() {
     assert_eq!(plan["reserve"][0], "<account selected after setup>");
     assert_eq!(plan["add"][0]["count"], 2);
     assert!(!e.cfg.exists());
+    cmd(&e)
+        .args(["setup", "--dry-run", "--reserve", "missing"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("account missing does not exist"));
     let args = [
         "setup",
         "--yes",
@@ -412,6 +419,10 @@ fn reservation_flags_and_dry_run() {
         "codex-2",
     ];
     cmd(&e).args(args).assert().success();
+    cmd(&e)
+        .args(["setup", "--dry-run", "--reserve", "codex-2"])
+        .assert()
+        .success();
     let cfg: toml::Value =
         toml::from_str(&std::fs::read_to_string(e.cfg.join("config.toml")).unwrap()).unwrap();
     assert_eq!(

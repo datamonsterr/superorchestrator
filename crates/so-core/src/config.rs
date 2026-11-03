@@ -456,11 +456,16 @@ pub struct Orchestrator {
     pub reserved_accounts: Vec<String>,
 }
 
+impl Orchestrator {
+    pub fn is_reserved(&self, name: &str) -> bool {
+        self.reserved_accounts.iter().any(|account| account == name)
+    }
+}
+
 /// The whole of `config.toml`. Every section is optional in the file.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    pub orchestrator: Orchestrator,
     pub limits: Limits,
     pub runs: Runs,
     pub workflows: Workflows,
@@ -472,6 +477,7 @@ pub struct Config {
     pub supervisor: Supervisor,
     pub notifications: Notifications,
     pub defaults: Defaults,
+    pub orchestrator: Orchestrator,
 }
 
 const OLD_CHOICES_HINT: &str = "list models on each [[router.levels]] entry as harness/model/effort, e.g. models = [\"codex/gpt-6.1-sol/high\"] (docs/guide/routing.md)";
@@ -1533,11 +1539,6 @@ mod tests {
         assert_eq!(ok.choices()[0].id(), "codex/m/high");
         assert_eq!(Config::load(&paths).unwrap(), ok);
     }
-}
-
-#[cfg(test)]
-mod reserved_account_tests {
-    use super::*;
     #[test]
     fn reservation_set_and_round_trip() {
         let mut c = Config::default();

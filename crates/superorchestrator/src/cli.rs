@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 /// Command line interface for superorchestrator.
 #[derive(Parser, Debug)]
@@ -87,11 +87,18 @@ pub enum Command {
     Mcp(McpArgs),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrchestratorHarness {
+    Claude,
+    Codex,
+}
+
 #[derive(Args, Debug)]
 pub struct SetupArgs {
     /// Harness used by the orchestrator
-    #[arg(long, value_parser = ["claude", "codex"])]
-    pub orchestrator: Option<String>,
+    #[arg(long, value_enum)]
+    pub orchestrator: Option<OrchestratorHarness>,
     /// Reserve an existing account (repeatable)
     #[arg(long, value_name = "NAME")]
     pub reserve: Vec<String>,

@@ -113,13 +113,9 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
         Utc::now(),
     )
     .map_err(|e| e.to_string())?;
-    snapshot.accounts.retain(|a| {
-        !state
-            .config
-            .orchestrator
-            .reserved_accounts
-            .contains(&a.file.name)
-    });
+    snapshot
+        .accounts
+        .retain(|a| !state.config.orchestrator.is_reserved(&a.file.name));
 
     let rows: Vec<Value> = view
         .accounts
@@ -133,6 +129,9 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
                 SignInState::SignedOut => row.insert("signed_in".into(), json!(false)),
                 SignInState::Unknown => None,
             };
+            if state.config.orchestrator.is_reserved(&a.name) {
+                row.insert("reserved".into(), json!(true));
+            }
             if !a.enabled {
                 row.insert("disabled".into(), json!(true));
             }
@@ -181,12 +180,7 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
                     .accounts
                     .iter()
                     .filter(|a| {
-                        a.harness == c.harness
-                            && !state
-                                .config
-                                .orchestrator
-                                .reserved_accounts
-                                .contains(&a.name)
+                        a.harness == c.harness && !state.config.orchestrator.is_reserved(&a.name)
                     })
                     .collect();
                 let open: Vec<_> = same
@@ -196,12 +190,7 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
                 Some(
                     if same.is_empty()
                         && view.accounts.iter().any(|a| {
-                            a.harness == c.harness
-                                && state
-                                    .config
-                                    .orchestrator
-                                    .reserved_accounts
-                                    .contains(&a.name)
+                            a.harness == c.harness && state.config.orchestrator.is_reserved(&a.name)
                         })
                     {
                         "account reserved"

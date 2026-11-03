@@ -115,18 +115,18 @@ pub async fn route_detailed(
 /// Ids of the choices the decider would be offered.
 pub fn eligible_choice_ids(ctx: &RouteCtx<'_>, exclude: &[String]) -> Vec<String> {
     let mut candidates = eligible(&ctx.config.choices(), ctx.catalog, ctx.snapshot, exclude);
-    remove_reserved(&mut candidates, &ctx.config.orchestrator.reserved_accounts);
+    remove_reserved(&mut candidates, &ctx.config.orchestrator);
     apply_claude_rank(candidates)
         .into_iter()
         .map(|c| c.choice.id())
         .collect()
 }
 
-fn remove_reserved(candidates: &mut Vec<Candidate<'_>>, reserved: &[String]) {
+fn remove_reserved(candidates: &mut Vec<Candidate<'_>>, reserved: &so_core::config::Orchestrator) {
     for candidate in candidates.iter_mut() {
         candidate
             .accounts
-            .retain(|a| !reserved.contains(&a.file.name));
+            .retain(|a| !reserved.is_reserved(&a.file.name));
     }
     candidates.retain(|candidate| !candidate.accounts.is_empty());
 }
@@ -291,7 +291,7 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
         )
     };
     if pins.account.is_none() {
-        remove_reserved(&mut cands, &ctx.config.orchestrator.reserved_accounts);
+        remove_reserved(&mut cands, &ctx.config.orchestrator);
     }
     // Failover: skipped accounts leave some choices with none, which makes them ineligible.
     if !params.exclude_accounts.is_empty() {
@@ -543,7 +543,12 @@ mod reservation_tests {
         let catalog = Catalog::default_catalog();
         let mut candidates =
             vec![candidate(&choice("codex/gpt-6.1-sol/high"), &catalog, &snapshot).unwrap()];
-        remove_reserved(&mut candidates, &["reserved".into()]);
+        remove_reserved(
+            &mut candidates,
+            &so_core::config::Orchestrator {
+                reserved_accounts: vec!["reserved".into()],
+            },
+        );
         assert_eq!(
             candidates[0]
                 .accounts

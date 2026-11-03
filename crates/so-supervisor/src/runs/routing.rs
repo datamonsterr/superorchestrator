@@ -225,7 +225,7 @@ impl RunManager {
             self.inner.paths.clone(),
             f64::from(self.config().usage.low_pct),
         );
-        let reserved = self.config().orchestrator.reserved_accounts.clone();
+        let reserved = self.config().orchestrator.clone();
         let (exclude, pin_account, model) = (
             params.exclude_accounts.clone(),
             params.account.clone(),
@@ -245,9 +245,10 @@ impl RunManager {
                     .into_iter()
                     .filter(|a| !exclude.contains(&a.file.name))
                     .filter(|a| {
-                        pin_account
-                            .as_ref()
-                            .map_or_else(|| !reserved.contains(&a.file.name), |n| n == &a.file.name)
+                        pin_account.as_ref().map_or_else(
+                            || !reserved.is_reserved(&a.file.name),
+                            |n| n == &a.file.name,
+                        )
                     })
                     .collect();
                 Ok(so_router::select::rank_accounts(&usable, &pool)
