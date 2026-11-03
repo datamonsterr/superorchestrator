@@ -773,6 +773,19 @@ mod tests {
     const FX: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../so-harness/tests/fixtures");
 
     #[test]
+    fn acp_catalog_contains_installed_cli_models() {
+        let c = Catalog::default_catalog();
+        for (h, model) in [
+            (Harness::Copilot, "gpt-5.4"),
+            (Harness::Gemini, "gemini-2.5-pro"),
+            (Harness::Kimi, "kimi-for-coding"),
+            (Harness::Qwen, "coder-model"),
+        ] {
+            assert!(c.contains(h, model), "{h}/{model}");
+        }
+    }
+
+    #[test]
     fn free_models_are_catalog_free_or_named_free() {
         let c = Catalog::default_catalog();
         assert!(c.is_free(Harness::Opencode, "opencode/deepseek-v4.1-flash-free"));

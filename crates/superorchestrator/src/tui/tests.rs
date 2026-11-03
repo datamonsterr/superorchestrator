@@ -15,6 +15,13 @@ use super::data::*;
 use super::theme::Theme;
 use super::ui;
 
+#[test]
+fn account_form_lists_every_harness() {
+    for harness in Harness::ALL {
+        assert!(HARNESSES.contains(&harness), "{harness}");
+    }
+}
+
 fn now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 10, 23, 12, 0, 0).unwrap()
 }
