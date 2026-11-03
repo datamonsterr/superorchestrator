@@ -20,6 +20,11 @@ pub enum SignIn {
 /// (isolated home), agy `.gemini/antigravity-cli/antigravity-oauth-token`
 /// (plus the older `.gemini/oauth_creds.json` and `google_accounts.json`).
 pub fn sign_in_state(account: &AccountFile, host: &HostEnv) -> Result<SignIn> {
+    if let Some(endpoint) = &account.endpoint {
+        return Ok(bool_state(
+            crate::env::resolve_token(account, endpoint, host).is_ok(),
+        ));
+    }
     let home = host.expand(&account.home)?;
     let present = |rels: &[&str]| rels.iter().any(|r| home.join(r).exists());
     Ok(match account.harness {
@@ -66,6 +71,44 @@ mod tests {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, [0xff, 0xfe, 0x00]).unwrap();
         std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o000)).unwrap();
+    }
+
+    #[test]
+    fn endpoint_checks_token_not_credentials() {
+        let d = tempfile::tempdir().unwrap();
+        let mut h = host(d.path(), Platform::Linux);
+        let mut a = acct(Harness::Claude, "~/.cl");
+        a.endpoint = Some(so_core::Endpoint {
+            preset: so_core::EndpointPreset::Zai,
+            base_url: None,
+            token_env: Some("EP_TOKEN".into()),
+            token_file: None,
+            token_var: None,
+            models: vec![],
+            slots: Default::default(),
+        });
+        touch_unreadable(&d.path().join(".cl/.credentials.json"));
+        assert_eq!(sign_in_state(&a, &h).unwrap(), SignIn::SignedOut);
+        h.vars.insert("EP_TOKEN".into(), "secret".into());
+        assert_eq!(sign_in_state(&a, &h).unwrap(), SignIn::SignedIn);
+        h.vars.insert("EP_TOKEN".into(), "".into());
+        assert_eq!(sign_in_state(&a, &h).unwrap(), SignIn::SignedOut);
+        let key = d.path().join("token");
+        std::fs::write(&key, "secret\n").unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let ep = a.endpoint.as_mut().unwrap();
+        ep.token_env = None;
+        ep.token_file = Some("~/token".into());
+        assert_eq!(sign_in_state(&a, &h).unwrap(), SignIn::SignedIn);
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(sign_in_state(&a, &h).unwrap(), SignIn::SignedOut);
+        assert!(
+            !crate::manage::login_command(&a, &h, false)
+                .unwrap()
+                .note
+                .unwrap()
+                .contains("/login")
+        );
     }
 
     #[test]

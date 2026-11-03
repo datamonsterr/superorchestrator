@@ -209,6 +209,7 @@ mod tests {
             Store::open_in_memory().unwrap(),
             Config::default(),
             HostEnv {
+                vars: Default::default(),
                 home: d.path().join("home"),
                 path_var: None,
                 platform: Platform::Linux,

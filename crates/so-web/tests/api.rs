@@ -93,6 +93,7 @@ async fn fx_cfg(token: Option<&str>, config: Config) -> Fx {
     std::fs::create_dir_all(&home).unwrap();
     let paths = Paths::from_dir(cfg);
     let host = HostEnv {
+        vars: Default::default(),
         home: home.clone(),
         path_var: Some(home.join("bin").to_string_lossy().into_owned()),
         platform: Platform::Linux,

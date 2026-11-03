@@ -132,6 +132,10 @@ impl Driver for ClaudeDriver {
             .args(build_args(&spec, &session_id))
             .envs(spec.launch.vars.iter().map(|(k, v)| (k, v)))
             .current_dir(&spec.cwd);
+        // Explicit removals also override account and global pass_env.
+        for name in &spec.launch.env_remove {
+            cmd.env_remove(name);
+        }
         let acks = Acks::default();
         let sup = spawn_supervised(
             cmd,

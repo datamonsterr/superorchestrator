@@ -2,21 +2,91 @@
 
 use std::path::{Path, PathBuf};
 
-use so_core::{AccountFile, Harness, Platform};
+use so_core::{AccountFile, Endpoint, Harness, Platform, Slot};
 
 use crate::error::{AccountsError, Result};
 use crate::host::{HostEnv, same_path};
 
 /// Everything needed to start a harness for one account. The full command is
 /// `program argv_prefix... extra_args... <caller args>`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Launch {
     pub program: PathBuf,
     /// Extra inherited names, resolved only when the process starts.
     pub pass_env: Vec<String>,
     pub vars: Vec<(String, String)>,
+    pub env_remove: Vec<String>,
     pub argv_prefix: Vec<String>,
     pub extra_args: Vec<String>,
+}
+
+impl std::fmt::Debug for Launch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let vars: Vec<_> = self
+            .vars
+            .iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    if matches!(k.as_str(), "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY") {
+                        "[REDACTED]"
+                    } else {
+                        v.as_str()
+                    },
+                )
+            })
+            .collect();
+        f.debug_struct("Launch")
+            .field("program", &self.program)
+            .field("pass_env", &self.pass_env)
+            .field("vars", &vars)
+            .field("env_remove", &self.env_remove)
+            .field("argv_prefix", &self.argv_prefix)
+            .field("extra_args", &self.extra_args)
+            .finish()
+    }
+}
+
+pub(crate) fn resolve_token(
+    account: &AccountFile,
+    endpoint: &Endpoint,
+    host: &HostEnv,
+) -> Result<String> {
+    use std::os::unix::fs::PermissionsExt;
+    if let Some(var) = &endpoint.token_env {
+        return host
+            .vars
+            .get(var)
+            .filter(|v| !v.is_empty())
+            .cloned()
+            .ok_or_else(|| AccountsError::TokenEnv {
+                account: account.name.clone(),
+                var: var.clone(),
+            });
+    }
+    let source = endpoint.token_file.as_deref().unwrap_or_default();
+    let err = || AccountsError::TokenFile {
+        account: account.name.clone(),
+        path: source.to_string(),
+    };
+    let path = host.expand(source).map_err(|_| err())?;
+    // Avoid blocking on a FIFO before opening. Recheck the opened target below.
+    if !std::fs::metadata(&path).map_err(|_| err())?.is_file() {
+        return Err(err());
+    }
+    let mut file = std::fs::File::open(path).map_err(|_| err())?;
+    let metadata = file.metadata().map_err(|_| err())?;
+    let mode = metadata.permissions().mode() & 0o777;
+    if !metadata.is_file() || (mode != 0o600 && mode != 0o400) {
+        return Err(err());
+    }
+    let mut token = String::new();
+    std::io::Read::read_to_string(&mut file, &mut token).map_err(|_| err())?;
+    let token = token.trim_end().to_string();
+    if token.is_empty() {
+        return Err(err());
+    }
+    Ok(token)
 }
 
 impl Launch {
@@ -68,7 +138,34 @@ pub(crate) fn build_launch_vars(
     host: &HostEnv,
 ) -> Result<Vec<(String, String)>> {
     let home = host.expand(&account.home)?;
-    Ok(harness_vars(account, host, &home))
+    let mut vars = harness_vars(account, host, &home);
+    if let Some(endpoint) = &account.endpoint {
+        let token = resolve_token(account, endpoint, host)?;
+        vars.extend([
+            ("ANTHROPIC_BASE_URL".into(), endpoint.base_url().into()),
+            (endpoint.token_var().into(), token),
+            ("ANTHROPIC_MODEL".into(), endpoint.slot(Slot::Opus).into()),
+            (
+                "ANTHROPIC_DEFAULT_OPUS_MODEL".into(),
+                endpoint.slot(Slot::Opus).into(),
+            ),
+            (
+                "ANTHROPIC_DEFAULT_SONNET_MODEL".into(),
+                endpoint.slot(Slot::Sonnet).into(),
+            ),
+            (
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL".into(),
+                endpoint.slot(Slot::Haiku).into(),
+            ),
+        ]);
+        vars.extend(
+            endpoint
+                .extra_env()
+                .iter()
+                .map(|(k, v)| ((*k).into(), (*v).into())),
+        );
+    }
+    Ok(vars)
 }
 
 fn harness_vars(account: &AccountFile, host: &HostEnv, home: &Path) -> Vec<(String, String)> {
@@ -82,7 +179,9 @@ fn harness_vars(account: &AccountFile, host: &HostEnv, home: &Path) -> Vec<(Stri
             ("XDG_DATA_HOME".into(), s(&home.join("data"))),
             ("XDG_STATE_HOME".into(), s(&home.join("state"))),
         ],
-        Harness::Claude if !same_path(home, &claude_default_home(host)) => {
+        Harness::Claude
+            if account.endpoint.is_some() || !same_path(home, &claude_default_home(host)) =>
+        {
             vec![("CLAUDE_CONFIG_DIR".into(), s(home))]
         }
         _ => Vec::new(),
@@ -100,10 +199,15 @@ pub fn build_launch(account: &AccountFile, host: &HostEnv) -> Result<Launch> {
         program: binary,
         pass_env: account.pass_env.clone(),
         vars: Vec::new(),
+        env_remove: account
+            .endpoint
+            .as_ref()
+            .map(|e| vec![e.other_token_var().into()])
+            .unwrap_or_default(),
         argv_prefix: Vec::new(),
         extra_args: Vec::new(),
     };
-    launch.vars = harness_vars(account, host, &home);
+    launch.vars = build_launch_vars(account, host)?;
     match account.harness {
         Harness::Codex | Harness::Opencode | Harness::Claude => {}
         Harness::Agy => {
@@ -134,8 +238,163 @@ mod tests {
     use super::*;
     use crate::testutil::{host, stub_bin};
 
+    #[test]
+    fn endpoint_launch_reads_private_token_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        stub_bin(d.path(), "claude");
+        let key = d.path().join("key");
+        std::fs::write(&key, "secret-value\n").unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut a = acct("endpoint", Harness::Claude, "~/.endpoint");
+        a.endpoint = Some(so_core::Endpoint {
+            preset: so_core::EndpointPreset::Kimi,
+            base_url: None,
+            token_env: None,
+            token_file: Some(key.display().to_string()),
+            token_var: None,
+            models: vec![],
+            slots: Default::default(),
+        });
+        let launch = build_launch(&a, &host(d.path(), Platform::Linux)).unwrap();
+        assert!(
+            launch
+                .vars
+                .contains(&("ANTHROPIC_API_KEY".into(), "secret-value".into()))
+        );
+        assert!(!format!("{launch:?}").contains("secret-value"));
+        let link = d.path().join("key-link");
+        std::os::unix::fs::symlink(&key, &link).unwrap();
+        a.endpoint.as_mut().unwrap().token_file = Some(link.display().to_string());
+        assert!(build_launch(&a, &host(d.path(), Platform::Linux)).is_ok());
+    }
+
+    #[test]
+    fn endpoint_rejects_directory_as_token_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let key = d.path().join("key-directory");
+        std::fs::create_dir(&key).unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut a = acct("endpoint", Harness::Claude, "~/.endpoint");
+        let endpoint = so_core::Endpoint {
+            preset: so_core::EndpointPreset::Kimi,
+            base_url: None,
+            token_env: None,
+            token_file: Some(key.display().to_string()),
+            token_var: None,
+            models: vec![],
+            slots: Default::default(),
+        };
+        a.endpoint = Some(endpoint.clone());
+        let error = resolve_token(&a, &endpoint, &host(d.path(), Platform::Linux)).unwrap_err();
+        assert!(matches!(error, AccountsError::TokenFile { .. }));
+    }
+
     fn acct(name: &str, h: Harness, home: &str) -> AccountFile {
         AccountFile::new(name, h, home, h.as_str()).unwrap()
+    }
+
+    #[test]
+    fn endpoint_presets_and_token_errors() {
+        use so_core::{Endpoint, EndpointPreset, Slots};
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        stub_bin(d.path(), "claude");
+        let mut h = host(d.path(), Platform::Linux);
+        h.vars
+            .insert("PROVIDER_KEY".into(), "sensitive-token".into());
+        for preset in [
+            EndpointPreset::Zai,
+            EndpointPreset::Kimi,
+            EndpointPreset::Minimax,
+            EndpointPreset::Custom,
+        ] {
+            let mut a = acct("ep", Harness::Claude, "~/.ep");
+            a.endpoint = Some(Endpoint {
+                preset,
+                base_url: (preset == EndpointPreset::Custom).then(|| "https://example.org".into()),
+                token_env: Some("PROVIDER_KEY".into()),
+                token_file: None,
+                token_var: None,
+                models: vec!["m".into()],
+                slots: if preset == EndpointPreset::Custom {
+                    Slots {
+                        opus: Some("o".into()),
+                        sonnet: Some("s".into()),
+                        haiku: Some("h".into()),
+                    }
+                } else {
+                    Slots::default()
+                },
+            });
+            let ep = a.endpoint.as_ref().unwrap();
+            let launch = build_launch(&a, &h).unwrap();
+            assert_eq!(launch.env_remove, [ep.other_token_var()]);
+            assert!(
+                launch
+                    .vars
+                    .contains(&(ep.token_var().into(), "sensitive-token".into()))
+            );
+            assert!(
+                launch
+                    .vars
+                    .contains(&("ANTHROPIC_MODEL".into(), ep.slot(Slot::Opus).into()))
+            );
+            for (key, slot) in [
+                ("ANTHROPIC_DEFAULT_OPUS_MODEL", Slot::Opus),
+                ("ANTHROPIC_DEFAULT_SONNET_MODEL", Slot::Sonnet),
+                ("ANTHROPIC_DEFAULT_HAIKU_MODEL", Slot::Haiku),
+            ] {
+                assert!(launch.vars.contains(&(key.into(), ep.slot(slot).into())));
+            }
+            if preset == EndpointPreset::Zai {
+                assert!(
+                    launch
+                        .vars
+                        .contains(&("API_TIMEOUT_MS".into(), "3000000".into()))
+                );
+                assert!(launch.vars.contains(&(
+                    "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC".into(),
+                    "1".into()
+                )));
+            }
+            assert!(!format!("{launch:?}").contains("sensitive-token"));
+            assert!(!so_core::redact::redact(&format!("{launch:?}")).contains("sensitive-token"));
+            let joined = launch
+                .vars
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            assert!(!so_core::redact::redact(&joined).contains("sensitive-token"));
+            h.vars.clear();
+            let err = build_launch(&a, &h).unwrap_err().to_string();
+            assert!(
+                err.contains("ep")
+                    && err.contains("PROVIDER_KEY")
+                    && !err.contains("sensitive-token")
+            );
+            h.vars
+                .insert("PROVIDER_KEY".into(), "sensitive-token".into());
+        }
+        let key = d.path().join("key");
+        std::fs::write(&key, "sensitive-token").unwrap();
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut a = acct("ep", Harness::Claude, "~/.ep");
+        a.endpoint = Some(Endpoint {
+            preset: EndpointPreset::Kimi,
+            base_url: None,
+            token_env: None,
+            token_file: Some(key.display().to_string()),
+            token_var: None,
+            models: vec![],
+            slots: Slots::default(),
+        });
+        let error = build_launch(&a, &h).unwrap_err().to_string();
+        assert!(
+            error.contains("ep") && error.contains("key") && !error.contains("sensitive-token")
+        );
     }
 
     #[test]
@@ -156,6 +415,7 @@ mod tests {
             )]
         );
         assert!(l.argv_prefix.is_empty() && l.extra_args.is_empty());
+        assert!(l.env_remove.is_empty());
     }
 
     #[test]
@@ -186,6 +446,7 @@ mod tests {
         let h = host(d.path(), Platform::Linux);
         let l = build_launch(&acct("claude-two", Harness::Claude, "~/.claude-two"), &h).unwrap();
         assert_eq!(l.vars[0].0, "CLAUDE_CONFIG_DIR");
+        assert!(l.env_remove.is_empty());
         let l = build_launch(&acct("claude-acc1", Harness::Claude, "~/.claude"), &h).unwrap();
         assert!(l.vars.is_empty());
     }
