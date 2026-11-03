@@ -87,6 +87,26 @@ impl Store {
         Ok(rows.next().transpose()?)
     }
 
+    /// Whether the newest `QuestionAsked` event of `run_id` is newer (by id) than its newest
+    /// `QuestionAnswered` event, in one query. It is a lookup on the `idx_events_run_ts` run_id range filtered by type
+    /// (not a type index), so its cost is linear in the run's events. A question abandoned by a disconnected
+    /// client stays open, same as the monitor; that is a known limitation.
+    pub fn has_open_question(&self, run_id: &str) -> Result<bool> {
+        let conn = self.conn();
+        let mut st = conn.prepare_cached(
+            "SELECT COALESCE((SELECT MAX(id) FROM events WHERE run_id = ?1 AND type = ?2), '') \
+             > COALESCE((SELECT MAX(id) FROM events WHERE run_id = ?1 AND type = ?3), '')",
+        )?;
+        Ok(st.query_row(
+            params![
+                run_id,
+                enum_to_sql(&so_core::EventType::QuestionAsked),
+                enum_to_sql(&so_core::EventType::QuestionAnswered)
+            ],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Deletes events older than `ts`; returns how many were removed.
     pub fn prune_events_before(&self, ts: DateTime<Utc>) -> Result<usize> {
         Ok(self
@@ -182,6 +202,25 @@ mod tests {
             event_type: EventType::Progress,
             data: serde_json::json!({"step": 1}),
         }
+    }
+
+    #[test]
+    fn open_question_follows_latest_asked_and_answered_ids() {
+        let s = Store::open_in_memory().unwrap();
+        let t = Utc::now();
+        let add = |kind| {
+            let mut e = ev("s", Some("r"), t);
+            e.event_type = kind;
+            s.append_event(&e).unwrap();
+        };
+        assert!(!s.has_open_question("r").unwrap());
+        add(EventType::QuestionAsked);
+        assert!(s.has_open_question("r").unwrap());
+        add(EventType::QuestionAnswered);
+        assert!(!s.has_open_question("r").unwrap());
+        add(EventType::QuestionAsked);
+        assert!(s.has_open_question("r").unwrap());
+        assert!(!s.has_open_question("other").unwrap());
     }
 
     #[test]

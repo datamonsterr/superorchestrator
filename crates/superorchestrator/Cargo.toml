@@ -43,6 +43,7 @@ insta.workspace = true
 assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true
+rusqlite.workspace = true
 serde_json.workspace = true
 rmcp = { workspace = true, features = ["client", "transport-child-process"] }
 

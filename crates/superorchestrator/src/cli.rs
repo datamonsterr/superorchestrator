@@ -76,6 +76,9 @@ pub enum Command {
     /// Manage run worktrees
     #[command(subcommand)]
     Worktrees(WorktreesCmd),
+    /// Handle a harness lifecycle event
+    #[command(subcommand, hide = true)]
+    Hook(HookCmd),
     /// Run the supervisor
     #[command(hide = true)]
     Daemon(DaemonArgs),
@@ -85,6 +88,14 @@ pub enum Command {
     /// Run the MCP server on stdio
     #[command(hide = true)]
     Mcp(McpArgs),
+}
+
+#[derive(Subcommand, Debug, Clone, Copy)]
+pub enum HookCmd {
+    /// Report runs that wait at the review gate or on an answer, as session context
+    SessionStart,
+    /// Report runs that still wait at the review gate, as a system message
+    Stop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize)]

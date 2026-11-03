@@ -1,0 +1,6 @@
+{
+  "hooks": {
+    "SessionStart": [{"hooks": [{"type": "command", "command": "superorchestrator hook session-start", "statusMessage": "Checking delegated runs", "timeout": 10}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "superorchestrator hook stop", "statusMessage": "Checking review gates", "timeout": 10}]}]
+  }
+}

@@ -9,10 +9,6 @@ use toml_edit::{Array, DocumentMut, Item, Table};
 /// Key of our entry in every harness config.
 pub const NAME: &str = "superorchestrator";
 
-const CODEX_STARTUP_TIMEOUT_SECS: i64 = 30;
-const CODEX_TOOL_TIMEOUT_MARGIN_SECS: u64 = 60;
-const CODEX_ENV_VARS: &[&str] = &["XDG_RUNTIME_DIR"];
-
 /// Codex `config.toml`: `[mcp_servers.superorchestrator]` with `command` and `args`.
 pub fn codex_add(old: &str, exe: &str) -> Result<Option<String>> {
     let mut doc: DocumentMut = old.parse().context("not valid TOML")?;
@@ -35,9 +31,11 @@ pub fn codex_add(old: &str, exe: &str) -> Result<Option<String>> {
         .get("args")
         .and_then(Item::as_array)
         .is_some_and(|a| a.len() == 1 && a.get(0).and_then(|v| v.as_str()) == Some("mcp"));
-    let startup = CODEX_STARTUP_TIMEOUT_SECS;
-    let timeout = i64::try_from(so_core::MAX_WAIT.as_secs() + CODEX_TOOL_TIMEOUT_MARGIN_SECS)
-        .context("Codex tool timeout exceeds TOML integer range")?;
+    let startup = i64::try_from(so_core::CODEX_STARTUP_TIMEOUT_SECS)
+        .context("Codex startup timeout exceeds TOML integer range")?;
+    let timeout =
+        i64::try_from(so_core::MAX_WAIT.as_secs() + so_core::CODEX_TOOL_TIMEOUT_MARGIN_SECS)
+            .context("Codex tool timeout exceeds TOML integer range")?;
     let same_startup = entry.get("startup_timeout_sec").and_then(Item::as_integer) == Some(startup);
     let same_timeout = entry.get("tool_timeout_sec").and_then(Item::as_integer) == Some(timeout);
     let env_vars = entry.get("env_vars").and_then(Item::as_array);
@@ -45,7 +43,7 @@ pub fn codex_add(old: &str, exe: &str) -> Result<Option<String>> {
         return Err(anyhow!("`mcp_servers.{NAME}.env_vars` is not an array"));
     }
     let same_env_vars = env_vars.is_some_and(|a| {
-        CODEX_ENV_VARS
+        so_core::CODEX_MCP_ENV_VARS
             .iter()
             .all(|required| a.iter().any(|item| item.as_str() == Some(required)))
     });
@@ -74,7 +72,7 @@ pub fn codex_add(old: &str, exe: &str) -> Result<Option<String>> {
             .and_then(Item::as_array)
             .cloned()
             .unwrap_or_default();
-        for var in CODEX_ENV_VARS {
+        for var in so_core::CODEX_MCP_ENV_VARS {
             if !env_vars.iter().any(|item| item.as_str() == Some(var)) {
                 env_vars.push(*var);
             }

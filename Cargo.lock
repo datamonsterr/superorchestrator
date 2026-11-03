@@ -3455,6 +3455,7 @@ dependencies = [
  "ratatui",
  "reqwest",
  "rmcp",
+ "rusqlite",
  "serde",
  "serde_json",
  "so-accounts",
