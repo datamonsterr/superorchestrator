@@ -28,6 +28,8 @@ export interface AccountView {
   pools?: string[] | null;
   /** Routing priority (lower is tried first). */
   priority?: number | null;
+  /** Kept for the orchestrator and excluded from automatic routing. */
+  reserved?: boolean;
   signed_in: SignInState;
 }
 
@@ -115,6 +117,7 @@ export interface Config {
   defaults?: Defaults;
   limits?: Limits;
   notifications?: Notifications;
+  orchestrator?: Orchestrator;
   router?: Router;
   runs?: Runs;
   supervisor?: Supervisor;
@@ -343,6 +346,11 @@ export interface Notifications {
 
 /** Behaviour when the decider is configured but cannot be reached. */
 export type OnUnreachable = "error" | "heuristic";
+
+/** Accounts kept for the orchestrator. */
+export interface Orchestrator {
+  reserved_accounts?: string[];
+}
 
 export interface PatchAccountRequest {
   cap?: number | null;

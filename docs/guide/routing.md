@@ -131,7 +131,7 @@ Claude ranks last. The router picks a Claude model only when one of these holds:
 - the call names it;
 - no other eligible model has an account with headroom.
 
-Claude accounts are kept for the orchestrator, so the router keeps Claude limits for it.
+No level lists a Claude model by default, so auto routing does not use Claude accounts unless a level lists one.
 
 ## Pinning a model
 

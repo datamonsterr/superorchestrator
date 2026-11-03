@@ -90,6 +90,37 @@ async fn auto_routing_picks_an_account_and_records_the_decision() {
 }
 
 #[tokio::test]
+async fn a_reserved_account_is_routed_only_when_pinned() {
+    let mut env = routed_env();
+    env.config
+        .orchestrator
+        .reserved_accounts
+        .push("claude-a".into());
+    env.account("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    // Auto routing never takes the reserved account, and it is the only one.
+    let err = c
+        .call::<_, Value>(so_core::proto::METHOD_SPAWN_AGENT, auto_params(&env))
+        .await
+        .unwrap_err();
+    assert_eq!(rpc_code(err), so_core::proto::UNAVAILABLE);
+    assert!(env.launches("claude-a").is_empty());
+
+    // Naming it is the explicit way in.
+    let mut p = auto_params(&env);
+    p.account = Some("claude-a".into());
+    let r = spawn(&c, p).await;
+    assert_eq!(r.state, RunState::Succeeded, "{r:?}");
+    assert_eq!(
+        view(&c, &r.run_id).await.account.as_deref(),
+        Some("claude-a")
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test]
 async fn pinned_fields_are_respected() {
     let env = routed_env();
     env.account("claude-a", 2, &ok_script(&[]));

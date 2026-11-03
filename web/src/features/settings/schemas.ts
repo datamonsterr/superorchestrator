@@ -18,6 +18,7 @@ const baseSchema = z.object({
   runs: z.object({ stall_ms: whole(1000), ask_timeout: z.string().trim().min(1, 'Enter a duration such as 10m') }),
   notifications: z.object({ desktop: z.boolean(), discord_webhook_env: z.string().trim() }),
   worktrees: z.object({ dir: z.string().trim(), branch_prefix: z.string().trim() }),
+  orchestrator: z.object({ reserved_accounts: z.string() }),
   router: z.object({
     policy: z.object({ min_confidence: fraction, min_margin: fraction }),
     jev: z.object({ key_env: z.string().trim().min(1, 'Enter an environment variable name'), key_file: z.string().trim() }),
@@ -49,6 +50,7 @@ export function valuesFromConfig(view: ConfigView): SettingsValues {
     runs: { stall_ms: c.runs?.stall_ms ?? 300_000, ask_timeout: c.runs?.ask_timeout ?? '10m' },
     notifications: { desktop: c.notifications?.desktop ?? false, discord_webhook_env: c.notifications?.discord_webhook_env ?? '' },
     worktrees: { dir: c.worktrees?.dir ?? '', branch_prefix: c.worktrees?.branch_prefix ?? '' },
+    orchestrator: { reserved_accounts: (c.orchestrator?.reserved_accounts ?? []).join(', ') },
     router: {
       policy: { min_confidence: c.router?.policy?.min_confidence ?? 0.45, min_margin: c.router?.policy?.min_margin ?? 0.15 },
       jev: { key_env: c.router?.jev?.key_env ?? 'OPENROUTER_API_KEY', key_file: c.router?.jev?.key_file ?? '' },
@@ -57,6 +59,9 @@ export function valuesFromConfig(view: ConfigView): SettingsValues {
   }
 }
 
+/** The reserved-accounts field is edited as one comma-separated string. */
+const splitNames = (s: string) => s.split(',').map((name) => name.trim()).filter(Boolean)
+
 type Tree = { [k: string]: Tree | string | number | boolean }
 
 /**
@@ -64,8 +69,8 @@ type Tree = { [k: string]: Tree | string | number | boolean }
  * (`key_file`) is not sent: the API has no way to unset a key, so it keeps its value.
  */
 export function diffToPatch(before: SettingsValues, after: SettingsValues): ConfigPatch {
-  const walk = (a: Tree, b: Tree, path: string): Tree => {
-    const out: Tree = {}
+  const walk = (a: Tree, b: Tree, path: string): Record<string, unknown> => {
+    const out: Record<string, unknown> = {}
     for (const k of Object.keys(b)) {
       const x = a[k]
       const y = b[k]
@@ -73,6 +78,9 @@ export function diffToPatch(before: SettingsValues, after: SettingsValues): Conf
       if (typeof y === 'object') {
         const sub = walk(x as Tree, y, here)
         if (Object.keys(sub).length > 0) out[k] = sub
+      } else if (here === 'orchestrator.reserved_accounts' && typeof x === 'string' && typeof y === 'string') {
+        const names = splitNames(y)
+        if (JSON.stringify(splitNames(x)) !== JSON.stringify(names)) out[k] = names
       } else if (x !== y && !(here === 'router.jev.key_file' && y === '')) {
         out[k] = y
       }

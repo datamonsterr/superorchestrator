@@ -187,7 +187,23 @@ fn read_one(ctx: &Ctx, host: &HostEnv, link: &mut Link, effect: Effect, tx: &Sen
                     version: s.version,
                     uptime_s: s.uptime_s,
                 });
-            let snap = load_snapshot(ctx, host, sup, Utc::now());
+            // The supervisor routes with its loaded config, so its reserved flags are the
+            // truth while it runs.
+            let reserved = sup.as_ref().and_then(|_| {
+                link.call::<_, so_core::proto::HarnessesView>(
+                    so_core::proto::METHOD_LIST_HARNESSES,
+                    serde_json::json!({}),
+                )
+                .ok()
+                .map(|v| {
+                    v.accounts
+                        .into_iter()
+                        .filter(|a| a.reserved)
+                        .map(|a| a.name)
+                        .collect::<std::collections::HashSet<_>>()
+                })
+            });
+            let snap = load_snapshot(ctx, host, sup, reserved.as_ref(), Utc::now());
             send(tx, Update::Snapshot(Box::new(snap)));
         }
         Effect::Detail { id, diff } => {
@@ -654,7 +670,7 @@ fn step_body(ctx: &Ctx, host: &HostEnv, step: SetupStep) -> Result<(StepState, V
             (StepState::Warn, lines)
         }
         SetupStep::Install => {
-            let v = install::install_quiet(ctx, false, true)?;
+            let v = install::install_quiet(ctx, false, true, true)?;
             let lines = v
                 .as_array()
                 .map(|a| {
@@ -910,6 +926,11 @@ mod tests {
             .unwrap()
             .save(&ctx.paths)
             .unwrap();
+        std::fs::write(
+            d.path().join("cfg/config.toml"),
+            "[orchestrator]\nreserved_accounts = [\"agy-1\"]\n",
+        )
+        .unwrap();
         let (tx, rx) = channel();
         let mut link = Link::new(None, SUP_TIMEOUT).unwrap();
         read_one(&ctx, &host, &mut link, Effect::Refresh, &tx);
@@ -930,6 +951,7 @@ mod tests {
             "gemini: ok 74%, claude: ok wk 36%"
         );
         assert!(snapshot.supervisor.is_none());
+        assert!(snapshot.accounts[0].reserved);
     }
 
     #[test]
