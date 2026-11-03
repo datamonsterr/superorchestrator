@@ -694,6 +694,7 @@ mod tests {
 
     fn fake_host(dir: &std::path::Path) -> HostEnv {
         HostEnv {
+            vars: Default::default(),
             home: dir.join("home"),
             path_var: Some(dir.join("bin").display().to_string()),
             platform: so_core::Platform::Linux,

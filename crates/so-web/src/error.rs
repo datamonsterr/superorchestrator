@@ -212,6 +212,8 @@ impl From<AccountsError> for ApiError {
             AccountsError::Io { path, source } => Self::io(&path, &source),
             AccountsError::AgyMultiAccountUnsupported(_)
             | AccountsError::AgySecondAccount { .. }
+            | AccountsError::TokenEnv { .. }
+            | AccountsError::TokenFile { .. }
             | AccountsError::BinaryNotFound(_)
             | AccountsError::HomeMissing(_)
             | AccountsError::InvalidName(_)

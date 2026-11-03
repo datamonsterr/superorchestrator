@@ -22,6 +22,7 @@ async fn runs_list_show_and_join_print() {
     std::fs::set_permissions(e.tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     add_account(&e);
     let host = HostEnv {
+        vars: Default::default(),
         home: e.home.clone(),
         path_var: Some("/usr/bin:/bin".into()),
         platform: Platform::current(),

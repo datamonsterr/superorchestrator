@@ -414,6 +414,7 @@ mod tests {
                 .unwrap();
         }
         let host = HostEnv {
+            vars: Default::default(),
             home: dir.path().to_path_buf(),
             path_var: Some("/usr/bin:/bin".into()),
             platform: Platform::current(),

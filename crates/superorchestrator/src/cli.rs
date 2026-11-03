@@ -184,6 +184,25 @@ pub enum AccountCmd {
 pub struct AccountAdd {
     /// codex, agy, opencode or claude
     pub harness: String,
+    /// Endpoint preset; the positional argument is the account name.
+    #[arg(long, value_parser = ["zai", "kimi", "minimax", "custom"])]
+    pub endpoint: Option<String>,
+    #[arg(long, requires = "endpoint")]
+    pub base_url: Option<String>,
+    #[arg(long, requires = "endpoint", conflicts_with = "token_stdin")]
+    pub token_env: Option<String>,
+    #[arg(long, requires = "endpoint", conflicts_with = "token_env")]
+    pub token_stdin: bool,
+    #[arg(long = "model", requires = "endpoint")]
+    pub models: Vec<String>,
+    #[arg(long, requires = "endpoint")]
+    pub opus: Option<String>,
+    #[arg(long, requires = "endpoint")]
+    pub sonnet: Option<String>,
+    #[arg(long, requires = "endpoint")]
+    pub haiku: Option<String>,
+    #[arg(long = "harness", requires = "endpoint")]
+    pub endpoint_harness: Option<String>,
     /// Account name (default: <harness>-<n> with the lowest free n)
     #[arg(long)]
     pub name: Option<String>,

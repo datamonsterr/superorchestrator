@@ -225,6 +225,7 @@ impl Env {
 
     async fn start(&self) -> SupervisorHandle {
         let host = HostEnv {
+            vars: Default::default(),
             home: self.home.clone(),
             path_var: Some("/usr/bin:/bin".into()),
             platform: Platform::current(),

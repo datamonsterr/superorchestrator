@@ -48,6 +48,59 @@ fn load_account(paths: &Paths, name: &str) -> Result<AccountFile> {
 }
 
 fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
+    if let Some(preset) = &a.endpoint {
+        if a.endpoint_harness.as_deref().is_some_and(|h| h != "claude") {
+            bail!("endpoint accounts require the claude harness");
+        }
+        if a.name.is_some() || a.count != 1 || a.home.is_some() {
+            bail!("endpoint add takes the account name as its positional argument");
+        }
+        if a.token_env.is_some() == a.token_stdin {
+            bail!("specify exactly one of --token-env or --token-stdin");
+        }
+        let token = if a.token_stdin {
+            let mut line = String::new();
+            std::io::stdin().read_line(&mut line)?;
+            let token = line.trim_end().to_string();
+            if token.is_empty() {
+                bail!("token from stdin is empty");
+            }
+            Some(token)
+        } else {
+            None
+        };
+        let endpoint = so_core::Endpoint {
+            preset: preset.parse()?,
+            base_url: a.base_url.clone(),
+            token_env: a.token_env.clone(),
+            token_file: None,
+            token_var: None,
+            models: a.models.clone(),
+            slots: so_core::Slots {
+                opus: a.opus.clone(),
+                sonnet: a.sonnet.clone(),
+                haiku: a.haiku.clone(),
+            },
+        };
+        let host = ctx.host()?;
+        let acc = manage::add_endpoint(
+            &ctx.paths,
+            &ctx.config()?,
+            &host,
+            &a.harness,
+            endpoint,
+            token.as_deref(),
+        )?;
+        ctx.refresh_skill();
+        let ep = acc.endpoint.as_ref().expect("endpoint");
+        let source = ep
+            .token_env
+            .as_ref()
+            .map(|v| format!("env:{v}"))
+            .unwrap_or_else(|| "file".into());
+        ctx.emit_ok(json!({"name":acc.name,"harness":"claude","home":acc.home,"endpoint":{"preset":ep.preset.as_str(),"base_url":ep.base_url(),"token_source":source}}), &format!("added endpoint account {} ({}, {}, {})", acc.name, ep.preset.as_str(), ep.base_url(), source))?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let harness = parse_harness(&a.harness)?;
     if a.name.is_some() && a.count > 1 {
         return Err(CliError::new(
@@ -290,6 +343,13 @@ fn login(ctx: &Ctx, name: &str) -> Result<ExitCode> {
     let account = load_account(&ctx.paths, name)?;
     let host = ctx.host()?;
     let tty = stdin_is_tty();
+    if account.endpoint.is_some() {
+        let login = login_json(&account, &host)?;
+        ctx.emit(&json!({"ok": true, "name": name, "login": login}), |w| {
+            write_login_hint(w, &login, true)
+        })?;
+        return Ok(ExitCode::SUCCESS);
+    }
     manage::login_command(&account, &host, tty)?; // fails early when the harness binary is missing
     let runnable = tty || account.harness == Harness::Codex;
     if !runnable {

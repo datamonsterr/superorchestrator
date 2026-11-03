@@ -480,3 +480,52 @@ fn account_add_partial_failure_keeps_hints_and_exits_non_zero() {
         "no second error print"
     );
 }
+
+#[test]
+fn endpoint_add_stdin_and_list_are_secret_free() {
+    let e = Env::new();
+    e.init();
+    let output = e
+        .cmd()
+        .args([
+            "--json",
+            "account",
+            "add",
+            "kimi-test",
+            "--endpoint",
+            "kimi",
+            "--token-stdin",
+        ])
+        .write_stdin("endpoint-secret\n")
+        .assert()
+        .success();
+    assert!(!stdout(&output).contains("endpoint-secret"));
+    let account = so_core::AccountFile::load(&e.cfg.join("accounts/kimi-test.toml")).unwrap();
+    assert_eq!(
+        account.endpoint.unwrap().preset,
+        so_core::EndpointPreset::Kimi
+    );
+    let list = list_json(&e);
+    let entry = list.iter().find(|v| v["name"] == "kimi-test").unwrap();
+    assert_eq!(entry["endpoint"]["token_source"], "file");
+    assert_eq!(entry["endpoint"]["preset"], "kimi");
+    assert!(!entry.to_string().contains("endpoint-secret"));
+    e.cmd()
+        .args(["account", "add", "bad", "--endpoint", "zai"])
+        .assert()
+        .failure();
+    e.cmd()
+        .args([
+            "account",
+            "add",
+            "bad",
+            "--endpoint",
+            "zai",
+            "--token-env",
+            "VAR",
+            "--harness",
+            "codex",
+        ])
+        .assert()
+        .failure();
+}

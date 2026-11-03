@@ -28,6 +28,7 @@ pub(crate) mod testutil {
 
     pub fn host(home: &Path, platform: Platform) -> HostEnv {
         HostEnv {
+            vars: Default::default(),
             home: home.to_path_buf(),
             path_var: Some(home.join("bin").to_string_lossy().into_owned()),
             platform,

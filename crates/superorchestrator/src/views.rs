@@ -145,6 +145,7 @@ pub fn views_json(views: &[AccountView]) -> Value {
                 json!({
                     "name": v.account.name,
                     "harness": v.account.harness.as_str(),
+                    "endpoint": v.account.endpoint.as_ref().map(|ep| json!({"preset": ep.preset.as_str(), "base_url": ep.base_url(), "token_source": ep.token_env.as_ref().map(|v| format!("env:{v}")).unwrap_or_else(|| "file".into())})),
                     "signed_in": sign_in_text(v.signed_in),
                     "enabled": v.account.enabled,
                     "cap": v.account.cap,
@@ -171,6 +172,21 @@ pub fn write_views_table(w: &mut dyn Write, views: &[AccountView]) -> io::Result
             vec![
                 v.account.name.clone(),
                 v.account.harness.as_str().to_string(),
+                v.account
+                    .endpoint
+                    .as_ref()
+                    .map(|ep| {
+                        format!(
+                            "{} {} {}",
+                            ep.preset.as_str(),
+                            ep.base_url(),
+                            ep.token_env
+                                .as_ref()
+                                .map(|v| format!("env:{v}"))
+                                .unwrap_or_else(|| "file".into())
+                        )
+                    })
+                    .unwrap_or_default(),
                 sign_in_text(v.signed_in).to_string(),
                 if v.account.enabled { "yes" } else { "no" }.to_string(),
                 v.account.cap.to_string(),
@@ -188,6 +204,7 @@ pub fn write_views_table(w: &mut dyn Write, views: &[AccountView]) -> io::Result
         &[
             "NAME",
             "HARNESS",
+            "ENDPOINT",
             "SIGNED IN",
             "ENABLED",
             "CAP",
