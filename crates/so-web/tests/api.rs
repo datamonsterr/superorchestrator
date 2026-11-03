@@ -2542,3 +2542,95 @@ async fn mutations_refresh_an_installed_skill_and_only_an_installed_one() {
     // Both files follow.
     assert_eq!(skill(), std::fs::read_to_string(&files[1]).unwrap());
 }
+
+#[tokio::test]
+async fn endpoint_accounts_keep_tokens_private_and_validate_login() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fx().await;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let success = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let server_success = success.clone();
+    let server = tokio::spawn(async move {
+        axum::serve(
+            listener,
+            Router::new().route(
+                "/v1/messages",
+                axum::routing::post(move || {
+                    let success = server_success.clone();
+                    async move {
+                        if success.load(std::sync::atomic::Ordering::SeqCst) {
+                            (StatusCode::OK, "ok")
+                        } else {
+                            (StatusCode::UNAUTHORIZED, "fixture endpoint secret")
+                        }
+                    }
+                }),
+            ),
+        )
+        .await
+        .unwrap();
+    });
+    let (status, value) = post(&f.app, "/api/v1/accounts", Some(json!({"name":"endpoint-one", "endpoint":{"preset":"zai", "base_url":format!("http://{addr}")}, "token":"fixture endpoint secret"}))).await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    assert_eq!(value["endpoint"]["token_source"], "file");
+    assert!(!value.to_string().contains("fixture endpoint secret"));
+    let key = f.path("cfg/keys/endpoint-one.key");
+    assert_eq!(
+        std::fs::metadata(key).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(
+        std::fs::read_to_string(f.path("cfg/accounts/endpoint-one.toml"))
+            .unwrap()
+            .contains("token_file")
+    );
+    let (_, list) = get(&f.app, "/api/v1/accounts").await;
+    assert!(!list.to_string().contains("fixture endpoint secret"));
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["endpoint"]["preset"] == "zai")
+    );
+    let (_, login) = post(&f.app, "/api/v1/accounts/endpoint-one/login", None).await;
+    assert_eq!(login["state"], "failed");
+    assert_eq!(login["kind"], "auth");
+    assert!(!login.to_string().contains("fixture endpoint secret"));
+    success.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (_, login) = get(&f.app, "/api/v1/accounts/endpoint-one/login").await;
+    assert_eq!(login["state"], "done");
+    assert_eq!(login["signed_in"], "signed_in");
+    let (status, value) = post(
+        &f.app,
+        "/api/v1/accounts",
+        Some(
+            json!({"name":"endpoint-env", "endpoint":{"preset":"kimi", "token_env":"MY_TEST_KEY"}}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{value}");
+    assert_eq!(value["endpoint"]["token_source"], "env:MY_TEST_KEY");
+    for (name, body) in [
+        (
+            "wrong-harness",
+            json!({"harness":"codex", "endpoint":{"preset":"zai"}, "token":"x"}),
+        ),
+        (
+            "both-sources",
+            json!({"endpoint":{"preset":"zai", "token_env":"KEY"}, "token":"x"}),
+        ),
+        ("no-source", json!({"endpoint":{"preset":"zai"}})),
+        (
+            "bad-custom",
+            json!({"endpoint":{"preset":"custom"}, "token":"x"}),
+        ),
+    ] {
+        let mut body = body;
+        body["name"] = json!(name);
+        let (status, value) = post(&f.app, "/api/v1/accounts", Some(body)).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{value}");
+        assert!(value["error"]["data"].is_object());
+    }
+    server.abort();
+}

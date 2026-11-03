@@ -47,6 +47,17 @@ impl std::fmt::Debug for Launch {
     }
 }
 
+/// Resolve the configured endpoint token without exposing it in diagnostics.
+pub fn resolve_endpoint_token(account: &AccountFile, host: &HostEnv) -> Result<String> {
+    match &account.endpoint {
+        Some(endpoint) => resolve_token(account, endpoint, host),
+        None => Err(AccountsError::TokenEnv {
+            account: account.name.clone(),
+            var: "endpoint not configured".into(),
+        }),
+    }
+}
+
 pub(crate) fn resolve_token(
     account: &AccountFile,
     endpoint: &Endpoint,

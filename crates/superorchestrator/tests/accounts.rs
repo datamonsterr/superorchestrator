@@ -529,3 +529,31 @@ fn endpoint_add_stdin_and_list_are_secret_free() {
         .assert()
         .failure();
 }
+
+#[test]
+fn endpoint_login_validates_with_server() {
+    use std::io::{Read, Write};
+    let e = Env::new();
+    e.init();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0; 4096];
+        let n = stream.read(&mut buf).unwrap();
+        let request = String::from_utf8_lossy(&buf[..n]);
+        assert!(request.starts_with("POST /v1/messages "));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}\n")
+            .unwrap();
+    });
+    std::fs::write(e.cfg.join("accounts/endpoint-test.toml"), format!("name = \"endpoint-test\"\nharness = \"claude\"\nhome = \"~/.endpoint-test\"\nbinary = \"claude\"\n[endpoint]\npreset = \"zai\"\nbase_url = \"http://{address}\"\ntoken_env = \"SO_TEST_ENDPOINT_KEY\"\n")).unwrap();
+    let out = e
+        .cmd()
+        .env("SO_TEST_ENDPOINT_KEY", "private-endpoint-key")
+        .args(["--json", "account", "login", "endpoint-test"])
+        .assert()
+        .success();
+    assert!(!stdout(&out).contains("private-endpoint-key"));
+    server.join().unwrap();
+}

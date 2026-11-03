@@ -344,11 +344,23 @@ fn login(ctx: &Ctx, name: &str) -> Result<ExitCode> {
     let host = ctx.host()?;
     let tty = stdin_is_tty();
     if account.endpoint.is_some() {
-        let login = login_json(&account, &host)?;
-        ctx.emit(&json!({"ok": true, "name": name, "login": login}), |w| {
-            write_login_hint(w, &login, true)
-        })?;
-        return Ok(ExitCode::SUCCESS);
+        let result = validate_endpoint(&account, &host)?;
+        match result {
+            Ok(()) => {
+                ctx.emit_ok(
+                    json!({ "name": name }),
+                    &format!("endpoint login validated for {name}"),
+                )?;
+                return Ok(ExitCode::SUCCESS);
+            }
+            Err((kind, detail)) => {
+                ctx.emit(
+                    &json!({ "ok": false, "name": name, "kind": kind, "detail": detail }),
+                    |w| writeln!(w, "{kind}: {detail}"),
+                )?;
+                return Ok(ExitCode::FAILURE);
+            }
+        }
     }
     manage::login_command(&account, &host, tty)?; // fails early when the harness binary is missing
     let runnable = tty || account.harness == Harness::Codex;
@@ -367,6 +379,28 @@ fn login(ctx: &Ctx, name: &str) -> Result<ExitCode> {
         &format!("login finished for {name}"),
     )?;
     Ok(ExitCode::SUCCESS)
+}
+
+pub(crate) fn validate_endpoint(
+    account: &AccountFile,
+    host: &HostEnv,
+) -> Result<std::result::Result<(), (String, String)>> {
+    let endpoint = account
+        .endpoint
+        .as_ref()
+        .context("endpoint not configured")?;
+    let token = match so_accounts::resolve_endpoint_token(account, host) {
+        Ok(token) => token,
+        Err(e) => return Ok(Err(("auth".into(), e.to_string()))),
+    };
+    Ok(super::runs::runtime()?
+        .block_on(so_harness::endpoint::validate(
+            endpoint.base_url(),
+            endpoint.token_var(),
+            &token,
+            endpoint.slot(so_core::Slot::Haiku),
+        ))
+        .map_err(|e| (e.kind.to_string(), e.detail)))
 }
 
 /// Runs the account's login command on the terminal. `Ok(false)` when it exited non-zero.

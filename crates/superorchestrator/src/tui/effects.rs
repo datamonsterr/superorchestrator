@@ -270,6 +270,13 @@ fn perform(
         }
         Effect::Login(name) => {
             let account = load_account(&ctx.paths, &name)?;
+            if account.endpoint.is_some() {
+                let message = match crate::cmd::account::validate_endpoint(&account, host)? {
+                    Ok(()) => format!("endpoint login validated for {name}"),
+                    Err((kind, detail)) => format!("{kind}: {detail}"),
+                };
+                return Ok(Some(message));
+            }
             // Fails early when the harness binary is missing.
             let plan = manage::login_command(&account, host, true)?;
             let (program, args) = plan.argv.split_first().context("empty login command")?;

@@ -308,13 +308,51 @@ pub struct ConfigView {
     pub restart_required: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AddAccountRequest {
-    pub harness: Harness,
+    #[serde(default)]
+    pub harness: Option<Harness>,
     pub name: String,
     #[serde(default)]
     pub home: Option<String>,
+    #[serde(default)]
+    pub endpoint: Option<EndpointRequest>,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EndpointRequest {
+    pub preset: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub models: Vec<String>,
+    #[serde(default)]
+    pub slots: EndpointSlots,
+    #[serde(default)]
+    pub token_env: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EndpointSlots {
+    #[serde(default)]
+    pub opus: Option<String>,
+    #[serde(default)]
+    pub sonnet: Option<String>,
+    #[serde(default)]
+    pub haiku: Option<String>,
+}
+
+impl std::fmt::Debug for EndpointRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EndpointRequest")
+            .field("preset", &self.preset)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -364,6 +402,12 @@ pub struct FlagRequest {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum SignInStart {
+    Endpoint {
+        signed_in: SignInState,
+        state: SignInProgress,
+        message: Option<String>,
+        kind: Option<String>,
+    },
     /// A one-time URL and code (not produced yet; every harness uses `manual`).
     DeviceAuth {
         url: String,
@@ -383,6 +427,7 @@ pub enum SignInStart {
 pub enum SignInMode {
     DeviceAuth,
     Manual,
+    Endpoint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -400,6 +445,8 @@ pub struct SignInStatus {
     pub mode: SignInMode,
     pub state: SignInProgress,
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
