@@ -40,6 +40,13 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Atomically writes a private endpoint token with a trailing newline.
+pub fn write_key_file(path: &Path, token: &str) -> Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    create_private_dirs(dir).map_err(|e| CoreError::io(dir, e))?;
+    write_atomic(path, format!("{token}\n").as_bytes())
+}
+
 /// Creates `dir` and its missing parents with mode 0700.
 pub fn create_private_dirs(dir: &Path) -> std::io::Result<()> {
     std::fs::DirBuilder::new()

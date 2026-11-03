@@ -98,6 +98,12 @@ impl Paths {
     pub fn account_file(&self, name: &str) -> PathBuf {
         self.accounts_dir().join(format!("{name}.toml"))
     }
+    pub fn keys_dir(&self) -> PathBuf {
+        self.config_dir.join("keys")
+    }
+    pub fn key_file(&self, name: &str) -> PathBuf {
+        self.keys_dir().join(format!("{name}.key"))
+    }
     pub fn agents_dir(&self) -> PathBuf {
         self.config_dir.join("agents")
     }

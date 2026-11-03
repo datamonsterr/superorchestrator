@@ -33,10 +33,17 @@ pub fn redact(text: &str) -> String {
     let mut i = 0;
     let mut prev: Option<char> = None;
     let mut jwt_dead_until = 0usize;
+    let mut json_dead_until = 0usize;
     while i < text.len() {
         let rest = &text[i..];
         let at_boundary = prev.is_none_or(|p| !p.is_ascii_alphanumeric());
-        if let Some(skip) = match_secret(rest, at_boundary, i, &mut jwt_dead_until) {
+        if let Some(skip) = match_secret(
+            rest,
+            at_boundary,
+            i,
+            &mut jwt_dead_until,
+            &mut json_dead_until,
+        ) {
             out.push_str(&skip.0);
             i += skip.1;
             prev = Some(']');
@@ -56,9 +63,13 @@ fn match_secret(
     at_boundary: bool,
     abs: usize,
     jwt_dead_until: &mut usize,
+    json_dead_until: &mut usize,
 ) -> Option<(String, usize)> {
     if !at_boundary {
         return None;
+    }
+    if let Some(value) = match_anthropic_assignment(rest, abs, json_dead_until) {
+        return Some(value);
     }
     if let Some(bearer) = match_bearer(rest) {
         return Some(bearer);
@@ -79,6 +90,16 @@ fn match_secret(
 /// bytes matched.
 fn match_structured(rest: &str, abs: usize, jwt_dead_until: &mut usize) -> Option<usize> {
     let b = rest.as_bytes();
+    if b.len() >= 49
+        && b[..32]
+            .iter()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(c))
+        && b[32] == b'.'
+        && b[33..49].iter().all(u8::is_ascii_alphanumeric)
+        && b.get(49).is_none_or(|c| !c.is_ascii_alphanumeric())
+    {
+        return Some(49);
+    }
     if rest.starts_with("xox") && b.len() > 4 && b"bpars".contains(&b[3]) && b[4] == b'-' {
         let n = token_len(&rest[5..]);
         return (n >= MIN_TOKEN).then_some(5 + n);
@@ -118,6 +139,55 @@ fn match_structured(rest: &str, abs: usize, jwt_dead_until: &mut usize) -> Optio
         let second = seg(r);
         let sig = rest[first + 1 + second..].strip_prefix('.')?;
         return Some(first + 1 + second + 1 + seg(sig));
+    }
+    None
+}
+
+fn match_anthropic_assignment(
+    rest: &str,
+    abs: usize,
+    json_dead_until: &mut usize,
+) -> Option<(String, usize)> {
+    for name in ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY"] {
+        if let Some(after) = rest.strip_prefix(name).and_then(|s| s.strip_prefix('=')) {
+            let n = after
+                .bytes()
+                .take_while(|c| !c.is_ascii_whitespace())
+                .count();
+            if n > 0 {
+                let keep = name.len() + 1;
+                return Some((format!("{}{MARK}", &rest[..keep]), keep + n));
+            }
+        }
+        if abs >= *json_dead_until
+            && let Some(after) = rest.strip_prefix(name).and_then(|s| s.strip_prefix('"'))
+        {
+            let ws = after.bytes().take_while(u8::is_ascii_whitespace).count();
+            let Some(after_colon) = after[ws..].strip_prefix(':') else {
+                continue;
+            };
+            let ws2 = after_colon
+                .bytes()
+                .take_while(u8::is_ascii_whitespace)
+                .count();
+            let Some(value) = after_colon[ws2..].strip_prefix('"') else {
+                continue;
+            };
+            let mut escaped = false;
+            for (i, c) in value.char_indices() {
+                if escaped {
+                    escaped = false;
+                    continue;
+                }
+                if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    let keep = rest.len() - value.len();
+                    return Some((format!("{}{MARK}", &rest[..keep]), keep + i));
+                }
+            }
+            *json_dead_until = abs + rest.len();
+        }
     }
     None
 }
@@ -163,7 +233,17 @@ pub fn redact_json(v: &mut serde_json::Value) {
             }
         }
         serde_json::Value::Array(a) => a.iter_mut().for_each(redact_json),
-        serde_json::Value::Object(o) => o.values_mut().for_each(redact_json),
+        serde_json::Value::Object(o) => {
+            for (key, value) in o.iter_mut() {
+                if matches!(key.as_str(), "ANTHROPIC_AUTH_TOKEN" | "ANTHROPIC_API_KEY")
+                    && value.is_string()
+                {
+                    *value = serde_json::Value::String(MARK.to_string());
+                } else {
+                    redact_json(value);
+                }
+            }
+        }
         _ => {}
     }
 }

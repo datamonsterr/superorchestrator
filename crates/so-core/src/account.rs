@@ -51,6 +51,8 @@ struct RawAccount {
     pools: Option<Vec<String>>,
     #[serde(default)]
     pass_env: Vec<String>,
+    #[serde(default)]
+    endpoint: Option<crate::Endpoint>,
 }
 
 impl From<RawAccount> for AccountFile {
@@ -66,6 +68,7 @@ impl From<RawAccount> for AccountFile {
             enabled: r.enabled,
             pools,
             pass_env: r.pass_env,
+            endpoint: r.endpoint,
         }
     }
 }
@@ -94,6 +97,8 @@ pub struct AccountFile {
     pub pools: Vec<String>,
     /// Exact names of additional inherited variables; values are never stored here.
     pub pass_env: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<crate::Endpoint>,
 }
 
 impl AccountFile {
@@ -110,6 +115,7 @@ impl AccountFile {
             enabled: true,
             pools: default_pools(harness),
             pass_env: Vec::new(),
+            endpoint: None,
         })
     }
 
@@ -134,6 +140,12 @@ impl AccountFile {
             return Err(invalid(
                 "pass_env must contain non-empty environment names without NUL or =",
             ));
+        }
+        if let Some(endpoint) = &self.endpoint {
+            if self.harness != Harness::Claude {
+                return Err(invalid("endpoint requires claude harness"));
+            }
+            endpoint.validate().map_err(invalid)?;
         }
         Ok(())
     }
