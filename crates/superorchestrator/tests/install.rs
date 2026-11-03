@@ -157,9 +157,11 @@ fn install_registers_everywhere_and_is_idempotent_then_uninstall_reverses() {
     assert!(c.contains("# keep me") && c.contains("[mcp_servers.other]"));
     assert!(c.contains("[mcp_servers.superorchestrator]"));
     assert!(c.contains(&format!("command = \"{exe_s}\"")));
+    assert!(c.contains("env_vars = [\"XDG_RUNTIME_DIR\"]"));
     let c = read(&s.codex_acc);
     assert!(c.contains("# acc comment") && c.contains("theme = \"dark\""));
     assert!(c.contains("[mcp_servers.superorchestrator]"));
+    assert!(c.contains("env_vars = [\"XDG_RUNTIME_DIR\"]"));
 
     // opencode
     let want = json!({"type":"local","command":[exe_s, "mcp"],"enabled":true});
