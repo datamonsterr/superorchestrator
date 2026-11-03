@@ -74,7 +74,7 @@ export function makeLargeSession({
     const pw = parentIdx >= 0 ? windows[parentIdx] : undefined
     const start = pw ? pw.start + int(1, 60) * 1000 + (i % 3) * 20000 : BASE_MS
     const end = Math.min(BASE_MS + sessionMs, start + int(2, 40) * 60 * 1000)
-    const harness = i === 0 ? 'copilot' : pick(HARNESSES)
+    const harness = pick(HARNESSES)
     const account = `${harness}-acc${int(1, 2)}`
     const usage = { input_tokens: int(1e4, 5e5), output_tokens: int(1e3, 5e4), cost: Math.round(rnd() * 400) / 100 }
     cost += usage.cost
