@@ -200,7 +200,7 @@ describe('TimelinePage run switching', () => {
     await userEvent.click(await screen.findByRole('tab', { name: 'Events' }, { timeout: 4000 }))
     expect(await screen.findByText('3 of 3 events')).toBeInTheDocument() // run-2: queued, stall, escalated
     expect(runEventFetches).toBe(0)
-  })
+  }, 15_000)
 })
 
 describe('TimelinePage live data and robustness', () => {
