@@ -39,6 +39,10 @@ impl Rig {
                         "FAKE_ACP_LOG".into(),
                         self.dir.path().join("log").display().to_string(),
                     ),
+                    (
+                        "FAKE_ACP_META".into(),
+                        self.dir.path().join("meta").display().to_string(),
+                    ),
                 ],
                 argv_prefix: vec![],
                 extra_args: vec![],
@@ -128,10 +132,100 @@ async fn session_mapping_permissions_and_idle_send() {
     let new = log.iter().find(|v| v["method"] == "session/new").unwrap();
     assert_eq!(new["params"]["mcpServers"][0]["env"][0]["value"], "secret");
     assert!(
+        log.iter()
+            .filter(|v| v["method"] != "session/new")
+            .all(|v| !v.to_string().contains("secret"))
+    );
+    let first_prompt = log
+        .iter()
+        .find(|v| v["method"] == "session/prompt")
+        .unwrap();
+    assert_eq!(
+        first_prompt["params"]["prompt"],
+        json!([
+            {"type": "text", "text": "instructions"},
+            {"type": "text", "text": "hello"}
+        ])
+    );
+    let meta: Value =
+        serde_json::from_str(&std::fs::read_to_string(rig.dir.path().join("meta")).unwrap())
+            .unwrap();
+    assert!(!meta["argv"].to_string().contains("secret"));
+    assert!(
+        !meta["env_names"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v == "TOKEN")
+    );
+    let transcript = std::fs::read_to_string(rig.dir.path().join("run/transcript.jsonl")).unwrap();
+    assert!(!transcript.contains("secret"));
+    let entry = transcript
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|v| {
+            v["raw"]
+                .as_str()
+                .is_some_and(|raw| raw.contains("session/new"))
+        })
+        .unwrap();
+    let raw: Value = serde_json::from_str(entry["raw"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        raw["params"]["mcpServers"][0]["env"][0]["value"],
+        "[REDACTED]"
+    );
+    assert!(
         log.iter().any(
             |v| v["method"] == "session/prompt" && v["params"]["prompt"][0]["text"] == "second"
         )
     );
+}
+#[tokio::test]
+async fn empty_addendum_is_skipped() {
+    let rig = Rig::new();
+    let mut spec = rig.spec("", Harness::Copilot);
+    spec.system_addendum.clear();
+    let mut h = driver(Harness::Copilot).launch(spec).await.unwrap();
+    turn(&mut h).await;
+    h.control.shutdown(Duration::from_secs(1)).await.unwrap();
+    let log = rig.log();
+    let prompt = log
+        .iter()
+        .find(|v| v["method"] == "session/prompt")
+        .unwrap();
+    assert_eq!(
+        prompt["params"]["prompt"],
+        json!([{"type":"text","text":"hello"}])
+    );
+}
+
+#[tokio::test]
+async fn usage_and_limit_stop_reasons() {
+    for mode in ["max_tokens", "max_turn_requests"] {
+        let rig = Rig::new();
+        let mut h = driver(Harness::Copilot)
+            .launch(rig.spec(mode, Harness::Copilot))
+            .await
+            .unwrap();
+        let events = turn(&mut h).await;
+        assert!(events.iter().any(|e| matches!(
+            e,
+            HarnessEvent::Usage {
+                input_tokens: 123,
+                output_tokens: 45,
+                cost: None,
+                rate_limits: None
+            }
+        )));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            HarnessEvent::TurnFinished {
+                is_error: false,
+                ..
+            }
+        )));
+        h.control.shutdown(Duration::from_secs(1)).await.unwrap();
+    }
 }
 #[tokio::test]
 async fn resume_and_config_model() {

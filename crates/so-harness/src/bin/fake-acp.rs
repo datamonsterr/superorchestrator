@@ -8,6 +8,15 @@ fn emit(v: Value) {
 }
 fn main() {
     let mode = std::env::var("FAKE_ACP_MODE").unwrap_or_default();
+    if let Ok(path) = std::env::var("FAKE_ACP_META") {
+        let argv: Vec<_> = std::env::args().collect();
+        let env_names: Vec<_> = std::env::vars().map(|(name, _)| name).collect();
+        std::fs::write(
+            path,
+            json!({"argv": argv, "env_names": env_names}).to_string(),
+        )
+        .unwrap();
+    }
     let mut log = std::env::var("FAKE_ACP_LOG").ok().map(|p| {
         std::fs::OpenOptions::new()
             .create(true)
@@ -90,8 +99,14 @@ fn main() {
                 emit(
                     json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed"}}}),
                 );
-                result =
-                    Some(json!({"stopReason":if mode == "refusal" {"refusal"} else {"end_turn"}}));
+                let reason = match mode.as_str() {
+                    "refusal" | "max_tokens" | "max_turn_requests" => mode.as_str(),
+                    _ => "end_turn",
+                };
+                result = Some(json!({
+                    "stopReason": reason,
+                    "usage": {"inputTokens": 123, "outputTokens": 45}
+                }));
             }
             "session/cancel" => {
                 if let Some(id) = pending.take() {
