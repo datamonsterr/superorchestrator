@@ -1,6 +1,6 @@
 //! Deterministic, independently applicable suggestions for level configuration.
 use crate::{
-    catalog::{Catalog, Tier},
+    catalog::{Catalog, Cost, ModelRef, Tier},
     insights::{BOUNDARY_BAND, HistoryRecord, LevelInsight},
     levels::{levels_by_distance, tier_of},
 };
@@ -204,11 +204,18 @@ fn promote_model(
     }
 }
 
+/// Most assign-model suggestions emitted for one level.
+pub const MAX_ASSIGN_PER_LEVEL: usize = 3;
+
+type AssignCandidate = (bool, bool, String, ModelRef);
+
 fn assign_model(levels: &[Level], order: &[usize], catalog: &Catalog, out: &mut Vec<Suggestion>) {
     let used: Vec<_> = levels
         .iter()
         .flat_map(|l| l.models.iter().cloned())
         .collect();
+    let listed_harnesses: Vec<_> = used.iter().map(|c| c.harness).collect();
+    let mut per_level: BTreeMap<usize, Vec<AssignCandidate>> = BTreeMap::new();
     for entry in crate::catalog::unassigned_models(catalog, &used) {
         let m = catalog
             .get(entry.harness, &entry.model)
@@ -226,33 +233,63 @@ fn assign_model(levels: &[Level], order: &[usize], catalog: &Catalog, out: &mut 
             Tier::Fast => matching[0],
             Tier::Mid => matching[(matching.len() - 1) / 2],
         };
-        let l = &levels[i];
-        if l.models.is_empty() {
+        if levels[i].models.is_empty() {
             continue;
         }
-        let mut c = so_core::Choice {
+        let id = so_core::Choice {
             harness: entry.harness,
             model: entry.model.clone(),
             effort: None,
-        };
-        c.effort = m.efforts.last().cloned();
-        let id = c.id();
-        let mut next = levels.to_vec();
-        next[i].models.push(c);
-        let diff = vec![change(l, "models", models(l), models(&next[i]))];
-        push(
-            out,
-            format!("assign-model:{}:{id}", l.name),
-            Rule::AssignModel,
-            l,
-            format!(
-                "Assign unlisted {0} tier model `{id}` to `{1}`.",
+        }
+        .id();
+        per_level.entry(i).or_default().push((
+            !listed_harnesses.contains(&entry.harness),
+            m.cost != Cost::Free,
+            id,
+            entry,
+        ));
+    }
+    for (i, mut cands) in per_level {
+        cands.sort_by(|a, b| (a.0, a.1, &a.2).cmp(&(b.0, b.1, &b.2)));
+        let total = cands.len();
+        let emitted = total.min(MAX_ASSIGN_PER_LEVEL);
+        let l = &levels[i];
+        for (n, (_, _, _, entry)) in cands.into_iter().take(MAX_ASSIGN_PER_LEVEL).enumerate() {
+            let m = catalog
+                .get(entry.harness, &entry.model)
+                .expect("catalog entry exists");
+            let c = so_core::Choice {
+                harness: entry.harness,
+                model: entry.model.clone(),
+                effort: m.efforts.last().cloned(),
+            };
+            let id = c.id();
+            let mut next = levels.to_vec();
+            next[i].models.push(c);
+            let diff = vec![change(l, "models", models(l), models(&next[i]))];
+            let mut rationale = format!(
+                "Assign unlisted {} tier model `{id}` to `{}`.",
                 m.tier.as_str(),
                 l.name
-            ),
-            next,
-            diff,
-        );
+            );
+            if n + 1 == emitted && total > emitted {
+                rationale.push_str(&format!(
+                    " {} more unlisted {} tier models fit `{}`; see unassigned_models.",
+                    total - emitted,
+                    m.tier.as_str(),
+                    l.name
+                ));
+            }
+            push(
+                out,
+                format!("assign-model:{}:{id}", l.name),
+                Rule::AssignModel,
+                l,
+                rationale,
+                next,
+                diff,
+            );
+        }
     }
 }
 

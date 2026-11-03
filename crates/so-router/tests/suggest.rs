@@ -167,6 +167,67 @@ fn assign_tiers_and_efforts() {
         assert!(s.iter().any(|x| x.id == id), "{id}");
     }
 }
+fn catalog_with(entries: &[(Harness, &str, Cost)]) -> Catalog {
+    let mut c = Catalog::default();
+    for (h, name, cost) in entries {
+        c.harnesses
+            .entry(*h)
+            .or_insert_with(HarnessModels::default)
+            .models
+            .push(ModelEntry {
+                id: (*name).into(),
+                tier: Tier::Fast,
+                efforts: vec!["low".into()],
+                pool: None,
+                cost: *cost,
+            });
+    }
+    c
+}
+#[test]
+fn assign_caps_and_orders_per_level() {
+    let levels = vec![level("fast", 0, 100, &["codex/listed"])];
+    let c = catalog_with(&[
+        (Harness::Codex, "listed", Cost::Included),
+        (Harness::Codex, "z-paid", Cost::Included),
+        (Harness::Codex, "b-paid", Cost::Included),
+        (Harness::Codex, "y-free", Cost::Free),
+        (Harness::Opencode, "a-free", Cost::Free),
+        (Harness::Opencode, "a-paid", Cost::Included),
+    ]);
+    let s = only(&levels, &[], &c, Rule::AssignModel);
+    // Listed harness first, free before paid; the other harness is cut.
+    let ids: Vec<_> = s.iter().map(|x| x.id.as_str()).collect();
+    assert_eq!(
+        ids,
+        [
+            "assign-model:fast:codex/b-paid/low",
+            "assign-model:fast:codex/y-free/low",
+            "assign-model:fast:codex/z-paid/low"
+        ]
+    );
+    let more: Vec<_> = s.iter().filter(|x| x.rationale.contains("more")).collect();
+    assert_eq!(more.len(), 1);
+    assert!(
+        more[0]
+            .rationale
+            .contains("2 more unlisted fast tier models fit `fast`; see unassigned_models.")
+    );
+    // The cut note rides on the last emitted suggestion in ranking order (z-paid).
+    assert_eq!(more[0].id, "assign-model:fast:codex/z-paid/low");
+}
+#[test]
+fn assign_free_beats_ref_order_and_small_sets_are_unchanged() {
+    let levels = vec![level("fast", 0, 100, &["codex/listed"])];
+    let c = catalog_with(&[
+        (Harness::Codex, "listed", Cost::Included),
+        (Harness::Codex, "a-paid", Cost::Included),
+        (Harness::Codex, "b-free", Cost::Free),
+    ]);
+    let s = only(&levels, &[], &c, Rule::AssignModel);
+    assert_eq!(s.len(), 2);
+    assert!(s.iter().all(|x| !x.rationale.contains("more")));
+}
 #[test]
 fn gaps_removal_and_round_trip() {
     let levels = vec![

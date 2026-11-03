@@ -82,28 +82,46 @@ superorchestrator levels model remove <level> <harness/model[/effort]>
 
 ### Level insights and suggestions
 
-`superorchestrator levels suggest` summarizes routing history by the levels currently configured and lists deterministic suggestions. Each suggestion shows its id, rule, rationale and changes. For example (illustrative):
+`superorchestrator levels suggest` summarizes routing history by the levels currently configured and lists deterministic suggestions. Example output (illustrative):
 
 ```text
-ID: shift-boundary:moderate:62-57
-Rule: shift_boundary  Level: moderate
-Rationale: 3 of 5 runs within 5 of `moderate`'s upper bound had a bad outcome (60%); move the boundary down by 5 toward `complex`.
-Change: moderate max 62 -> 57; complex min 63 -> 58
+Routing insights: 42 history runs
+simple 13-37: 18 runs
+  accepted 72.2% rejected 16.7% failed 5.6% failover 11.1%
+  median complexity 24.0 median duration 61200.0 ms
+  model agy/gemini-3.8-flash-medium/medium: 12 runs, 83.3% success
+  [history] c=34 accepted Rename the config loader and update its callers (borderline)
+  [eval] c=94 - Design a sharded job queue with exactly-once delivery
+Suggestions:
+  shift-boundary:simple:37-32: 4 of 6 runs within 5 of `simple`'s upper bound had a bad outcome (67%); move the boundary down by 5 toward `moderate`.
+    simple.max: 37 -> 32
+    moderate.min: 38 -> 33
+3 unassigned models
 ```
+
+Each example line reads `[source] c=NN outcome excerpt`. `c=NN` is the complexity the decider gave the run, rounded. The outcome is `accepted`, `rejected`, `failed` or `succeeded`; eval examples have no outcome and show `-`. `(borderline)` marks an example within five points of the level's boundary. A success rate is the share of counted runs (outcome not other) that are not bad.
 
 The command supports `--json` for structured output. To apply a suggestion, copy its id:
 
 ```sh
-superorchestrator levels suggest --apply shift-boundary:moderate:62-57
+superorchestrator levels suggest --apply shift-boundary:simple:37-32
 ```
 
-The proposed levels are validated and written through the same path as other levels edits. Restart the supervisor to apply the change. The web page and TUI provide their own apply actions.
+The proposed levels are validated and written through the same path as other levels edits. The command prints `applied <id>` and the note to restart the supervisor to apply the change. The web page and TUI provide their own apply actions.
 
 The report shows per-level run counts, complexity min/median/max and 10-point buckets, outcome counts and rates, failover and escalation rates, median duration, and per-model success rates. Example tasks are redacted excerpts from history: up to three are closest to the level's complexity centre, with up to two more near a boundary (within five points). When fewer than three history examples exist, bundled eval tasks fill the display and carry the `eval` label. These examples help inspect which tasks fall into a level; eval examples are illustrative and are not routing history.
 
 History is assigned to the levels in effect now by complexity, even when a record's original level differs. Outcome precedence is rejected, accepted, failed, succeeded, then other. Other outcomes are excluded from rates. A bad outcome is a rejection, failure, escalation or failover.
 
-Suggestions use these rules: shift a boundary down five points when at least five runs within five points of its upper bound have at least 50% bad outcomes; promote a later model when both models have at least five runs and its success rate leads by at least 20 points; assign unlisted models to matching-tier levels; extend a level to close uncovered ranges; and remove a level whose models are all missing from the catalog. Invalid proposed level sets are omitted.
+Suggestions use these rules:
+
+- **shift-boundary.** When at least five runs within five points of a level's upper bound have a bad rate of at least 50% (a clear majority), move that bound down five points. The next level's `min` moves down five too, only when it was `max + 1`, so gaps are kept. Skipped when the new `max` would be below the level's `min`.
+- **promote-model.** When both models have at least five runs and a later model's success rate leads by at least 20 points (a gap larger than noise at small samples), move it ahead of the earlier one.
+- **assign-model.** Append an unlisted catalog model to a level of its tier. A level's tier is its `tier`, else the majority catalog tier of its listed models, with ties going to the higher tier. Tier-only levels are skipped, since they already admit the model. Each level gets at most 3 suggestions, ranked by: harness already listed in some level, then free cost, then ref id. The last one says how many more were cut; the full list is in the unassigned models.
+- **close-gap.** Extend a level to cover an uncovered range.
+- **remove-empty.** With at least two levels, remove a level that lists models when the catalog knows none of them. Its range goes to the lower neighbour (its `max` extended), or to the next level up (its `min` extended) when it is the lowest.
+
+Invalid proposed level sets are omitted.
 
 ### Level ranges
 

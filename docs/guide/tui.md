@@ -56,8 +56,6 @@ The list is read from the store. The diff, cancel, join, accept and reject go th
 
 **5 Levels.** Lists every level from `config.toml`, including levels that use a tier, with its name, min-max complexity and model refs in preference order. `Enter` opens the selected level's model refs. Changes use the same validation and config editing path as the `levels` CLI command; errors appear in the status line. The catalog picker offers model refs from `models.toml`, including their efforts. Existing refs remain visible even when they are absent from the catalog.
 
-The Levels tab also shows level insights, example tasks and deterministic suggestions. Use the apply key on a suggestion and confirm with `y` to write its proposed levels; restart the supervisor to apply them. See [Level insights and suggestions](routing.md#level-insights-and-suggestions).
-
 | Key | Action |
 | --- | --- |
 | `Enter` | Open a level's model refs. |
