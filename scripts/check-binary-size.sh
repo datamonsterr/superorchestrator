@@ -2,13 +2,13 @@
 # Fails when the release binary is larger than the budget.
 # Usage: scripts/check-binary-size.sh BINARY [MAX_BYTES]
 #
-# Budget: measured 41,603,680 bytes (x86_64 Linux, rustc 1.99.1, `cargo build --release`, real
-# web/dist embedded) plus 25%, rounded to 52,000,000. Raise it deliberately, in a reviewed change.
+# Budget: measured 52,142,448 bytes (x86_64 Linux, CI release build with web/dist embedded, after
+# level insights) plus about 7% headroom, rounded to 56,000,000. Raise it deliberately, in a reviewed change.
 set -eu
 
 [ $# -ge 1 ] || { echo "usage: $0 BINARY [MAX_BYTES]" >&2; exit 2; }
 bin=$1
-max=${2:-52000000}
+max=${2:-56000000}
 [ -f "$bin" ] || { echo "size: not found: $bin" >&2; exit 1; }
 
 size=$(wc -c < "$bin" | tr -d ' ')
