@@ -106,13 +106,20 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
     let view = harnesses_view(state)?;
     let accounts = AccountFile::list(&state.paths).map_err(|e| e.to_string())?;
     let catalog = cached_catalog(&state.paths)?;
-    let snapshot = Snapshot::collect(
+    let mut snapshot = Snapshot::collect(
         &state.store,
         &accounts,
         f64::from(state.config.usage.low_pct),
         Utc::now(),
     )
     .map_err(|e| e.to_string())?;
+    snapshot.accounts.retain(|a| {
+        !state
+            .config
+            .orchestrator
+            .reserved_accounts
+            .contains(&a.file.name)
+    });
 
     let rows: Vec<Value> = view
         .accounts
@@ -173,35 +180,55 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
                 let same: Vec<_> = view
                     .accounts
                     .iter()
-                    .filter(|a| a.harness == c.harness)
+                    .filter(|a| {
+                        a.harness == c.harness
+                            && !state
+                                .config
+                                .orchestrator
+                                .reserved_accounts
+                                .contains(&a.name)
+                    })
                     .collect();
                 let open: Vec<_> = same
                     .iter()
                     .filter(|a| a.enabled && a.active_runs < a.cap)
                     .collect();
-                Some(if same.is_empty() {
-                    "no account"
-                } else if same.iter().all(|a| !a.enabled) {
-                    "account disabled"
-                } else if open.is_empty() {
-                    "at cap"
-                } else if open
-                    .iter()
-                    .all(|a| a.flags.as_ref().is_some_and(|f| !f.is_empty()))
-                {
-                    "cooldown"
-                } else if open.iter().any(|a| {
-                    snapshot
-                        .accounts
+                Some(
+                    if same.is_empty()
+                        && view.accounts.iter().any(|a| {
+                            a.harness == c.harness
+                                && state
+                                    .config
+                                    .orchestrator
+                                    .reserved_accounts
+                                    .contains(&a.name)
+                        })
+                    {
+                        "account reserved"
+                    } else if same.is_empty() {
+                        "no account"
+                    } else if same.iter().all(|a| !a.enabled) {
+                        "account disabled"
+                    } else if open.is_empty() {
+                        "at cap"
+                    } else if open
                         .iter()
-                        .find(|s| s.file.name == a.name)
-                        .is_some_and(|s| s.pools.values().any(|p| !p.available))
-                }) {
-                    "no headroom"
-                } else {
-                    // The router found no usable account for a reason this view cannot name.
-                    "not eligible"
-                })
+                        .all(|a| a.flags.as_ref().is_some_and(|f| !f.is_empty()))
+                    {
+                        "cooldown"
+                    } else if open.iter().any(|a| {
+                        snapshot
+                            .accounts
+                            .iter()
+                            .find(|s| s.file.name == a.name)
+                            .is_some_and(|s| s.pools.values().any(|p| !p.available))
+                    }) {
+                        "no headroom"
+                    } else {
+                        // The router found no usable account for a reason this view cannot name.
+                        "not eligible"
+                    },
+                )
             };
             if let Some(why) = why {
                 row.insert("eligible".into(), json!(false));

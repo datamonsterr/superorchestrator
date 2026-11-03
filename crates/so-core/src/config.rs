@@ -449,10 +449,18 @@ pub struct Defaults {
     pub effort: Option<String>,
 }
 
+/// Accounts kept for the orchestrator.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Orchestrator {
+    pub reserved_accounts: Vec<String>,
+}
+
 /// The whole of `config.toml`. Every section is optional in the file.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    pub orchestrator: Orchestrator,
     pub limits: Limits,
     pub runs: Runs,
     pub workflows: Workflows,
@@ -1524,5 +1532,23 @@ mod tests {
         .unwrap();
         assert_eq!(ok.choices()[0].id(), "codex/m/high");
         assert_eq!(Config::load(&paths).unwrap(), ok);
+    }
+}
+
+#[cfg(test)]
+mod reserved_account_tests {
+    use super::*;
+    #[test]
+    fn reservation_set_and_round_trip() {
+        let mut c = Config::default();
+        c.set("orchestrator.reserved_accounts", "[\"codex-1\"]")
+            .unwrap();
+        assert_eq!(
+            c.get("orchestrator.reserved_accounts").unwrap().unwrap(),
+            "[\"codex-1\"]"
+        );
+        let encoded = toml::to_string(&c).unwrap();
+        let decoded: Config = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.orchestrator.reserved_accounts, vec!["codex-1"]);
     }
 }

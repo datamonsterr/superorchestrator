@@ -80,6 +80,7 @@ pub fn config_fingerprint(config: &Config) -> String {
         "policy": config.router.policy,
         "instruction": config.router.instruction,
         "levels": config.router.levels,
+        "reserved_accounts": config.orchestrator.reserved_accounts,
     });
     let digest = Sha256::digest(serde_json::to_vec(&v).unwrap_or_default());
     digest.iter().map(|b| format!("{b:02x}")).collect()
@@ -113,15 +114,21 @@ pub async fn route_detailed(
 
 /// Ids of the choices the decider would be offered.
 pub fn eligible_choice_ids(ctx: &RouteCtx<'_>, exclude: &[String]) -> Vec<String> {
-    apply_claude_rank(eligible(
-        &ctx.config.choices(),
-        ctx.catalog,
-        ctx.snapshot,
-        exclude,
-    ))
-    .into_iter()
-    .map(|c| c.choice.id())
-    .collect()
+    let mut candidates = eligible(&ctx.config.choices(), ctx.catalog, ctx.snapshot, exclude);
+    remove_reserved(&mut candidates, &ctx.config.orchestrator.reserved_accounts);
+    apply_claude_rank(candidates)
+        .into_iter()
+        .map(|c| c.choice.id())
+        .collect()
+}
+
+fn remove_reserved(candidates: &mut Vec<Candidate<'_>>, reserved: &[String]) {
+    for candidate in candidates.iter_mut() {
+        candidate
+            .accounts
+            .retain(|a| !reserved.contains(&a.file.name));
+    }
+    candidates.retain(|candidate| !candidate.accounts.is_empty());
 }
 
 struct Pins {
@@ -283,6 +290,9 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
             &params.exclude,
         )
     };
+    if pins.account.is_none() {
+        remove_reserved(&mut cands, &ctx.config.orchestrator.reserved_accounts);
+    }
     // Failover: skipped accounts leave some choices with none, which makes them ineligible.
     if !params.exclude_accounts.is_empty() {
         for c in &mut cands {
@@ -514,5 +524,33 @@ fn finish(
         decider_model: rated.decider_model,
         decider_models: rated.decider_models,
         ranked_accounts,
+    }
+}
+
+#[cfg(test)]
+mod reservation_tests {
+    use super::*;
+    use crate::eligible::tests::{account, choice};
+
+    #[test]
+    fn reserved_account_is_removed_from_auto_candidates() {
+        let snapshot = Snapshot {
+            accounts: vec![
+                account("reserved", Harness::Codex, 2, 0),
+                account("available", Harness::Codex, 2, 0),
+            ],
+        };
+        let catalog = Catalog::default_catalog();
+        let mut candidates =
+            vec![candidate(&choice("codex/gpt-6.1-sol/high"), &catalog, &snapshot).unwrap()];
+        remove_reserved(&mut candidates, &["reserved".into()]);
+        assert_eq!(
+            candidates[0]
+                .accounts
+                .iter()
+                .map(|a| a.file.name.as_str())
+                .collect::<Vec<_>>(),
+            ["available"]
+        );
     }
 }

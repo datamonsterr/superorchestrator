@@ -89,10 +89,19 @@ pub enum Command {
 
 #[derive(Args, Debug)]
 pub struct SetupArgs {
+    /// Harness used by the orchestrator
+    #[arg(long, value_parser = ["claude", "codex"])]
+    pub orchestrator: Option<String>,
+    /// Reserve an existing account (repeatable)
+    #[arg(long, value_name = "NAME")]
+    pub reserve: Vec<String>,
+    /// Print the setup plan without changing anything
+    #[arg(long)]
+    pub dry_run: bool,
     /// Codex accounts to add (default: 1 when there is none yet)
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
     pub codex: Option<u32>,
-    /// Claude accounts to add (default: 0; claude is kept for the orchestrator)
+    /// Claude accounts to add (default: 0, or 1 with --orchestrator codex)
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
     pub claude: Option<u32>,
     /// OpenCode accounts to add (default: 1 when there is none yet)
