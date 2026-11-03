@@ -16,10 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `install` writes `startup_timeout_sec = 30`, `tool_timeout_sec = 1860` and `env_vars = ["XDG_RUNTIME_DIR"]` on the Codex MCP entries, and a managed block in `$CODEX_HOME/AGENTS.md` and each Codex account's `AGENTS.md` (`--no-agents-md` skips it). The three skills are harness-neutral with Codex notes.
   - Codex plugin in `plugin-codex/` and marketplace `.agents/plugins/marketplace.json`.
   - Hidden `superorchestrator hook session-start|stop` for Claude Code and Codex hooks.
+- Model refresh includes the documented Claude model list when a Claude account is enabled and reports catalog models not assigned to levels.
+- Level insights and deterministic suggestions are available in the CLI, web UI and TUI.
 
 ### Changed
 
 - `wait_agent` caps its timeout at 30 minutes, and `spawn_agent(wait: true)` returns after at most 30 minutes with the current state. The run continues.
+
+### Fixed
+
+- Routing record prompt excerpts now contain a redacted, whitespace-collapsed excerpt of the run prompt (up to 160 characters).
 
 ### Security
 

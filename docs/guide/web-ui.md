@@ -21,6 +21,8 @@ The browser's global history may still record the original fragment. A history e
 - **Session timeline.** One lane per run, nested under its parent, updated live. Click a lane for the run panel: brief, route decision, events, transcript, result, worktree, join command, and actions (message, cancel, accept, reject).
 - **Accounts.** Add, import, edit cap, priority and pools, enable or disable, flag a cooldown, remove, and sign in.
 - **Levels.** Edit levels and the routing instruction, preview a route, read the decision log. The page is at `/routing`. Each level lists its models in order, with add, remove and move controls.
+
+The Routing page's Insights panel shows per-level history, example tasks and suggestions. Apply a suggestion to save its proposed levels through the existing levels API; restart the supervisor to use the change. See [Level insights and suggestions](routing.md#level-insights-and-suggestions).
 - **Agents.** List, view and edit agent files.
 - **Workflows.** Saved workflows, runs and step status.
 - **Settings.** `config.toml` fields, notifications, worktree defaults and the key source for Jev. The key value is never shown.

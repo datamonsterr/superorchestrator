@@ -80,6 +80,31 @@ superorchestrator levels model remove <level> <harness/model[/effort]>
 
 `levels remove` refuses to remove the last level, because nothing would be routable; use `levels reset`. With `--json`, `levels list` prints the resolved view above, while the other commands print `{ok, levels, materialised_defaults, restart_required}`, where `levels` has the config shape (`name`, `min`, `max`, `tier`, `models` as ref strings).
 
+### Level insights and suggestions
+
+`superorchestrator levels suggest` summarizes routing history by the levels currently configured and lists deterministic suggestions. Each suggestion shows its id, rule, rationale and changes. For example (illustrative):
+
+```text
+ID: shift-boundary:moderate:62-57
+Rule: shift_boundary  Level: moderate
+Rationale: 3 of 5 runs within 5 of `moderate`'s upper bound had a bad outcome (60%); move the boundary down by 5 toward `complex`.
+Change: moderate max 62 -> 57; complex min 63 -> 58
+```
+
+The command supports `--json` for structured output. To apply a suggestion, copy its id:
+
+```sh
+superorchestrator levels suggest --apply shift-boundary:moderate:62-57
+```
+
+The proposed levels are validated and written through the same path as other levels edits. Restart the supervisor to apply the change. The web page and TUI provide their own apply actions.
+
+The report shows per-level run counts, complexity min/median/max and 10-point buckets, outcome counts and rates, failover and escalation rates, median duration, and per-model success rates. Example tasks are redacted excerpts from history: up to three are closest to the level's complexity centre, with up to two more near a boundary (within five points). When fewer than three history examples exist, bundled eval tasks fill the display and carry the `eval` label. These examples help inspect which tasks fall into a level; eval examples are illustrative and are not routing history.
+
+History is assigned to the levels in effect now by complexity, even when a record's original level differs. Outcome precedence is rejected, accepted, failed, succeeded, then other. Other outcomes are excluded from rates. A bad outcome is a rejection, failure, escalation or failover.
+
+Suggestions use these rules: shift a boundary down five points when at least five runs within five points of its upper bound have at least 50% bad outcomes; promote a later model when both models have at least five runs and its success rate leads by at least 20 points; assign unlisted models to matching-tier levels; extend a level to close uncovered ranges; and remove a level whose models are all missing from the catalog. Invalid proposed level sets are omitted.
+
 ### Level ranges
 
 - `min` and `max` are integers from 0 to 100. The range covers complexity from `min` up to, but not including, `max + 1`, so a complexity of 37.5 is in a level `0-37`. A level with `max = 100` also includes 100.
@@ -213,7 +238,7 @@ The effort of a ref is checked when the config loads, against the list in [Model
 
 `thinking` is a special value for agy. Some agy models are the thinking variant themselves (`claude-sonnet-4-6` is "Claude Sonnet 4.6 (Thinking)"), so there is no effort to pass. `agy/claude-sonnet-4-6/thinking` tells the router to rank the model with the top effort tier, and the agy driver launches without `--effort`. The agy thinking-variant models (`claude-sonnet-4-6`, `claude-opus-4-6-thinking`) take no `--effort`, so a ref with a real effort on one of them is rejected when the config loads, and `spawn_agent` refuses that pairing with `INVALID_PARAMS` before creating a worktree. Leave the effort out or use `thinking`.
 
-`models.toml` lists known models per harness, with tier, efforts, pool and cost. A default ships in the binary. `superorchestrator models refresh` collects models from the harness CLIs and models.dev, and reports listed models that the catalog does not know and catalog models that no level lists. `superorchestrator models list` prints them. The catalog is for discovery and validation. It never edits your config.
+`models.toml` lists known models per harness, with tier, efforts, pool and cost. A default ships in the binary. `superorchestrator models refresh` collects models from the harness CLIs and models.dev, and reports listed models that the catalog does not know and catalog models that no level lists. When an enabled Claude account exists, refresh also adds the documented Claude models `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` and `claude-fable-5-1`. Catalog models that no level lists are reported as unassigned; they are discoverable, but are not routable until listed on a level. `superorchestrator models list` prints them. The catalog is for discovery and validation. It never edits your config.
 
 ## Evaluating the router
 

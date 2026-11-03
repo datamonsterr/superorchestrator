@@ -101,6 +101,18 @@ _Avoid_: Difficulty, size
 A named, operator-defined range of complexity, with the models allowed for tasks in that range, in preference order, or a model tier when it lists none. A level's model list is not a Pool.
 _Avoid_: Tier, bucket, band, pool
 
+**level insight**:
+The history analysis for one current Level: its complexity distribution, outcomes, model success rates and example tasks.
+_Avoid_: Level scorecard
+
+**suggestion**:
+A deterministic proposed change to the full level configuration, with a stable id, rationale and diff, validated before it is offered.
+_Avoid_: Recommendation
+
+**bad outcome**:
+A rejected or failed run, or a run that escalated or failed over.
+_Avoid_: Unsuccessful outcome
+
 **Pool**:
 A separately metered slice of one account's usage, such as agy's Gemini and Claude model families. Most accounts have one pool.
 _Avoid_: Family, bucket, quota group

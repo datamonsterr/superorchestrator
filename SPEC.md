@@ -312,6 +312,7 @@ A run whose process died unexpectedly is resumed once from its native session, i
 - codex app-server `model/list`
 - `opencode models`, plus free models from models.dev, cached 24 h
 - `agy models`
+- documented Claude model list when an enabled Claude account exists
 
 The catalog is used only for discovery, validation, tiers and the free flag. `models refresh` reports listed models that the catalog does not know and catalog models that no level lists, and never edits config.
 
@@ -337,6 +338,14 @@ models = ["agy/claude-sonnet-4-6/thinking", "opencode/opencode/muse-spark-1.3", 
 A level lists its models in preference order: the first eligible one is preferred. `tier` (`high`, `mid` or `fast`) applies only when `models` is empty, and a level needs one of the two. Duplicate refs in one level are rejected. A model is enabled by being listed; there is no separate switch, and models carry no role, description or priority.
 
 A file that still has `[[choices]]` at the top level, or `choices = [...]` on a level, fails to load with this message: `[[choices]] is no longer read: list models on each [[router.levels]] entry as harness/model/effort, e.g. models = ["codex/gpt-6.1-sol/high"] (docs/guide/routing.md)`. There is no compatibility mode; the message is the migration guide.
+
+### 8.2.1 Level insights and suggestions
+
+`GET /api/v1/routing/insights` returns `InsightsReport`: generation time, history run count, per-level insights, suggestions and unassigned catalog models. History is mapped to the levels in effect now by complexity. Outcomes are rejected (any review rejection), accepted, failed, succeeded or other; other outcomes are excluded from rates. A bad outcome is rejected, failed, escalated or failed over.
+
+Per-level insights include complexity min/median/max and 10-point buckets, outcome counts and rates, failover and escalation rates, median duration, per-model success rate, and up to three examples nearest the level centre plus two within five points of a boundary. If history has fewer than three examples, bundled eval examples fill the set and are labelled `eval`.
+
+`superorchestrator levels suggest [--json] [--apply ID]` reports deterministic suggestions. Rules shift a boundary down five points when at least five runs in the five-point upper-bound band have at least 50% bad outcomes; promote a model when each compared model has at least five runs and a later model's success rate is at least 20 percentage points higher; assign an unlisted catalog model to a matching tier level; close uncovered complexity gaps; and remove a level whose models are all absent from the catalog, transferring its range to a neighbour. Every suggestion includes its stable id, rationale, full proposed `levels` and diff, and is omitted if validation fails. `--apply ID` writes through the existing levels edit path and requires a supervisor restart. The web Insights panel applies with `PUT /api/v1/levels`; the TUI Levels tab offers apply with confirmation.
 
 `init` seeds five levels, with these models in order:
 
@@ -577,6 +586,8 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
 
 **API:** The JSON API under `/api/v1` mirrors the CLI. `/api/v1/stream` is SSE for events. The frontend uses only this API.
 
+`GET /api/v1/routing/insights` returns per-level routing history analysis, suggestions and unassigned models (8.2.1).
+
 ## 15. CLI
 
 `superorchestrator` with no arguments on a terminal opens the terminal UI (`tui`, below); without a terminal it prints the help. Every action in it is also a subcommand:
@@ -597,6 +608,7 @@ monitor [--session ID] [--client-pid PID] [--cwd DIR] [--window MINUTES]
 account add [--name N] [--count K] [--login]|import|login|list|remove|enable|disable|flag
 agent create|list|show|edit|remove
 models refresh|list
+levels suggest [--json] [--apply ID]
 route "<task>" [--model REF] [--agent NAME] [--explain]
 route eval [...]
 runs list|show|watch|cancel
