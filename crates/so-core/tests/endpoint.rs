@@ -214,6 +214,8 @@ fn redaction_patterns() {
     }
     let key = "0123456789abcdef0123456789abcdef.AbCd123456789012";
     assert_eq!(so_core::redact::redact(key), "[REDACTED]");
+    let uppercase_key = "0123456789ABCDEF0123456789ABCDEF.AbCd123456789012";
+    assert_eq!(so_core::redact::redact(uppercase_key), "[REDACTED]");
     let mut value = serde_json::json!({"ANTHROPIC_API_KEY": "secret", "nested": {"ANTHROPIC_AUTH_TOKEN": "secret"}});
     so_core::redact::redact_json(&mut value);
     assert_eq!(value["ANTHROPIC_API_KEY"], "[REDACTED]");

@@ -91,9 +91,7 @@ fn match_secret(
 fn match_structured(rest: &str, abs: usize, jwt_dead_until: &mut usize) -> Option<usize> {
     let b = rest.as_bytes();
     if b.len() >= 49
-        && b[..32]
-            .iter()
-            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(c))
+        && b[..32].iter().all(u8::is_ascii_hexdigit)
         && b[32] == b'.'
         && b[33..49].iter().all(u8::is_ascii_alphanumeric)
         && b.get(49).is_none_or(|c| !c.is_ascii_alphanumeric())
