@@ -110,6 +110,9 @@ pub struct SetupArgs {
     /// Do not add the delegation block to ~/.claude/CLAUDE.md
     #[arg(long)]
     pub no_claude_md: bool,
+    /// Do not add the delegation block to Codex AGENTS.md files.
+    #[arg(long)]
+    pub no_agents_md: bool,
 }
 
 #[derive(Args, Debug)]
@@ -144,6 +147,9 @@ pub struct InstallArgs {
     /// Do not add the delegation block to ~/.claude/CLAUDE.md.
     #[arg(long)]
     pub no_claude_md: bool,
+    /// Do not add the delegation block to Codex AGENTS.md files.
+    #[arg(long)]
+    pub no_agents_md: bool,
 }
 
 #[derive(Args, Debug)]

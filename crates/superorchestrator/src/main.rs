@@ -72,6 +72,7 @@ fn dispatch(cli: Cli) -> Result<ExitCode> {
             a.force,
             a.dry_run,
             !a.no_claude_md,
+            !a.no_agents_md,
         )),
         Command::Uninstall(a) => ok(cmd::install::uninstall(&ctx, a.dry_run)),
         Command::Mcp(a) => ok(cmd::mcp::run(&ctx, &a.client)),

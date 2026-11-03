@@ -117,10 +117,37 @@ fn resolve(p: &Path) -> PathBuf {
     if let Ok(c) = p.canonicalize() {
         return c;
     }
+    if let Ok(target) = std::fs::read_link(p) {
+        let target = if target.is_absolute() {
+            target
+        } else {
+            p.parent().unwrap_or_else(|| Path::new(".")).join(target)
+        };
+        // A dangling link can still identify a target in an existing directory.
+        if std::fs::symlink_metadata(&target).is_err() {
+            return match (target.parent(), target.file_name()) {
+                (Some(parent), Some(name)) => resolve(parent).join(name),
+                _ => target,
+            };
+        }
+    }
     match (p.parent(), p.file_name()) {
         (Some(parent), Some(name)) => resolve(parent).join(name),
         _ => p.to_path_buf(),
     }
+}
+
+fn agents_md_paths(host: &HostEnv, accounts: &[AccountFile]) -> Result<Vec<PathBuf>> {
+    let global = std::env::var_os("CODEX_HOME")
+        .filter(|v| !v.is_empty())
+        .map_or_else(|| host.home.join(".codex"), PathBuf::from);
+    let mut paths = vec![global.join("AGENTS.md")];
+    for account in accounts.iter().filter(|a| a.harness == Harness::Codex) {
+        paths.push(host.expand(&account.home)?.join("AGENTS.md"));
+    }
+    let mut seen = std::collections::HashSet::new();
+    paths.retain(|p| seen.insert(resolve(p)));
+    Ok(paths)
 }
 
 fn same_dir(a: &Path, b: &Path) -> bool {
@@ -180,10 +207,15 @@ pub(crate) const BLOCK_END: &str = "<!-- superorchestrator:end -->";
 const BLOCK_BODY: &str = "## Delegation\n\n\
 - Delegate implementation through superorchestrator. Load the `use-superorchestrator-mcp` skill before the first delegation.\n\
 - Use the `superorchestrator-cli` skill for accounts, status and runs from the shell.\n\
-- Keep Claude accounts for the orchestrator; leave `harness: auto` unless there is a reason.\n";
+- The orchestrator’s own accounts are reserved via `orchestrator.reserved_accounts`; never pin them for subagents, and leave `harness: auto` unless there is a reason.\n";
 
-fn block_text() -> String {
-    format!("{BLOCK_BEGIN}\n{BLOCK_BODY}{BLOCK_END}\n")
+fn block_text(agents: bool) -> String {
+    let wait = if agents {
+        "- Use `spawn_agent(wait: false)` then `wait_agent` with `timeout_ms` at most 30 minutes because the MCP tool timeout is bounded.\n"
+    } else {
+        ""
+    };
+    format!("{BLOCK_BEGIN}\n{BLOCK_BODY}{wait}{BLOCK_END}\n")
 }
 
 /// Byte range of the managed block: from the start of the begin line to just after the end
@@ -204,11 +236,11 @@ fn block_range(text: &str) -> Result<Option<(usize, usize)>> {
         ([], []) => Ok(None),
         ([b], [e]) if b < e => Ok(Some((*b, *e))),
         (b, e) if b.len() > 1 || e.len() > 1 => Err(anyhow!(
-            "found {} superorchestrator blocks in CLAUDE.md; fix it by hand",
+            "found {} superorchestrator blocks; fix it by hand",
             b.len().max(e.len())
         )),
         _ => Err(anyhow!(
-            "the superorchestrator block markers in CLAUDE.md are unbalanced or out of order; fix it by hand"
+            "the superorchestrator block markers are unbalanced or out of order; fix it by hand"
         )),
     }
 }
@@ -220,9 +252,9 @@ fn eol_of(text: &str) -> &'static str {
 
 /// `text` with the managed block added (after a blank line) or replaced in place, in the
 /// file's own line ending.
-fn with_block(text: &str) -> Result<String> {
+fn with_block(text: &str, agents: bool) -> Result<String> {
     let eol = eol_of(text);
-    let block = block_text().replace('\n', eol);
+    let block = block_text(agents).replace('\n', eol);
     Ok(match block_range(text)? {
         Some((b, e)) => format!("{}{block}{}", &text[..b], &text[e..]),
         None if text.is_empty() => block,
@@ -251,24 +283,41 @@ fn claude_md_path(host: &HostEnv) -> PathBuf {
     host.home.join(".claude/CLAUDE.md")
 }
 
-fn edit_claude_md(w: &Writer, host: &HostEnv, add: bool) -> Result<Outcome> {
-    const LABEL: &str = "claude.md";
-    let path = claude_md_path(host);
-    let old = match std::fs::read_to_string(&path) {
+fn edit_managed_md(w: &Writer, path: &Path, add: bool, agents: bool) -> Result<Outcome> {
+    let label = if agents { "agents.md" } else { "claude.md" };
+    // Resolve dangling links too: the shared atomic writer follows existing links, but
+    // canonicalization cannot follow a link whose target has not been created yet.
+    let mut write_path = path.to_path_buf();
+    for _ in 0..40 {
+        match std::fs::read_link(&write_path) {
+            Ok(target) => {
+                write_path = if target.is_absolute() {
+                    target
+                } else {
+                    write_path
+                        .parent()
+                        .unwrap_or_else(|| Path::new("."))
+                        .join(target)
+                };
+            }
+            Err(_) => break,
+        }
+    }
+    let old = match std::fs::read_to_string(path) {
         Ok(s) => Some(s),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(anyhow!(e).context(format!("could not read {}", path.display()))),
     };
-    let unchanged = || Ok(Outcome::new(LABEL, "unchanged", Some(&path), None));
+    let unchanged = || Ok(Outcome::new(label, "unchanged", Some(path), None));
     if add {
-        let new = with_block(old.as_deref().unwrap_or_default())
+        let new = with_block(old.as_deref().unwrap_or_default(), agents)
             .with_context(|| format!("{}", path.display()))?;
         if old.as_deref() == Some(new.as_str()) {
             return unchanged();
         }
-        w.write(&path, &new)?;
+        w.write(if path.exists() { path } else { &write_path }, &new)?;
         let action = if old.is_some() { "update" } else { "create" };
-        return Ok(Outcome::new(LABEL, action, Some(&path), None));
+        return Ok(Outcome::new(label, action, Some(path), None));
     }
     let Some(old) = old else {
         return unchanged();
@@ -276,13 +325,13 @@ fn edit_claude_md(w: &Writer, host: &HostEnv, add: bool) -> Result<Outcome> {
     let Some(new) = without_block(&old).with_context(|| format!("{}", path.display()))? else {
         return unchanged();
     };
-    let is_link = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
+    let is_link = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
     if new.is_empty() && !is_link {
-        w.remove_file(&path)?;
+        w.remove_file(path)?;
     } else {
-        w.write(&path, &new)?;
+        w.write(if path.exists() { path } else { &write_path }, &new)?;
     }
-    Ok(Outcome::new(LABEL, "remove", Some(&path), None))
+    Ok(Outcome::new(label, "remove", Some(path), None))
 }
 
 /// Private directories (0700), created recursively.
@@ -667,9 +716,14 @@ fn collect(results: Vec<Step>) -> (Vec<Outcome>, usize) {
 }
 
 /// `install` without printing: the outcomes as JSON, or an error when a step failed.
-pub(crate) fn install_quiet(ctx: &Ctx, force: bool, claude_md: bool) -> Result<serde_json::Value> {
+pub(crate) fn install_quiet(
+    ctx: &Ctx,
+    force: bool,
+    claude_md: bool,
+    agents_md: bool,
+) -> Result<serde_json::Value> {
     let w = Writer::new(&ctx.paths, false);
-    let (outcomes, failures) = collect(install_steps(ctx, &w, force, claude_md)?);
+    let (outcomes, failures) = collect(install_steps(ctx, &w, force, claude_md, agents_md)?);
     if failures > 0 {
         return Err(anyhow!("{failures} step(s) failed"));
     }
@@ -693,9 +747,15 @@ fn skill_step(w: &Writer, p: &Path, content: Option<&str>) -> Step {
     ("skill".to_string(), edit_skill(w, p, content))
 }
 
-pub fn install(ctx: &Ctx, force: bool, dry_run: bool, claude_md: bool) -> Result<()> {
+pub fn install(
+    ctx: &Ctx,
+    force: bool,
+    dry_run: bool,
+    claude_md: bool,
+    agents_md: bool,
+) -> Result<()> {
     let w = Writer::new(&ctx.paths, dry_run);
-    let results = install_steps(ctx, &w, force, claude_md)?;
+    let results = install_steps(ctx, &w, force, claude_md, agents_md)?;
     finish(ctx, results, dry_run)
 }
 
@@ -706,6 +766,7 @@ pub(crate) fn install_steps(
     w: &Writer,
     force: bool,
     claude_md: bool,
+    agents_md: bool,
 ) -> Result<Vec<Step>> {
     let host = ctx.host()?;
     let exe = std::env::current_exe().context("could not find this executable")?;
@@ -729,7 +790,17 @@ pub(crate) fn install_steps(
         results.extend(old_skill_step(w, &p));
     }
     if claude_md {
-        results.push(("claude.md".to_string(), edit_claude_md(w, &host, true)));
+        results.push((
+            "claude.md".to_string(),
+            edit_managed_md(w, &claude_md_path(&host), true, false),
+        ));
+    }
+    if agents_md {
+        for path in agents_md_paths(&host, &accounts)? {
+            if path.parent().is_some_and(Path::is_dir) {
+                results.push(("agents.md".into(), edit_managed_md(w, &path, true, true)));
+            }
+        }
     }
     Ok(results)
 }
@@ -749,7 +820,13 @@ pub fn uninstall(ctx: &Ctx, dry_run: bool) -> Result<()> {
     for p in so_agents::skill::old_skill_files(&host.home) {
         results.extend(old_skill_step(&w, &p));
     }
-    results.push(("claude.md".to_string(), edit_claude_md(&w, &host, false)));
+    results.push((
+        "claude.md".to_string(),
+        edit_managed_md(&w, &claude_md_path(&host), false, false),
+    ));
+    for path in agents_md_paths(&host, &accounts)? {
+        results.push(("agents.md".into(), edit_managed_md(&w, &path, false, true)));
+    }
     finish(ctx, results, dry_run)
 }
 
@@ -790,62 +867,62 @@ mod tests {
 
     #[test]
     fn block_is_added_replaced_and_removed_in_place() {
-        assert_eq!(with_block("").unwrap(), block_text());
+        assert_eq!(with_block("", false).unwrap(), block_text(false));
         let base = "# Mine\n\n- one\n";
-        let added = with_block(base).unwrap();
-        assert_eq!(added, format!("{base}\n{}", block_text()));
-        assert_eq!(with_block(&added).unwrap(), added, "idempotent");
+        let added = with_block(base, false).unwrap();
+        assert_eq!(added, format!("{base}\n{}", block_text(false)));
+        assert_eq!(with_block(&added, false).unwrap(), added, "idempotent");
         assert_eq!(without_block(&added).unwrap().unwrap(), base);
         assert_eq!(without_block(base).unwrap(), None);
         // A changed block is replaced where it stands, text after it untouched.
         let stale = format!("top\n\n{BLOCK_BEGIN}\nold\n{BLOCK_END}\nbottom\n");
         assert_eq!(
-            with_block(&stale).unwrap(),
-            format!("top\n\n{}bottom\n", block_text())
+            with_block(&stale, false).unwrap(),
+            format!("top\n\n{}bottom\n", block_text(false))
         );
         // No trailing newline in the original.
         assert_eq!(
-            without_block(&with_block("tail").unwrap())
+            without_block(&with_block("tail", false).unwrap())
                 .unwrap()
                 .unwrap(),
             "tail\n"
         );
-        assert_eq!(without_block(&block_text()).unwrap().unwrap(), "");
+        assert_eq!(without_block(&block_text(false)).unwrap().unwrap(), "");
     }
 
     #[test]
     fn an_unterminated_block_is_an_error() {
         let t = format!("x\n{BLOCK_BEGIN}\nstuff\n");
-        assert!(with_block(&t).is_err());
+        assert!(with_block(&t, false).is_err());
         assert!(without_block(&t).is_err());
     }
 
     #[test]
     fn exactly_one_ordered_pair_is_required() {
         // A quoted marker (here inside a fence) next to the real block.
-        let fenced = format!("```\n{BLOCK_BEGIN}\n```\n\n{}", block_text());
-        let e = with_block(&fenced).unwrap_err().to_string();
+        let fenced = format!("```\n{BLOCK_BEGIN}\n```\n\n{}", block_text(false));
+        let e = with_block(&fenced, false).unwrap_err().to_string();
         assert!(e.contains("found 2 superorchestrator blocks"), "{e}");
         assert!(without_block(&fenced).is_err());
-        let two = format!("{}\n{}", block_text(), block_text());
-        assert!(with_block(&two).is_err() && without_block(&two).is_err());
+        let two = format!("{}\n{}", block_text(false), block_text(false));
+        assert!(with_block(&two, false).is_err() && without_block(&two).is_err());
         let backwards = format!("{BLOCK_END}\nmid\n{BLOCK_BEGIN}\n");
-        assert!(with_block(&backwards).is_err() && without_block(&backwards).is_err());
+        assert!(with_block(&backwards, false).is_err() && without_block(&backwards).is_err());
         let lonely_end = format!("a\n{BLOCK_END}\n");
-        assert!(with_block(&lonely_end).is_err());
+        assert!(with_block(&lonely_end, false).is_err());
     }
 
     #[test]
     fn crlf_files_get_a_crlf_block_that_round_trips() {
         let base = "# Mine\r\n\r\n- one\r\n";
-        let added = with_block(base).unwrap();
+        let added = with_block(base, false).unwrap();
         assert_eq!(added.matches("\r\n").count(), added.matches('\n').count());
         assert!(added.starts_with(&format!("{base}\r\n{BLOCK_BEGIN}\r\n")));
-        assert_eq!(with_block(&added).unwrap(), added, "idempotent");
+        assert_eq!(with_block(&added, false).unwrap(), added, "idempotent");
         assert_eq!(without_block(&added).unwrap().unwrap(), base);
         // A stale LF block inside a CRLF file is replaced with a CRLF one.
         let stale = format!("a\r\n{BLOCK_BEGIN}\nold\n{BLOCK_END}\nb\r\n");
-        let fixed = with_block(&stale).unwrap();
+        let fixed = with_block(&stale, false).unwrap();
         assert_eq!(fixed.matches("\r\n").count(), fixed.matches('\n').count());
     }
 

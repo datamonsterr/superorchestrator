@@ -346,3 +346,14 @@ fn install_output_uses_tilde_paths_and_names_the_claude_registration() {
         .success();
     assert!(stdout(&out).contains(e.home.to_str().unwrap()));
 }
+
+#[test]
+fn no_agents_md_passes_through_to_install() {
+    let e = env_with_harnesses();
+    std::fs::create_dir_all(e.home.join(".codex")).unwrap();
+    cmd(&e)
+        .args(["setup", "--yes", "--no-login", "--no-agents-md"])
+        .assert()
+        .success();
+    assert!(!e.home.join(".codex/AGENTS.md").exists());
+}

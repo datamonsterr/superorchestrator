@@ -379,9 +379,10 @@ fn run_steps(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
         // The calls into `install`; the CLAUDE.md block is on unless `--no-claude-md`.
         let claude_md = !args.no_claude_md;
         let result = if ctx.json {
-            crate::cmd::install::install_quiet(ctx, false, claude_md)
+            crate::cmd::install::install_quiet(ctx, false, claude_md, !args.no_agents_md)
         } else {
-            crate::cmd::install::install(ctx, false, false, claude_md).map(|()| Value::Null)
+            crate::cmd::install::install(ctx, false, false, claude_md, !args.no_agents_md)
+                .map(|()| Value::Null)
         };
         installed = json!(result.is_ok());
         if let Err(e) = result {

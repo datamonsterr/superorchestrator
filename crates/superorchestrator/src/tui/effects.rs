@@ -654,7 +654,7 @@ fn step_body(ctx: &Ctx, host: &HostEnv, step: SetupStep) -> Result<(StepState, V
             (StepState::Warn, lines)
         }
         SetupStep::Install => {
-            let v = install::install_quiet(ctx, false, true)?;
+            let v = install::install_quiet(ctx, false, true, true)?;
             let lines = v
                 .as_array()
                 .map(|a| {

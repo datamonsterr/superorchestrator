@@ -189,7 +189,7 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "wait_agent",
-        "Block until a run finishes or posts a question or progress, or timeout_ms. Returns finished (state, result), updates (answer questions with send_message kind=answer), timed_out.",
+        "Wait for a run to finish or post a question or progress, up to timeout_ms (max 30 minutes). Returns finished, updates (answer with send_message kind=answer), timed_out.",
         true,
         true,
         schema_of::<WaitParams>,
