@@ -69,7 +69,7 @@ impl HistoryRecord {
             Outcome::Other
         }
     }
-    fn bad(&self) -> bool {
+    pub fn bad(&self) -> bool {
         matches!(self.outcome(), Outcome::Rejected | Outcome::Failed)
             || self.failovers > 0
             || self.escalations > 0

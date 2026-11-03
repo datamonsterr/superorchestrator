@@ -279,6 +279,46 @@ pub struct Level {
     pub models: Vec<Choice>,
 }
 
+/// Validate a set of router levels without modifying it.
+pub fn validate_levels(levels: &[Level]) -> std::result::Result<(), String> {
+    for (i, l) in levels.iter().enumerate() {
+        if l.name.trim().is_empty() {
+            return Err("router.levels: name must not be empty".into());
+        }
+        if levels[..i].iter().any(|o| o.name.trim() == l.name.trim()) {
+            return Err(format!("router.levels: duplicate name `{}`", l.name));
+        }
+        if l.min > l.max || l.max > 100 {
+            return Err(format!(
+                "router.levels `{}`: needs min <= max <= 100 (got {}..{})",
+                l.name, l.min, l.max
+            ));
+        }
+        if let Some(o) = levels[..i]
+            .iter()
+            .find(|o| o.min <= l.max && l.min <= o.max)
+        {
+            return Err(format!(
+                "router.levels `{}` ({}..{}) overlaps `{}` ({}..{})",
+                l.name, l.min, l.max, o.name, o.min, o.max
+            ));
+        }
+        if l.models.is_empty() && l.tier.is_none() {
+            return Err(format!(
+                "router.levels `{}`: needs `models` or `tier`",
+                l.name
+            ));
+        }
+        if let Some(j) = (1..l.models.len()).find(|&j| l.models[..j].contains(&l.models[j])) {
+            return Err(format!(
+                "router.levels `{}`: duplicate model `{}`",
+                l.name, l.models[j]
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl LevelTier {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -542,43 +582,7 @@ impl Config {
     }
 
     fn validate_levels(&self) -> std::result::Result<(), String> {
-        let levels = &self.router.levels;
-        for (i, l) in levels.iter().enumerate() {
-            if l.name.trim().is_empty() {
-                return Err("router.levels: name must not be empty".into());
-            }
-            if levels[..i].iter().any(|o| o.name.trim() == l.name.trim()) {
-                return Err(format!("router.levels: duplicate name `{}`", l.name));
-            }
-            if l.min > l.max || l.max > 100 {
-                return Err(format!(
-                    "router.levels `{}`: needs min <= max <= 100 (got {}..{})",
-                    l.name, l.min, l.max
-                ));
-            }
-            if let Some(o) = levels[..i]
-                .iter()
-                .find(|o| o.min <= l.max && l.min <= o.max)
-            {
-                return Err(format!(
-                    "router.levels `{}` ({}..{}) overlaps `{}` ({}..{})",
-                    l.name, l.min, l.max, o.name, o.min, o.max
-                ));
-            }
-            if l.models.is_empty() && l.tier.is_none() {
-                return Err(format!(
-                    "router.levels `{}`: needs `models` or `tier`",
-                    l.name
-                ));
-            }
-            if let Some(j) = (1..l.models.len()).find(|&j| l.models[..j].contains(&l.models[j])) {
-                return Err(format!(
-                    "router.levels `{}`: duplicate model `{}`",
-                    l.name, l.models[j]
-                ));
-            }
-        }
-        Ok(())
+        validate_levels(&self.router.levels)
     }
 
     /// Distinct model refs of every level, in level order; a ref listed twice counts once,

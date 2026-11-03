@@ -19,3 +19,5 @@ pub use error::{Result, RouterError};
 pub use route::{
     RouteCtx, RouteInputs, RouteOutcome, config_fingerprint, route_detailed, route_with,
 };
+
+pub mod suggest;
