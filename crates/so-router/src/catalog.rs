@@ -2,11 +2,11 @@
 //! Used only for discovery and validation; it never edits the models listed on levels.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::future::Future;
 use std::path::Path;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use so_accounts::{HostEnv, build_launch};
@@ -656,7 +656,12 @@ enum ModelSource {
     Codex,
     Listing(Harness, &'static str),
     ModelsDev,
-    Documented(Harness, &'static str, &'static str, &'static [&'static str]),
+    Documented {
+        harness: Harness,
+        name: &'static str,
+        detail: &'static str,
+        ids: &'static [&'static str],
+    },
 }
 
 const SOURCES: &[ModelSource] = &[
@@ -664,17 +669,17 @@ const SOURCES: &[ModelSource] = &[
     ModelSource::Listing(Harness::Opencode, "opencode"),
     ModelSource::ModelsDev,
     ModelSource::Listing(Harness::Agy, "agy"),
-    ModelSource::Documented(
-        Harness::Claude,
-        "claude",
-        "documented model ids (claude has no model listing)",
-        &[
+    ModelSource::Documented {
+        harness: Harness::Claude,
+        name: "claude",
+        detail: "documented model ids (claude has no model listing)",
+        ids: &[
             "claude-opus-5-5",
             "claude-sonnet-5-5",
             "claude-haiku-5-5",
             "claude-fable-5-1",
         ],
-    ),
+    },
 ];
 
 impl ModelSource {
@@ -683,7 +688,12 @@ impl ModelSource {
             Self::Codex => gather_codex(env).await,
             Self::Listing(harness, name) => gather_listing(env, harness, name).await,
             Self::ModelsDev => gather_models_dev(env).await,
-            Self::Documented(harness, name, detail, ids) => {
+            Self::Documented {
+                harness,
+                name,
+                detail,
+                ids,
+            } => {
                 let enabled = first_account(env, harness).is_some();
                 Gathered {
                     sources: vec![if enabled {
@@ -723,35 +733,14 @@ pub async fn refresh(
     mut catalog: Catalog,
     choices: &[Choice],
 ) -> (Catalog, RefreshReport) {
-    // Poll every source in each pass and retain table order in the final report.
-    let mut pending: Vec<_> = SOURCES
-        .iter()
-        .map(|source| Some(Box::pin(source.gather(env))))
-        .collect();
-    let mut gathered: Vec<Option<Gathered>> = (0..SOURCES.len()).map(|_| None).collect();
-    std::future::poll_fn(|cx| {
-        for (future, result) in pending.iter_mut().zip(&mut gathered) {
-            if let Some(fut) = future
-                && let std::task::Poll::Ready(value) = fut.as_mut().poll(cx)
-            {
-                *result = Some(value);
-                *future = None;
-            }
-        }
-        if pending.iter().all(Option::is_none) {
-            std::task::Poll::Ready(())
-        } else {
-            std::task::Poll::Pending
-        }
-    })
-    .await;
+    let gathered = join_all(SOURCES.iter().map(|source| source.gather(env))).await;
     let mut sources = Vec::new();
     let mut collected: Vec<Collected> = Vec::new();
     let mut listed: Vec<Collected> = Vec::new();
     let mut free_set: BTreeSet<String> = BTreeSet::new();
-    for (kind, g) in SOURCES.iter().zip(gathered.into_iter().flatten()) {
+    for (kind, g) in SOURCES.iter().zip(gathered) {
         sources.extend(g.sources);
-        if !matches!(kind, ModelSource::Documented(..)) {
+        if !matches!(kind, ModelSource::Documented { .. }) {
             listed.extend(g.models.iter().cloned());
         }
         collected.extend(g.models);
