@@ -19,7 +19,7 @@ This is the guided `setup` with Codex as the orchestrator. It:
 - reserves the Codex account whose home is `$CODEX_HOME` or `~/.codex`, else the first Codex account by name;
 - runs `install`, which registers the MCP server with Codex and writes the `AGENTS.md` block (see below).
 
-Useful flags: `--reserve NAME` (repeatable, overrides the choice; the name must be an existing or importable account), `--dry-run` (prints the plan, including `orchestrator` and `reserve`), and `--no-agents-md`. Without `--orchestrator`, `setup` reserves nothing. Running it again changes nothing.
+Useful flags: `--reserve NAME` (repeatable, overrides the choice; the name must be an account that exists after setup's account steps: existing, imported, or created by this setup. Otherwise setup fails with "account NAME does not exist"), `--dry-run` (prints the plan, including `orchestrator` and `reserve`), and `--no-agents-md`. Without `--orchestrator`, `setup` reserves nothing. Running it again changes nothing.
 
 ## Install or plugin
 
@@ -36,12 +36,14 @@ Choose one way to give Codex the MCP server.
 
 ```toml
 [mcp_servers.superorchestrator]
-command = "superorchestrator"
+command = "/home/you/.local/bin/superorchestrator"
 args = ["mcp"]
 startup_timeout_sec = 30
 tool_timeout_sec = 1860
 env_vars = ["XDG_RUNTIME_DIR"]
 ```
+
+`install` writes the absolute path of the running binary (the example shows a typical one). Only the plugin's `.mcp.json` uses the bare `superorchestrator` from `PATH`.
 
 Codex defaults are 10 s to start a server and 60 s per tool call. Codex also starts MCP servers with a scrubbed environment. Without `XDG_RUNTIME_DIR`, the server cannot find the supervisor socket.
 
@@ -63,7 +65,7 @@ If `install` also wrote `[mcp_servers.superorchestrator]` to `config.toml`, that
 
 ## Reserved accounts
 
-`setup` sets `[orchestrator] reserved_accounts` for you. Auto routing never picks a reserved account. To use one for a subagent anyway, pin it: `spawn_agent(account: "codex-1")`. `list_harnesses` marks reserved rows `reserved: true`, and a choice reachable only through reserved accounts shows `why: "account reserved"`. See [config](config.md#orchestrator).
+`setup` sets `[orchestrator] reserved_accounts` for you. Auto routing never picks a reserved account. The orchestrator's instructions tell it never to pin a reserved account for a subagent. Pinning `account` in a call is only a manual escape hatch for an operator. `list_harnesses` marks reserved rows `reserved: true`, and a choice reachable only through reserved accounts shows `why: "account reserved"`. See [config](config.md#orchestrator).
 
 ## Waiting for subagents
 
@@ -93,7 +95,7 @@ Codex runs only hooks you trust. Open `/hooks` in Codex and trust the superorche
 
 ## Resuming native sessions
 
-A subagent's native session can be resumed in Codex with `codex resume <id>`. Use the native session id the run recorded.
+`superorchestrator runs show <run>` prints a `join:` line (`get_run` returns it as `join_command`). For a Codex run it is `<account-name> resume <native session id>`, run through the account's wrapper so the right credential home is used. `superorchestrator join <run> [--exec]` runs it. A bare `codex resume <id>` uses the default `CODEX_HOME` and may not find the session.
 
 ## Troubleshooting
 
@@ -109,4 +111,4 @@ Look for `startup_timeout_sec: 30`, `tool_timeout_sec: 1860` and `XDG_RUNTIME_DI
 
 **Hooks do not run.** Trust them in Codex with `/hooks`. Hooks come from the plugin, not from `install`.
 
-**A reserved account was used.** Only a call that pins `account` may use one. Check `reserved_accounts` with `superorchestrator config get orchestrator.reserved_accounts`.
+**A reserved account was used.** Only a call that pins `account` may use one, and the orchestrator is told not to. Check `reserved_accounts` with `superorchestrator config get orchestrator.reserved_accounts`.
