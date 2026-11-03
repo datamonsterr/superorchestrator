@@ -51,7 +51,7 @@ Goal: a "Decider" section on the web Settings page using `/api/v1/decider`.
 - "Test decider" button: shows complexity, level, confidence, model, latency, or the error.
 - Show `restart_required`.
 - Tests: vitest for the form (validation messages, PATCH body, paste cleared, masked display, override notice, test result and error); a Playwright case with MSW in the browser e2e suite that saves a model and runs Test decider.
-- Acceptance: `cd web && npm run lint && npm run typecheck && npm test -- --run` and the browser e2e command from `.github/workflows/ci.yml`.
+- Acceptance: `pnpm -C web lint && pnpm -C web typecheck && pnpm -C web test && pnpm -C web e2e`.
 - Out of scope: other Settings sections, TUI.
 
 ### Task 4: TUI Sessions and Models tabs
@@ -73,7 +73,7 @@ Goal: a "Decider" section on the web Settings page using `/api/v1/decider`.
 
 - Web: nav label "Routing" becomes "Levels"; nav order matches the parity table; Dashboard and Accounts show cooldowns with their end time next to headroom where missing (reset times are already shown).
 - Docs: `docs/guide/parity.md` with the feature map table (feature, web page, TUI tab, gap reason), linked from `web-ui.md` and `tui.md`; update `web-ui.md`, `tui.md`, `config.md` (decider section, key paste); SPEC sections for the web UI and TUI; ADR `0008-supervisor-writes-decider-key-file.md`; CHANGELOG entry.
-- Acceptance: `cd web && npm run lint && npm run typecheck && npm test -- --run`.
+- Acceptance: `pnpm -C web lint && pnpm -C web typecheck && pnpm -C web test`.
 - Out of scope: code outside `web/` and `docs/`, SPEC, CHANGELOG.
 
 ## Order
