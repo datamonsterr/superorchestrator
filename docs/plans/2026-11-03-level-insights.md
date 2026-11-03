@@ -85,7 +85,7 @@ Out of scope: new TUI tabs (E5 adds them).
 ### Task 8: Docs
 
 Depends on Tasks 1-5 (describes their behaviour).
-Goal: SPEC.md (insights, suggestions, endpoint, CLI), ADR `docs/adr/0008-level-suggestion-rules.md` (rules, thresholds, outcome definition, why deterministic), `docs/guide/routing.md` section "Level insights and suggestions" (plus short notes in `web-ui.md` and `tui.md`), CONTEXT.md terms (level insight, suggestion, bad outcome) and CHANGELOG.
+Goal: SPEC.md (insights, suggestions, endpoint, CLI), ADR `docs/adr/0009-level-suggestions-are-deterministic-rules.md` (rules, thresholds, outcome definition, why deterministic), `docs/guide/routing.md` section "Level insights and suggestions" (plus short notes in `web-ui.md` and `tui.md`), CONTEXT.md terms (level insight, suggestion, bad outcome) and CHANGELOG.
 Acceptance: `sh scripts/check-docs.sh` if present, else `git diff --check`.
 Out of scope: code changes.
 
