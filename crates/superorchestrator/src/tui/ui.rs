@@ -11,7 +11,8 @@ use so_core::RunState;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::app::{
-    AddField, App, DetailView, HARNESSES, Modal, SetupStep, StepState, Tab, ToastKind,
+    AddField, App, DetailView, HARNESSES, Modal, STEP_CUSTOM_FIRST, STEP_NAME, STEP_PRESET,
+    STEP_SOURCE, STEP_TOKEN, SetupStep, StepState, Tab, ToastKind,
 };
 use super::data::{Check, Level, RunItem, Snapshot};
 use super::theme::Theme;
@@ -1355,14 +1356,14 @@ fn draw_modal(f: &mut Frame, app: &App, modal: &Modal, full: Rect) {
         }
         Modal::AddEndpoint(form) => {
             let (label, value) = match form.step {
-                0 => ("Account name", form.name.clone()),
-                1 => (
+                STEP_NAME => ("Account name", form.name.clone()),
+                STEP_PRESET => (
                     "Preset (←/→)",
                     so_core::EndpointPreset::ALL[form.preset]
                         .as_str()
                         .to_owned(),
                 ),
-                2 => (
+                STEP_SOURCE => (
                     "Token source (←/→)",
                     if form.env_source {
                         "Environment variable"
@@ -1371,8 +1372,8 @@ fn draw_modal(f: &mut Frame, app: &App, modal: &Modal, full: Rect) {
                     }
                     .to_owned(),
                 ),
-                3 if form.env_source => ("Environment variable name", form.env.clone()),
-                3 => ("Token", "•".repeat(form.token.0.chars().count())),
+                STEP_TOKEN if form.env_source => ("Environment variable name", form.env.clone()),
+                STEP_TOKEN => ("Token", "•".repeat(form.token.0.chars().count())),
                 n => (
                     [
                         "Base URL",
@@ -1380,8 +1381,8 @@ fn draw_modal(f: &mut Frame, app: &App, modal: &Modal, full: Rect) {
                         "Opus slot",
                         "Sonnet slot",
                         "Haiku slot",
-                    ][n - 4],
-                    form.custom[n - 4].clone(),
+                    ][n - STEP_CUSTOM_FIRST],
+                    form.custom[n - STEP_CUSTOM_FIRST].clone(),
                 ),
             };
             let mut lines = vec![

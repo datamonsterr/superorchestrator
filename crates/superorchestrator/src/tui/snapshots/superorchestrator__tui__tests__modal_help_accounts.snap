@@ -1,6 +1,5 @@
 ---
 source: crates/superorchestrator/src/tui/tests.rs
-assertion_line: 1125
 expression: "shot(&mut a, 80, 24)"
 ---
  superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator

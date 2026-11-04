@@ -120,7 +120,7 @@ pub fn run(ctx: &Ctx) -> Result<()> {
         // `try_init` wraps the hook above with its own restore; replace that.
         let mut terminal = ratatui::try_init()?;
         set_panic_hook(ui_thread, orig);
-        event_loop(&mut terminal, &rtx, &atx, &urx, &stop)
+        event_loop(&mut terminal, &rtx, &atx, &urx, &stop, &ctx.paths)
     };
     // Let a step that is writing config finish rather than cut it off.
     drop((rtx, atx));
@@ -189,8 +189,9 @@ fn event_loop(
     actions: &Sender<Effect>,
     updates: &mpsc::Receiver<Update>,
     stop: &Stop,
+    paths: &so_core::Paths,
 ) -> io::Result<()> {
-    let mut app = App::new(Theme::from_env(), Utc::now());
+    let mut app = App::new(Theme::from_env(), Utc::now(), paths.clone());
     let mut d = Dispatch {
         reads,
         actions,

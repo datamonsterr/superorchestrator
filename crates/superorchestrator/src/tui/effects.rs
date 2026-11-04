@@ -752,7 +752,11 @@ mod tests {
         action_loop(ctx.clone(), fake_host(d.path()), erx, utx);
         let update = urx.recv().unwrap();
         assert!(matches!(&update, Update::Done { ok: false, text } if text.contains("overlaps")));
-        let mut app = super::super::app::App::new(super::super::theme::Theme::plain(), Utc::now());
+        let mut app = super::super::app::App::new(
+            super::super::theme::Theme::plain(),
+            Utc::now(),
+            ctx.paths.clone(),
+        );
         app.on_update(update);
         assert!(app.toast.unwrap().text.contains("overlaps"));
         assert_eq!(

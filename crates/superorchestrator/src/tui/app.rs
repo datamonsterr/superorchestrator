@@ -8,7 +8,9 @@ use chrono::{DateTime, Duration, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
 use so_accounts::ImportCandidate;
-use so_core::{AccountFile, Endpoint, EndpointPreset, Harness, RunState, Slots};
+use so_core::{
+    AccountFile, Endpoint, EndpointPreset, Harness, Paths, RunState, Slots, validate_account_name,
+};
 
 use super::data::{AccountRow, RunDetail, RunItem, Snapshot};
 use super::theme::Theme;
@@ -138,6 +140,19 @@ impl std::fmt::Debug for Secret {
     }
 }
 
+pub const STEP_NAME: usize = 0;
+pub const STEP_PRESET: usize = STEP_NAME + 1;
+pub const STEP_SOURCE: usize = STEP_PRESET + 1;
+pub const STEP_TOKEN: usize = STEP_SOURCE + 1;
+pub const STEP_CUSTOM_FIRST: usize = STEP_TOKEN + 1;
+pub const CUSTOM_BASE_URL: usize = 0;
+pub const CUSTOM_MODELS: usize = CUSTOM_BASE_URL + 1;
+pub const CUSTOM_OPUS: usize = CUSTOM_MODELS + 1;
+pub const CUSTOM_SONNET: usize = CUSTOM_OPUS + 1;
+pub const CUSTOM_HAIKU: usize = CUSTOM_SONNET + 1;
+pub const CUSTOM_FIELD_COUNT: usize = CUSTOM_HAIKU + 1;
+pub const STEP_LAST: usize = STEP_CUSTOM_FIRST + CUSTOM_HAIKU;
+
 #[derive(Debug, Clone, Default)]
 pub struct EndpointForm {
     pub step: usize,
@@ -146,7 +161,7 @@ pub struct EndpointForm {
     pub env_source: bool,
     pub token: Secret,
     pub env: String,
-    pub custom: [String; 5],
+    pub custom: [String; CUSTOM_FIELD_COUNT],
     pub error: Option<String>,
 }
 
@@ -155,12 +170,12 @@ impl EndpointForm {
         let custom = EndpointPreset::ALL[self.preset] == EndpointPreset::Custom;
         Endpoint {
             preset: EndpointPreset::ALL[self.preset],
-            base_url: custom.then(|| self.custom[0].trim().to_owned()),
+            base_url: custom.then(|| self.custom[CUSTOM_BASE_URL].trim().to_owned()),
             token_env: self.env_source.then(|| self.env.trim().to_owned()),
-            token_file: (!self.env_source).then(|| "pending".into()),
+            token_file: None,
             token_var: None,
             models: if custom {
-                self.custom[1]
+                self.custom[CUSTOM_MODELS]
                     .split(',')
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
@@ -171,9 +186,9 @@ impl EndpointForm {
             },
             slots: if custom {
                 Slots {
-                    opus: Some(self.custom[2].trim().into()),
-                    sonnet: Some(self.custom[3].trim().into()),
-                    haiku: Some(self.custom[4].trim().into()),
+                    opus: Some(self.custom[CUSTOM_OPUS].trim().into()),
+                    sonnet: Some(self.custom[CUSTOM_SONNET].trim().into()),
+                    haiku: Some(self.custom[CUSTOM_HAIKU].trim().into()),
                 }
             } else {
                 Slots::default()
@@ -386,6 +401,7 @@ pub struct DetailView {
 
 pub struct App {
     pub theme: Theme,
+    pub paths: Paths,
     pub tab: Tab,
     pub now: DateTime<Utc>,
     pub tick: u64,
@@ -410,9 +426,10 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(theme: Theme, now: DateTime<Utc>) -> Self {
+    pub fn new(theme: Theme, now: DateTime<Utc>, paths: Paths) -> Self {
         Self {
             theme,
+            paths,
             tab: Tab::Overview,
             now,
             tick: 0,
@@ -1078,55 +1095,67 @@ impl App {
             Modal::AddEndpoint(form) => {
                 match code {
                     KeyCode::Esc => return None,
-                    KeyCode::BackTab if form.step > 0 => {
+                    KeyCode::BackTab if form.step > STEP_NAME => {
                         form.step -= 1;
                         form.error = None;
                     }
-                    KeyCode::Left | KeyCode::Right if form.step == 1 => {
+                    KeyCode::Left | KeyCode::Right if form.step == STEP_PRESET => {
                         form.preset = if code == KeyCode::Left {
-                            (form.preset + 3) % 4
+                            (form.preset + EndpointPreset::ALL.len() - 1)
+                                % EndpointPreset::ALL.len()
                         } else {
-                            (form.preset + 1) % 4
+                            (form.preset + 1) % EndpointPreset::ALL.len()
                         };
                     }
-                    KeyCode::Left | KeyCode::Right if form.step == 2 => {
+                    KeyCode::Left | KeyCode::Right if form.step == STEP_SOURCE => {
                         form.env_source = !form.env_source
                     }
                     KeyCode::Enter => {
                         form.error = None;
                         let error = match form.step {
-                            0 => AccountFile::new(
-                                form.name.trim(),
-                                Harness::Claude,
-                                "~/.account",
-                                "claude",
-                            )
-                            .err()
-                            .map(|e| e.to_string()),
-                            3 if !form.env_source && form.token.0.is_empty() => {
+                            STEP_NAME => validate_account_name(form.name.trim())
+                                .err()
+                                .map(|e| e.to_string()),
+                            STEP_TOKEN if !form.env_source && form.token.0.is_empty() => {
                                 Some("Enter a token".into())
                             }
-                            3 if form.env_source && form.env.trim().is_empty() => {
+                            STEP_TOKEN if form.env_source && form.env.trim().is_empty() => {
                                 Some("Enter an environment variable name".into())
                             }
                             _ => None,
                         };
                         if let Some(error) = error {
                             form.error = Some(error);
-                        } else if form.step == 3 && form.preset != 3 || form.step == 8 {
+                        } else if (form.step == STEP_TOKEN
+                            && EndpointPreset::ALL[form.preset] != EndpointPreset::Custom)
+                            || form.step == STEP_LAST
+                        {
                             let endpoint = form.endpoint();
-                            let mut account = AccountFile::new(
-                                form.name.trim(),
+                            let name = form.name.trim().to_owned();
+                            let mut check_endpoint = endpoint.clone();
+                            if !form.env_source {
+                                // The backend sets this real key path before validating and writing the token.
+                                check_endpoint.token_file =
+                                    Some(self.paths.key_file(&name).to_string_lossy().into_owned());
+                            }
+                            let check = AccountFile::new(
+                                &name,
                                 Harness::Claude,
-                                "~/.account",
+                                &format!("~/.{name}"),
                                 "claude",
                             )
-                            .expect("name validated");
-                            account.endpoint = Some(endpoint.clone());
-                            if let Err(error) = account.validate() {
-                                form.error = Some(error.to_string());
+                            .and_then(|mut account| {
+                                account.endpoint = Some(check_endpoint);
+                                account.validate()
+                            });
+                            if let Err(error) = check {
+                                form.error = Some(match error {
+                                    so_core::error::CoreError::InvalidValue { reason, .. } => {
+                                        reason
+                                    }
+                                    other => other.to_string(),
+                                });
                             } else {
-                                let name = form.name.trim().to_owned();
                                 let token =
                                     (!form.env_source).then(|| std::mem::take(&mut form.token));
                                 return self.start(Effect::AddEndpointAccount {
@@ -1141,10 +1170,12 @@ impl App {
                     }
                     _ => {
                         let input = match form.step {
-                            0 => Some(&mut form.name),
-                            3 if form.env_source => Some(&mut form.env),
-                            3 => Some(&mut form.token.0),
-                            4..=8 => Some(&mut form.custom[form.step - 4]),
+                            STEP_NAME => Some(&mut form.name),
+                            STEP_TOKEN if form.env_source => Some(&mut form.env),
+                            STEP_TOKEN => Some(&mut form.token.0),
+                            STEP_CUSTOM_FIRST..=STEP_LAST => {
+                                Some(&mut form.custom[form.step - STEP_CUSTOM_FIRST])
+                            }
                             _ => None,
                         };
                         if let Some(input) = input {
