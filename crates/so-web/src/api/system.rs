@@ -157,16 +157,24 @@ pub async fn routing_records(
         events.truncate(limit);
         events.last().map(|e| encode_cursor(&e.ts, &e.id))
     });
+    let ids: Vec<String> = events.iter().filter_map(|e| e.run_id.clone()).collect();
+    let prompts = st.db(move |s| s.run_prompts(&ids)).await?;
     let items = events
         .into_iter()
         .filter_map(|e| {
             let mut result = super::runs::route_result_of(&e.data)?;
             result.rationale = so_core::redact::redact(&result.rationale);
-            let excerpt = e.data["prompt_excerpt"].as_str().unwrap_or_default();
+            let excerpt = e
+                .run_id
+                .as_ref()
+                .and_then(|id| prompts.get(id))
+                .map(String::as_str)
+                .or_else(|| e.data["prompt_excerpt"].as_str())
+                .unwrap_or_default();
             Some(RouteRecord {
                 ts: e.ts,
                 run_id: e.run_id,
-                prompt_excerpt: so_core::redact::redact(excerpt),
+                prompt_excerpt: so_core::redact::prompt_excerpt(excerpt, 160),
                 result,
             })
         })
@@ -175,6 +183,35 @@ pub async fn routing_records(
         items,
         next_cursor: next_cursor.flatten(),
     }))
+}
+
+pub async fn routing_insights(
+    State(st): State<AppState>,
+) -> ApiResult<Json<so_supervisor::services::insights::InsightsReport>> {
+    let s = st.clone();
+    st.blocking(move || {
+        let config = Config::load(&s.sup.paths)?;
+        let catalog = so_router::Catalog::load(&s.sup.paths).map_err(|e| {
+            tracing::warn!("model catalog unreadable: {e}");
+            ApiError::internal("the model catalog could not be read")
+        })?;
+        // Read history on a short-lived read-only connection so the supervisor's shared
+        // store stays free; fall back to it when the state DB file cannot be opened.
+        let db = s.sup.paths.state_db();
+        let ro = if db.exists() {
+            so_store::Store::open_read_only(&db).ok()
+        } else {
+            None
+        };
+        let store = ro.as_ref().unwrap_or(&s.sup.store);
+        Ok(Json(so_supervisor::services::insights::insights_report(
+            store,
+            &config,
+            &catalog,
+            Utc::now(),
+        )?))
+    })
+    .await
 }
 
 // ------------------------------------------------------------------ config

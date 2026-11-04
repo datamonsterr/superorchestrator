@@ -28,6 +28,8 @@ pub const HARNESSES: [Harness; 9] = [
 ];
 
 const PAGE: usize = 10;
+/// While the Levels tab is open, the insights report is re-read at most this often.
+const INSIGHTS_EVERY_SECS: i64 = 30;
 const TOAST_OK: i64 = 4;
 const TOAST_ERR: i64 = 10;
 
@@ -172,13 +174,17 @@ pub enum Effect {
     Setup(SetupStep),
     SetupAll,
     Levels(LevelsCmd),
+    /// Writes the levels of the routing suggestion with this id.
+    ApplySuggestion(String),
+    /// Reads the routing insights report (reader thread; never part of the refresh).
+    Insights,
 }
 
 impl Effect {
     /// Short phrase for the status line while the effect runs; `None` for reads.
     pub fn busy_label(&self) -> Option<&'static str> {
         Some(match self {
-            Effect::Refresh | Effect::Detail { .. } => return None,
+            Effect::Refresh | Effect::Detail { .. } | Effect::Insights => return None,
             Effect::AddAccounts { .. } => "adding accounts",
             Effect::Login(_) => "preparing sign-in",
             Effect::SetEnabled { .. } => "updating account",
@@ -192,6 +198,7 @@ impl Effect {
             Effect::Join(_) => "preparing join",
             Effect::Setup(_) | Effect::SetupAll => "running setup",
             Effect::Levels(_) => "updating levels",
+            Effect::ApplySuggestion(_) => "applying suggestion",
         })
     }
 }
@@ -213,6 +220,8 @@ pub struct Launch {
 pub enum Update {
     Snapshot(Box<Snapshot>),
     Detail(Result<Box<RunDetail>, String>),
+    /// The insights report; `Ok(None)` when there is no state.db yet.
+    Insights(Result<Option<Box<so_supervisor::services::insights::InsightsReport>>, String>),
     /// A read on the reader thread panicked or failed outright.
     ReadFailed(String),
     Done {
@@ -340,6 +349,16 @@ pub struct App {
     pub levels_sel: usize,
     pub models_sel: usize,
     pub level_open: Option<String>,
+    /// The Levels tab keys act on the suggestions list instead of the levels.
+    pub suggest_focus: bool,
+    pub suggest_sel: usize,
+    /// Last good routing insights; loaded by `Effect::Insights`, not by the refresh.
+    pub insights: Option<so_supervisor::services::insights::InsightsReport>,
+    pub insights_error: Option<String>,
+    insights_stale: bool,
+    insights_at: Option<DateTime<Utc>>,
+    /// A levels edit or suggestion apply is running; its result makes the insights stale.
+    edit_pending: bool,
     pub levels_state: TableState,
     pub models_state: TableState,
     /// Scroll state of the two tables; the draw step keeps it on the selection.
@@ -367,6 +386,13 @@ impl App {
             levels_sel: 0,
             models_sel: 0,
             level_open: None,
+            suggest_focus: false,
+            suggest_sel: 0,
+            insights: None,
+            insights_error: None,
+            insights_stale: false,
+            insights_at: None,
+            edit_pending: false,
             levels_state: TableState::default(),
             models_state: TableState::default(),
             accounts_state: TableState::default(),
@@ -433,6 +459,9 @@ impl App {
     }
 
     fn start(&mut self, effect: Effect) -> Option<Effect> {
+        if matches!(effect, Effect::Levels(_) | Effect::ApplySuggestion(_)) {
+            self.edit_pending = true;
+        }
         if let Some(label) = effect.busy_label() {
             self.busy = Some(label);
         }
@@ -501,13 +530,36 @@ impl App {
     }
 
     fn switch(&mut self, tab: Tab) {
+        if tab == Tab::Levels && self.tab != Tab::Levels {
+            self.insights_stale = true;
+        }
         self.tab = tab;
+    }
+
+    /// The insights read to send now: on entering the Levels tab, after a levels edit, and at
+    /// most every `INSIGHTS_EVERY_SECS` while the tab stays open. The caller sends it only
+    /// when no insights read is in flight.
+    pub fn insights_request(&mut self) -> Option<Effect> {
+        if self.tab != Tab::Levels {
+            return None;
+        }
+        let due = self
+            .insights_at
+            .is_none_or(|at| (self.now - at).num_seconds() >= INSIGHTS_EVERY_SECS);
+        if !(self.insights_stale || due) {
+            return None;
+        }
+        self.insights_stale = false;
+        self.insights_at = Some(self.now);
+        Some(Effect::Insights)
     }
 
     /// `q` and `Esc`: close what is open, else leave.
     fn back_or_quit(&mut self) {
         if self.tab == Tab::Runs && self.detail.is_some() {
             self.detail = None;
+        } else if self.tab == Tab::Levels && self.suggest_focus {
+            self.suggest_focus = false;
         } else if self.tab == Tab::Levels && self.level_open.is_some() {
             self.level_open = None;
         } else {
@@ -688,6 +740,34 @@ impl App {
         self.snap.as_ref().map_or(&[], |s| s.levels.as_slice())
     }
 
+    pub fn suggestions(&self) -> &[so_router::suggest::Suggestion] {
+        self.insights
+            .as_ref()
+            .map_or(&[], |i| i.suggestions.as_slice())
+    }
+
+    /// `s` focuses the suggestions; there, `j/k` select and `A` or `Enter` ask to apply.
+    fn suggest_key(&mut self, key: KeyEvent) -> Option<Effect> {
+        let len = self.suggestions().len();
+        if let Some(next) = Self::movement(key.code, self.suggest_sel, len) {
+            self.suggest_sel = next;
+            return None;
+        }
+        match key.code {
+            KeyCode::Char('s') => self.suggest_focus = false,
+            KeyCode::Char('A') | KeyCode::Enter => {
+                // `?` leaves the key a no-op when there is nothing to apply.
+                let id = self.suggestions().get(self.suggest_sel)?.id.clone();
+                self.modal = Some(Modal::Confirm {
+                    prompt: format!("Apply suggestion {id}? (y/n)"),
+                    effect: Effect::ApplySuggestion(id),
+                });
+            }
+            _ => {}
+        }
+        None
+    }
+
     pub fn focused_level(&self) -> Option<&super::data::LevelRow> {
         match &self.level_open {
             Some(name) => self.levels().iter().find(|l| &l.name == name),
@@ -728,6 +808,9 @@ impl App {
         if self.busy.is_some() {
             return None;
         }
+        if self.suggest_focus {
+            return self.suggest_key(key);
+        }
         let open = self.level_open.is_some();
         let len = if open {
             self.focused_level().map_or(0, |l| l.models.len())
@@ -754,6 +837,15 @@ impl App {
                     fields: [String::new(), "0".into(), "100".into()],
                     field: 0,
                 });
+                return None;
+            }
+            KeyCode::Char('s') if !open => {
+                if self.suggestions().is_empty() {
+                    self.say(ToastKind::Err, "no routing suggestions");
+                } else {
+                    self.suggest_focus = true;
+                    self.suggest_sel = self.suggest_sel.min(self.suggestions().len() - 1);
+                }
                 return None;
             }
             KeyCode::Char('u') => {
@@ -1151,8 +1243,35 @@ impl App {
                 self.say(ToastKind::Err, e);
                 Next::Nothing
             }
+            Update::Insights(result) => {
+                // Follow the selected suggestion by id; an applied one disappears.
+                let picked = self
+                    .suggestions()
+                    .get(self.suggest_sel)
+                    .map(|s| s.id.clone());
+                match result {
+                    Ok(report) => {
+                        self.insights = report.map(|r| *r);
+                        self.insights_error = None;
+                    }
+                    Err(e) => self.insights_error = Some(e),
+                }
+                let now = self.suggestions();
+                let len = now.len();
+                self.suggest_sel = picked
+                    .and_then(|id| now.iter().position(|s| s.id == id))
+                    .unwrap_or(self.suggest_sel)
+                    .min(len.saturating_sub(1));
+                if len == 0 {
+                    self.suggest_focus = false;
+                }
+                Next::Nothing
+            }
             Update::Done { ok, text } => {
                 self.busy = None;
+                if std::mem::take(&mut self.edit_pending) {
+                    self.insights_stale = true;
+                }
                 if !text.is_empty() {
                     self.say(if ok { ToastKind::Ok } else { ToastKind::Err }, text);
                 }

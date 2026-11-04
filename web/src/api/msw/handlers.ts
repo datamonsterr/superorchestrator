@@ -146,6 +146,7 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
       levels = { ...levels, levels: body.levels, routing_instruction: body.routing_instruction, restart_required: true }
       return HttpResponse.json(levels)
     }),
+    http.get(`${B}/routing/insights`, () => HttpResponse.json(fx.insights)),
     http.get(`${B}/models`, () => HttpResponse.json(fx.models)),
     http.post(`${B}/models/refresh`, () => HttpResponse.json(fx.models)),
 

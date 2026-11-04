@@ -178,14 +178,14 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "spawn_agent",
-        "Start a run; unpinned harness/account/model are auto-routed. wait=true blocks to finish or review gate. cmd: checks require depth 0; subagents may use only ci/pr_threads and cwd inside their run worktree/cwd.",
+        "Start a run; unpinned fields auto-route. wait=true waits at most 30 minutes for finish or review, returns current state; run continues (use wait_agent). cmd checks require depth 0; subagents may use only ci/pr_threads and cwd inside their run worktree/cwd.",
         true,
         false,
         schema_of::<SpawnParams>,
     ),
     spec(
         "wait_agent",
-        "Block until a run finishes or posts a question or progress, or timeout_ms. Returns finished (state, result), updates (answer questions with send_message kind=answer), timed_out.",
+        "Wait for finish, question or progress (max 30 minutes). Returns finished, updates (send_message kind=answer), timed_out.",
         true,
         true,
         schema_of::<WaitParams>,
@@ -298,6 +298,15 @@ pub fn tool_specs(subagent: bool) -> impl Iterator<Item = &'static ToolSpec> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn wait_descriptions_follow_max_wait() {
+        let minutes = format!("{} minutes", so_core::MAX_WAIT.as_secs() / 60);
+        for name in ["spawn_agent", "wait_agent"] {
+            let spec = tool_specs(false).find(|t| t.name == name).unwrap();
+            assert!(spec.description.contains(&minutes), "{name}");
+        }
+    }
 
     #[test]
     fn run_workflow_description_names_every_script_global() {

@@ -2,8 +2,7 @@
 source: crates/superorchestrator/src/tui/tests.rs
 expression: "shot(&mut a, 80, 24)"
 ---
- superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
-  ╭ Help ────────────────────────────────────────────────────────────────────╮
+ s╭ Help ────────────────────────────────────────────────────────────────────╮
   │                                                                          │
   │ Everywhere                                                               │
   │ Tab  S-Tab  next / previous tab                                          │
@@ -16,6 +15,7 @@ expression: "shot(&mut a, 80, 24)"
   │ Levels                                                                   │
   │ j k  g G    move (arrows, PgUp/PgDn, Home/End too)                       │
   │ Enter       open a level's model refs                                    │
+  │ s           suggestions: j/k pick, A/Enter apply                         │
   │ a / x       add from the catalog / remove the selected ref               │
   │ J / K       move the selected ref down / up                              │
   │ r           edit min and max complexity (0-100)                          │

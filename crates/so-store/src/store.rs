@@ -34,6 +34,13 @@ impl Store {
         Ok(Store::from_conn(conn))
     }
 
+    /// Opens an existing database without creating it, changing its schema, or writing to it.
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Store> {
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        conn.busy_timeout(Duration::from_millis(200))?;
+        Ok(Store::from_conn(conn))
+    }
+
     /// Opens a private in-memory database (for tests).
     pub fn open_in_memory() -> Result<Store> {
         let mut conn = Connection::open_in_memory()?;
@@ -87,5 +94,27 @@ fn create_private(path: &Path) -> Result<()> {
             Ok(())
         }
         Err(e) => Err(StoreError::Io(e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_only_open_neither_creates_nor_migrates_and_rejects_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        assert!(Store::open_read_only(&path).is_err());
+        assert!(!path.exists());
+        Connection::open(&path).unwrap();
+        let store = Store::open_read_only(&path).unwrap();
+        assert_eq!(store.schema_version().unwrap(), 0);
+        assert!(
+            store
+                .conn()
+                .execute("CREATE TABLE x (id INTEGER)", [])
+                .is_err()
+        );
     }
 }

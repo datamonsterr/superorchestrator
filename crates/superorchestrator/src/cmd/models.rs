@@ -19,13 +19,23 @@ pub fn run(ctx: &Ctx, cmd: ModelsCmd) -> Result<()> {
 
 fn list(ctx: &Ctx) -> Result<()> {
     let catalog = Catalog::load(&ctx.paths)?;
+    let config = ctx.config()?;
     let rows = catalog.entries();
+    let levels = |h, id: &str| -> Vec<&str> {
+        config
+            .router
+            .levels
+            .iter()
+            .filter(|level| level.models.iter().any(|c| c.harness == h && c.model == id))
+            .map(|level| level.name.as_str())
+            .collect()
+    };
     let value: Vec<_> = rows
         .iter()
         .map(|(h, m)| {
             serde_json::json!({
                 "harness": h, "model": m.id, "tier": m.tier, "cost": m.cost,
-                "pool": m.pool, "efforts": m.efforts,
+                "pool": m.pool, "efforts": m.efforts, "levels": levels(*h, &m.id),
             })
         })
         .collect();
@@ -41,12 +51,15 @@ fn list(ctx: &Ctx) -> Result<()> {
                     s(serde_json::to_value(m.cost).unwrap_or_default()),
                     m.pool.clone().unwrap_or_default(),
                     m.efforts.join(","),
+                    levels(*h, &m.id).join(","),
                 ]
             })
             .collect();
         write_table(
             w,
-            &["HARNESS", "MODEL", "TIER", "COST", "POOL", "EFFORTS"],
+            &[
+                "HARNESS", "MODEL", "TIER", "COST", "POOL", "EFFORTS", "LEVELS",
+            ],
             &table,
         )
     })
@@ -97,8 +110,8 @@ async fn refresh_cmd(ctx: &Ctx) -> Result<()> {
         }
         writeln!(
             w,
-            "{} catalog model(s) are listed by no level",
-            report.unused_models.len()
+            "{} catalog model(s) not listed by any level",
+            report.unassigned_models.len()
         )?;
         Ok(())
     })

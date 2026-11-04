@@ -36,6 +36,17 @@ impl HostEnv {
         Ok(expand_tilde_with(&env, s)?)
     }
 
+    /// The Codex home: `$CODEX_HOME` when set and non-empty, else `~/.codex`.
+    pub fn codex_home(&self) -> PathBuf {
+        self.codex_home_from(std::env::var_os("CODEX_HOME"))
+    }
+
+    /// [`Self::codex_home`] with the `CODEX_HOME` value given.
+    pub fn codex_home_from(&self, var: Option<std::ffi::OsString>) -> PathBuf {
+        var.filter(|v| !v.is_empty())
+            .map_or_else(|| self.home.join(".codex"), PathBuf::from)
+    }
+
     /// Renders `p` as `~/rel` when it is under the home directory.
     pub fn tildify(&self, p: &Path) -> String {
         match p.strip_prefix(&self.home) {
@@ -93,6 +104,26 @@ pub(crate) fn canon(p: &Path) -> std::io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_home_prefers_a_non_empty_env_value() {
+        let host = HostEnv {
+            home: PathBuf::from("/h"),
+            path_var: None,
+            platform: Platform::Linux,
+        };
+        assert_eq!(
+            host.codex_home_from(Some("/x/codex".into())),
+            PathBuf::from("/x/codex")
+        );
+        assert_eq!(
+            host.codex_home_from(Some("".into())),
+            PathBuf::from("/h/.codex")
+        );
+        assert_eq!(host.codex_home_from(None), PathBuf::from("/h/.codex"));
+    }
+
     #[test]
     fn parent_component_after_symlink_uses_the_target_parent() {
         let dir = tempfile::tempdir().unwrap();

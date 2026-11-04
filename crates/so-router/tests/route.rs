@@ -1628,3 +1628,23 @@ async fn agy_gemini_and_claude_pools_are_ranked_separately() {
     .await;
     assert_eq!(r.ranked_accounts, ["agy-1", "agy-2"]);
 }
+
+#[tokio::test]
+async fn reserved_account_requires_an_account_pin() {
+    let mut w = world("http://localhost", false);
+    w.config.orchestrator.reserved_accounts = vec!["codex-a".into()];
+    w.config.router.levels = vec![level("all", 0, 100, &[CODEX_BIG])];
+    let mut p = params("implement a feature");
+    assert!(route_detailed(&w.inputs(), &p).await.is_err());
+    p.harness = Some("codex".into());
+    assert!(route_detailed(&w.inputs(), &p).await.is_err());
+    p.account = Some("codex-a".into());
+    assert_eq!(
+        route_detailed(&w.inputs(), &p)
+            .await
+            .unwrap()
+            .result
+            .account,
+        "codex-a"
+    );
+}

@@ -279,6 +279,46 @@ pub struct Level {
     pub models: Vec<Choice>,
 }
 
+/// Validate a set of router levels without modifying it.
+pub fn validate_levels(levels: &[Level]) -> std::result::Result<(), String> {
+    for (i, l) in levels.iter().enumerate() {
+        if l.name.trim().is_empty() {
+            return Err("router.levels: name must not be empty".into());
+        }
+        if levels[..i].iter().any(|o| o.name.trim() == l.name.trim()) {
+            return Err(format!("router.levels: duplicate name `{}`", l.name));
+        }
+        if l.min > l.max || l.max > 100 {
+            return Err(format!(
+                "router.levels `{}`: needs min <= max <= 100 (got {}..{})",
+                l.name, l.min, l.max
+            ));
+        }
+        if let Some(o) = levels[..i]
+            .iter()
+            .find(|o| o.min <= l.max && l.min <= o.max)
+        {
+            return Err(format!(
+                "router.levels `{}` ({}..{}) overlaps `{}` ({}..{})",
+                l.name, l.min, l.max, o.name, o.min, o.max
+            ));
+        }
+        if l.models.is_empty() && l.tier.is_none() {
+            return Err(format!(
+                "router.levels `{}`: needs `models` or `tier`",
+                l.name
+            ));
+        }
+        if let Some(j) = (1..l.models.len()).find(|&j| l.models[..j].contains(&l.models[j])) {
+            return Err(format!(
+                "router.levels `{}`: duplicate model `{}`",
+                l.name, l.models[j]
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl LevelTier {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -454,6 +494,19 @@ pub struct Defaults {
     pub effort: Option<String>,
 }
 
+/// Accounts kept for the orchestrator.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Orchestrator {
+    pub reserved_accounts: Vec<String>,
+}
+
+impl Orchestrator {
+    pub fn is_reserved(&self, name: &str) -> bool {
+        self.reserved_accounts.iter().any(|account| account == name)
+    }
+}
+
 /// The whole of `config.toml`. Every section is optional in the file.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
@@ -469,6 +522,7 @@ pub struct Config {
     pub supervisor: Supervisor,
     pub notifications: Notifications,
     pub defaults: Defaults,
+    pub orchestrator: Orchestrator,
 }
 
 const OLD_CHOICES_HINT: &str = "list models on each [[router.levels]] entry as harness/model/effort, e.g. models = [\"codex/gpt-6.1-sol/high\"] (docs/guide/routing.md)";
@@ -533,43 +587,7 @@ impl Config {
     }
 
     fn validate_levels(&self) -> std::result::Result<(), String> {
-        let levels = &self.router.levels;
-        for (i, l) in levels.iter().enumerate() {
-            if l.name.trim().is_empty() {
-                return Err("router.levels: name must not be empty".into());
-            }
-            if levels[..i].iter().any(|o| o.name.trim() == l.name.trim()) {
-                return Err(format!("router.levels: duplicate name `{}`", l.name));
-            }
-            if l.min > l.max || l.max > 100 {
-                return Err(format!(
-                    "router.levels `{}`: needs min <= max <= 100 (got {}..{})",
-                    l.name, l.min, l.max
-                ));
-            }
-            if let Some(o) = levels[..i]
-                .iter()
-                .find(|o| o.min <= l.max && l.min <= o.max)
-            {
-                return Err(format!(
-                    "router.levels `{}` ({}..{}) overlaps `{}` ({}..{})",
-                    l.name, l.min, l.max, o.name, o.min, o.max
-                ));
-            }
-            if l.models.is_empty() && l.tier.is_none() {
-                return Err(format!(
-                    "router.levels `{}`: needs `models` or `tier`",
-                    l.name
-                ));
-            }
-            if let Some(j) = (1..l.models.len()).find(|&j| l.models[..j].contains(&l.models[j])) {
-                return Err(format!(
-                    "router.levels `{}`: duplicate model `{}`",
-                    l.name, l.models[j]
-                ));
-            }
-        }
-        Ok(())
+        validate_levels(&self.router.levels)
     }
 
     /// Distinct model refs of every level, in level order; a ref listed twice counts once,
@@ -1534,5 +1552,18 @@ mod tests {
         .unwrap();
         assert_eq!(ok.choices()[0].id(), "codex/m/high");
         assert_eq!(Config::load(&paths).unwrap(), ok);
+    }
+    #[test]
+    fn reservation_set_and_round_trip() {
+        let mut c = Config::default();
+        c.set("orchestrator.reserved_accounts", "[\"codex-1\"]")
+            .unwrap();
+        assert_eq!(
+            c.get("orchestrator.reserved_accounts").unwrap().unwrap(),
+            "[\"codex-1\"]"
+        );
+        let encoded = toml::to_string(&c).unwrap();
+        let decoded: Config = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.orchestrator.reserved_accounts, vec!["codex-1"]);
     }
 }
