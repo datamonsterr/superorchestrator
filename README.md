@@ -37,7 +37,7 @@ superorchestrator setup
 claude
 ```
 
-Ask Claude Code to delegate a task. `setup` initializes the config, offers to add accounts for installed harnesses, and registers the MCP server and skills. Run `superorchestrator doctor` to check the setup. Useful flags: `--yes`, `--codex N`, `--claude N`, `--opencode N`, `--agy N`, `--no-login`, `--no-install` and `--no-claude-md`. See the [getting started guide](docs/guide/getting-started.md).
+Ask Claude Code to delegate a task. `setup` initializes the config, offers to add accounts for installed harnesses, and registers the MCP server and skills. Run `superorchestrator doctor` to check the setup. Useful flags: `--yes`, `--codex N`, `--claude N`, `--opencode N`, `--agy N`, `--no-login`, `--no-install` and `--no-claude-md`, `--copilot N`, `--gemini N`, `--kimi N`, `--cursor N` and `--qwen N`. See the [getting started guide](docs/guide/getting-started.md).
 
 ## Your first delegation
 
@@ -75,6 +75,11 @@ Watch runs from the shell with `superorchestrator runs list` and `superorchestra
 | Antigravity | `agy` | One `.gemini` directory per account. Linux only for several accounts. |
 | OpenCode | `opencode` | Live attach |
 | Claude | `claude` | Ranks last in routing; no level lists a Claude model by default |
+| Copilot | `copilot` | ACP |
+| Gemini | `gemini` | ACP |
+| Kimi | `kimi` | ACP |
+| Cursor | `agent` | ACP |
+| Qwen | `qwen` | ACP |
 
 ## Development
 

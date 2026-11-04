@@ -8,8 +8,8 @@ Routing has no separate list of approved combinations. A **model ref** names one
 
 A model ref has the form `harness/model[/effort]`:
 
-- `harness` is `codex`, `agy`, `opencode` or `claude`.
-- For `codex`, `agy` and `claude`, the last segment is the effort when the harness accepts it. Otherwise the whole rest is the model, and there is no effort.
+- `harness` is `codex`, `agy`, `opencode`, `claude`, `copilot`, `gemini`, `kimi`, `cursor` or `qwen`.
+- For `codex`, `agy`, `claude` and `copilot`, the last segment is the effort when the harness accepts it. Otherwise the whole rest is the model, and there is no effort.
   - `claude`: `low`, `medium`, `high`, `xhigh`, `max`.
   - `agy`: `low`, `medium`, `high`, `xhigh`, `max`, `thinking`.
   - `codex`: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, `ultra`.
@@ -17,7 +17,7 @@ A model ref has the form `harness/model[/effort]`:
 
 Examples: `codex/gpt-6.1-sol/high`, `agy/gemini-3.8-flash-medium/medium`, `agy/claude-sonnet-4-6/thinking`, `claude/claude-sonnet-5-5/medium`.
 
-`agy/claude-sonnet-4-6/thinking` and `agy/claude-sonnet-4-6` are both valid. `agy/claude-sonnet-4-6/high` is rejected when the config loads, because that model has no `high` effort. The ref string is the id everywhere: it appears as `choice_id` in runs, in `route_decision` events, in route results and in `list_harnesses`.
+`agy/claude-sonnet-4-6/thinking` and `agy/claude-sonnet-4-6` are both valid. Copilot refs may add one effort segment; Gemini, Kimi, Cursor and Qwen reject an effort segment. `agy/claude-sonnet-4-6/high` is rejected when the config loads, because that model has no `high` effort. The ref string is the id everywhere: it appears as `choice_id` in runs, in `route_decision` events, in route results and in `list_harnesses`.
 
 ```toml
 [[router.levels]]
