@@ -1104,7 +1104,7 @@ pub(super) fn draw_run_table(
             ])
         })
         .collect();
-    let header = Row::new(["RUN", "STATUS", "ACCOUNT", "AGE", "TITLE"]).style(t.header());
+    let header = Row::new(["RUN", "STATE", "ACCOUNT", "AGE", "TITLE"]).style(t.header());
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
