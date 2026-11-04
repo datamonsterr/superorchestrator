@@ -1,6 +1,6 @@
 # Epic E3: endpoint accounts — implementation plan
 
-Design: [ADR 0008](../adr/0008-endpoint-accounts.md). Branch: `claude/endpoint-accounts-b80eca`.
+Design: [ADR 0010](../adr/0010-endpoint-accounts.md). Branch: `claude/endpoint-accounts-b80eca`.
 
 Every task: TDD (failing test first), `cargo fmt`, `cargo clippy -p <crate> --all-targets -- -D warnings` clean, commit. Do not touch files outside the listed area without asking. Use CONTEXT.md terms; new term: **Endpoint account**.
 
@@ -41,7 +41,7 @@ Goal: endpoint models route only to accounts that serve them; endpoint choices a
 
 - `so-router/src/catalog.rs`: claude model entries accept `endpoint = "<preset>"`; accessor `catalog.endpoint(harness, model) -> Option<EndpointPreset>`.
 - `catalog/default.toml`: add `[[claude.models]]` with `endpoint`: `glm-5.3` (high), `glm-5.3-flash` (fast) for `zai`; `k3.1-pro` (high), `k3.1-pro-highspeed` (mid), `k3` (mid), `kimi-for-coding` (mid) for `kimi`; `MiniMax-M3.1-Flash` (mid) for `minimax`. `cost = "included"`, no `efforts`.
-- `eligible.rs`: a `serves(account, choice, catalog)` rule per ADR 0008 decision 3, applied in `usable_accounts` (and anywhere an account is picked for a pinned choice or pinned account in `route.rs`/`select.rs`). `apply_claude_rank` demotes only choices with no catalog endpoint. Where `router.priority` orders harnesses, an endpoint choice ranks just ahead of `claude`.
+- `eligible.rs`: a `serves(account, choice, catalog)` rule per ADR 0010 decision 3, applied in `usable_accounts` (and anywhere an account is picked for a pinned choice or pinned account in `route.rs`/`select.rs`). `apply_claude_rank` demotes only choices with no catalog endpoint. Where `router.priority` orders harnesses, an endpoint choice ranks just ahead of `claude`.
 - A pinned endpoint account with no model pinned uses its opus slot model.
 
 Acceptance: `cargo test -p so-router`; clippy.

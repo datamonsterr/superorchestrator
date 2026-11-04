@@ -141,6 +141,7 @@ struct Dispatch<'a> {
     actions: &'a Sender<Effect>,
     refreshing: bool,
     detail_in_flight: bool,
+    insights_in_flight: bool,
     last_refresh: Instant,
 }
 
@@ -163,6 +164,13 @@ impl Dispatch<'_> {
                 self.detail_in_flight = true;
                 self.reads.send(effect).is_ok()
             }
+            Effect::Insights => {
+                if self.insights_in_flight {
+                    return true;
+                }
+                self.insights_in_flight = true;
+                self.reads.send(effect).is_ok()
+            }
             other => self.actions.send(other).is_ok(),
         }
     }
@@ -172,9 +180,11 @@ impl Dispatch<'_> {
         match u {
             Update::Snapshot(_) => self.refreshing = false,
             Update::Detail(_) => self.detail_in_flight = false,
+            Update::Insights(_) => self.insights_in_flight = false,
             Update::ReadFailed(_) => {
                 self.refreshing = false;
                 self.detail_in_flight = false;
+                self.insights_in_flight = false;
             }
             _ => {}
         }
@@ -197,6 +207,7 @@ fn event_loop(
         actions,
         refreshing: false,
         detail_in_flight: false,
+        insights_in_flight: false,
         last_refresh: Instant::now(),
     };
     let mut worker_gone = !d.send(Effect::Refresh);
@@ -255,6 +266,11 @@ fn event_loop(
             if let Some(e) = app.detail_request() {
                 sent &= d.send(e);
             }
+        }
+        if !d.insights_in_flight
+            && let Some(e) = app.insights_request()
+        {
+            sent &= d.send(e);
         }
         if !sent && !worker_gone {
             // Say it once; the screen stays usable for what still works.

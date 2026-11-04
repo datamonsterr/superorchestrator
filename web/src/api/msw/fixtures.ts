@@ -10,6 +10,7 @@ import type {
   EventType,
   Headroom,
   ImportCandidate,
+  InsightsReport,
   LevelsView,
   MessageView,
   ModelCatalog,
@@ -89,6 +90,69 @@ export const levels: LevelsView = {
   ],
   routing_instruction: 'Prefer the first model of a level; fall back down the list when it has no headroom.',
   restart_required: false,
+}
+
+const bucket = (from: number, to: number, count: number) => ({ from, to, count })
+const zeroOutcomes = { accepted: 0, rejected: 0, failed: 0, succeeded: 0, other: 0, escalated: 0, failover: 0 }
+
+/** Insights over the levels above: history for trivial and complex, eval examples only for simple. */
+export const insights: InsightsReport = {
+  generated_at: at(-5),
+  history_runs: 12,
+  base_levels: levels.levels,
+  levels: [
+    {
+      name: 'trivial', min: 0, max: 12, runs: 7,
+      complexity_min: 3, complexity_median: 8, complexity_max: 12,
+      buckets: [bucket(0, 4, 2), bucket(4, 8, 2), bucket(8, 12, 3)],
+      outcomes: { ...zeroOutcomes, accepted: 5, succeeded: 1, failed: 1 },
+      success_rate: 0.86, accepted_rate: 0.71, rejected_rate: 0, failed_rate: 0.14, succeeded_rate: 0.14, failover_rate: 0.14, escalated_rate: 0,
+      median_duration_ms: 42_000,
+      models: [
+        { choice_id: 'agy/gemini-3.8-flash-low/low', runs: 5, success_rate: 0.8 },
+        { choice_id: 'agy/gemini-3.8-flash-medium/medium', runs: 2, success_rate: 1 },
+      ],
+      examples: [
+        { run_id: 'run-1', eval_id: null, excerpt: 'Fix the typo in the README title', complexity: 6, outcome: 'accepted', source: 'history', borderline: false },
+        { run_id: null, eval_id: 'eval-trivial-1', excerpt: 'Rename a local variable', complexity: 11, outcome: null, source: 'eval', borderline: true },
+      ],
+    },
+    {
+      name: 'simple', min: 13, max: 37, runs: 0,
+      complexity_min: null, complexity_median: null, complexity_max: null,
+      buckets: [bucket(13, 25, 0), bucket(25, 37, 0)],
+      outcomes: zeroOutcomes,
+      success_rate: null, accepted_rate: null, rejected_rate: null, failed_rate: null, succeeded_rate: null, failover_rate: null, escalated_rate: null,
+      median_duration_ms: null,
+      models: [],
+      examples: [{ run_id: null, eval_id: 'eval-simple-1', excerpt: 'Add a CLI flag with a test', complexity: 30, outcome: null, source: 'eval', borderline: false }],
+    },
+    {
+      name: 'complex', min: 63, max: 87, runs: 5,
+      complexity_min: 64, complexity_median: 72, complexity_max: 85,
+      buckets: [bucket(63, 71, 2), bucket(71, 79, 2), bucket(79, 87, 1)],
+      outcomes: { ...zeroOutcomes, accepted: 2, rejected: 1, failed: 1, succeeded: 1 },
+      success_rate: 0.6, accepted_rate: 0.4, rejected_rate: 0.2, failed_rate: 0.2, succeeded_rate: 0.2, failover_rate: 0.2, escalated_rate: 0.2,
+      median_duration_ms: 310_000,
+      models: [{ choice_id: 'agy/claude-sonnet-4-6/thinking', runs: 5, success_rate: 0.6 }],
+      examples: [{ run_id: 'run-2', eval_id: null, excerpt: 'Refactor the session store to stream events', complexity: 74, outcome: 'rejected', source: 'history', borderline: true }],
+    },
+  ],
+  suggestions: [
+    {
+      id: 'promote-complex-0',
+      rule: 'promote_model',
+      level: 'complex',
+      rationale: 'codex/gpt-6.1-sol/high succeeded more often than the first model of complex.',
+      levels: levels.levels.map((l) =>
+        l.name === 'complex' ? { ...l, models: ['codex/gpt-6.1-sol/high', 'agy/claude-sonnet-4-6/thinking', 'opencode/opencode/muse-spark-1.3'] } : l,
+      ),
+      diff: [
+        { level: 'complex', field: 'models', before: 'agy/claude-sonnet-4-6/thinking, opencode/opencode/muse-spark-1.3, codex/gpt-6.1-sol/high', after: 'codex/gpt-6.1-sol/high, agy/claude-sonnet-4-6/thinking, opencode/opencode/muse-spark-1.3' },
+      ],
+    },
+  ],
+  unassigned_models: [{ harness: 'codex', model: 'gpt-5' }],
 }
 
 /** The distinct refs across levels, in level order (what `GET /harnesses` lists as `choices`). */

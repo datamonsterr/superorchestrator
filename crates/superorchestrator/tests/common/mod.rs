@@ -16,6 +16,7 @@ pub fn scrub(c: &mut Command) {
         "XDG_CACHE_HOME",
         "XDG_RUNTIME_DIR",
         "CLAUDE_CONFIG_DIR",
+        "CODEX_HOME",
         "SUPERORCHESTRATOR_RUN_ID",
         "SUPERORCHESTRATOR_RUN_TOKEN",
         "SUPERORCHESTRATOR_MODELS_DEV_URL",

@@ -49,8 +49,12 @@ One named login for one harness, backed by its own credential home, such as `cod
 _Avoid_: Profile, login, credential, worker
 
 **Endpoint account**:
-A `claude` account with an `[endpoint]` table. Its Claude Code process talks to an Anthropic-compatible coding-plan API (Z.ai GLM, Kimi Code, MiniMax, or a custom URL) instead of an Anthropic subscription. See [ADR 0008](docs/adr/0008-endpoint-accounts.md).
+A `claude` account with an `[endpoint]` table. Its Claude Code process talks to an Anthropic-compatible coding-plan API (Z.ai GLM, Kimi Code, MiniMax, or a custom URL) instead of an Anthropic subscription. See [ADR 0010](docs/adr/0010-endpoint-accounts.md).
 _Avoid_: Provider account, proxy account, API account
+
+**Reserved account**:
+An account kept for the orchestrator; auto routing never picks it, but a spawn that pins it may.
+_Avoid_: Orchestrator account, held account
 
 **Credential home**:
 The folder that holds one account's login and harness state, selected through the harness's own environment variable.
@@ -100,6 +104,18 @@ _Avoid_: Difficulty, size
 **Level**:
 A named, operator-defined range of complexity, with the models allowed for tasks in that range, in preference order, or a model tier when it lists none. A level's model list is not a Pool.
 _Avoid_: Tier, bucket, band, pool
+
+**level insight**:
+The history analysis for one current Level: its complexity distribution, outcomes, model success rates and example tasks.
+_Avoid_: Level scorecard
+
+**suggestion**:
+A deterministic proposed change to the full level configuration, with a stable id, rationale and diff, validated before it is offered.
+_Avoid_: Recommendation
+
+**bad outcome**:
+A rejected or failed run, or a run that escalated or failed over.
+_Avoid_: Unsuccessful outcome
 
 **Pool**:
 A separately metered slice of one account's usage, such as agy's Gemini and Claude model families. Most accounts have one pool.

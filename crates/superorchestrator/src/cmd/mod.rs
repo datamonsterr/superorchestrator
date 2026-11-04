@@ -6,6 +6,7 @@ pub mod config;
 pub mod daemon;
 pub mod doctor;
 pub mod exec;
+pub mod hook;
 pub mod init;
 pub mod install;
 pub mod levels;

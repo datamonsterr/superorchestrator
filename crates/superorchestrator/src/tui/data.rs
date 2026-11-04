@@ -26,6 +26,7 @@ pub struct AccountRow {
     pub harness: Harness,
     pub signed_in: SignIn,
     pub enabled: bool,
+    pub reserved: bool,
     pub cap: u32,
     pub active: i64,
     /// `pool: text, pool: text`.
@@ -270,16 +271,34 @@ fn checklist(ctx: &Ctx, host: &HostEnv, accounts: &[AccountRow]) -> Vec<Check> {
     out
 }
 
+/// Whether an account is reserved. The running supervisor routes with its own loaded config,
+/// so its answer wins when the TUI has one (`from_supervisor`). Offline, the config file is
+/// the best available source. If that cannot be read either, the flag is unknown and shown
+/// as not reserved: the tag is only ever drawn from a source that said so.
+fn is_reserved(
+    name: &str,
+    from_supervisor: Option<&std::collections::HashSet<String>>,
+    config: Option<&so_core::Config>,
+) -> bool {
+    match from_supervisor {
+        Some(set) => set.contains(name),
+        None => config.is_some_and(|c| c.orchestrator.is_reserved(name)),
+    }
+}
+
 fn account_rows(
     ctx: &Ctx,
     host: &HostEnv,
     now: DateTime<Utc>,
+    from_supervisor: Option<&std::collections::HashSet<String>>,
 ) -> (Vec<AccountRow>, Option<String>) {
+    let config = ctx.config().ok();
     match collect_views_with(ctx, host) {
         Ok(views) => (
             views
                 .into_iter()
                 .map(|v| AccountRow {
+                    reserved: is_reserved(&v.account.name, from_supervisor, config.as_ref()),
                     cooling: v.headroom.iter().any(|(_, t)| t.starts_with("cooldown")),
                     headroom: v
                         .headroom
@@ -324,9 +343,10 @@ pub fn load_snapshot(
     ctx: &Ctx,
     host: &HostEnv,
     sup: Option<SupInfo>,
+    reserved_from_supervisor: Option<&std::collections::HashSet<String>>,
     now: DateTime<Utc>,
 ) -> Snapshot {
-    let (accounts, accounts_error) = account_rows(ctx, host, now);
+    let (accounts, accounts_error) = account_rows(ctx, host, now, reserved_from_supervisor);
     let (rows, active) = open_existing_store(&ctx.paths)
         .and_then(|s| recent_runs(&s).ok())
         .unwrap_or_default();
@@ -376,6 +396,24 @@ fn level_rows(ctx: &Ctx) -> anyhow::Result<Vec<LevelRow>> {
             models: l.models.iter().map(|m| m.id()).collect(),
         })
         .collect())
+}
+
+/// The routing insights report, read-only; `None` when no state.db exists yet. Not part of
+/// the snapshot: it costs about half a second on a real database.
+pub fn load_insights(
+    ctx: &Ctx,
+) -> anyhow::Result<Option<so_supervisor::services::insights::InsightsReport>> {
+    if !ctx.paths.state_db().exists() {
+        return Ok(None);
+    }
+    let store = so_store::Store::open_read_only(ctx.paths.state_db())?;
+    let catalog = so_router::Catalog::load(&ctx.paths)?;
+    Ok(Some(so_supervisor::services::insights::insights_report(
+        &store,
+        &ctx.config()?,
+        &catalog,
+        chrono::Utc::now(),
+    )?))
 }
 
 /// Expand each catalog model into the model refs the picker can offer.
@@ -523,6 +561,37 @@ mod tests {
             let c: so_core::Choice = r.parse().unwrap();
             assert!(catalog.contains(c.harness, &c.model), "{r}");
         }
+    }
+
+    #[test]
+    fn supervisor_reserved_flag_wins_over_the_config_file() {
+        let mut config = so_core::Config::default();
+        config.orchestrator.reserved_accounts = vec!["a".into()];
+        let sup: std::collections::HashSet<String> = ["b".to_string()].into();
+        assert!(is_reserved("b", Some(&sup), Some(&config)));
+        assert!(!is_reserved("a", Some(&sup), Some(&config)));
+        // Connected, with the config unreadable: the supervisor still decides.
+        assert!(is_reserved("b", Some(&sup), None));
+        // Offline: the config decides; unreadable config marks nothing.
+        assert!(is_reserved("a", None, Some(&config)));
+        assert!(!is_reserved("a", None, None));
+    }
+
+    #[test]
+    fn missing_state_db_gives_no_insights_and_no_error() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(Some(d.path().to_path_buf()), false, true).unwrap();
+        assert!(!ctx.paths.state_db().exists());
+        assert!(load_insights(&ctx).unwrap().is_none());
+    }
+
+    #[test]
+    fn existing_state_db_gives_a_report() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = Ctx::new(Some(d.path().to_path_buf()), false, true).unwrap();
+        drop(so_store::Store::open(ctx.paths.state_db()).unwrap());
+        let report = load_insights(&ctx).unwrap().unwrap();
+        assert_eq!(report.history_runs, 0);
     }
 
     #[test]

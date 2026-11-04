@@ -125,7 +125,7 @@ superorchestrator setup --yes                 # one account for each harness tha
 superorchestrator setup --yes --codex 3 --opencode 2 --no-login
 ```
 
-Claude accounts are kept for the orchestrator. `setup` adds none by default (`--claude N` adds them), and no level lists a Claude model, so routing never spends them. To let routing use one as a last resort, run `superorchestrator config edit` and list a Claude ref such as `claude/claude-sonnet-5-5/medium` on a level. Without a terminal and without `--yes`, `setup` prints what it would do and changes nothing.
+No level lists a Claude model by default, so auto routing does not use Claude accounts unless a level lists one. `setup` adds no Claude account by default (`--claude N` adds them) unless `--orchestrator codex`. To let routing use one as a last resort, run `superorchestrator config edit` and list a Claude ref such as `claude/claude-sonnet-5-5/medium` on a level. Without a terminal and without `--yes`, `setup` prints what it would do and changes nothing.
 
 `--scan` looks for `~/.codex`, `~/.codex-accN`, `~/.agent-farm/profiles/agy_worker_N/.gemini`, `~/.local/share/opencode` and `~/.claude`. `--scan` offers homes you have signed in to: a home counts only when it holds the harness's auth file (checked by existence, never read). Directories that `install` or a harness probe leave behind, such as `~/.claude/backups` or `~/.local/share/opencode/log`, are not offered. Claude may keep its login in the keychain, so `~/.claude` also counts when it has a `projects` directory.
 
@@ -162,6 +162,10 @@ The check only tests that the harness's auth file exists:
 - agy: a file under `.gemini/` such as `antigravity-cli/antigravity-oauth-token`
 
 For Claude on macOS, and for the default `~/.claude`, credentials may live in the system keyring. The state is then `unknown` and the account stays usable. Auth file contents are never read, logged or served.
+
+## Reserved accounts
+
+A reserved account is kept for the orchestrator. List names in `[orchestrator] reserved_accounts` ([config](config.md#orchestrator)). Auto routing never picks a reserved account, but a call that pins `account` may. The web accounts table and the TUI accounts view mark reserved accounts. `setup --orchestrator codex|claude [--reserve NAME]` sets the list; see [Codex as orchestrator](codex-orchestrator.md).
 
 ## Caps and pools
 

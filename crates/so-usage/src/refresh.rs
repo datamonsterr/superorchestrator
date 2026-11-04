@@ -192,7 +192,8 @@ mod tests {
             };
             std::fs::write(home.join(auth), "unread credential").unwrap();
         }
-        let mut a = AccountFile::new(name, harness, home.to_str().unwrap(), "/bin/true").unwrap();
+        let mut a =
+            AccountFile::new(name, harness, home.to_str().unwrap(), "/usr/bin/true").unwrap();
         a.enabled = enabled;
         a.save(paths).unwrap();
         a

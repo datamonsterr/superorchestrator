@@ -29,7 +29,7 @@ superorchestrator setup
 6. runs `install` (see below);
 7. prints a `doctor` summary.
 
-Account defaults: one account for each installed harness that has none. Claude gets none, because its limits are kept for the orchestrator.
+Account defaults: one account for each installed harness that has none. Claude gets none, because no level lists a Claude model by default, so auto routing would not use it (`--orchestrator codex` changes this).
 
 To skip the questions:
 
@@ -64,12 +64,14 @@ More in [accounts](accounts.md#logging-in-per-harness). To add more accounts lat
 - **Adds a block to `~/.claude/CLAUDE.md`**, between `<!-- superorchestrator:begin -->` and `<!-- superorchestrator:end -->`. It says:
   - delegate implementation through superorchestrator, and load the `use-superorchestrator-mcp` skill before the first delegation;
   - use the `superorchestrator-cli` skill for accounts, status and runs from the shell;
-  - keep Claude accounts for the orchestrator, and leave `harness: auto` unless there is a reason.
+  - do not pin a reserved account for a subagent, and leave `harness: auto` unless there is a reason.
 - **Leaves your text alone.** Running `install` again replaces the block in place. Nothing outside the markers is touched.
 
 To opt out of the `CLAUDE.md` block, pass `--no-claude-md` to `setup` or `install`. To remove everything `install` added, including the block and the skills, run `superorchestrator uninstall`.
 
 If you use the [Claude Code plugin](../../plugin/README.md), it registers the MCP server and skills itself. Do not also run `install` for Claude Code.
+
+To use Codex CLI as the orchestrator instead of Claude Code, run `superorchestrator setup --orchestrator codex`. See [Codex as orchestrator](codex-orchestrator.md).
 
 ## 5. Check
 

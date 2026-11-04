@@ -614,6 +614,9 @@ pub struct AccountView {
     pub harness: Harness,
     pub signed_in: SignInState,
     pub enabled: bool,
+    /// Kept for the orchestrator and excluded from automatic routing.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reserved: bool,
     pub cap: u32,
     /// Slot-holding runs plus active interactive sessions.
     pub active_runs: u32,
@@ -1006,6 +1009,7 @@ mod endpoint_view_tests {
         assert!(value.get("token").is_none());
         let mut account = AccountView {
             name: "endpoint-test".into(),
+            reserved: false,
             harness: Harness::Claude,
             signed_in: SignInState::SignedIn,
             enabled: true,

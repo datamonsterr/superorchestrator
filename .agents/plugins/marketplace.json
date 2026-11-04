@@ -1,0 +1,10 @@
+{
+  "name": "superorchestrator",
+  "interface": { "displayName": "Superorchestrator" },
+  "plugins": [{
+    "name": "superorchestrator",
+    "source": { "source": "local", "path": "./plugin-codex" },
+    "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+    "category": "Developer Tools"
+  }]
+}

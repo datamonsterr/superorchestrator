@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Map, Value, json};
-use toml_edit::{Array, DocumentMut, Item, Table, value};
+use toml_edit::{Array, DocumentMut, Item, Table};
 
 /// Key of our entry in every harness config.
 pub const NAME: &str = "superorchestrator";
@@ -31,14 +31,66 @@ pub fn codex_add(old: &str, exe: &str) -> Result<Option<String>> {
         .get("args")
         .and_then(Item::as_array)
         .is_some_and(|a| a.len() == 1 && a.get(0).and_then(|v| v.as_str()) == Some("mcp"));
-    if same_command && same_args {
+    let startup = i64::try_from(so_core::CODEX_STARTUP_TIMEOUT_SECS)
+        .context("Codex startup timeout exceeds TOML integer range")?;
+    let timeout =
+        i64::try_from(so_core::MAX_WAIT.as_secs() + so_core::CODEX_TOOL_TIMEOUT_MARGIN_SECS)
+            .context("Codex tool timeout exceeds TOML integer range")?;
+    let same_startup = entry.get("startup_timeout_sec").and_then(Item::as_integer) == Some(startup);
+    let same_timeout = entry.get("tool_timeout_sec").and_then(Item::as_integer) == Some(timeout);
+    let env_vars = entry.get("env_vars").and_then(Item::as_array);
+    if entry.contains_key("env_vars") && env_vars.is_none() {
+        return Err(anyhow!("`mcp_servers.{NAME}.env_vars` is not an array"));
+    }
+    let same_env_vars = env_vars.is_some_and(|a| {
+        so_core::CODEX_MCP_ENV_VARS
+            .iter()
+            .all(|required| a.iter().any(|item| item.as_str() == Some(required)))
+    });
+    if same_command && same_args && same_startup && same_timeout && same_env_vars {
         return Ok(None);
     }
-    entry["command"] = value(exe);
+    if !same_command {
+        set_codex_value(entry, "command", toml_edit::Value::from(exe));
+    }
     let mut args = Array::new();
     args.push("mcp");
-    entry["args"] = value(args);
+    if !same_args {
+        set_codex_value(entry, "args", toml_edit::Value::Array(args));
+    }
+    for (key, number) in [
+        ("startup_timeout_sec", startup),
+        ("tool_timeout_sec", timeout),
+    ] {
+        if entry.get(key).and_then(Item::as_integer) != Some(number) {
+            set_codex_value(entry, key, toml_edit::Value::from(number));
+        }
+    }
+    if !same_env_vars {
+        let mut env_vars = entry
+            .get("env_vars")
+            .and_then(Item::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for var in so_core::CODEX_MCP_ENV_VARS {
+            if !env_vars.iter().any(|item| item.as_str() == Some(var)) {
+                env_vars.push(*var);
+            }
+        }
+        set_codex_value(entry, "env_vars", toml_edit::Value::Array(env_vars));
+    }
     Ok(Some(doc.to_string()))
+}
+
+fn set_codex_value(entry: &mut Table, key: &str, mut replacement: toml_edit::Value) {
+    if let Some(decor) = entry
+        .get(key)
+        .and_then(Item::as_value)
+        .map(|v| v.decor().clone())
+    {
+        *replacement.decor_mut() = decor;
+    }
+    entry[key] = Item::Value(replacement);
 }
 
 pub fn codex_remove(old: &str) -> Result<Option<String>> {
@@ -186,6 +238,43 @@ mod tests {
         let new = codex_add(old, "/new").unwrap().unwrap();
         assert!(new.contains("command = \"/new\""));
         assert!(new.contains("env = { A = \"1\" }"));
+    }
+
+    #[test]
+    fn codex_add_creates_env_vars() {
+        let new = codex_add("", EXE).unwrap().unwrap();
+        let doc: DocumentMut = new.parse().unwrap();
+        assert_eq!(
+            doc["mcp_servers"][NAME]["env_vars"]
+                .as_array()
+                .unwrap()
+                .get(0)
+                .unwrap()
+                .as_str(),
+            Some("XDG_RUNTIME_DIR")
+        );
+    }
+
+    #[test]
+    fn codex_add_appends_env_var_and_keeps_other_entries_and_formatting() {
+        let old = "[mcp_servers.superorchestrator]\ncommand = \"/old\"\nenv_vars = [ \"KEEP\" ] # preserve\n";
+        let new = codex_add(old, EXE).unwrap().unwrap();
+        assert!(new.contains("\"KEEP\""));
+        assert!(new.contains("\"XDG_RUNTIME_DIR\""));
+        assert!(new.contains("# preserve"));
+    }
+
+    #[test]
+    fn codex_add_is_idempotent_with_env_vars() {
+        let new = codex_add("", EXE).unwrap().unwrap();
+        assert_eq!(codex_add(&new, EXE).unwrap(), None);
+    }
+
+    #[test]
+    fn codex_add_errors_when_env_vars_is_not_an_array() {
+        let err =
+            codex_add("[mcp_servers.superorchestrator]\nenv_vars = \"bad\"\n", EXE).unwrap_err();
+        assert!(err.to_string().contains("env_vars"));
     }
 
     #[test]

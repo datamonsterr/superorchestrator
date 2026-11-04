@@ -1796,3 +1796,60 @@ async fn agy_gemini_and_claude_pools_are_ranked_separately() {
     .await;
     assert_eq!(r.ranked_accounts, ["agy-1", "agy-2"]);
 }
+
+#[tokio::test]
+async fn reserved_account_requires_an_account_pin() {
+    let mut w = world("http://localhost", false);
+    w.config.orchestrator.reserved_accounts = vec!["codex-a".into()];
+    w.config.router.levels = vec![level("all", 0, 100, &[CODEX_BIG])];
+    let mut p = params("implement a feature");
+    assert!(route_detailed(&w.inputs(), &p).await.is_err());
+    p.harness = Some("codex".into());
+    assert!(route_detailed(&w.inputs(), &p).await.is_err());
+    p.account = Some("codex-a".into());
+    assert_eq!(
+        route_detailed(&w.inputs(), &p)
+            .await
+            .unwrap()
+            .result
+            .account,
+        "codex-a"
+    );
+}
+
+#[tokio::test]
+async fn reserved_endpoint_is_excluded_from_auto_routing() {
+    let mut w = world("http://localhost", false);
+    w.config.orchestrator.reserved_accounts = vec!["zai-reserved".into()];
+    w.config.router.levels = vec![level("all", 0, 100, &["claude/glm-5.3"])];
+    w.accounts
+        .push(endpoint_account("zai-reserved", "zai", &[]));
+    w.accounts
+        .push(endpoint_account("zai-available", "zai", &[]));
+    let result = route_detailed(&w.inputs(), &params("x"))
+        .await
+        .unwrap()
+        .result;
+    assert_eq!(result.account, "zai-available");
+    w.accounts.retain(|a| a.name != "zai-available");
+    let error = route_detailed(&w.inputs(), &params("x")).await.unwrap_err();
+    assert!(
+        error.to_string().to_lowercase().contains("eligible"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn pinned_reserved_endpoint_uses_opus_slot() {
+    let mut w = world("http://localhost", false);
+    w.config.orchestrator.reserved_accounts = vec!["zai-reserved".into()];
+    w.accounts
+        .push(endpoint_account("zai-reserved", "zai", &[]));
+    let mut p = params("x");
+    p.account = Some("zai-reserved".into());
+    let result = route_detailed(&w.inputs(), &p).await.unwrap().result;
+    assert_eq!(
+        (result.account.as_str(), result.model.as_str()),
+        ("zai-reserved", "glm-5.3")
+    );
+}

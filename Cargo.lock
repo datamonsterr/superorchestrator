@@ -3241,7 +3241,9 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "chrono",
+ "futures-util",
  "reqwest",
+ "schemars",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -3261,6 +3263,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "rusqlite",
+ "serde",
  "serde_json",
  "so-core",
  "tempfile",
@@ -3455,6 +3458,7 @@ dependencies = [
  "ratatui",
  "reqwest",
  "rmcp",
+ "rusqlite",
  "serde",
  "serde_json",
  "so-accounts",

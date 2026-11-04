@@ -67,7 +67,10 @@ The list is read from the store. The diff, cancel, join, accept and reject go th
 | `n` | Create a level: enter its name, min and max, then pick its first model ref. |
 | `D` | Delete the selected or open level by typing its exact name. The last level cannot be deleted. |
 | `u` | Reset to the default levels after a `y` confirmation. |
+| `s` | Focus the routing suggestions list (list view only). There `j` / `k` select a suggestion, `A` or `Enter` asks `Apply suggestion <id>? (y/n)` and `y` writes its levels like `levels suggest --apply`, `s` or `Esc` returns to the levels. |
 | `Esc` / `q` | Return from the model-ref pane to the level list, or quit from the list. |
+
+Below the levels, a panel shows the selected level's routing insights from `state.db` (runs, complexity, accepted/rejected/failed/failover rates, median duration, top three models and example tasks with a `[history]` or `[eval]` label), and a second panel lists the suggestions with their `level.field: before -> after` changes. Both are hidden when no `state.db` exists yet.
 
 Edits are saved locally. **Restart the supervisor to apply them**; the UI displays this reminder after a change and never restarts the supervisor. The Overview Levels block remains a summary; use this tab to edit levels.
 

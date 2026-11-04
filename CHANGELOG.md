@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `install` resolves symlinks before editing managed files (dangling links are followed), so a linked config, `CLAUDE.md` or `AGENTS.md` is edited at its target.
+- Codex CLI as a first-class orchestrator. See `docs/guide/codex-orchestrator.md` and ADR-0010.
+  - `[orchestrator] reserved_accounts`: auto routing never picks them; a call that pins `account` may. `list_harnesses` marks them `reserved: true` and `why: "account reserved"`. The web Settings, web accounts table and TUI accounts view show them.
+  - `setup --orchestrator claude|codex [--reserve NAME]... [--dry-run] [--no-agents-md]`.
+  - `install` writes `startup_timeout_sec = 30`, `tool_timeout_sec = 1860` and `env_vars = ["XDG_RUNTIME_DIR"]` on the Codex MCP entries, and a managed block in `$CODEX_HOME/AGENTS.md` and each Codex account's `AGENTS.md` (`--no-agents-md` skips it). The three skills are harness-neutral with Codex notes.
+  - Codex plugin in `plugin-codex/` and marketplace `.agents/plugins/marketplace.json`.
+  - Hidden `superorchestrator hook session-start|stop` for Claude Code and Codex hooks.
+- Model refresh includes the documented Claude model list when a Claude account is enabled and reports catalog models not assigned to levels.
+- Level insights and deterministic suggestions are available in the CLI, web UI and TUI.
+
+### Changed
+
+- `wait_agent` caps its timeout at 30 minutes, and `spawn_agent(wait: true)` returns after at most 30 minutes with the current state. The run continues.
+
+### Fixed
+
+- Routing record prompt excerpts now contain a redacted, whitespace-collapsed excerpt of the run prompt (up to 160 characters).
+
 ### Security
 
 Fixes for the GitHub security advisories below. Several change behaviour; see "Changed (breaking)".
@@ -45,6 +65,9 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Changed
 
+- `models refresh --json` renames `unused_models` to `unassigned_models`.
+- `models list` gains a `LEVELS` column and a `levels` field in `--json`.
+- `levels suggest` prints deterministic level suggestions, and the TUI Levels tab shows insights and suggestions (`s` focuses the suggestions, `A` or Enter asks to apply the selected one).
 - Seeded complexity levels route harder work to Codex first: `moderate` leads with `codex/gpt-6-luna/medium`, `complex` with `codex/gpt-6.1-sol/high` and `expert` with `codex/gpt-6.1-sol/xhigh`. `simple` also lists `gpt-6-luna`, which is seeded only for `moderate` and below. The seed no longer lists `opencode/opencode/muse-spark-1.3`. `gpt-6-luna` is added to the bundled catalog and the bundled eval labels follow the new seed. Existing configs are not changed; copy the levels from `seed/` to adopt them.
 
 - The seeded choice `opencode-muse-long` uses `opencode/muse-spark-1.3`; the old model id
@@ -62,7 +85,7 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Added
 
-- Endpoint accounts: a `claude` account with an `[endpoint]` table runs Claude Code against the Z.ai GLM Coding Plan, Kimi Code, MiniMax or a custom Anthropic-compatible URL. Add one with `superorchestrator account add <name> --endpoint <preset> --token-stdin` (or `--token-env VAR`). Keys are saved to `<config dir>/keys/<name>.key` (mode 0600), never in account config. Endpoint models (`claude/glm-5.3`, `claude/k3.1-pro` and so on) route only to accounts that serve them and are not demoted by the Claude rank. Provider quota and rate-limit errors are classified, and a Z.ai reset time sets the cooldown. There is no usage probe. See `docs/guide/endpoints.md` and ADR 0008.
+- Endpoint accounts: a `claude` account with an `[endpoint]` table runs Claude Code against the Z.ai GLM Coding Plan, Kimi Code, MiniMax or a custom Anthropic-compatible URL. Add one with `superorchestrator account add <name> --endpoint <preset> --token-stdin` (or `--token-env VAR`). Keys are saved to `<config dir>/keys/<name>.key` (mode 0600), never in account config. Endpoint models (`claude/glm-5.3`, `claude/k3.1-pro` and so on) route only to accounts that serve them and are not demoted by the Claude rank. Provider quota and rate-limit errors are classified, and a Z.ai reset time sets the cooldown. There is no usage probe. See `docs/guide/endpoints.md` and ADR 0010.
 - Model refs: `harness/model[/effort]` names a harness, model and effort in one string, and levels list them. Each harness's effort list is checked when the config loads. `agy/claude-sonnet-4-6/thinking` is valid, and `agy/claude-sonnet-4-6/high` is rejected.
 - Model pins accept a ref: `route --model codex/gpt-6.1-sol/high`, `spawn_agent(model: ...)`, the agent file's `model:` and `defaults.model`. A ref sets harness, model and effort. A conflicting `harness` or `effort` is an error. A pinned ref that no level lists still runs.
 - `route --model REF` and `route --agent NAME` replace `route --role`. `--explain` prints an `accounts:` line with the ranked accounts, best first.

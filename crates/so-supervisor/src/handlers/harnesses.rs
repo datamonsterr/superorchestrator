@@ -7,7 +7,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde_json::{Map, Value, json};
 use so_accounts::{HostEnv, SignIn, sign_in_state};
 use so_core::proto::{AccountFlag, AccountView, HarnessesView, METHOD_LIST_HARNESSES, SignInState};
-use so_core::{AccountFile, Harness, Headroom, HeadroomSource, HeadroomStatus};
+use so_core::{AccountFile, Choice, Harness, Headroom, HeadroomSource, HeadroomStatus};
 use so_router::{Catalog, Snapshot, eligible::candidate};
 use so_usage::effective_with;
 
@@ -95,6 +95,49 @@ fn headroom_short(rows: &[Headroom]) -> Option<String> {
     Some(rows.iter().map(one).collect::<Vec<_>>().join("; "))
 }
 
+/// Why no account can take a run on choice `c`, for a choice the router would not consider.
+fn why_ineligible(
+    state: &SupervisorState,
+    view: &HarnessesView,
+    c: &Choice,
+    snapshot: &Snapshot,
+) -> &'static str {
+    let reserved = |name: &str| state.config.orchestrator.is_reserved(name);
+    let same = view.accounts.iter().filter(|a| a.harness == c.harness);
+    let (usable, held): (Vec<_>, Vec<_>) = same.partition(|a| !reserved(&a.name));
+    let open: Vec<_> = usable
+        .iter()
+        .filter(|a| a.enabled && a.active_runs < a.cap)
+        .collect();
+    if usable.is_empty() {
+        if held.is_empty() {
+            "no account"
+        } else {
+            "account reserved"
+        }
+    } else if usable.iter().all(|a| !a.enabled) {
+        "account disabled"
+    } else if open.is_empty() {
+        "at cap"
+    } else if open
+        .iter()
+        .all(|a| a.flags.as_ref().is_some_and(|f| !f.is_empty()))
+    {
+        "cooldown"
+    } else if open.iter().any(|a| {
+        snapshot
+            .accounts
+            .iter()
+            .find(|s| s.file.name == a.name)
+            .is_some_and(|s| s.pools.values().any(|p| !p.available))
+    }) {
+        "no headroom"
+    } else {
+        // The router found no usable account for a reason this view cannot name.
+        "not eligible"
+    }
+}
+
 /// `list_harnesses` for an orchestrator, with `{"brief": true}`: one short row per account
 /// and per choice, plus the free models. Omitted keys mean false or empty; `signed_in` and
 /// `headroom` are left out when unknown. A choice row is `{id, harness, model, effort?,
@@ -106,13 +149,16 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
     let view = harnesses_view(state)?;
     let accounts = AccountFile::list(&state.paths).map_err(|e| e.to_string())?;
     let catalog = cached_catalog(&state.paths)?;
-    let snapshot = Snapshot::collect(
+    let mut snapshot = Snapshot::collect(
         &state.store,
         &accounts,
         f64::from(state.config.usage.low_pct),
         Utc::now(),
     )
     .map_err(|e| e.to_string())?;
+    snapshot
+        .accounts
+        .retain(|a| !state.config.orchestrator.is_reserved(&a.file.name));
 
     let rows: Vec<Value> = view
         .accounts
@@ -129,6 +175,9 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
                 SignInState::SignedOut => row.insert("signed_in".into(), json!(false)),
                 SignInState::Unknown => None,
             };
+            if state.config.orchestrator.is_reserved(&a.name) {
+                row.insert("reserved".into(), json!(true));
+            }
             if !a.enabled {
                 row.insert("disabled".into(), json!(true));
             }
@@ -173,38 +222,7 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
             let why = if candidate(c, &catalog, &snapshot).is_some() {
                 None
             } else {
-                let same: Vec<_> = view
-                    .accounts
-                    .iter()
-                    .filter(|a| a.harness == c.harness)
-                    .collect();
-                let open: Vec<_> = same
-                    .iter()
-                    .filter(|a| a.enabled && a.active_runs < a.cap)
-                    .collect();
-                Some(if same.is_empty() {
-                    "no account"
-                } else if same.iter().all(|a| !a.enabled) {
-                    "account disabled"
-                } else if open.is_empty() {
-                    "at cap"
-                } else if open
-                    .iter()
-                    .all(|a| a.flags.as_ref().is_some_and(|f| !f.is_empty()))
-                {
-                    "cooldown"
-                } else if open.iter().any(|a| {
-                    snapshot
-                        .accounts
-                        .iter()
-                        .find(|s| s.file.name == a.name)
-                        .is_some_and(|s| s.pools.values().any(|p| !p.available))
-                }) {
-                    "no headroom"
-                } else {
-                    // The router found no usable account for a reason this view cannot name.
-                    "not eligible"
-                })
+                Some(why_ineligible(state, &view, c, &snapshot))
             };
             if let Some(why) = why {
                 row.insert("eligible".into(), json!(false));
@@ -279,7 +297,7 @@ pub fn harnesses_view(state: &SupervisorState) -> Result<HarnessesView, String> 
     for path in files {
         match AccountFile::load(&path) {
             Ok(account) => accounts.push(account_view(state, host, &index, &flags, now, &account)),
-            Err(e) => accounts.push(broken_account(&path, first_line(&e.to_string()))),
+            Err(e) => accounts.push(broken_account(state, &path, first_line(&e.to_string()))),
         }
     }
     accounts.sort_by(|a, b| a.name.cmp(&b.name));
@@ -364,6 +382,7 @@ fn account_view(
         harness: account.harness,
         signed_in,
         enabled: account.enabled,
+        reserved: state.config.orchestrator.is_reserved(&account.name),
         cap: account.cap,
         active_runs: u32::try_from(runs + sessions).unwrap_or(u32::MAX),
         headroom: rows,
@@ -391,7 +410,7 @@ fn first_line(s: &str) -> &str {
 
 /// Entry for an account file that could not be loaded. The harness is unknown, so the
 /// first one stands in; `error` is what tells a reader not to trust the other fields.
-fn broken_account(path: &std::path::Path, error: &str) -> AccountView {
+fn broken_account(state: &SupervisorState, path: &std::path::Path, error: &str) -> AccountView {
     AccountView {
         endpoint: None,
         name: path
@@ -401,6 +420,10 @@ fn broken_account(path: &std::path::Path, error: &str) -> AccountView {
         harness: Harness::Codex,
         signed_in: SignInState::Unknown,
         enabled: false,
+        reserved: path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .is_some_and(|name| state.config.orchestrator.is_reserved(name)),
         cap: 0,
         active_runs: 0,
         headroom: Vec::new(),

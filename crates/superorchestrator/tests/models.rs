@@ -34,13 +34,48 @@ fn models_refresh_reports_sources_and_writes_the_catalog() {
         .success();
     let v: serde_json::Value = serde_json::from_str(&common::stdout(&out)).unwrap();
     assert!(!v["sources"].as_array().unwrap().is_empty(), "{v}");
-    assert!(v["added"].is_array() && v["unused_models"].is_array());
+    assert!(v["added"].is_array() && v["unassigned_models"].is_array());
+    assert!(v.get("unused_models").is_none());
     assert!(e.cfg.join("models.toml").is_file());
     let before = std::fs::read(e.cfg.join("models.toml")).unwrap();
-    e.cmd()
+    let out = e
+        .cmd()
         .env("SUPERORCHESTRATOR_MODELS_DEV_URL", stub_models_dev())
         .args(["models", "refresh"])
         .assert()
         .success();
+    assert!(common::stdout(&out).contains("catalog model(s) not listed by any level"));
     assert_eq!(std::fs::read(e.cfg.join("models.toml")).unwrap(), before);
+}
+
+#[test]
+fn models_list_shows_levels_in_table_and_json() {
+    let e = Env::new();
+    e.init();
+    let out = e
+        .cmd()
+        .args(["--json", "models", "list"])
+        .assert()
+        .success();
+    let rows: serde_json::Value = serde_json::from_str(&common::stdout(&out)).unwrap();
+    let model = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["harness"] == "codex" && r["model"] == "gpt-6.1-sol")
+        .unwrap();
+    assert_eq!(
+        model["levels"],
+        serde_json::json!(["moderate", "complex", "expert"])
+    );
+    assert!(
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["levels"] == serde_json::json!([]))
+    );
+    let out = e.cmd().args(["models", "list"]).assert().success();
+    let text = common::stdout(&out);
+    assert!(text.contains("LEVELS"));
+    assert!(text.contains("moderate,complex,expert"));
 }

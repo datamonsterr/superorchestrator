@@ -163,7 +163,7 @@ async fn fx_cfg(token: Option<&str>, config: Config) -> Fx {
             &session,
             Some(&run.id),
             EventType::RouteDecision,
-            json!({"result": route, "prompt_excerpt": "do it"}),
+            json!({"result": route}),
             10,
         ))
         .unwrap();
@@ -473,6 +473,66 @@ async fn route_decision_and_route_log() {
 }
 
 #[tokio::test]
+async fn route_log_uses_redacted_truncated_run_prompt() {
+    let f = fx().await;
+    let mut run = run_row(&f.session, RunState::Running);
+    run.prompt = Some(format!("  hello\n{SECRET} {}", "é".repeat(180)));
+    f.handle.state().store.insert_run(&run).unwrap();
+    let query = so_store::EventQuery {
+        event_type: Some(EventType::RouteDecision),
+        limit: 10,
+        ..Default::default()
+    };
+    let mut route = f
+        .handle
+        .state()
+        .store
+        .query_events(&query)
+        .unwrap()
+        .remove(0);
+    route.id = new_id();
+    route.run_id = Some(run.id);
+    route.ts = Utc::now();
+    f.handle.state().store.append_event(&route).unwrap();
+    let (status, body) = get(&f.app, "/api/v1/routing/records").await;
+    assert_eq!(status, StatusCode::OK);
+    let excerpt = body["items"][0]["prompt_excerpt"].as_str().unwrap();
+    assert_eq!(excerpt, format!("hello [REDACTED] {}…", "é".repeat(142)));
+    assert_eq!(excerpt.chars().count(), 160);
+}
+
+#[tokio::test]
+async fn route_log_falls_back_when_run_prompt_is_unavailable() {
+    let f = fx().await;
+    let store = &f.handle.state().store;
+    let mut run = run_row(&f.session, RunState::Running);
+    run.prompt = None;
+    store.insert_run(&run).unwrap();
+    let query = so_store::EventQuery {
+        event_type: Some(EventType::RouteDecision),
+        limit: 10,
+        ..Default::default()
+    };
+    let mut route = store.query_events(&query).unwrap().remove(0);
+    route.data["prompt_excerpt"] = json!(format!("fallback {SECRET}"));
+    route.ts = Utc::now();
+    route.id = new_id();
+    route.run_id = Some(run.id);
+    store.append_event(&route).unwrap();
+    route.id = new_id();
+    route.run_id = None;
+    store.append_event(&route).unwrap();
+    let (status, body) = get(&f.app, "/api/v1/routing/records").await;
+    assert_eq!(status, StatusCode::OK);
+    let items = body["items"].as_array().unwrap();
+    let fallbacks: Vec<_> = items
+        .iter()
+        .filter(|item| item["prompt_excerpt"] == "fallback [REDACTED]")
+        .collect();
+    assert_eq!(fallbacks.len(), 2);
+}
+
+#[tokio::test]
 async fn cancel_a_queued_run() {
     let f = fx().await;
     let queued = run_row(&f.session, RunState::Queued);
@@ -495,6 +555,68 @@ async fn unknown_api_routes_are_json_404s() {
 }
 
 // --------------------------------------------------------------------- accounts
+
+#[tokio::test]
+async fn reserved_account_is_marked_in_accounts_api() {
+    let mut config = Config::default();
+    config.orchestrator.reserved_accounts = vec!["codex-acc1".into()];
+    let f = fx_cfg(Some(TEST_TOKEN), config).await;
+    let (status, created) = post(
+        &f.app,
+        "/api/v1/accounts",
+        Some(json!({"harness": "codex", "name": "codex-acc1"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["reserved"], true);
+    let (_, list) = get(&f.app, "/api/v1/accounts").await;
+    assert_eq!(list[0]["reserved"], true);
+}
+
+#[tokio::test]
+async fn unreserved_account_omits_reserved_in_accounts_api() {
+    let f = fx_cfg(Some(TEST_TOKEN), Config::default()).await;
+    let (status, created) = post(
+        &f.app,
+        "/api/v1/accounts",
+        Some(json!({"harness": "codex", "name": "codex-acc2"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(created.get("reserved").is_none());
+    let (_, list) = get(&f.app, "/api/v1/accounts").await;
+    assert!(list[0].get("reserved").is_none());
+}
+
+#[tokio::test]
+async fn reserved_accounts_config_round_trips() {
+    let f = fx().await;
+    let (status, value) = send_json(
+        &f.app,
+        "PATCH",
+        "/api/v1/config",
+        json!({"orchestrator": {"reserved_accounts": ["codex-acc1", "agy-acc1"]}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    let (_, value) = get(&f.app, "/api/v1/config").await;
+    assert_eq!(
+        value["config"]["orchestrator"]["reserved_accounts"],
+        json!(["codex-acc1", "agy-acc1"])
+    );
+    let (status, value) = send_json(
+        &f.app,
+        "PATCH",
+        "/api/v1/config",
+        json!({"orchestrator": {"reserved_accounts": []}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{value}");
+    assert_eq!(
+        value["config"]["orchestrator"]["reserved_accounts"],
+        json!([])
+    );
+}
 
 #[tokio::test]
 async fn account_lifecycle() {
@@ -2665,4 +2787,33 @@ async fn endpoint_account_sources_are_validated() {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{value}");
         assert!(value["error"]["data"].is_object());
     }
+}
+
+#[tokio::test]
+async fn routing_insights_are_authenticated_and_redacted() {
+    let f = fx().await;
+    let mut run = run_row(&f.session, RunState::Failed);
+    run.prompt = Some(format!("task {SECRET}"));
+    f.handle.state().store.insert_run(&run).unwrap();
+    f.handle
+        .state()
+        .store
+        .append_event(&event(
+            &f.session,
+            Some(&run.id),
+            EventType::RouteDecision,
+            json!({"complexity": 30}),
+            0,
+        ))
+        .unwrap();
+    let (status, body) = get(&f.app, "/api/v1/routing/insights").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["levels"].is_array() && body["suggestions"].is_array());
+    assert!(body.to_string().contains("[REDACTED]") && !body.to_string().contains(SECRET));
+    let (status, _, _) = send(
+        &f.app,
+        anonymous_request("GET", "/api/v1/routing/insights", None),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

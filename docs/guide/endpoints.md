@@ -1,6 +1,6 @@
 # Endpoint accounts
 
-An endpoint account is a `claude` account whose Claude Code process talks to an Anthropic-compatible coding-plan API instead of an Anthropic subscription. Three coding plans are supported by preset: the Z.ai GLM Coding Plan, the Kimi Code plan and the MiniMax M Plan. A `custom` preset covers any other compatible URL. The design is in [ADR 0008](../adr/0008-endpoint-accounts.md).
+An endpoint account is a `claude` account whose Claude Code process talks to an Anthropic-compatible coding-plan API instead of an Anthropic subscription. Three coding plans are supported by preset: the Z.ai GLM Coding Plan, the Kimi Code plan and the MiniMax M Plan. A `custom` preset covers any other compatible URL. The design is in [ADR 0010](../adr/0010-endpoint-accounts.md).
 
 Why use one: these plans are cheap capacity for subagents. The harness is still Claude Code, so launch, `runs join`, session handling and error handling work as for any `claude` account. Endpoint accounts are not orchestrator accounts, and routing spends them like any other harness.
 

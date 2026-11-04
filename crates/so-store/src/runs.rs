@@ -1,5 +1,6 @@
 //! Run and attempt queries.
 
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use chrono::{DateTime, Utc};
@@ -144,6 +145,22 @@ impl Store {
         let mut st = conn.prepare(&format!("SELECT {COLS} FROM runs WHERE id = ?1"))?;
         let mut rows = st.query_map([id], map)?;
         Ok(rows.next().transpose()?)
+    }
+
+    /// Returns prompts for the requested runs, omitting missing runs and null prompts.
+    pub fn run_prompts(&self, ids: &[String]) -> Result<HashMap<String, String>> {
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let conn = self.conn();
+        let mut statement = conn.prepare(&format!(
+            "SELECT id, prompt FROM runs WHERE prompt IS NOT NULL AND id IN ({placeholders})"
+        ))?;
+        let rows = statement.query_map(rusqlite::params_from_iter(ids), |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
     }
 
     /// Finds the single run whose id starts with `prefix`.
@@ -1021,6 +1038,32 @@ pub(crate) mod tests {
         let sess = session(None);
         s.insert_session(&sess).unwrap();
         (s, sess.id)
+    }
+
+    #[test]
+    fn run_prompts_returns_only_existing_prompts() {
+        let (s, sid) = setup();
+        let first = run(&sid, None);
+        let mut second = run(&sid, None);
+        second.prompt = Some("another".into());
+        let mut empty = run(&sid, None);
+        empty.prompt = None;
+        for r in [&first, &second, &empty] {
+            s.insert_run(r).unwrap();
+        }
+        assert!(s.run_prompts(&[]).unwrap().is_empty());
+        let prompts = s
+            .run_prompts(&[
+                first.id.clone(),
+                second.id.clone(),
+                empty.id,
+                "missing".into(),
+                first.id.clone(),
+            ])
+            .unwrap();
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[&first.id], "do it");
+        assert_eq!(prompts[&second.id], "another");
     }
 
     #[test]

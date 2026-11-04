@@ -35,6 +35,7 @@ fn roots(g: &mut SchemaGenerator) {
     add::<so_core::proto::StatusResult>(g);
     add::<so_core::proto::AgentsView>(g);
     add::<so_supervisor::doctor::DoctorReport>(g);
+    add::<so_supervisor::services::insights::InsightsReport>(g);
     add::<RunViewPublic>(g);
     add::<JoinView>(g);
     add::<StatusView>(g);
