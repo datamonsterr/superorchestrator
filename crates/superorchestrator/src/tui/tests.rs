@@ -1496,6 +1496,7 @@ fn dispatch_keeps_one_read_of_each_kind_in_flight() {
         refreshing: false,
         detail_in_flight: false,
         insights_in_flight: false,
+        sessions_in_flight: Default::default(),
         last_refresh: std::time::Instant::now(),
     };
     let det = || Effect::Detail {
@@ -1523,6 +1524,7 @@ fn dispatch_reports_a_dead_worker() {
         refreshing: false,
         detail_in_flight: false,
         insights_in_flight: false,
+        sessions_in_flight: Default::default(),
         last_refresh: std::time::Instant::now(),
     };
     drop(arx);
@@ -2156,4 +2158,146 @@ fn insights_failure_keeps_the_last_good_report() {
     assert!(shot(&mut a, 100, 40).contains("boom"));
     a.on_update(Update::Insights(Ok(None)));
     assert!(a.insights.is_none() && a.insights_error.is_none());
+}
+
+fn settings_app() -> App {
+    let mut a = app();
+    a.tab = Tab::Settings;
+    let dir = tempfile::tempdir().unwrap();
+    let paths = so_core::Paths::from_dir(dir.path().to_path_buf());
+    a.settings_tab.view = Some(
+        so_supervisor::services::decider::view_with_env(
+            &paths,
+            &so_core::Config::default(),
+            |_| None,
+        )
+        .unwrap(),
+    );
+    a.settings_tab.summary =
+        Some("Config: /tmp/config.toml  UI: 127.0.0.1:7878  caps: global 16 children 8".into());
+    a
+}
+
+#[test]
+fn settings_form_and_results() {
+    let mut a = settings_app();
+    assert!(a.on_key(key(KeyCode::Char('8'))).is_none());
+    a.on_key(key(KeyCode::Enter));
+    a.on_key(key(KeyCode::Char('x')));
+    a.on_key(key(KeyCode::Enter));
+    let Some(Effect::DeciderSet(patch)) = a.on_key(key(KeyCode::Char('s'))) else {
+        panic!("expected save")
+    };
+    assert_eq!(patch.0.len(), 1);
+    assert!(patch.0["endpoint"].as_str().unwrap().ends_with('x'));
+    a.on_update(Update::DeciderView {
+        result: Err("endpoint: rejected".into()),
+        summary: None,
+    });
+    assert_eq!(a.toast.as_ref().unwrap().text, "endpoint: rejected");
+    assert!(matches!(
+        a.on_key(key(KeyCode::Char('t'))),
+        Some(Effect::DeciderTest)
+    ));
+    a.on_update(Update::DeciderTest(Ok(
+        so_supervisor::services::decider::DeciderTestResult {
+            ok: true,
+            complexity: Some(25.0),
+            level: Some("simple".into()),
+            confidence: Some(0.9),
+            model: Some("model-x".into()),
+            latency_ms: 123,
+            error: None,
+        },
+    )));
+    let text = shot(&mut a, 120, 40);
+    for field in [
+        "complexity 25",
+        "level simple",
+        "confidence 0.9",
+        "model model-x",
+        "latency 123ms",
+    ] {
+        assert!(text.contains(field), "{field}: {text}");
+    }
+    a.on_update(Update::DeciderTest(Err("network error".into())));
+    assert!(shot(&mut a, 120, 40).contains("network error"));
+}
+
+#[test]
+fn settings_snapshots() {
+    let mut a = settings_app();
+    insta::assert_snapshot!("settings_80x24", shot(&mut a, 80, 24));
+    insta::assert_snapshot!("settings_120x40", shot(&mut a, 120, 40));
+    a.settings_tab.selected = 9;
+    a.on_key(key(KeyCode::Enter));
+    for c in "secret".chars() {
+        a.on_key(key(KeyCode::Char(c)));
+    }
+    let screen = shot(&mut a, 80, 24);
+    assert!(!screen.contains("secret"));
+    assert!(screen.contains("••••••"));
+    insta::assert_snapshot!("settings_paste_80x24", screen);
+}
+
+#[test]
+fn sessions_dispatch_deduplicates_in_flight_loads() {
+    use super::Dispatch;
+    let (rtx, rrx) = std::sync::mpsc::channel();
+    let (atx, _) = std::sync::mpsc::channel();
+    let mut d = Dispatch {
+        reads: &rtx,
+        actions: &atx,
+        refreshing: false,
+        detail_in_flight: false,
+        insights_in_flight: false,
+        sessions_in_flight: Default::default(),
+        last_refresh: std::time::Instant::now(),
+    };
+    let load = || Effect::SessionRuns { id: "s".into() };
+    assert!(d.send(load()) && d.send(load()));
+    assert_eq!(rrx.try_iter().count(), 1);
+    d.on_update(&Update::SessionRuns {
+        id: "s".into(),
+        runs: Ok(vec![]),
+    });
+    assert!(d.send(load()));
+    assert_eq!(rrx.try_iter().count(), 1);
+}
+
+#[test]
+fn settings_paste_is_cleared_on_submit_and_after_error() {
+    let mut a = settings_app();
+    a.settings_tab.selected = 9;
+    a.on_key(key(KeyCode::Enter));
+    for c in "private-key".chars() {
+        a.on_key(key(KeyCode::Char(c)));
+    }
+    a.on_key(key(KeyCode::Enter));
+    let effect = a.on_key(key(KeyCode::Char('s'))).unwrap();
+    assert!(!format!("{effect:?}").contains("private-key"));
+    assert!(a.settings_tab.edit.is_none());
+    assert!(!format!("{:?}", a.settings_tab.patch).contains("private-key"));
+    assert!(a.settings_tab.patch.0.get("key").is_none());
+    a.on_update(Update::DeciderView {
+        result: Err("key rejected".into()),
+        summary: None,
+    });
+    assert!(!shot(&mut a, 80, 24).contains("private-key"));
+}
+
+#[test]
+fn settings_show_overrides_and_restart() {
+    let mut a = settings_app();
+    let view = a.settings_tab.view.as_mut().unwrap();
+    view.restart_required = true;
+    view.env_overrides
+        .push(so_supervisor::services::decider::EnvOverride {
+            name: "MODEL_VAR".into(),
+            field: "model".into(),
+            value: Some("ignored".into()),
+        });
+    let text = shot(&mut a, 120, 40);
+    assert!(text.contains("MODEL_VAR wins over config.toml for model"));
+    assert!(text.contains("Restart required"));
 }

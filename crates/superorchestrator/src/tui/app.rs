@@ -159,6 +159,9 @@ pub struct StepRow {
 pub enum Effect {
     Refresh,
     RefreshModels,
+    DeciderGet,
+    DeciderSet(super::tabs::settings::Patch),
+    DeciderTest,
     SessionRuns {
         id: String,
     },
@@ -210,7 +213,10 @@ impl Effect {
             Effect::Refresh
             | Effect::Detail { .. }
             | Effect::SessionRuns { .. }
-            | Effect::Insights => return None,
+            | Effect::Insights
+            | Effect::DeciderGet => return None,
+            Effect::DeciderSet(_) => "saving decider",
+            Effect::DeciderTest => "testing decider",
             Effect::AddAccounts { .. } => "adding accounts",
             Effect::Login(_) => "preparing sign-in",
             Effect::SetEnabled { .. } => "updating account",
@@ -246,6 +252,11 @@ pub struct Launch {
 #[derive(Debug)]
 pub enum Update {
     Snapshot(Box<Snapshot>),
+    DeciderView {
+        result: Result<so_supervisor::services::decider::DeciderView, String>,
+        summary: Option<String>,
+    },
+    DeciderTest(Result<so_supervisor::services::decider::DeciderTestResult, String>),
     SessionRuns {
         id: String,
         runs: Result<Vec<RunItem>, String>,
@@ -521,11 +532,15 @@ impl App {
         if let Some(m) = self.modal.take() {
             return self.modal_key(m, key);
         }
+        if self.tab == Tab::Settings && self.settings_tab.edit.is_some() {
+            return self.settings_tab.on_key(key);
+        }
         self.toast = None;
         if key.code == KeyCode::Char('?') {
             self.modal = Some(Modal::Help);
             return None;
         }
+        let previous_tab = self.tab;
         let plain = !ctrl && !key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
             KeyCode::Tab => self.switch(self.tab.step(1)),
@@ -551,13 +566,23 @@ impl App {
                             }
                         })
                     }
-                    Tab::Settings => self.settings_tab.on_key(key),
+                    Tab::Settings => {
+                        if self.busy.is_some() {
+                            None
+                        } else {
+                            let e = self.settings_tab.on_key(key);
+                            e.and_then(|e| self.start(e))
+                        }
+                    }
                     Tab::Accounts => self.accounts_key(key),
                     Tab::Runs => self.runs_key(key),
                     Tab::Setup => self.setup_key(key),
                     Tab::Levels => self.levels_key(key),
                 };
             }
+        }
+        if self.tab == Tab::Settings && previous_tab != Tab::Settings {
+            return Some(Effect::DeciderGet);
         }
         None
     }
@@ -1286,6 +1311,30 @@ impl App {
 
     pub fn on_update(&mut self, update: Update) -> Next {
         match update {
+            Update::DeciderView { result, summary } => {
+                self.busy = None;
+                self.settings_tab.summary = summary;
+                match result {
+                    Ok(view) => {
+                        self.settings_tab.view = Some(view);
+                        self.settings_tab.error = None;
+                        self.settings_tab.patch = Default::default();
+                    }
+                    Err(error) => {
+                        self.settings_tab.error = Some(error.clone());
+                        self.say(ToastKind::Err, error);
+                    }
+                }
+                Next::Nothing
+            }
+            Update::DeciderTest(result) => {
+                self.busy = None;
+                if let Err(error) = &result {
+                    self.say(ToastKind::Err, error.clone());
+                }
+                self.settings_tab.result = Some(result);
+                Next::Nothing
+            }
             Update::Snapshot(s) => {
                 self.apply_snapshot(*s);
                 Next::Nothing

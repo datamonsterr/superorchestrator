@@ -69,7 +69,7 @@ superorchestrator config edit
 
 ### `[router.jev]`
 
-The decider settings. The web UI (Settings, Decider) edits them; see [Decider](#decider) below.
+The decider settings. The web UI (Settings, Decider) and TUI (Settings, `8`) edit them; see [Decider](#decider) below.
 
 | Key | Default | Meaning |
 |---|---|---|

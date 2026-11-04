@@ -287,7 +287,17 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
             vec![("j/k", "scroll"), ("r", "refresh models"), nav],
             "quit",
         ),
-        Tab::Dashboard | Tab::Settings => (vec![nav, ("R", "refresh")], "quit"),
+        Tab::Dashboard => (vec![nav, ("R", "refresh")], "quit"),
+        Tab::Settings => (
+            vec![
+                ("↑/↓", "select"),
+                ("Enter", "edit"),
+                ("s", "save"),
+                ("t", "test"),
+                ("r", "reload"),
+            ],
+            "quit",
+        ),
         Tab::Usage => (vec![("j/k", "scroll"), nav, ("R", "refresh")], "quit"),
         Tab::Accounts => (
             vec![
@@ -1094,7 +1104,7 @@ pub(super) fn draw_run_table(
             ])
         })
         .collect();
-    let header = Row::new(["RUN", "STATE", "ACCOUNT", "AGE", "TITLE"]).style(t.header());
+    let header = Row::new(["RUN", "STATUS", "ACCOUNT", "AGE", "TITLE"]).style(t.header());
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
@@ -1379,7 +1389,11 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
             row("Esc", "back one level"),
         ]),
         Tab::Models => out.extend([row("j k", "scroll"), row("r", "refresh models")]),
-        Tab::Settings => {}
+        Tab::Settings => out.extend([
+            row("↑ ↓", "select field"),
+            row("Enter / Esc", "edit / cancel"),
+            row("s / t / r", "save / test / reload"),
+        ]),
         Tab::Accounts => {
             out.push(Line::styled("Accounts", t.accent()));
             out.extend([

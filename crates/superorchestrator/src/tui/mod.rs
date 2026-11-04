@@ -143,6 +143,7 @@ struct Dispatch<'a> {
     refreshing: bool,
     detail_in_flight: bool,
     insights_in_flight: bool,
+    sessions_in_flight: std::collections::HashSet<String>,
     last_refresh: Instant,
 }
 
@@ -158,7 +159,15 @@ impl Dispatch<'_> {
                 self.last_refresh = Instant::now();
                 self.reads.send(Effect::Refresh).is_ok()
             }
-            Effect::SessionRuns { .. } => self.reads.send(effect).is_ok(),
+            Effect::SessionRuns { ref id } => {
+                if !self.sessions_in_flight.insert(id.clone()) {
+                    return true;
+                }
+                self.reads.send(effect).is_ok()
+            }
+            Effect::DeciderGet | Effect::DeciderSet(_) | Effect::DeciderTest => {
+                self.reads.send(effect).is_ok()
+            }
             Effect::Detail { .. } => {
                 if self.detail_in_flight {
                     return true;
@@ -181,12 +190,16 @@ impl Dispatch<'_> {
     fn on_update(&mut self, u: &Update) {
         match u {
             Update::Snapshot(_) => self.refreshing = false,
+            Update::SessionRuns { id, .. } => {
+                self.sessions_in_flight.remove(id);
+            }
             Update::Detail(_) => self.detail_in_flight = false,
             Update::Insights(_) => self.insights_in_flight = false,
             Update::ReadFailed(_) => {
                 self.refreshing = false;
                 self.detail_in_flight = false;
                 self.insights_in_flight = false;
+                self.sessions_in_flight.clear();
             }
             _ => {}
         }
@@ -209,6 +222,7 @@ fn event_loop(
         refreshing: false,
         detail_in_flight: false,
         insights_in_flight: false,
+        sessions_in_flight: Default::default(),
         last_refresh: Instant::now(),
     };
     let mut worker_gone = !d.send(Effect::Refresh);

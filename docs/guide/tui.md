@@ -30,7 +30,7 @@ The tabs follow the web UI where the feature is the same. See the [feature map](
 | `5` | Usage | Headroom with reset times, cooldowns, 14-day usage |
 | `6` | Levels | Level ranges and model refs in preference order |
 | `7` | Models | The model catalog per harness |
-| `8` | Settings | Placeholder |
+| `8` | Settings | Decider form and read-only config summary |
 | `9` | Setup | First-run setup steps |
 
 **1 Dashboard.** (Called Overview in earlier versions.) Four counters (accounts, active runs, runs waiting for review, checklist progress), the setup checklist, the latest runs and a Levels block. The Levels block lists each level as `name  min-max  ref, ref` (the model refs in order). It is shown when rows remain after the recent runs, so at 80x24 with runs listed it may be out of view. When no level lists models, the block shows one line: no levels list models (nothing routes until one does). The checklist covers the config, the harnesses found on `PATH`, accounts, sign-ins, whether superorchestrator is registered with Claude Code, and the OpenRouter router key. Each missing item shows the fix beside it.
@@ -64,7 +64,7 @@ The list is read from the store. The diff, cancel, join, accept and reject go th
 
 **7 Models.** The model catalog per harness: model, efforts, whether it is free, and when the catalog was last refreshed. `r` refreshes it through the supervisor's model refresh, the same as the web Levels page. Models you add to a level come from this catalog.
 
-**8 Settings.** A placeholder for a future settings screen.
+**8 Settings.** Use Up and Down to select a decider field, Enter to edit or cycle `on_unreachable`, and Esc to cancel an edit. Choose the key env, file or paste field to change its source; pasted characters are masked. Press `s` to save changed fields, `t` to test the saved decider, and `r` to reload. The screen shows suggested models, key source and masked hint, environment overrides, restart notice and a read-only config summary.
 
 **9 Setup.** The first-run steps one by one with live status: `init`, `harnesses`, `import`, `add accounts`, `sign in`, `install` and `doctor`. `Enter` runs the selected step, `a` runs them all in order (it stops at the first failure), and `i` and `d` jump to `install` and `doctor`. Steps do only what is missing, so running them again is safe. `sign in` lists the accounts that are signed out and how to sign in; use the Accounts tab (`4`) for that.
 

@@ -4,7 +4,7 @@ expression: "shot(& mut a, w, h)"
 ---
  superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
  1 Dashboard 2 Sessions 3 Runs !1 4 Accounts 5 Usage 6 Levels 7 Models 8 Settings 9 Setup
-    RUN      STATE            ACCOUNT            AGE   TITLE
+    RUN      STATUS           ACCOUNT            AGE   TITLE
     0190aaaa ● running        codex-1            45s   Refactor the parser
   ▸ 0190bbbb ! pending_review codex-2            6m    Add retry to the HTTP client
     0190cccc ✓ succeeded      opencode-1         2h    Write the changelog entry for 0.1.0
