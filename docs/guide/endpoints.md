@@ -27,6 +27,8 @@ Flags:
 | `--model ID` | A model the account serves. Repeat for several. Required for `custom`. |
 | `--opus ID`, `--sonnet ID`, `--haiku ID` | Override a model slot. All three are required for `custom`. |
 
+The command form is `account add <name> --endpoint <preset> [--base-url URL] [--token-env VAR | --token-stdin] [--model ID ...] [--opus ID --sonnet ID --haiku ID]`. `--model` may be repeated. The equivalent TUI flow is `E` in Accounts: enter a name, choose a preset and token source, then provide the masked token or environment variable name and any custom endpoint fields.
+
 Give exactly one of `--token-stdin` and `--token-env`. `--name`, `--count` and `--home` do not apply to endpoint accounts.
 
 The web UI add-account dialog and the terminal UI add flow offer the same presets.
@@ -72,6 +74,8 @@ Facts below were checked on 2026-11-03. None of the three providers documents a 
 - Docs: [Claude Code setup](https://docs.z.ai/devpack/tool/claude), [plan overview](https://docs.z.ai/devpack/overview), [error codes](https://docs.z.ai/api-reference/api-code)
 
 Quota: the plan has a 5-hour window and a weekly or monthly window. Z.ai documents the errors for them (code 1308 for the 5-hour window, 1310 for the weekly or monthly window) but no usage API. For current allowances see the plan overview. The error message carries the reset time, for example `Your limit will reset at 2026-11-03 18:00:00`. The time is UTC+8, and superorchestrator uses it as the end of the cooldown.
+
+Plan allowances are Lite 2,000 / 10,000, Pro 12,000 / 60,000, and Max 28,000 / 140,000 credits per 5 hours / per week. Code 1113 means “Insufficient balance”; the classifier does not map this code, so it falls back to the HTTP status unless another recognized phrase is present.
 
 ### Kimi Code
 
@@ -119,11 +123,15 @@ Provider errors are recognized from the response text. A code matches only as it
 
 | Class | Z.ai | Kimi | MiniMax |
 |---|---|---|---|
-| Quota (pool marked exhausted) | 1308 (5 hour), 1309 (plan expired), 1310 (weekly or monthly), 1316 to 1321 (extra usage unavailable), "limit exhausted", "Usage limit reached for" | "5-hour usage limit", "weekly (7-day) usage limit", "monthly usage limit" | 2056 |
+| Quota (pool marked exhausted) | 1308, 1309, 1310, 1316–1321, "limit exhausted", "Usage limit reached for" | "5-hour usage limit", "weekly (7-day) usage limit", "monthly usage limit" | 2056 |
 | Rate limit | 1302, 1305, 1312 | "The engine is currently overloaded", "too many requests", "concurrent request limit" | 1002 |
 | Auth | 1000, 1001, 1003 | "membership benefits" | 2049 |
 
-Other responses fall back to the HTTP status: 401 and 403 are auth errors, and 429 is a rate limit.
+These are the provider codes the classifier maps. Z.ai 1113 (“Insufficient balance”) is unclassified by code. Other responses fall back to the HTTP status: 401 and 403 are auth errors, and 429 is a rate limit.
+
+## Real-provider smoke
+
+The ignored integration test `real_endpoint_smoke` reads exactly these environment variables: `SO_SMOKE_ENDPOINT_URL`, `SO_SMOKE_ENDPOINT_TOKEN_VAR`, `SO_SMOKE_ENDPOINT_TOKEN`, and `SO_SMOKE_ENDPOINT_MODEL`. If any is unset, it prints a skip message; otherwise it sends the validation request and requires it to succeed. The test is ignored by default.
 
 ## Make endpoint models routable
 
@@ -151,14 +159,16 @@ An endpoint account serves only the models of its preset (or its `models` list),
 
 To check a pick: `superorchestrator route "task" --model claude/glm-5.3 --explain`. Pinning an endpoint account with no model uses its opus slot model.
 
+`[orchestrator] reserved_accounts` applies to endpoint accounts too. A reserved endpoint account is excluded from automatic routing and is eligible only when the call pins it.
+
 ## Check sign-in
 
-An endpoint account is signed in when its key resolves: the variable is set and non-empty, or the key file exists with mode 0600. `superorchestrator account login <name>` goes further. It sends one `POST {base_url}/v1/messages` with `max_tokens: 1` on the haiku slot model and reports the result as ok, auth, quota, rate limit or other. The call uses one token of plan usage.
+An endpoint account is signed in when its key resolves: the variable is set and non-empty, or the key file exists with mode 0600 or 0400. CLI `account login`, TUI `l`, and web `POST /accounts/:name/login` all call the shared `so_harness::endpoint::validate_login`: one `POST {base_url}/v1/messages` with `max_tokens: 1` on the haiku slot model. Web `GET /accounts/:name/login` returns that cached result and does not validate again. The call uses one token of plan usage.
 
 ## Security
 
 - The key is never stored in the account file, never printed and never put on a command line. Use `--token-stdin` or `--token-env`.
-- Pasted keys go to `<config dir>/keys/<name>.key`. The directory is mode 0700 and the file is mode 0600. A key file with other permissions is refused at launch (a read-only 0400 file is accepted).
+- Pasted keys go to `<config dir>/keys/<name>.key`. The directory is mode 0700 and the file is mode 0600. Reads accept mode 0600 or 0400; the target must be a regular file, and a symlink to a regular file is accepted.
 - Log redaction covers `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_API_KEY` values and the Z.ai key shape. The launch's debug output shows `[REDACTED]` for the key. Treat the log as sensitive anyway.
 - The launch removes the other Anthropic key variable, so an operator key cannot leak to the provider.
 

@@ -196,7 +196,7 @@ For an endpoint account, `build_launch` adds these variables to the claude envir
 
 The token is resolved at launch and never saved in config:
 - `token_env`: the variable must be set and non-empty in the environment of the process that launches the harness.
-- `token_file`: the file must be a regular file with mode 0600 (a read-only 0400 file is also accepted). `~` is expanded and a trailing newline is trimmed.
+- `token_file`: the target must be a regular file with mode 0600 or 0400. A symlink resolving to a regular file is accepted. `~` is expanded and a trailing newline is trimmed.
 
 A missing token is an error that names the account and the source, never the value. The token is redacted from logs and from the `Debug` form of the launch.
 
@@ -216,7 +216,7 @@ exec superorchestrator exec codex-acc2 -- "$@"
 ### 5.4 Commands
 
 - `account add <harness> --name <name> [--home PATH]`: creates the home, writes the toml and the wrapper, then runs the login.
-- `account add <name> --endpoint zai|kimi|minimax|custom (--token-env VAR | --token-stdin) [--base-url URL] [--model ID ...] [--opus ID] [--sonnet ID] [--haiku ID]`: adds an endpoint account. The harness is `claude`. The name is the positional argument; `--name`, `--count` and `--home` are refused. `--token-stdin` reads one line from standard input and writes it to the key file.
+- `account add <name> --endpoint <preset> [--base-url URL] [--token-env VAR | --token-stdin] [--model ID ...] [--opus ID --sonnet ID --haiku ID]`: adds an endpoint account. Presets are `zai`, `kimi`, `minimax` and `custom`. The harness is `claude`. The name is the positional argument; `--name`, `--count` and `--home` are refused. `--token-stdin` reads one line from standard input and writes it to the key file. Repeat `--model` for multiple models; custom accounts require models and all three slot flags.
 - `account import <name> --harness H --home PATH`: links an existing home without copying credentials.
 - `account import --scan`: detects the existing layout and offers an import for each account found:
   - `~/.codex`, `~/.codex-accN`
@@ -229,7 +229,9 @@ exec superorchestrator exec codex-acc2 -- "$@"
 - `account enable|disable <name>`
 - `account flag <name> [--pool P] --until <time>|--hours N|--clear`: manual cooldown.
 
-An endpoint account is signed in when its token resolves: the variable is set and non-empty, or the key file exists with mode 0600. `account login` for an endpoint account sends one `POST {base_url}/v1/messages` with `max_tokens: 1` on the haiku slot model and reports the classified result (ok, auth, quota, rate limit or other). The request uses `x-api-key` when `token_var` is `ANTHROPIC_API_KEY` and `Authorization: Bearer` otherwise, and times out after 20 s. The reported detail is redacted.
+An endpoint account is signed in when its token resolves: the variable is set and non-empty, or the key file exists with mode 0600 or 0400. CLI `account login`, TUI `l`, and web `POST /accounts/:name/login` share `so_harness::endpoint::validate_login`. Each validation sends one `POST {base_url}/v1/messages` with `max_tokens: 1` on the haiku slot model and reports the classified result (ok, auth, quota, rate limit or other). Web `GET /accounts/:name/login` returns the cached result from POST; it does not validate again. The request uses `x-api-key` when `token_var` is `ANTHROPIC_API_KEY` and `Authorization: Bearer` otherwise, and times out after 20 s. The reported detail is redacted.
+
+The ignored integration test `real_endpoint_smoke` in `crates/so-harness/tests/endpoint.rs` reads `SO_SMOKE_ENDPOINT_URL`, `SO_SMOKE_ENDPOINT_TOKEN_VAR`, `SO_SMOKE_ENDPOINT_TOKEN`, and `SO_SMOKE_ENDPOINT_MODEL`; if any is unset, it prints a skip message. Otherwise, it calls the real endpoint and requires validation to succeed.
 
 The sign-in check only tests that the harness's auth file exists. Auth file contents are never read into prompts or logs, never printed and never served.
 
@@ -437,7 +439,7 @@ Every suggestion includes its stable id, rationale, full proposed `levels` and d
 
 ### 8.3 Decision procedure (`route`)
 
-1. **Eligible models.** Keep the models listed on levels whose harness has at least one enabled account with headroom for the model's pool and below its cap. Accounts in `orchestrator.reserved_accounts` do not count unless the call pins `account`; a model reachable only through reserved accounts is dropped, and `list_harnesses` reports it with `why: "account reserved"` (reserved rows carry `reserved: true`). There is no role filter. Drop the models the call excludes (`exclude`, a list of model refs). Claude rank (8.4) applies.
+1. **Eligible models.** Keep the models listed on levels whose harness has at least one enabled account with headroom for the model's pool and below its cap. Accounts in `orchestrator.reserved_accounts`, including endpoint accounts, do not count unless the call pins `account`; a model reachable only through reserved accounts is dropped, and `list_harnesses` reports it with `why: "account reserved"` (reserved rows carry `reserved: true`). There is no role filter. Drop the models the call excludes (`exclude`, a list of model refs). Claude rank (8.4) applies.
 2. **Complexity.** The router needs one number, complexity from 0 to 100, to pick a level. It comes from the first source below that applies.
    - **Decider.** If an OpenRouter key is configured (`router.jev.key_env`, default `OPENROUTER_API_KEY`, or `router.jev.key_file`) and more than one model is eligible, call `POST https://openrouter.ai/api/alpha/decisions` with model `router.jev.model` (default `inception/mercury-decide:free`). The model is any OpenRouter model id, set in `config.toml` or by `SUPERORCHESTRATOR_ROUTER_MODEL`; the environment beats the config, which beats the default, and an empty value counts as unset. `router.jev.fallback_model` (default `~typesafe/jev-latest`, env `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL`, `none` disables it) is tried only when the primary model is unusable: a transport error, a timeout, HTTP 429 or 5xx, or HTTP 400/404 for a missing model. A 429, 5xx, 408 or refused connection is retried once first; a timeout is not retried, because it uses up the time left for that model. Other 4xx responses, invalid or oversized bodies and a disallowed endpoint (plain http to a non-loopback host) are not about the model: they go to the heuristic. A refused key (401/403) and a rejected answer never reach the fallback. Both calls together stay within `router.jev.timeout`; with a fallback the primary may use 3/5 of it. `route --explain`, `doctor` and the eval summary show the models in effect and where each came from. The request is:
      - `state`: `task_content`, `system_instruction`, `routing_instruction`, `agent` (the profile name, `worker` when none is named). No account names, quota, usage or credentials are sent.
