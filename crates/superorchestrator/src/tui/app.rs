@@ -30,32 +30,56 @@ const TOAST_ERR: i64 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
-    Overview,
-    Accounts,
+    Dashboard,
+    Sessions,
     Runs,
-    Setup,
+    Accounts,
+    Usage,
     Levels,
+    Models,
+    Settings,
+    Setup,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 5] = [
-        Tab::Overview,
-        Tab::Accounts,
+    pub const ALL: [Tab; 9] = [
+        Tab::Dashboard,
+        Tab::Sessions,
         Tab::Runs,
-        Tab::Setup,
+        Tab::Accounts,
+        Tab::Usage,
         Tab::Levels,
+        Tab::Models,
+        Tab::Settings,
+        Tab::Setup,
     ];
-
     pub fn index(self) -> usize {
         Self::ALL.iter().position(|t| *t == self).unwrap_or(0)
     }
     pub fn title(self) -> &'static str {
         match self {
-            Tab::Overview => "Overview",
-            Tab::Accounts => "Accounts",
+            Tab::Dashboard => "Dashboard",
+            Tab::Sessions => "Sessions",
             Tab::Runs => "Runs",
-            Tab::Setup => "Setup",
+            Tab::Accounts => "Accounts",
+            Tab::Usage => "Usage",
             Tab::Levels => "Levels",
+            Tab::Models => "Models",
+            Tab::Settings => "Settings",
+            Tab::Setup => "Setup",
+        }
+    }
+    pub fn compact_title(self) -> &'static str {
+        match self {
+            Tab::Dashboard => "Dash",
+            Tab::Sessions => "Sess",
+            Tab::Runs => "Runs",
+            Tab::Accounts => "Acct",
+            Tab::Usage => "Usage",
+            Tab::Levels => "Lvls",
+            Tab::Models => "Model",
+            Tab::Settings => "Conf",
+            Tab::Setup => "Setup",
         }
     }
     fn step(self, by: isize) -> Tab {
@@ -134,6 +158,13 @@ pub struct StepRow {
 #[derive(Debug, Clone)]
 pub enum Effect {
     Refresh,
+    RefreshModels,
+    DeciderGet,
+    DeciderSet(super::tabs::settings::Patch),
+    DeciderTest,
+    SessionRuns {
+        id: String,
+    },
     /// `diff` also asks the supervisor for the run's diff (only done for runs waiting for review).
     Detail {
         id: String,
@@ -179,7 +210,13 @@ impl Effect {
     /// Short phrase for the status line while the effect runs; `None` for reads.
     pub fn busy_label(&self) -> Option<&'static str> {
         Some(match self {
-            Effect::Refresh | Effect::Detail { .. } | Effect::Insights => return None,
+            Effect::Refresh
+            | Effect::Detail { .. }
+            | Effect::SessionRuns { .. }
+            | Effect::Insights
+            | Effect::DeciderGet => return None,
+            Effect::DeciderSet(_) => "saving decider",
+            Effect::DeciderTest => "testing decider",
             Effect::AddAccounts { .. } => "adding accounts",
             Effect::Login(_) => "preparing sign-in",
             Effect::SetEnabled { .. } => "updating account",
@@ -193,6 +230,7 @@ impl Effect {
             Effect::Join(_) => "preparing join",
             Effect::Setup(_) | Effect::SetupAll => "running setup",
             Effect::Levels(_) => "updating levels",
+            Effect::RefreshModels => "refreshing models",
             Effect::ApplySuggestion(_) => "applying suggestion",
         })
     }
@@ -214,6 +252,15 @@ pub struct Launch {
 #[derive(Debug)]
 pub enum Update {
     Snapshot(Box<Snapshot>),
+    DeciderView {
+        result: Result<so_supervisor::services::decider::DeciderView, String>,
+        summary: Option<String>,
+    },
+    DeciderTest(Result<so_supervisor::services::decider::DeciderTestResult, String>),
+    SessionRuns {
+        id: String,
+        runs: Result<Vec<RunItem>, String>,
+    },
     Detail(Result<Box<RunDetail>, String>),
     /// The insights report; `Ok(None)` when there is no state.db yet.
     Insights(Result<Option<Box<so_supervisor::services::insights::InsightsReport>>, String>),
@@ -333,6 +380,10 @@ pub struct DetailView {
 }
 
 pub struct App {
+    pub sessions_tab: super::tabs::sessions::State,
+    pub usage_tab: super::tabs::usage::State,
+    pub models_tab: super::tabs::models::State,
+    pub settings_tab: super::tabs::settings::State,
     pub theme: Theme,
     pub tab: Tab,
     pub now: DateTime<Utc>,
@@ -370,8 +421,12 @@ pub struct App {
 impl App {
     pub fn new(theme: Theme, now: DateTime<Utc>) -> Self {
         Self {
+            sessions_tab: Default::default(),
+            usage_tab: Default::default(),
+            models_tab: Default::default(),
+            settings_tab: Default::default(),
             theme,
-            tab: Tab::Overview,
+            tab: Tab::Dashboard,
             now,
             tick: 0,
             snap: None,
@@ -477,16 +532,20 @@ impl App {
         if let Some(m) = self.modal.take() {
             return self.modal_key(m, key);
         }
+        if self.tab == Tab::Settings && self.settings_tab.edit.is_some() {
+            return self.settings_tab.on_key(key);
+        }
         self.toast = None;
         if key.code == KeyCode::Char('?') {
             self.modal = Some(Modal::Help);
             return None;
         }
+        let previous_tab = self.tab;
         let plain = !ctrl && !key.modifiers.contains(KeyModifiers::ALT);
         match key.code {
             KeyCode::Tab => self.switch(self.tab.step(1)),
             KeyCode::BackTab => self.switch(self.tab.step(-1)),
-            KeyCode::Char(c @ '1'..='5') if plain => {
+            KeyCode::Char(c @ '1'..='9') if plain => {
                 self.switch(Tab::ALL[usize::from(c as u8 - b'1')]);
             }
             KeyCode::F(5) => return self.refresh(),
@@ -494,13 +553,36 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc if plain => self.back_or_quit(),
             _ => {
                 return match self.tab {
-                    Tab::Overview => None,
+                    Tab::Dashboard => None,
+                    Tab::Sessions => self.sessions_key(key),
+                    Tab::Usage => self.usage_tab.on_key(key),
+                    Tab::Models => {
+                        let effect = self.models_tab.on_key(key);
+                        effect.and_then(|e| {
+                            if self.busy.is_none() {
+                                self.start(e)
+                            } else {
+                                None
+                            }
+                        })
+                    }
+                    Tab::Settings => {
+                        if self.busy.is_some() {
+                            None
+                        } else {
+                            let e = self.settings_tab.on_key(key);
+                            e.and_then(|e| self.start(e))
+                        }
+                    }
                     Tab::Accounts => self.accounts_key(key),
                     Tab::Runs => self.runs_key(key),
                     Tab::Setup => self.setup_key(key),
                     Tab::Levels => self.levels_key(key),
                 };
             }
+        }
+        if self.tab == Tab::Settings && previous_tab != Tab::Settings {
+            return Some(Effect::DeciderGet);
         }
         None
     }
@@ -525,6 +607,9 @@ impl App {
     }
 
     fn switch(&mut self, tab: Tab) {
+        if tab != self.tab && matches!(self.tab, Tab::Runs | Tab::Sessions) {
+            self.detail = None;
+        }
         if tab == Tab::Levels && self.tab != Tab::Levels {
             self.insights_stale = true;
         }
@@ -551,8 +636,11 @@ impl App {
 
     /// `q` and `Esc`: close what is open, else leave.
     fn back_or_quit(&mut self) {
-        if self.tab == Tab::Runs && self.detail.is_some() {
+        if matches!(self.tab, Tab::Runs | Tab::Sessions) && self.detail.is_some() {
             self.detail = None;
+        } else if self.tab == Tab::Sessions && self.sessions_tab.open.is_some() {
+            self.sessions_tab.open = None;
+            self.sessions_tab.runs = None;
         } else if self.tab == Tab::Levels && self.suggest_focus {
             self.suggest_focus = false;
         } else if self.tab == Tab::Levels && self.level_open.is_some() {
@@ -563,7 +651,7 @@ impl App {
     }
 
     /// Moves a selection for a list key; `None` when the key is not a movement.
-    fn movement(code: KeyCode, sel: usize, len: usize) -> Option<usize> {
+    pub(super) fn movement(code: KeyCode, sel: usize, len: usize) -> Option<usize> {
         let last = len.saturating_sub(1);
         Some(match code {
             KeyCode::Down | KeyCode::Char('j') => (sel + 1).min(last),
@@ -628,19 +716,42 @@ impl App {
         }
     }
 
+    fn sessions_key(&mut self, key: KeyEvent) -> Option<Effect> {
+        if let Some(detail) = &mut self.detail {
+            Self::scroll_detail(detail, key.code);
+            return None;
+        }
+        let effect = self
+            .sessions_tab
+            .on_key(key, &self.snap.as_ref()?.sessions)?;
+        if let Effect::Detail { id, .. } = &effect {
+            self.detail = Some(DetailView {
+                id: id.clone(),
+                data: None,
+                scroll: 0,
+                diff: None,
+                diff_key: None,
+                force_diff: false,
+            });
+        }
+        Some(effect)
+    }
+
+    fn scroll_detail(d: &mut DetailView, code: KeyCode) {
+        match code {
+            KeyCode::Down | KeyCode::Char('j') => d.scroll = d.scroll.saturating_add(1),
+            KeyCode::Up | KeyCode::Char('k') => d.scroll = d.scroll.saturating_sub(1),
+            KeyCode::PageDown => d.scroll = d.scroll.saturating_add(PAGE as u16),
+            KeyCode::PageUp => d.scroll = d.scroll.saturating_sub(PAGE as u16),
+            KeyCode::Home | KeyCode::Char('g') => d.scroll = 0,
+            KeyCode::End | KeyCode::Char('G') => d.scroll = u16::MAX,
+            _ => {}
+        }
+    }
+
     fn runs_key(&mut self, key: KeyEvent) -> Option<Effect> {
         if let Some(d) = &mut self.detail {
-            // The detail pane scrolls instead of moving the selection.
-            match key.code {
-                KeyCode::Down | KeyCode::Char('j') => d.scroll = d.scroll.saturating_add(1),
-                KeyCode::Up | KeyCode::Char('k') => d.scroll = d.scroll.saturating_sub(1),
-                KeyCode::PageDown => d.scroll = d.scroll.saturating_add(PAGE as u16),
-                KeyCode::PageUp => d.scroll = d.scroll.saturating_sub(PAGE as u16),
-                KeyCode::Home | KeyCode::Char('g') => d.scroll = 0,
-                // The draw step clamps this to the end of the content.
-                KeyCode::End | KeyCode::Char('G') => d.scroll = u16::MAX,
-                _ => {}
-            }
+            Self::scroll_detail(d, key.code);
         } else if let Some(s) = Self::movement(key.code, self.runs_sel, self.runs().len()) {
             self.runs_sel = s;
             return None;
@@ -1200,8 +1311,42 @@ impl App {
 
     pub fn on_update(&mut self, update: Update) -> Next {
         match update {
+            Update::DeciderView { result, summary } => {
+                self.busy = None;
+                self.settings_tab.summary = summary;
+                match result {
+                    Ok(view) => {
+                        self.settings_tab.view = Some(view);
+                        self.settings_tab.error = None;
+                        self.settings_tab.patch = Default::default();
+                    }
+                    Err(error) => {
+                        self.settings_tab.error = Some(error.clone());
+                        self.say(ToastKind::Err, error);
+                    }
+                }
+                Next::Nothing
+            }
+            Update::DeciderTest(result) => {
+                self.busy = None;
+                if let Err(error) = &result {
+                    self.say(ToastKind::Err, error.clone());
+                }
+                self.settings_tab.result = Some(result);
+                Next::Nothing
+            }
             Update::Snapshot(s) => {
                 self.apply_snapshot(*s);
+                Next::Nothing
+            }
+            Update::SessionRuns { id, runs } => {
+                if self.sessions_tab.open.as_deref() == Some(&id) {
+                    if let Ok(rows) = &runs {
+                        self.sessions_tab.run_sel =
+                            self.sessions_tab.run_sel.min(rows.len().saturating_sub(1));
+                    }
+                    self.sessions_tab.runs = Some(runs);
+                }
                 Next::Nothing
             }
             Update::Detail(r) => {
@@ -1300,7 +1445,7 @@ impl App {
         }
     }
 
-    /// Keeps each selection on the same account or run when the lists change.
+    /// Keeps selections on the same items when the lists change.
     fn apply_snapshot(&mut self, snap: Snapshot) {
         let acc = self.selected_account().map(|a| a.name.clone());
         let run = self.selected_run().map(|r| r.id.clone());
@@ -1312,6 +1457,25 @@ impl App {
             .and_then(|id| snap.runs.iter().position(|r| r.id == id))
             .unwrap_or(self.runs_sel)
             .min(snap.runs.len().saturating_sub(1));
+        let session = self
+            .snap
+            .as_ref()
+            .and_then(|s| s.sessions.get(self.sessions_tab.sel))
+            .map(|s| &s.id);
+        self.sessions_tab.sel = session
+            .and_then(|id| snap.sessions.iter().position(|s| &s.id == id))
+            .unwrap_or(self.sessions_tab.sel)
+            .min(snap.sessions.len().saturating_sub(1));
+        if let Some(id) = &self.sessions_tab.open
+            && !snap.sessions.iter().any(|s| &s.id == id)
+        {
+            self.sessions_tab.open = None;
+            self.sessions_tab.runs = None;
+            self.sessions_tab.run_sel = 0;
+            if self.tab == Tab::Sessions {
+                self.detail = None;
+            }
+        }
         let level = self.levels().get(self.levels_sel).map(|l| l.name.clone());
         self.levels_sel = level
             .and_then(|n| snap.levels.iter().position(|l| l.name == n))

@@ -56,6 +56,9 @@ describe('base handlers cover every endpoint in design 2.1', () => {
     ['runWorkflow', () => endpoints.runWorkflow('ship-feature', { a: 1 })],
     ['getConfig', () => endpoints.getConfig()],
     ['patchConfig', () => endpoints.patchConfig({ runs: { stall_ms: 1 } })],
+    ['getDecider', () => endpoints.getDecider()],
+    ['patchDecider', () => endpoints.patchDecider({ timeout: '30s' })],
+    ['testDecider', () => endpoints.testDecider({})],
     ['postAuth', () => endpoints.postAuth('t')],
   ]
 

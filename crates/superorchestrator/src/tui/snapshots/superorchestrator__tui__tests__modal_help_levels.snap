@@ -1,12 +1,14 @@
 ---
 source: crates/superorchestrator/src/tui/tests.rs
+assertion_line: 1649
 expression: "shot(&mut a, 80, 24)"
 ---
  s╭ Help ────────────────────────────────────────────────────────────────────╮
-  │                                                                          │
+ 1│                                                                          │
   │ Everywhere                                                               │
   │ Tab  S-Tab  next / previous tab                                          │
-  │ 1 2 3 4 5   Overview, Accounts, Runs, Setup, Levels                      │
+  │ 1-5         Dashboard, Sessions, Runs, Accounts, Usage                   │
+  │ 6-9         Levels, Models, Settings, Setup                              │
   │ R  F5       refresh now (the screen refreshes every 2 s)                 │
   │ ?           this help                                                    │
   │ q  Esc      close a pane, or quit at the top level                       │
@@ -23,6 +25,5 @@ expression: "shot(&mut a, 80, 24)"
   │ D           delete level (type its name to confirm)                      │
   │ u           reset to defaults (asks first)                               │
   │             Restart the supervisor after config edits to apply.          │
-  │                                                                          │
- u╰──────────────────────────────────────────────────────────────────────────╯
- Esc close
+ u│                                                                          │
+ E╰──────────────────────────────────────────────────────────────────────────╯

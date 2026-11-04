@@ -8,7 +8,7 @@ use so_store::{RunRow, Store};
 
 use crate::cmd::{install, setup};
 use crate::ctx::Ctx;
-use crate::views::{collect_views_with, open_existing_store};
+use crate::views::{collect_views_at, open_existing_store};
 
 /// How many runs the Runs tab keeps.
 const RECENT_RUNS: usize = 200;
@@ -33,6 +33,7 @@ pub struct AccountRow {
     pub headroom: String,
     /// A cooldown flag is set (the headroom text says until when).
     pub cooling: bool,
+    pub pools: Vec<crate::views::PoolHeadroom>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -75,12 +76,35 @@ pub struct LevelRow {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct SessionItem {
+    pub id: String,
+    pub started_at: DateTime<Utc>,
+    pub title: String,
+    pub run_count: i64,
+    pub active_count: i64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelItem {
+    pub harness: Harness,
+    pub model: String,
+    pub efforts: Vec<String>,
+    pub free: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub sessions: Vec<SessionItem>,
+    pub sessions_error: Option<String>,
+    pub models: Vec<ModelItem>,
+    pub models_refreshed_at: Option<DateTime<Utc>>,
     pub at: DateTime<Utc>,
     pub config_dir: String,
     pub supervisor: Option<SupInfo>,
     pub accounts: Vec<AccountRow>,
     pub accounts_error: Option<String>,
+    pub daily_usage: Vec<so_supervisor::services::usage::DailyUsage>,
+    pub usage_error: Option<String>,
     pub runs: Vec<RunItem>,
     pub active_runs: usize,
     pub pending_review: usize,
@@ -163,6 +187,14 @@ fn recent_runs(store: &Store) -> so_store::Result<(Vec<RunRow>, usize)> {
     Ok((rows, active))
 }
 
+pub fn load_session_runs(ctx: &Ctx, id: &str) -> Result<Vec<RunItem>, String> {
+    let store = open_existing_store(&ctx.paths).ok_or("no run history yet")?;
+    store
+        .list_recent_runs_by_session(id, RECENT_RUNS)
+        .map(|rows| rows.iter().map(run_item).collect())
+        .map_err(|e| e.to_string())
+}
+
 fn checklist(ctx: &Ctx, host: &HostEnv, accounts: &[AccountRow]) -> Vec<Check> {
     let mut out = Vec::new();
     let has_config = ctx.paths.config_toml().exists();
@@ -178,7 +210,7 @@ fn checklist(ctx: &Ctx, host: &HostEnv, accounts: &[AccountRow]) -> Vec<Check> {
         } else {
             "no config.toml yet".into()
         },
-        fix: (!has_config).then(|| "Setup tab (4): run `init`".into()),
+        fix: (!has_config).then(|| "Setup tab (9): run `init`".into()),
     });
 
     let infos = setup::detect_harnesses(ctx, host, &[]).unwrap_or_default();
@@ -217,7 +249,7 @@ fn checklist(ctx: &Ctx, host: &HostEnv, accounts: &[AccountRow]) -> Vec<Check> {
         },
         fix: accounts
             .is_empty()
-            .then(|| "Accounts tab (2): press a to add, i to import".into()),
+            .then(|| "Accounts tab (4): press a to add, i to import".into()),
     });
 
     let enabled: Vec<&AccountRow> = accounts.iter().filter(|a| a.enabled).collect();
@@ -241,7 +273,7 @@ fn checklist(ctx: &Ctx, host: &HostEnv, accounts: &[AccountRow]) -> Vec<Check> {
         } else {
             format!("{signed} of {} enabled", enabled.len())
         },
-        fix: (out_count > 0).then(|| "Accounts tab (2): select one, press l".into()),
+        fix: (out_count > 0).then(|| "Accounts tab (4): select one, press l".into()),
     });
 
     let installed = install::claude_registered(host);
@@ -253,7 +285,7 @@ fn checklist(ctx: &Ctx, host: &HostEnv, accounts: &[AccountRow]) -> Vec<Check> {
         } else {
             "not installed".into()
         },
-        fix: (!installed).then(|| "Setup tab (4): press i, or `superorchestrator install`".into()),
+        fix: (!installed).then(|| "Setup tab (9): press i, or `superorchestrator install`".into()),
     });
 
     let jev = ctx.config().map(|c| c.router.jev).unwrap_or_default();
@@ -293,7 +325,7 @@ fn account_rows(
     from_supervisor: Option<&std::collections::HashSet<String>>,
 ) -> (Vec<AccountRow>, Option<String>) {
     let config = ctx.config().ok();
-    match collect_views_with(ctx, host) {
+    match collect_views_at(ctx, host, now) {
         Ok(views) => (
             views
                 .into_iter()
@@ -306,6 +338,7 @@ fn account_rows(
                         .map(|(p, t)| format!("{p}: {}", short_headroom(t, now)))
                         .collect::<Vec<_>>()
                         .join(", "),
+                    pools: v.pool_headroom,
                     name: v.account.name,
                     harness: v.account.harness,
                     signed_in: v.signed_in,
@@ -365,7 +398,62 @@ pub fn load_snapshot(
             Some(format!("model catalog unavailable: {e:#}")),
         ),
     };
+    let usage = open_existing_store(&ctx.paths).map(|s| {
+        so_supervisor::services::usage::daily(
+            &s,
+            (now.date_naive() - chrono::Duration::days(13))
+                .and_hms_opt(0, 0, 0)
+                .expect("midnight is valid")
+                .and_utc(),
+        )
+    });
+    let (daily_usage, usage_error) = match usage {
+        Some(Ok(rows)) => (rows, None),
+        Some(Err(e)) => (Vec::new(), Some(e.to_string())),
+        None => (Vec::new(), None),
+    };
+    let sessions_result =
+        open_existing_store(&ctx.paths).map(|store| -> so_store::Result<Vec<SessionItem>> {
+            store
+                .list_sessions(so_store::SessionFilter::All, RECENT_RUNS)?
+                .into_iter()
+                .map(|row| {
+                    let stats = so_supervisor::services::sessions::summarize(&store, &row)?.stats;
+                    Ok(SessionItem {
+                        id: row.id.clone(),
+                        started_at: row.started_at,
+                        title: row.cwd.unwrap_or(row.client),
+                        run_count: stats.runs,
+                        active_count: store.count_active_runs_by_session(&row.id)?,
+                    })
+                })
+                .collect()
+        });
+    let (sessions, sessions_error) = match sessions_result {
+        Some(Ok(s)) => (s, None),
+        Some(Err(e)) => (Vec::new(), Some(e.to_string())),
+        None => (Vec::new(), None),
+    };
+    let models = so_router::Catalog::load(&ctx.paths)
+        .map(|c| {
+            c.entries()
+                .into_iter()
+                .map(|(h, m)| ModelItem {
+                    harness: h,
+                    model: m.id.clone(),
+                    efforts: m.efforts.clone(),
+                    free: c.is_free(h, &m.id),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Snapshot {
+        sessions,
+        sessions_error,
+        models,
+        models_refreshed_at: so_supervisor::services::models::last_refresh(&ctx.paths),
+        daily_usage,
+        usage_error,
         at: now,
         config_dir: host.tildify(&ctx.paths.config_dir),
         supervisor: sup,

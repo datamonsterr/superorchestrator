@@ -1,0 +1,28 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 80, 24)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+ 1 Dash 2 Sess 3 Runs 4 Acct 5 Usage 6 Lvls 7 Model 8 Conf 9 Setup
+ Decider  ↑/↓ select  Enter edit  s save  t test  r reload
+ > endpoint         https://openrouter.ai/api/alpha/decisions
+   model            inception/mercury-decide:free  (suggested: inception/mercur
+   fallback_model   ~typesafe/jev-latest  (suggested: ~typesafe/jev-latest)
+   on_unreachable   error
+   timeout          20s
+   min_confidence   0.45
+   min_margin       0.15
+   key env
+   key file
+   key paste
+ Running model: inception/mercury-decide:free
+ Running fallback: ~typesafe/jev-latest
+ Key: Unset OPENROUTER_API_KEY
+ Config: /tmp/config.toml  UI: 127.0.0.1:7878  caps: global 16 children 8
+
+
+
+
+
+ updated 3s ago
+ ↑/↓ select  Enter edit  s save  t test  r reload  ? help  q quit

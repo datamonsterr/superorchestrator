@@ -66,3 +66,21 @@ test('routing page lists levels and adds a model', async ({ page }) => {
   await expect(dialog).toBeHidden()
   await expect(simple.getByText('claude/claude-haiku-5-5/low', { exact: true })).toBeVisible()
 })
+
+test('settings decider tab: change the model, save, then test the decider', async ({ page }) => {
+  await page.goto('/settings')
+  await page.getByRole('tab', { name: 'Decider' }).click()
+  const model = page.getByLabel('Model', { exact: true })
+  await expect(model).toHaveValue('openai/gpt-5-mini')
+  await model.fill('anthropic/claude-haiku-5-5')
+  await page.getByRole('button', { name: 'Save' }).click()
+  await expect(page.getByText('Decider settings saved')).toBeVisible()
+  await expect(model).toHaveValue('anthropic/claude-haiku-5-5')
+  await expect(page.getByTestId('decider-effective')).toContainText('anthropic/claude-haiku-5-5')
+
+  await page.getByRole('button', { name: 'Test decider' }).click()
+  const result = page.getByRole('status', { name: 'Test result' })
+  await expect(result).toContainText('62.5')
+  await expect(result).toContainText('high')
+  await expect(result).toContainText('412 ms')
+})

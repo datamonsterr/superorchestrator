@@ -2665,6 +2665,167 @@ async fn mutations_refresh_an_installed_skill_and_only_an_installed_one() {
 }
 
 #[tokio::test]
+async fn decider_api_paste_and_config_never_return_secret() {
+    let f = fx().await;
+    let secret = "sk-or-api-test-secret-1234";
+    let (status, v) = send_json(
+        &f.app,
+        "PATCH",
+        "/api/v1/decider",
+        json!({"key":{"paste":secret}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(!v.to_string().contains(secret));
+    for path in ["/api/v1/decider", "/api/v1/config"] {
+        let (status, v) = get(&f.app, path).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        assert!(!v.to_string().contains(secret));
+    }
+    let events = f
+        .handle
+        .state()
+        .store
+        .query_events(&so_store::EventQuery {
+            limit: 1000,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(!serde_json::to_string(&events).unwrap().contains(secret));
+    f.handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn decider_test_http_uses_disk_settings() {
+    let f = fx().await;
+    let (status, body) = send_json(
+        &f.app,
+        "PATCH",
+        "/api/v1/decider",
+        json!({"key":{"env":"SO_E5_WEB_KEY_UNSET"}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post(
+        &f.app,
+        "/api/v1/decider/test",
+        Some(json!({"prompt":"small task"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["ok"], false);
+    assert!(body["error"].as_str().unwrap().contains("key"));
+    f.handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn decider_patch_errors_never_echo_submitted_values() {
+    let f = fx().await;
+    let secret = "SECRETVALUE";
+    for body in [
+        json!({"key": secret}),
+        json!({"key": {"paste": 123}}),
+        json!({"key": {"paste": secret, "env": secret}}),
+        json!({"model": 7, "key": {"paste": secret}}),
+        json!({ secret: 1 }),
+        json!(secret),
+    ] {
+        let (status, v) = send_json(&f.app, "PATCH", "/api/v1/decider", body).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+        assert!(!v.to_string().contains(secret), "{v}");
+    }
+    let mut req = anonymous_request("PATCH", "/api/v1/decider", None);
+    *req.body_mut() = Body::from(format!("not json {secret}"));
+    req.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {TEST_TOKEN}").parse().unwrap(),
+    );
+    let (status, _, v) = send(&f.app, req).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    assert!(!v.to_string().contains(secret), "{v}");
+    // Validation failures are caller errors; a broken config file is a server error.
+    let (status, v) = send_json(&f.app, "PATCH", "/api/v1/decider", json!({"model": "a b"})).await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+    std::fs::write(f.dir.path().join("cfg/config.toml"), "not [valid toml").unwrap();
+    let (status, v) = get(&f.app, "/api/v1/decider").await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{v}");
+    let (status, v) = send_json(&f.app, "PATCH", "/api/v1/decider", json!({"model": "a/b"})).await;
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{v}");
+    f.handle.shutdown().await;
+}
+
+#[derive(Clone)]
+struct TraceBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for TraceBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn pasted_decider_key_leaks_nowhere() {
+    let buffer = TraceBuffer(std::sync::Arc::default());
+    let writer = buffer.clone();
+    // Global, because the handlers run on blocking and spawned threads.
+    tracing::subscriber::set_global_default(
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || writer.clone())
+            .with_ansi(false)
+            .finish(),
+    )
+    .unwrap();
+    let f = fx().await;
+    let secret = "sk-or-LEAKTEST-abcdef-7391";
+    let (status, patched) = send_json(
+        &f.app,
+        "PATCH",
+        "/api/v1/decider",
+        json!({"key": {"paste": secret}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{patched}");
+    let (status, decider) = get(&f.app, "/api/v1/decider").await;
+    assert_eq!(status, StatusCode::OK, "{decider}");
+    let (status, config) = get(&f.app, "/api/v1/config").await;
+    assert_eq!(status, StatusCode::OK, "{config}");
+    let events = f
+        .handle
+        .state()
+        .store
+        .query_events(&so_store::EventQuery {
+            limit: 10_000,
+            ..Default::default()
+        })
+        .unwrap();
+    f.handle.shutdown().await;
+    for (what, text) in [
+        ("patch response", patched.to_string()),
+        ("decider response", decider.to_string()),
+        ("config response", config.to_string()),
+        ("events", serde_json::to_string(&events).unwrap()),
+        (
+            "tracing output",
+            String::from_utf8_lossy(&buffer.0.lock().unwrap()).into_owned(),
+        ),
+    ] {
+        assert!(!text.contains(secret), "secret leaked in {what}");
+    }
+    assert!(
+        !buffer.0.lock().unwrap().is_empty(),
+        "tracing captured nothing"
+    );
+    assert_eq!(decider["key"]["source"], "file");
+    assert_eq!(decider["key"]["masked"], "…7391");
+}
+
+#[tokio::test]
 async fn routing_insights_are_authenticated_and_redacted() {
     let f = fx().await;
     let mut run = run_row(&f.session, RunState::Failed);

@@ -6,6 +6,10 @@ import type {
   AgentWriteResult,
   AgentsView,
   ConfigPatch,
+  DeciderPatch,
+  DeciderTestRequest,
+  DeciderTestResult,
+  DeciderView,
   ConfigView,
   DailyUsage,
   DashboardView,
@@ -134,5 +138,8 @@ export const endpoints = {
   // config and auth
   getConfig: (o?: Opt) => request<ConfigView>('/config', o),
   patchConfig: (body: ConfigPatch) => request<ConfigView>('/config', { method: 'PATCH', body }),
+  getDecider: (o?: Opt) => request<DeciderView>('/decider', o),
+  patchDecider: (body: DeciderPatch) => request<DeciderView>('/decider', { method: 'PATCH', body }),
+  testDecider: (body: DeciderTestRequest) => request<DeciderTestResult>('/decider/test', { method: 'POST', body }),
   postAuth: (token: string) => request<void>('/auth', { method: 'POST', body: { token } }),
 } as const

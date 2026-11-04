@@ -19,7 +19,7 @@ use so_supervisor::SupervisorClient;
 use so_supervisor::services::accounts::{FlagAction, apply_flag, flag_pools};
 
 use super::app::{Effect, Launch, SetupStep, StepState, Update};
-use super::data::{SupInfo, load_detail, load_insights, load_snapshot};
+use super::data::{SupInfo, load_detail, load_insights, load_session_runs, load_snapshot};
 use crate::cmd::account::{login_json, write_login_hint};
 use crate::cmd::{install, runs, setup};
 use crate::ctx::Ctx;
@@ -206,6 +206,10 @@ fn read_one(ctx: &Ctx, host: &HostEnv, link: &mut Link, effect: Effect, tx: &Sen
             let snap = load_snapshot(ctx, host, sup, reserved.as_ref(), Utc::now());
             send(tx, Update::Snapshot(Box::new(snap)));
         }
+        Effect::SessionRuns { id } => {
+            let runs = load_session_runs(ctx, &id);
+            send(tx, Update::SessionRuns { id, runs });
+        }
         Effect::Detail { id, diff } => {
             let d = load_detail(ctx, &id).map(|mut d| {
                 // The diff comes from the supervisor (it owns the worktree's git calls).
@@ -215,6 +219,34 @@ fn read_one(ctx: &Ctx, host: &HostEnv, link: &mut Link, effect: Effect, tx: &Sen
                 Box::new(d)
             });
             send(tx, Update::Detail(d));
+        }
+        Effect::DeciderGet | Effect::DeciderSet(_) => {
+            let (method, params) = match effect {
+                Effect::DeciderSet(patch) => (
+                    so_core::proto::METHOD_DECIDER_SET,
+                    serde_json::Value::Object(patch.0),
+                ),
+                _ => (so_core::proto::METHOD_DECIDER_GET, serde_json::json!({})),
+            };
+            let result = link.call(method, params);
+            let summary = ctx.config().ok().map(|c| {
+                format!(
+                    "Config: {}  UI: {}:{}  caps: global {} children {}",
+                    ctx.paths.config_toml().display(),
+                    c.ui.bind,
+                    c.ui.port,
+                    c.limits.global_cap,
+                    c.limits.max_children
+                )
+            });
+            send(tx, Update::DeciderView { result, summary });
+        }
+        Effect::DeciderTest => {
+            let previous_timeout = link.timeout;
+            link.timeout = std::time::Duration::from_secs(125);
+            let result = link.call(so_core::proto::METHOD_DECIDER_TEST, serde_json::json!({}));
+            link.timeout = previous_timeout;
+            send(tx, Update::DeciderTest(result));
         }
         Effect::Insights => {
             let report = load_insights(ctx)
@@ -257,7 +289,34 @@ fn perform(
         }
     };
     Ok(Some(match effect {
-        Effect::Refresh | Effect::Detail { .. } | Effect::Insights => return Ok(None),
+        Effect::Refresh
+        | Effect::Detail { .. }
+        | Effect::SessionRuns { .. }
+        | Effect::Insights
+        | Effect::DeciderGet
+        | Effect::DeciderSet(_)
+        | Effect::DeciderTest => {
+            return Ok(None);
+        }
+        Effect::RefreshModels => {
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            rt.block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(60),
+                    so_supervisor::services::models::refresh_and_save(
+                        &ctx.paths,
+                        host,
+                        &reqwest::Client::new(),
+                        None,
+                    ),
+                )
+                .await??;
+                anyhow::Ok(())
+            })?;
+            "models refreshed".into()
+        }
         Effect::Levels(cmd) => {
             let result = crate::cmd::levels::apply(ctx, cmd)?;
             if result.changed {
@@ -666,7 +725,7 @@ fn step_body(ctx: &Ctx, host: &HostEnv, step: SetupStep) -> Result<(StepState, V
                 return Ok((StepState::Done, vec!["no account is signed out".into()]));
             }
             let mut lines = vec![format!(
-                "{} account(s) signed out. Accounts tab (2), select one, press l:",
+                "{} account(s) signed out. Accounts tab (4), select one, press l:",
                 pending.len()
             )];
             for a in &pending {
@@ -964,6 +1023,46 @@ mod tests {
         );
         assert!(snapshot.supervisor.is_none());
         assert!(snapshot.accounts[0].reserved);
+    }
+
+    #[test]
+    fn decider_set_sends_patch_and_preserves_supervisor_error() {
+        use std::io::{BufRead, BufReader, Write};
+        let d = tempfile::tempdir().unwrap();
+        let sock = d.path().join("rpc.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&sock).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let hello: serde_json::Value = serde_json::from_str(&line).unwrap();
+            writeln!(stream, "{}", serde_json::json!({"jsonrpc":"2.0", "id":hello["id"], "result":{"session_id":"test", "depth":0}})).unwrap();
+            line.clear();
+            reader.read_line(&mut line).unwrap();
+            let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+            assert_eq!(request["method"], so_core::proto::METHOD_DECIDER_SET);
+            assert_eq!(
+                request["params"],
+                serde_json::json!({"model":"example", "key":{"paste":"secret"}})
+            );
+            writeln!(stream, "{}", serde_json::json!({"jsonrpc":"2.0", "id":request["id"], "error":{"code":-32602, "message":"model: rejected"}})).unwrap();
+        });
+        let (ctx, host) = (ctx(d.path()), fake_host(d.path()));
+        let (tx, rx) = channel();
+        let mut link = Link::new(Some(sock), SUP_TIMEOUT).unwrap();
+        let patch = super::super::tabs::settings::Patch(
+            serde_json::json!({"model":"example", "key":{"paste":"secret"}})
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        assert!(!format!("{:?}", Effect::DeciderSet(patch.clone())).contains("secret"));
+        read_one(&ctx, &host, &mut link, Effect::DeciderSet(patch), &tx);
+        assert!(
+            matches!(rx.recv().unwrap(), Update::DeciderView { result: Err(error), .. } if error == "model: rejected")
+        );
+        server.join().unwrap();
     }
 
     #[test]

@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use so_core::proto::{
-    HelloResult, INVALID_REQUEST, METHOD_NOT_FOUND, METHOD_UI_START, PARSE_ERROR, StatusResult,
+    HelloResult, INVALID_PARAMS, INVALID_REQUEST, METHOD_NOT_FOUND, METHOD_UI_START, PARSE_ERROR,
+    StatusResult,
 };
 use so_core::{Config, EventType, Harness, Paths, RunState, SessionKind, new_id};
 use so_store::{RunRow, SessionRow, Store};
@@ -1819,5 +1820,68 @@ async fn replaced_executable_marks_status_hello_and_list_harnesses_stale() {
     );
     let c2 = connect(&h).await;
     assert!(hello(&c2).await.stale);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn decider_rpc_is_inspect_only() {
+    let env = Env::new();
+    let session = session_row();
+    env.store().insert_session(&session).unwrap();
+    let run = run_row(&session.id, RunState::Running, 0);
+    env.store().insert_run(&run).unwrap();
+    let h = env.start().await;
+    let inspect = connect(&h).await;
+    inspect.hello_inspect("cli", "/w", None).await.unwrap();
+    let view: Value = inspect.call("decider_get", json!({})).await.unwrap();
+    assert!(view["endpoint"].is_string());
+    let error = inspect
+        .call::<_, Value>("decider_set", json!({"model": 7}))
+        .await
+        .unwrap_err();
+    match error {
+        ClientError::Rpc(error) => assert!(error.message.contains("model"), "{}", error.message),
+        other => panic!("expected invalid patch error, got {other:?}"),
+    }
+    let updated: Value = inspect
+        .call(
+            "decider_set",
+            json!({"model":"example/decider", "key":{"env":"SO_E5_RPC_UNSET_KEY"}}),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated["model"], "example/decider");
+    let tested: Value = inspect.call("decider_test", json!({})).await.unwrap();
+    assert_eq!(tested["ok"], false);
+    assert!(tested["error"].is_string());
+    // Secret-bearing text never appears in an invalid-params error either.
+    let error = inspect
+        .call::<_, Value>("decider_set", json!({"key": "SECRETVALUE"}))
+        .await
+        .unwrap_err();
+    match error {
+        ClientError::Rpc(error) => {
+            assert_eq!(error.code, INVALID_PARAMS);
+            assert!(!error.message.contains("SECRETVALUE"), "{}", error.message);
+        }
+        other => panic!("expected invalid params, got {other:?}"),
+    }
+    let client = connect(&h).await;
+    hello_run(&client, &env.store(), &run.id, true).await;
+    let denied = client
+        .call::<_, Value>("decider_set", json!({"model": "denied/model"}))
+        .await
+        .unwrap_err();
+    assert_operator_required(denied);
+    let unchanged: Value = inspect.call("decider_get", json!({})).await.unwrap();
+    assert_eq!(unchanged["model"], "example/decider");
+    for method in ["decider_get", "decider_set", "decider_test"] {
+        assert_operator_required(
+            client
+                .call::<_, Value>(method, json!({}))
+                .await
+                .unwrap_err(),
+        );
+    }
     h.shutdown().await;
 }
