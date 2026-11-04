@@ -23,10 +23,16 @@ pub enum AccountsError {
          (agy multi-account is Linux-only, ADR-0005)"
     )]
     AgySecondAccount { name: String, existing: String },
+    #[error("account `{account}` token environment variable `{var}` is missing or empty")]
+    TokenEnv { account: String, var: String },
+    #[error("account `{account}` token file `{path}` is unavailable, empty or insecure")]
+    TokenFile { account: String, path: String },
     #[error("binary `{0}` not found on PATH")]
     BinaryNotFound(String),
     #[error("account `{0}` already exists")]
     AlreadyExists(String),
+    #[error("account `{0}` is not an endpoint account")]
+    NotEndpoint(String),
     #[error("account `{0}` not found")]
     NotFound(String),
     #[error("credential home {0} does not exist")]

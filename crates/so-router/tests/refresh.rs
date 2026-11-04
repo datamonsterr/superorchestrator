@@ -65,6 +65,7 @@ async fn refresh_merges_reports_and_caches_models_dev() {
         stub(d.path(), b);
     }
     let host = HostEnv {
+        vars: Default::default(),
         home: home.clone(),
         path_var: Some(d.path().join("bin").to_string_lossy().into_owned()),
         platform: Platform::Linux,
@@ -229,6 +230,7 @@ async fn claude_documented_models_require_an_enabled_account() {
     let d = tempfile::tempdir().unwrap();
     let paths = Paths::from_dir(d.path().join("cfg"));
     let host = HostEnv {
+        vars: Default::default(),
         home: d.path().into(),
         path_var: None,
         platform: Platform::Linux,

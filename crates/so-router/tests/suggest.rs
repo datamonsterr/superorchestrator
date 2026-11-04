@@ -31,6 +31,7 @@ fn catalog(entries: &[(&str, Tier)]) -> Catalog {
                 tier: *tier,
                 efforts: vec!["low".into(), "high".into()],
                 pool: None,
+                endpoint: None,
                 cost: Cost::Included,
             });
     }
@@ -179,6 +180,7 @@ fn catalog_with(entries: &[(Harness, &str, Cost)]) -> Catalog {
                 tier: Tier::Fast,
                 efforts: vec!["low".into()],
                 pool: None,
+                endpoint: None,
                 cost: *cost,
             });
     }

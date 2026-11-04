@@ -123,7 +123,10 @@ impl RunManager {
         }
         AnyDriver::for_harness(account.harness, self.inner.driver_cfg)
             .map_err(|e| rpc(UNAVAILABLE, e.to_string()))?;
-        self.launch_for(&account)?;
+        let manager = self.clone();
+        let launch_account = account.clone();
+        self.blocking(move || manager.launch_for(&launch_account))
+            .await??;
         Ok(account)
     }
 

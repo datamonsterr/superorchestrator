@@ -599,7 +599,17 @@ pub enum SignInState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct EndpointView {
+    pub preset: String,
+    pub base_url: String,
+    pub models: Vec<String>,
+    pub token_source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct AccountView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<EndpointView>,
     pub name: String,
     pub harness: Harness,
     pub signed_in: SignInState,
@@ -978,5 +988,49 @@ mod tests {
         let debug = format!("{hello:?}");
         assert!(!debug.contains("private-test-token"));
         assert!(debug.contains("[REDACTED]"));
+    }
+}
+
+#[cfg(test)]
+mod endpoint_view_tests {
+    use super::*;
+
+    #[test]
+    fn endpoint_view_serializes_without_credentials() {
+        let view = EndpointView {
+            preset: "zai".into(),
+            base_url: "https://example.com".into(),
+            models: vec![],
+            token_source: "env:KEY".into(),
+        };
+        let value = serde_json::to_value(view).unwrap();
+        assert_eq!(value["token_source"], "env:KEY");
+        assert_eq!(value["models"], serde_json::json!([]));
+        assert!(value.get("token").is_none());
+        let mut account = AccountView {
+            name: "endpoint-test".into(),
+            reserved: false,
+            harness: Harness::Claude,
+            signed_in: SignInState::SignedIn,
+            enabled: true,
+            cap: 1,
+            active_runs: 0,
+            headroom: vec![],
+            error: None,
+            priority: None,
+            pools: None,
+            flags: None,
+            endpoint: None,
+        };
+        assert!(
+            serde_json::to_value(&account)
+                .unwrap()
+                .get("endpoint")
+                .is_none()
+        );
+        account.endpoint = Some(serde_json::from_value(value).unwrap());
+        let value = serde_json::to_value(&account).unwrap();
+        assert_eq!(value["endpoint"]["preset"], "zai");
+        assert_eq!(value["endpoint"]["token_source"], "env:KEY");
     }
 }

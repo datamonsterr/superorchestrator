@@ -80,6 +80,8 @@ pub struct AppState {
     pub opts: Arc<WebOptions>,
     pub limiter: Arc<RateLimiter>,
     pub login_codes: Arc<LoginCodes>,
+    pub endpoint_logins:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, crate::types::SignInStatus>>>,
     /// Set to `true` to stop the server; open SSE streams end when it is.
     pub stop: Arc<tokio::sync::watch::Sender<bool>>,
     /// One model refresh at a time.

@@ -10,6 +10,7 @@ import { HeadroomBar } from '@/components/common/HeadroomBar'
 import { SignInState } from '@/components/common/SignInState'
 import { RelativeTime } from '@/components/common/RelativeTime'
 import type { AccountView } from '@/api/types'
+import { presetBadge } from './endpoint-presets'
 
 export interface AccountActions {
   onToggle: (account: AccountView, enabled: boolean) => void
@@ -53,6 +54,11 @@ export function AccountsTable({ accounts, actions }: { accounts: AccountView[]; 
             </TableCell>
             <TableCell>
               <HarnessBadge harness={a.harness} />
+              {a.endpoint && (
+                <Badge variant="outline" className="ml-1" title={`${a.endpoint.base_url} (${a.endpoint.token_source})`}>
+                  {presetBadge(a.endpoint.preset)}
+                </Badge>
+              )}
             </TableCell>
             <TableCell>
               <SignInState state={a.signed_in} />

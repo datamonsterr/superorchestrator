@@ -546,6 +546,7 @@ mod tests {
         std::fs::write(&p, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         let host = HostEnv {
+            vars: Default::default(),
             home: d.path().to_path_buf(),
             path_var: Some(bindir.to_string_lossy().into_owned()),
             platform: so_core::Platform::Linux,

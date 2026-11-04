@@ -8,11 +8,22 @@ use so_core::paths::expand_tilde_with;
 
 use crate::error::Result;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HostEnv {
+    pub vars: std::collections::BTreeMap<String, String>,
     pub home: PathBuf,
     pub path_var: Option<String>,
     pub platform: Platform,
+}
+
+impl std::fmt::Debug for HostEnv {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostEnv")
+            .field("home", &self.home)
+            .field("path_var", &self.path_var)
+            .field("platform", &self.platform)
+            .finish_non_exhaustive()
+    }
 }
 
 impl HostEnv {
@@ -23,6 +34,9 @@ impl HostEnv {
             .filter(|h| !h.is_empty())
             .ok_or(so_core::CoreError::NoHomeDir)?;
         Ok(Self {
+            vars: std::env::vars_os()
+                .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+                .collect(),
             home: PathBuf::from(home),
             path_var: std::env::var("PATH").ok(),
             platform: Platform::current(),
@@ -109,6 +123,7 @@ mod tests {
     #[test]
     fn codex_home_prefers_a_non_empty_env_value() {
         let host = HostEnv {
+            vars: Default::default(),
             home: PathBuf::from("/h"),
             path_var: None,
             platform: Platform::Linux,

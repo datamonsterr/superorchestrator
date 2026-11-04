@@ -37,6 +37,7 @@ fn setup() -> Env {
 async fn route_accepts_an_unquoted_multi_word_task() {
     let e = setup();
     let host = HostEnv {
+        vars: Default::default(),
         home: e.home.clone(),
         path_var: Some("/usr/bin:/bin".into()),
         platform: Platform::current(),
@@ -73,6 +74,7 @@ fn route_without_a_task_is_a_usage_error() {
 async fn route_json_goes_through_the_supervisor() {
     let e = setup();
     let host = HostEnv {
+        vars: Default::default(),
         home: e.home.clone(),
         path_var: Some("/usr/bin:/bin".into()),
         platform: Platform::current(),
@@ -327,6 +329,7 @@ async fn route_after_adding_codex(drop_codex_refs: bool, args: &[&str]) -> std::
     .save(&e.paths())
     .unwrap();
     let host = HostEnv {
+        vars: Default::default(),
         home: e.home.clone(),
         path_var: Some("/usr/bin:/bin".into()),
         platform: Platform::current(),
@@ -404,6 +407,7 @@ async fn route_fails_when_the_decider_is_unreachable() {
         e.cmd().args(["config", "set", k, v]).assert().success();
     }
     let host = HostEnv {
+        vars: Default::default(),
         home: e.home.clone(),
         path_var: Some("/usr/bin:/bin".into()),
         platform: Platform::current(),
@@ -433,6 +437,7 @@ async fn route_fails_when_the_decider_is_unreachable() {
 async fn route_model_with_an_effort_the_harness_rejects_fails() {
     let e = setup();
     let host = HostEnv {
+        vars: Default::default(),
         home: e.home.clone(),
         path_var: Some("/usr/bin:/bin".into()),
         platform: Platform::current(),

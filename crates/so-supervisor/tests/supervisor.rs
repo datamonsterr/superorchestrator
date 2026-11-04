@@ -918,6 +918,7 @@ async fn list_harnesses_reports_accounts_load_and_choices() {
         .with_idle_exit(Duration::from_secs(600))
         .with_lock_wait(Duration::ZERO)
         .with_host(so_accounts::HostEnv {
+            vars: Default::default(),
             home: env.dir.path().join("fakehome"),
             path_var: None,
             platform: so_core::Platform::Linux,
@@ -1031,6 +1032,7 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
         .with_idle_exit(Duration::from_secs(600))
         .with_lock_wait(Duration::ZERO)
         .with_host(so_accounts::HostEnv {
+            vars: Default::default(),
             home: env.dir.path().join("fakehome"),
             path_var: None,
             platform: so_core::Platform::Linux,
@@ -1180,6 +1182,7 @@ async fn harnesses_views_show_effective_headroom() {
         .with_idle_exit(Duration::from_secs(600))
         .with_lock_wait(Duration::ZERO)
         .with_host(so_accounts::HostEnv {
+            vars: Default::default(),
             home: env.dir.path().join("fakehome"),
             path_var: None,
             platform: so_core::Platform::Linux,
@@ -1774,6 +1777,7 @@ async fn replaced_executable_marks_status_hello_and_list_harnesses_stale() {
         .opts(Duration::from_secs(600))
         .with_exe_watch(watch)
         .with_host(so_accounts::HostEnv {
+            vars: Default::default(),
             home: env.dir.path().join("fakehome"),
             path_var: None,
             platform: so_core::Platform::Linux,

@@ -40,6 +40,35 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Atomically writes a private endpoint token with a trailing newline.
+pub fn write_key_file(path: &Path, token: &str) -> Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    create_private_dirs(dir).map_err(|e| CoreError::io(dir, e))?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| CoreError::io(dir, e))?;
+    write_atomic(path, format!("{token}\n").as_bytes())
+}
+
+/// Creates a private key only if it does not already exist.
+pub fn write_key_file_new(path: &Path, token: &str) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    create_private_dirs(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)?;
+    let result = (|| {
+        writeln!(file, "{token}")?;
+        file.sync_all()
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(path);
+    }
+    result
+}
+
 /// Creates `dir` and its missing parents with mode 0700.
 pub fn create_private_dirs(dir: &Path) -> std::io::Result<()> {
     std::fs::DirBuilder::new()
@@ -88,6 +117,54 @@ pub fn write_file_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn create_new_key_has_one_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys/key");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = ["first", "second"]
+            .into_iter()
+            .map(|token| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    write_key_file_new(&path, token)
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
+        assert_eq!(
+            results
+                .iter()
+                .filter(|r| r
+                    .as_ref()
+                    .is_err_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn key_file_restricts_existing_directory() {
+        let d = tempfile::tempdir().unwrap();
+        let dir = d.path().join("keys");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = dir.join("account.key");
+        write_key_file(&path, "secret").unwrap();
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "secret\n");
+    }
 
     #[test]
     fn file_atomic_creates_private_dirs_and_files_and_keeps_mode_and_symlinks() {

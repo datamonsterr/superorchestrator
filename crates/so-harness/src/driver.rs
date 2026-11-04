@@ -608,6 +608,7 @@ mod tests {
                     cwd: dir.path().into(),
                     account: AccountFile::new("test-acc", h, "/unused", "test").unwrap(),
                     launch: Launch {
+                        env_remove: vec![],
                         program: "/bin/true".into(),
                         vars: vec![],
                         argv_prefix: vec![],
@@ -784,6 +785,7 @@ mod tests {
             cwd: "/cwd".into(),
             account: AccountFile::new("claude-acc1", Harness::Claude, "~/.c", "claude").unwrap(),
             launch: Launch {
+                env_remove: vec![],
                 pass_env: vec![],
                 program: "/bin/claude".into(),
                 vars: vec![("TOKEN_VAR".into(), "launch-secret".into())],

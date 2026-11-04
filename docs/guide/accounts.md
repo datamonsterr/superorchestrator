@@ -72,6 +72,8 @@ Supervisor spawns that are not harnesses are intentionally not isolated: review
 `cmd:` and `gh` checks, git worktree commands, notifications and process inspection
 keep the supervisor's environment.
 
+A `claude` account can also run against a coding-plan API (Z.ai GLM, Kimi Code, MiniMax or a custom URL) instead of an Anthropic subscription. See [endpoint accounts](endpoints.md).
+
 ## Credential homes
 
 The credential home holds the login and the harness state. It lives under `$HOME`, so you can sign in with the harness's own CLI. Superorchestrator links to it and never copies credentials.
@@ -133,7 +135,7 @@ No level lists a Claude model by default, so auto routing does not use Claude ac
 |---|---|
 | codex | `superorchestrator account login <name>`. With a terminal it runs `codex login`. Without one it runs `codex login --device-auth` and prints a URL and a code. |
 | opencode | `superorchestrator account login <name>` runs `opencode auth login` with the account's environment. It needs a terminal. |
-| claude | Run the wrapper (`<name>`), then type `/login` inside the session. |
+| claude | For a regular account, run the wrapper (`<name>`), then type `/login` inside the session. An endpoint account validates with `account login <name>` (one request to the configured endpoint). |
 | agy | Run the wrapper (`<name>`), then sign in from inside the agy session. |
 
 The web UI shows the same steps on the Accounts page.

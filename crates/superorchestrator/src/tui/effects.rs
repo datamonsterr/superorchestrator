@@ -296,8 +296,34 @@ fn perform(
             }
             text
         }
+        Effect::AddEndpointAccount {
+            name,
+            endpoint,
+            token,
+        } => {
+            let cfg = ctx.config()?;
+            manage::add_endpoint(
+                &ctx.paths,
+                &cfg,
+                host,
+                &name,
+                endpoint,
+                token.as_ref().map(|s| s.0.as_str()),
+                None,
+            )?;
+            skill_warnings(format!("added endpoint account {name}"))
+        }
         Effect::Login(name) => {
             let account = load_account(&ctx.paths, &name)?;
+            if account.endpoint.is_some() {
+                let message = match crate::cmd::runs::runtime()?
+                    .block_on(so_harness::endpoint::validate_login(&account, host))?
+                {
+                    Ok(()) => format!("endpoint login validated for {name}"),
+                    Err((kind, detail)) => anyhow::bail!("{kind}: {detail}"),
+                };
+                return Ok(Some(message));
+            }
             // Fails early when the harness binary is missing.
             let plan = manage::login_command(&account, host, true)?;
             let (program, args) = plan.argv.split_first().context("empty login command")?;
@@ -722,6 +748,7 @@ mod tests {
 
     fn fake_host(dir: &std::path::Path) -> HostEnv {
         HostEnv {
+            vars: Default::default(),
             home: dir.join("home"),
             path_var: Some(dir.join("bin").display().to_string()),
             platform: so_core::Platform::Linux,
@@ -756,7 +783,11 @@ mod tests {
         action_loop(ctx.clone(), fake_host(d.path()), erx, utx);
         let update = urx.recv().unwrap();
         assert!(matches!(&update, Update::Done { ok: false, text } if text.contains("overlaps")));
-        let mut app = super::super::app::App::new(super::super::theme::Theme::plain(), Utc::now());
+        let mut app = super::super::app::App::new(
+            super::super::theme::Theme::plain(),
+            Utc::now(),
+            ctx.paths.clone(),
+        );
         app.on_update(update);
         assert!(app.toast.unwrap().text.contains("overlaps"));
         assert_eq!(
@@ -818,6 +849,36 @@ mod tests {
         let (tx, _rx) = channel();
         let e = perform(&ctx, &host, Effect::Login("nope".into()), &tx).unwrap_err();
         assert!(e.to_string().contains("not found"), "{e}");
+    }
+
+    #[test]
+    fn endpoint_login_failure_is_reported_as_failure() {
+        let d = tempfile::tempdir().unwrap();
+        let ctx = ctx(d.path());
+        let host = fake_host(d.path());
+        let mut account = so_core::AccountFile::new(
+            "endpoint",
+            so_core::Harness::Claude,
+            "~/.endpoint",
+            "claude",
+        )
+        .unwrap();
+        account.endpoint = Some(
+            serde_json::from_value(
+                serde_json::json!({"preset":"zai", "token_env":"MISSING_TEST_TOKEN"}),
+            )
+            .unwrap(),
+        );
+        account.save(&ctx.paths).unwrap();
+        let (etx, erx) = channel();
+        let (utx, urx) = channel();
+        etx.send(Effect::Login("endpoint".into())).unwrap();
+        drop(etx);
+        action_loop(ctx, host, erx, utx);
+        assert!(matches!(
+            urx.recv().unwrap(),
+            Update::Done { ok: false, .. }
+        ));
     }
 
     #[test]

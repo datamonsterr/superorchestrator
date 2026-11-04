@@ -17,6 +17,7 @@ export interface AccountView {
   active_runs: number;
   cap: number;
   enabled: boolean;
+  endpoint?: EndpointView | null;
   /** Set when this account could not be inspected (e.g. an unreadable account file); the other fields are then placeholders. */
   error?: string | null;
   /** Active manual or automatic cooldowns. */
@@ -44,9 +45,11 @@ export interface AckResult {
 }
 
 export interface AddAccountRequest {
-  harness: Harness;
+  endpoint?: EndpointRequest | null;
+  harness?: Harness | null;
   home?: string | null;
   name: string;
+  token?: string | null;
 }
 
 export interface AgentDetail {
@@ -176,6 +179,27 @@ export interface Defaults {
 export interface DoctorReport {
   checks: Check[];
   ok: boolean;
+}
+
+export interface EndpointRequest {
+  base_url?: string | null;
+  models?: string[];
+  preset: string;
+  slots?: EndpointSlots;
+  token_env?: string | null;
+}
+
+export interface EndpointSlots {
+  haiku?: string | null;
+  opus?: string | null;
+  sonnet?: string | null;
+}
+
+export interface EndpointView {
+  base_url: string;
+  models: string[];
+  preset: string;
+  token_source: string;
 }
 
 /** Classification of a failed run's error. */
@@ -635,16 +659,17 @@ export interface SessionSummary {
   status: SessionStatus;
 }
 
-export type SignInMode = "device_auth" | "manual";
+export type SignInMode = "device_auth" | "manual" | "endpoint";
 
 export type SignInProgress = "pending" | "done" | "expired" | "failed";
 
-export type SignInStart = { code: string; expires_at: string; mode: "device_auth"; url: string } | { command: string; cwd?: string | null; mode: "manual"; note?: string | null };
+export type SignInStart = { kind?: string | null; message?: string | null; mode: "endpoint"; signed_in: SignInState; state: SignInProgress } | { code: string; expires_at: string; mode: "device_auth"; url: string } | { command: string; cwd?: string | null; mode: "manual"; note?: string | null };
 
 /** Sign-in state from an auth-file existence check. */
 export type SignInState = "signed_in" | "signed_out" | "unknown";
 
 export interface SignInStatus {
+  kind?: string | null;
   message?: string | null;
   mode: SignInMode;
   signed_in: SignInState;

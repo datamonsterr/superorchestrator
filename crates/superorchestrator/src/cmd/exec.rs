@@ -26,13 +26,20 @@ pub fn run(ctx: &Ctx, account: &str, args: &[String]) -> Result<std::convert::In
 
     record_session(&ctx.paths.state_db(), account);
 
-    let err = Command::new(&launch.program)
-        .args(&launch.argv_prefix)
+    let err = command(&launch, args).exec();
+    Err(err).with_context(|| format!("could not exec {}", launch.program.display()))
+}
+
+fn command(launch: &so_accounts::Launch, args: &[String]) -> Command {
+    let mut cmd = Command::new(&launch.program);
+    cmd.args(&launch.argv_prefix)
         .args(&launch.extra_args)
         .args(args)
-        .envs(launch.vars.iter().map(|(k, v)| (k, v)))
-        .exec();
-    Err(err).with_context(|| format!("could not exec {}", launch.program.display()))
+        .envs(launch.vars.iter().map(|(k, v)| (k, v)));
+    for name in &launch.env_remove {
+        cmd.env_remove(name);
+    }
+    cmd
 }
 
 /// Best effort: any store problem is ignored (logged only at debug level).
@@ -64,5 +71,27 @@ fn record_session(db: &Path, account: &str) {
         && debug_enabled()
     {
         eprintln!("superorchestrator: could not record session: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn command_applies_env_and_removals() {
+        let launch = so_accounts::Launch {
+            program: "/bin/true".into(),
+            pass_env: vec![],
+            vars: vec![("ANTHROPIC_API_KEY".into(), "secret".into())],
+            env_remove: vec!["ANTHROPIC_AUTH_TOKEN".into()],
+            argv_prefix: vec![],
+            extra_args: vec![],
+        };
+        let cmd = super::command(&launch, &[]);
+        let vars: std::collections::HashMap<_, _> = cmd.get_envs().collect();
+        assert_eq!(
+            vars[std::ffi::OsStr::new("ANTHROPIC_API_KEY")],
+            Some(std::ffi::OsStr::new("secret"))
+        );
+        assert_eq!(vars[std::ffi::OsStr::new("ANTHROPIC_AUTH_TOKEN")], None);
     }
 }

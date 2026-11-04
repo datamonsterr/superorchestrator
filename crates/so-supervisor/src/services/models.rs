@@ -115,6 +115,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let paths = Paths::from_dir(d.path().join("cfg"));
         let host = HostEnv {
+            vars: Default::default(),
             home: d.path().to_path_buf(),
             path_var: None,
             platform: Platform::Linux,
@@ -160,6 +161,7 @@ mod tests {
         std::fs::create_dir_all(&paths.config_dir).unwrap();
         std::fs::write(paths.config_toml(), "not = [valid\n").unwrap();
         let host = HostEnv {
+            vars: Default::default(),
             home: d.path().to_path_buf(),
             path_var: None,
             platform: Platform::Linux,

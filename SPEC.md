@@ -134,6 +134,42 @@ enabled = true
 pools = ["default"]          # agy: ["gemini", "claude"]
 ```
 
+A `claude` account may carry an `[endpoint]` table. Such an account is an **endpoint account** ([ADR-0010](docs/adr/0010-endpoint-accounts.md)). Its Claude Code process calls an Anthropic-compatible coding-plan API instead of an Anthropic subscription:
+
+```toml
+name = "glm-1"
+harness = "claude"
+home = "~/.glm-1"
+
+[endpoint]
+preset = "zai"                              # zai | kimi | minimax | custom
+base_url = "https://api.z.ai/api/anthropic" # preset default; required for custom
+token_file = "~/.config/superorchestrator/keys/glm-1.key"   # or: token_env = "ZAI_API_KEY"
+# token_var = "ANTHROPIC_AUTH_TOKEN"        # preset default; or ANTHROPIC_API_KEY
+# models = ["glm-5.3"]                      # required for custom
+[endpoint.slots]                            # preset defaults; all three required for custom
+# opus = "glm-5.3"
+# sonnet = "glm-5.3"
+# haiku = "glm-5.3-flash"
+```
+
+Rules:
+- Only `claude` accounts may have an `[endpoint]`.
+- Exactly one token source: `token_env` (the name of a variable in the supervisor's environment) or `token_file`. The token value is never stored in account config.
+- `token_var` is `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`. The preset sets the default.
+- `base_url` must start with `https://`, or be `http://127.0.0.1` or `http://localhost` (with an optional port). `custom` requires `base_url`, a non-empty `models` list and all three slots.
+- `models` lists the model ids the account serves. When it is empty, the account serves the catalog models whose endpoint is its preset (8.1).
+- Unknown keys in `[endpoint]` and `[endpoint.slots]` are rejected.
+
+Preset defaults:
+
+| Preset | Base URL | Token variable | Slots (opus / sonnet / haiku) | Extra variables |
+|---|---|---|---|---|
+| `zai` | `https://api.z.ai/api/anthropic` | `ANTHROPIC_AUTH_TOKEN` | `glm-5.3` / `glm-5.3` / `glm-5.3-flash` | `API_TIMEOUT_MS=3000000`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` |
+| `kimi` | `https://api.kimi.ai/coding/` (China: `https://api.kimi.com/coding/`, set with `base_url`) | `ANTHROPIC_API_KEY` | `k3.1-pro` for all three | none |
+| `minimax` | `https://api.minimax.io/anthropic` | `ANTHROPIC_AUTH_TOKEN` | `MiniMax-M3.1-Flash` for all three | none |
+| `custom` | none | `ANTHROPIC_AUTH_TOKEN` | none | none |
+
 Account names match `^[a-z][a-z0-9-]{1,31}$`. The name doubles as the wrapper command name, so it must not shadow a real binary (`codex`, `agy`, `opencode`, `claude`).
 
 ### 5.2 Credential homes and environment
@@ -146,6 +182,25 @@ Account names match `^[a-z][a-z0-9-]{1,31}$`. The name doubles as the wrapper co
 | agy | `~/.<name>` holding `.gemini/` | `--gemini_dir=<home>/.gemini` (a per-run gemini dir for supervised runs), with `HOME` unchanged ([ADR-0003](docs/adr/0003-agy-accounts-isolate-gemini-dir.md), [ADR-0005](docs/adr/0005-agy-runs-use-per-run-gemini-dir.md)) |
 
 Credential homes live in `$HOME`, so a person can log in with the normal CLI through the wrapper. Superorchestrator only links to them.
+
+#### Endpoint launch environment
+
+For an endpoint account, `build_launch` adds these variables to the claude environment above:
+
+- `ANTHROPIC_BASE_URL` set to the resolved base URL.
+- The token under `token_var`.
+- `ANTHROPIC_MODEL` and `ANTHROPIC_DEFAULT_OPUS_MODEL` set to the opus slot model, `ANTHROPIC_DEFAULT_SONNET_MODEL` to the sonnet slot model, and `ANTHROPIC_DEFAULT_HAIKU_MODEL` to the haiku slot model.
+- The preset's extra variables (Z.ai only).
+
+`CLAUDE_CONFIG_DIR` is always set, so settings and sessions stay isolated per account. The launch also removes the other key variable (`ANTHROPIC_API_KEY` when `token_var` is `ANTHROPIC_AUTH_TOKEN`, and the reverse), so the operator's own Anthropic key cannot reach the request. Supervised runs, wrappers and `runs join` all call `build_launch`, so they get the same environment.
+
+The token is resolved at launch and never saved in config:
+- `token_env`: the variable must be set and non-empty in the environment of the process that launches the harness.
+- `token_file`: the target must be a regular file with mode 0600 or 0400. A symlink resolving to a regular file is accepted. `~` is expanded and a trailing newline is trimmed.
+
+A missing token is an error that names the account and the source, never the value. The token is redacted from logs and from the `Debug` form of the launch.
+
+Pasted tokens (CLI `--token-stdin`, web UI, TUI) are written to `<config dir>/keys/<name>.key`. The directory is mode 0700 and the file is mode 0600. The account's `token_file` points at it.
 
 ### 5.3 Wrappers
 
@@ -161,6 +216,7 @@ exec superorchestrator exec codex-acc2 -- "$@"
 ### 5.4 Commands
 
 - `account add <harness> --name <name> [--home PATH]`: creates the home, writes the toml and the wrapper, then runs the login.
+- `account add <name> --endpoint <preset> [--base-url URL] [--token-env VAR | --token-stdin] [--model ID ...] [--opus ID --sonnet ID --haiku ID]`: adds an endpoint account. Presets are `zai`, `kimi`, `minimax` and `custom`. The harness is `claude`. The name is the positional argument; `--name`, `--count` and `--home` are refused. `--token-stdin` reads one line from standard input and writes it to the key file. Repeat `--model` for multiple models; custom accounts require models and all three slot flags.
 - `account import <name> --harness H --home PATH`: links an existing home without copying credentials.
 - `account import --scan`: detects the existing layout and offers an import for each account found:
   - `~/.codex`, `~/.codex-accN`
@@ -172,6 +228,10 @@ exec superorchestrator exec codex-acc2 -- "$@"
 - `account remove <name>`: asks the user to type the name, unless `--yes` is passed. Removes the toml and the wrapper. Deletes the credential home only with `--purge`.
 - `account enable|disable <name>`
 - `account flag <name> [--pool P] --until <time>|--hours N|--clear`: manual cooldown.
+
+An endpoint account is signed in when its token resolves: the variable is set and non-empty, or the key file exists with mode 0600 or 0400. CLI `account login`, TUI `l`, and web `POST /accounts/:name/login` share `so_harness::endpoint::validate_login`. Each validation sends one `POST {base_url}/v1/messages` with `max_tokens: 1` on the haiku slot model and reports the classified result (ok, auth, quota, rate limit or other). The web POST validates and caches the result; `GET /accounts/:name/login` returns that cached result and does not validate again. The request uses `x-api-key` when `token_var` is `ANTHROPIC_API_KEY` and `Authorization: Bearer` otherwise, and times out after 20 s. The reported detail is redacted.
+
+The ignored integration test `real_endpoint_smoke` in `crates/so-harness/tests/endpoint.rs` reads `SO_SMOKE_ENDPOINT_URL`, `SO_SMOKE_ENDPOINT_TOKEN_VAR`, `SO_SMOKE_ENDPOINT_TOKEN`, and `SO_SMOKE_ENDPOINT_MODEL`; if any is unset, it prints a skip message. Otherwise, it calls the real endpoint and requires validation to succeed.
 
 The sign-in check only tests that the harness's auth file exists. Auth file contents are never read into prompts or logs, never printed and never served.
 
@@ -199,6 +259,8 @@ Headroom is recorded per (account, pool) with these fields:
 ### 6.3 Exhaustion
 
 When a run fails with a quota, rate-limit or auth error (`classify_error`), the (account, pool) is marked exhausted until the reported reset time. When no reset time is known, it is marked for `usage.default_cooldown` (default 5 h). The run then fails over (section 8.5).
+
+Endpoint accounts (5.1) have no probe, because none of the three providers documents a usage API. Their headroom comes from the local ledger, and quota errors drive the cooldown. Quota errors mark the pool exhausted for `usage.default_cooldown`, or until the reset time when the message gives one. Z.ai quota messages carry `Your limit will reset at YYYY-MM-DD HH:MM:SS`, which is UTC+8. The provider error codes and messages that `classify_error` recognizes are listed in the [endpoint guide](docs/guide/endpoints.md#error-codes).
 
 ### 6.4 macOS
 
@@ -314,6 +376,16 @@ A run whose process died unexpectedly is resumed once from its native session, i
 - `agy models`
 - documented Claude model list when an enabled Claude account exists
 
+Catalog entries of the `claude` harness may name an `endpoint` preset. Those entries list no efforts, so their refs have no effort segment (`claude/glm-5.3`). The default catalog ships these:
+
+| Preset | Models (tier) |
+|---|---|
+| `zai` | `glm-5.3` (high), `glm-5.3-flash` (fast) |
+| `kimi` | `k3.1-pro` (high), `k3.1-pro-highspeed` (mid), `k3` (mid), `kimi-for-coding` (mid) |
+| `minimax` | `MiniMax-M3.1-Flash` (mid) |
+
+All of them have `cost = "included"`.
+
 The catalog is used only for discovery, validation, tiers and the free flag. `models refresh` reports listed models that the catalog does not know and catalog models that no level lists, and never edits config.
 
 ### 8.2 Models and levels
@@ -367,7 +439,7 @@ Every suggestion includes its stable id, rationale, full proposed `levels` and d
 
 ### 8.3 Decision procedure (`route`)
 
-1. **Eligible models.** Keep the models listed on levels whose harness has at least one enabled account with headroom for the model's pool and below its cap. Accounts in `orchestrator.reserved_accounts` do not count unless the call pins `account`; a model reachable only through reserved accounts is dropped, and `list_harnesses` reports it with `why: "account reserved"` (reserved rows carry `reserved: true`). There is no role filter. Drop the models the call excludes (`exclude`, a list of model refs). Claude rank (8.4) applies.
+1. **Eligible models.** Keep the models listed on levels whose harness has at least one enabled account with headroom for the model's pool and below its cap. Accounts in `orchestrator.reserved_accounts`, including endpoint accounts, do not count unless the call pins `account`; a model reachable only through reserved accounts is dropped, and `list_harnesses` reports it with `why: "account reserved"` (reserved rows carry `reserved: true`). There is no role filter. Drop the models the call excludes (`exclude`, a list of model refs). Claude rank (8.4) applies.
 2. **Complexity.** The router needs one number, complexity from 0 to 100, to pick a level. It comes from the first source below that applies.
    - **Decider.** If an OpenRouter key is configured (`router.jev.key_env`, default `OPENROUTER_API_KEY`, or `router.jev.key_file`) and more than one model is eligible, call `POST https://openrouter.ai/api/alpha/decisions` with model `router.jev.model` (default `inception/mercury-decide:free`). The model is any OpenRouter model id, set in `config.toml` or by `SUPERORCHESTRATOR_ROUTER_MODEL`; the environment beats the config, which beats the default, and an empty value counts as unset. `router.jev.fallback_model` (default `~typesafe/jev-latest`, env `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL`, `none` disables it) is tried only when the primary model is unusable: a transport error, a timeout, HTTP 429 or 5xx, or HTTP 400/404 for a missing model. A 429, 5xx, 408 or refused connection is retried once first; a timeout is not retried, because it uses up the time left for that model. Other 4xx responses, invalid or oversized bodies and a disallowed endpoint (plain http to a non-loopback host) are not about the model: they go to the heuristic. A refused key (401/403) and a rejected answer never reach the fallback. Both calls together stay within `router.jev.timeout`; with a fallback the primary may use 3/5 of it. `route --explain`, `doctor` and the eval summary show the models in effect and where each came from. The request is:
      - `state`: `task_content`, `system_instruction`, `routing_instruction`, `agent` (the profile name, `worker` when none is named). No account names, quota, usage or credentials are sent.
@@ -416,6 +488,14 @@ Claude ranks lowest by default. The router picks a Claude model only when one of
 - no other eligible model has an account with headroom
 
 No level lists a Claude model by default, so Claude accounts are not used unless a level lists one.
+
+The rank applies only to choices served by plain Claude accounts, which are accounts without an endpoint. Endpoint choices compete like any other harness. Where `router.priority` orders harnesses, an endpoint choice ranks just ahead of `claude`.
+
+Serving rule ([ADR-0010](docs/adr/0010-endpoint-accounts.md)). For a `claude` choice, an account is eligible when:
+- it has no endpoint and the model has no catalog endpoint (Anthropic models, and models the catalog does not know), or
+- it has an endpoint and the model is in its `models` list, or, when `models` is empty, the model's catalog endpoint equals the account's preset.
+
+Plain Claude accounts never receive endpoint models, and endpoint accounts never receive Anthropic models. Endpoint accounts are not orchestrator accounts. A pinned endpoint account with no model pinned uses its opus slot model.
 
 ### 8.5 Failover
 
@@ -794,7 +874,7 @@ The supervisor sends notifications for the events listed in `notifications.on`, 
 
 ### 19.3 Codex plugin and hooks
 
-The Codex plugin is in `plugin-codex/`, separate from the Claude Code `plugin/`: Codex always parses the default `hooks/hooks.json`, which in `plugin/` is the Claude Code mod module list (ADR-0008). It holds `.codex-plugin/plugin.json`, `.mcp.json` (with the timeouts and `env_vars` above), `hooks/hooks.json` and generated `skills/` copies, which `crates/superorchestrator/tests/plugin.rs` keeps in step with the shipped skills. The repository marketplace is `.agents/plugins/marketplace.json` (marketplace `superorchestrator`, plugin source `./plugin-codex`). It installs with `codex plugin marketplace add datamonsterr/superorchestrator` and `codex plugin add superorchestrator@superorchestrator`, and is toggled by `[plugins."superorchestrator@superorchestrator"] enabled`. An `[mcp_servers.superorchestrator]` entry in `config.toml` takes precedence over the plugin's server of the same name.
+The Codex plugin is in `plugin-codex/`, separate from the Claude Code `plugin/`: Codex always parses the default `hooks/hooks.json`, which in `plugin/` is the Claude Code mod module list (ADR-0010). It holds `.codex-plugin/plugin.json`, `.mcp.json` (with the timeouts and `env_vars` above), `hooks/hooks.json` and generated `skills/` copies, which `crates/superorchestrator/tests/plugin.rs` keeps in step with the shipped skills. The repository marketplace is `.agents/plugins/marketplace.json` (marketplace `superorchestrator`, plugin source `./plugin-codex`). It installs with `codex plugin marketplace add datamonsterr/superorchestrator` and `codex plugin add superorchestrator@superorchestrator`, and is toggled by `[plugins."superorchestrator@superorchestrator"] enabled`. An `[mcp_servers.superorchestrator]` entry in `config.toml` takes precedence over the plugin's server of the same name.
 
 `superorchestrator hook session-start|stop` is a hidden subcommand that reads the hook input and prints harness-neutral JSON; Claude Code and Codex accept the same shapes. `session-start` adds context that lists runs in the same git repository (same git common dir) that wait at the review gate (`pending_review`) or have an open question. `stop` prints a `systemMessage` warning when runs wait at the review gate and never blocks. Both are silent when nothing waits or the supervisor is down, finish within about 2 s, and read the store read-only. Codex requires the person to trust non-managed hooks through `/hooks`.
 

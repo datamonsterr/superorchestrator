@@ -300,6 +300,7 @@ impl Env {
     /// Like [`Env::start`], ending dead interactive sessions every `reap`.
     pub async fn start_reaping(&self, reap: Duration) -> SupervisorHandle {
         let host = HostEnv {
+            vars: Default::default(),
             home: self.home.clone(),
             path_var: Some("/usr/bin:/bin".into()),
             platform: Platform::current(),

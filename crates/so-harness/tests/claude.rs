@@ -81,6 +81,7 @@ impl Rig {
             account: AccountFile::new("claude-acc1", Harness::Claude, "~/.claude", "claude")
                 .unwrap(),
             launch: Launch {
+                env_remove: vec![],
                 pass_env: vec![],
                 program: PathBuf::from(env!("CARGO_BIN_EXE_fake-harness")),
                 vars: vec![
@@ -328,6 +329,26 @@ async fn raw_offsets_point_into_transcript() {
         };
         assert_eq!(entry["channel"], want);
     }
+}
+
+#[tokio::test]
+async fn endpoint_removal_overrides_explicit_and_pass_through_environment() {
+    let rig = Rig::new();
+    let mut spec = rig.spec(&script_from_fixture(TRANSCRIPT));
+    spec.launch.pass_env.push("ANTHROPIC_API_KEY".into());
+    spec.launch
+        .vars
+        .push(("ANTHROPIC_API_KEY".into(), "ignored".into()));
+    spec.launch.env_remove.push("ANTHROPIC_API_KEY".into());
+    let mut run = driver().launch(spec).await.unwrap();
+    until(&mut run, is_turn).await;
+    run.control.shutdown(Duration::from_secs(5)).await.unwrap();
+    assert!(
+        !rig.log()[0]["env_keys"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("ANTHROPIC_API_KEY"))
+    );
 }
 
 #[tokio::test]

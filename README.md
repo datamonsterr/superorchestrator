@@ -56,7 +56,7 @@ Watch runs from the shell with `superorchestrator runs list` and `superorchestra
 
 ## Guides
 
-- [Use cases](docs/guide/use-cases.md) · [Accounts](docs/guide/accounts.md) · [Routing](docs/guide/routing.md)
+- [Use cases](docs/guide/use-cases.md) · [Accounts](docs/guide/accounts.md) · [Endpoint accounts](docs/guide/endpoints.md) · [Routing](docs/guide/routing.md)
 - [Agents](docs/guide/agents.md) · [Workflows](docs/guide/workflows.md) · [Reviewing runs](docs/guide/review.md)
 - [Notifications](docs/guide/notifications.md) · [Configuration](docs/guide/config.md) · [Security](docs/guide/security.md)
 - [Troubleshooting](docs/guide/troubleshooting.md) · [Migrating](docs/guide/migrate.md)

@@ -1,9 +1,11 @@
 //! Heuristic scorer (SPEC 8.3 step 4):
 //! `score = fit + w_headroom·headroom − w_load·active_runs − w_cost·cost + priority`.
 
-use so_core::Harness;
 use so_core::config::Weights;
+use so_core::{Choice, Harness};
 
+#[cfg(test)]
+use crate::catalog::Catalog;
 use crate::catalog::{Cost, Tier};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -155,6 +157,16 @@ pub fn harness_priority(order: &[Harness], h: Harness) -> f64 {
         .iter()
         .position(|x| *x == h)
         .map_or(0.0, |i| (order.len() - 1 - i) as f64 * PRIORITY_STEP)
+}
+
+/// Priority of one choice: its harness priority, plus half a step for a `claude` choice whose
+/// model is identified as an endpoint choice, so endpoint choices rank between Claude and the
+/// harness listed before it. The bonus applies only when Claude is in `priority`: without a
+/// Claude position there is nothing to sit above, so endpoint choices get no bonus.
+pub fn choice_priority(priority: &[Harness], choice: &Choice, endpoint: bool) -> f64 {
+    let bonus =
+        choice.harness == Harness::Claude && priority.contains(&Harness::Claude) && endpoint;
+    harness_priority(priority, choice.harness) + if bonus { PRIORITY_STEP / 2.0 } else { 0.0 }
 }
 
 /// Penalty per step between the effort a task wants and the effort a choice runs at.
@@ -331,5 +343,29 @@ mod tests {
         assert!(p(Harness::Codex) > p(Harness::Claude));
         assert_eq!(p(Harness::Claude), 0.0);
         assert_eq!(harness_priority(&[Harness::Codex], Harness::Agy), 0.0);
+    }
+
+    fn prio(order: &[Harness], c: &str) -> f64 {
+        let choice: Choice = c.parse().unwrap();
+        let endpoint = Catalog::default_catalog()
+            .endpoint(choice.harness, &choice.model)
+            .is_some();
+        choice_priority(order, &choice, endpoint)
+    }
+
+    #[test]
+    fn endpoint_choice_gets_half_a_step_above_claude() {
+        use Harness::*;
+        let eps = |a: f64, b: f64| assert!((a - b).abs() < 1e-9, "{a} != {b}");
+        // Claude in the middle: plain claude 0.1, endpoint 0.15, codex (first) 0.2.
+        let mid = [Codex, Claude, Agy];
+        eps(prio(&mid, "claude/claude-opus-5-5"), 0.1);
+        eps(prio(&mid, "claude/glm-5.3"), 0.15);
+        eps(prio(&mid, "codex/gpt-6.1-sol"), 0.2);
+        // Claude first and last.
+        eps(prio(&[Claude, Codex], "claude/glm-5.3"), 0.15);
+        eps(prio(&[Codex, Claude], "claude/glm-5.3"), 0.05);
+        // Claude absent: no bonus.
+        eps(prio(&[Codex, Agy], "claude/glm-5.3"), 0.0);
     }
 }

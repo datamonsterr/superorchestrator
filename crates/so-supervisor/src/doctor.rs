@@ -442,6 +442,13 @@ fn check_ui_port(c: &mut Checks, cfg: Option<&Config>, supervisor_up: bool) {
 fn check_accounts(c: &mut Checks, host: &HostEnv, accounts: &[AccountFile]) {
     for a in accounts {
         let name = format!("account {}", a.name);
+        if a.endpoint.is_some() {
+            match so_accounts::resolve_endpoint_token(a, host) {
+                Ok(_) => c.ok(&name, "endpoint token resolves"),
+                Err(e) => c.warn(&name, e.to_string()),
+            }
+            continue;
+        }
         match so_accounts::sign_in_state(a, host) {
             Ok(SignIn::SignedIn) => c.ok(&name, "signed in"),
             Ok(SignIn::SignedOut) => c.warn(&name, "signed out"),
@@ -470,6 +477,36 @@ fn check_accounts(c: &mut Checks, host: &HostEnv, accounts: &[AccountFile]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoint_missing_token_is_reported() {
+        let mut a = AccountFile::new(
+            "endpoint-test",
+            Harness::Claude,
+            "~/.endpoint-test",
+            "claude",
+        )
+        .unwrap();
+        a.endpoint = Some(so_core::Endpoint {
+            preset: so_core::EndpointPreset::Zai,
+            base_url: None,
+            token_env: Some("MISSING_TOKEN".into()),
+            token_file: None,
+            token_var: None,
+            models: vec![],
+            slots: Default::default(),
+        });
+        let host = HostEnv {
+            vars: Default::default(),
+            home: "/tmp".into(),
+            path_var: None,
+            platform: Platform::Linux,
+        };
+        let mut checks = Checks::default();
+        check_accounts(&mut checks, &host, &[a]);
+        assert_eq!(checks.0[0].status, Status::Warn);
+        assert!(checks.0[0].detail.contains("MISSING_TOKEN"));
+    }
 
     fn account(pass_env: &[&str]) -> AccountFile {
         let mut a =

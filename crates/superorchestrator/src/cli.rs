@@ -217,6 +217,25 @@ pub enum AccountCmd {
 pub struct AccountAdd {
     /// codex, agy, opencode or claude
     pub harness: String,
+    /// Endpoint preset; the positional argument is the account name.
+    #[arg(long, value_parser = ["zai", "kimi", "minimax", "custom"])]
+    pub endpoint: Option<String>,
+    #[arg(long, requires = "endpoint")]
+    pub base_url: Option<String>,
+    #[arg(long, requires = "endpoint", conflicts_with = "token_stdin")]
+    pub token_env: Option<String>,
+    #[arg(long, requires = "endpoint", conflicts_with = "token_env")]
+    pub token_stdin: bool,
+    #[arg(long = "model", requires = "endpoint")]
+    pub models: Vec<String>,
+    #[arg(long, requires = "endpoint")]
+    pub opus: Option<String>,
+    #[arg(long, requires = "endpoint")]
+    pub sonnet: Option<String>,
+    #[arg(long, requires = "endpoint")]
+    pub haiku: Option<String>,
+    #[arg(long = "harness", requires = "endpoint")]
+    pub endpoint_harness: Option<String>,
     /// Account name (default: <harness>-<n> with the lowest free n)
     #[arg(long)]
     pub name: Option<String>,
@@ -224,7 +243,7 @@ pub struct AccountAdd {
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=99))]
     pub count: u32,
     /// Credential home (default: ~/.<name>); needs --name
-    #[arg(long, requires = "name")]
+    #[arg(long)]
     pub home: Option<String>,
     /// Sign in to each new account in turn (needs a terminal; otherwise prints the commands)
     #[arg(long)]

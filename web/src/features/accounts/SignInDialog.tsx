@@ -68,10 +68,15 @@ function SignInBody({ name, onClose }: { name: string; onClose: () => void }) {
 
   const countdown = useCountdown(info?.mode === 'device_auth' ? info.expires_at : null)
   const codeExpired = info?.mode === 'device_auth' && countdown === null
-  const status = useSignInStatus(name, !!info && !codeExpired)
+  // The start result is authoritative for endpoint accounts: the key was validated once, so there is nothing to poll.
+  const endpoint = info?.mode === 'endpoint' ? info : null
+  const status = useSignInStatus(name, !!info && !codeExpired && !endpoint)
   const signedInNow = accounts.data?.find((a) => a.name === name)?.signed_in === 'signed_in'
-  const done = status.data?.state === 'done' || (!!info && accountsKnown && !wasSignedIn && signedInNow)
-  const failed = status.data?.state === 'failed' || status.data?.state === 'expired'
+  const done = endpoint ? endpoint.state === 'done' : status.data?.state === 'done' || (!!info && accountsKnown && !wasSignedIn && signedInNow)
+  const endpointFailed = endpoint !== null && !done && (endpoint.state === 'failed' || endpoint.state === 'expired')
+  const failed = endpointFailed || status.data?.state === 'failed' || status.data?.state === 'expired'
+  const failure = endpointFailed ? endpoint : status.data
+  const failureText = failure?.message ? `${failure.message}${failure.kind ? ` (${failure.kind})` : ''}` : 'The sign-in did not finish in time.'
 
   const notified = useRef(false)
   useEffect(() => {
@@ -127,7 +132,7 @@ function SignInBody({ name, onClose }: { name: string; onClose: () => void }) {
         </div>
       )}
 
-      {info && !done && !failed && !codeExpired && (
+      {info && !endpoint && !done && !failed && !codeExpired && (
         <p className="flex items-center gap-2 text-sm" role="status">
           <Loader2 aria-hidden className="size-4 animate-spin" /> Waiting for sign-in
         </p>
@@ -143,9 +148,9 @@ function SignInBody({ name, onClose }: { name: string; onClose: () => void }) {
 
       {(failed || codeExpired) && (
         <Alert variant="destructive" role="alert">
-          <AlertTitle>{status.data?.state === 'failed' ? 'Sign-in failed' : 'Sign-in expired'}</AlertTitle>
+          <AlertTitle>{failure?.state === 'failed' ? 'Sign-in failed' : 'Sign-in expired'}</AlertTitle>
           <AlertDescription>
-            <p>{status.data?.message ?? 'The sign-in did not finish in time.'}</p>
+            <p>{failureText}</p>
             <Button type="button" variant="outline" size="sm" className="mt-2" onClick={retry}>
               Try again
             </Button>

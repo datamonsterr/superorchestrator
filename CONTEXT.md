@@ -48,6 +48,10 @@ _Avoid_: Provider, backend, tool, CLI
 One named login for one harness, backed by its own credential home, such as `codex-acc2`. An account is the unit that is routed, capped and metered.
 _Avoid_: Profile, login, credential, worker
 
+**Endpoint account**:
+A `claude` account with an `[endpoint]` table. Its Claude Code process talks to an Anthropic-compatible coding-plan API (Z.ai GLM, Kimi Code, MiniMax, or a custom URL) instead of an Anthropic subscription. It may also be listed in `orchestrator.reserved_accounts`; then it routes only when pinned. See [ADR 0010](docs/adr/0010-endpoint-accounts.md).
+_Avoid_: Provider account, proxy account, API account
+
 **Reserved account**:
 An account kept for the orchestrator; auto routing never picks it, but a spawn that pins it may.
 _Avoid_: Orchestrator account, held account

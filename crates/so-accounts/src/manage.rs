@@ -4,7 +4,7 @@ use std::io::Write;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
-use so_core::{AccountFile, Config, Harness, Paths, Platform};
+use so_core::{AccountFile, Config, Endpoint, Harness, Paths, Platform};
 
 use crate::env::{build_launch_vars, is_executable};
 use crate::error::{AccountsError, Result};
@@ -158,6 +158,49 @@ pub fn add(
     so_core::fsutil::create_private_dirs(&credential_dir)
         .map_err(|e| AccountsError::io(&credential_dir, e))?;
     finish(paths, cfg, host, &account)
+}
+
+/// Creates a Claude endpoint account and its optional private key file.
+pub fn add_endpoint(
+    paths: &Paths,
+    cfg: &Config,
+    host: &HostEnv,
+    name: &str,
+    mut endpoint: Endpoint,
+    token: Option<&str>,
+    home: Option<&str>,
+) -> Result<AccountFile> {
+    let home = home.map_or_else(|| format!("~/.{name}"), str::to_owned);
+    let mut account = AccountFile::new(name, Harness::Claude, &home, "claude")?;
+    ensure_new(paths, name)?;
+    ensure_no_shadow(cfg, host, name)?;
+    let dir = host.expand(&home)?;
+    ensure_disjoint_home(paths, host, name, &dir)?;
+    let key = paths.key_file(name);
+    if token.is_some() && key.exists() {
+        return Err(AccountsError::AlreadyExists(name.to_string()));
+    }
+    if token.is_some() {
+        endpoint.token_file = Some(key.to_string_lossy().into_owned());
+        endpoint.token_env = None;
+    }
+    account.endpoint = Some(endpoint);
+    account.validate()?;
+    so_core::fsutil::create_private_dirs(&dir).map_err(|e| AccountsError::io(&dir, e))?;
+    if let Some(token) = token {
+        so_core::fsutil::write_key_file_new(&key, token).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                AccountsError::AlreadyExists(name.to_string())
+            } else {
+                AccountsError::io(&key, e)
+            }
+        })?;
+    }
+    let result = finish(paths, cfg, host, &account);
+    if result.is_err() && token.is_some() {
+        let _ = std::fs::remove_file(key);
+    }
+    result
 }
 
 /// Highest `n` tried by [`add_numbered`] before giving up.
@@ -381,6 +424,12 @@ pub fn remove(paths: &Paths, cfg: &Config, host: &HostEnv, name: &str, purge: bo
     if let Some(v) = victim {
         std::fs::remove_dir_all(&v).map_err(|e| AccountsError::io(&v, e))?;
     }
+    if purge {
+        let key = paths.key_file(name);
+        if key.exists() {
+            std::fs::remove_file(&key).map_err(|e| AccountsError::io(&key, e))?;
+        }
+    }
     remove_wrapper(&wrapper_dir(cfg, host)?, name)?;
     std::fs::remove_file(&file).map_err(|e| AccountsError::io(&file, e))?;
     Ok(())
@@ -415,6 +464,19 @@ pub struct LoginPlan {
 }
 
 pub fn login_command(account: &AccountFile, host: &HostEnv, has_tty: bool) -> Result<LoginPlan> {
+    if account.endpoint.is_some() {
+        return Ok(LoginPlan {
+            argv: vec![
+                "superorchestrator".into(),
+                "account".into(),
+                "login".into(),
+                account.name.clone(),
+            ],
+            env: vec![],
+            needs_tty: false,
+            note: Some("The token is checked with account login validation.".into()),
+        });
+    }
     let bin = account.binary.clone();
     let wrapper_note = |msg: &str| Some(msg.to_string());
     let env = build_launch_vars(account, host)?;
@@ -475,6 +537,77 @@ mod tests {
             cfg,
             host,
         }
+    }
+
+    #[test]
+    fn endpoint_add_preserves_existing_key() {
+        let f = fx();
+        let key = f.paths.key_file("endpoint");
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::write(&key, "existing").unwrap();
+        let endpoint = Endpoint {
+            preset: so_core::EndpointPreset::Zai,
+            base_url: None,
+            token_env: None,
+            token_file: None,
+            token_var: None,
+            models: vec![],
+            slots: so_core::Slots::default(),
+        };
+        assert!(matches!(
+            add_endpoint(
+                &f.paths,
+                &f.cfg,
+                &f.host,
+                "endpoint",
+                endpoint,
+                Some("new"),
+                None
+            ),
+            Err(AccountsError::AlreadyExists(_))
+        ));
+        assert_eq!(std::fs::read_to_string(key).unwrap(), "existing");
+    }
+
+    #[test]
+    fn endpoint_add_and_purge_key() {
+        use so_core::{Endpoint, EndpointPreset, Slots};
+        let f = fx();
+        let endpoint = Endpoint {
+            preset: EndpointPreset::Zai,
+            base_url: None,
+            token_env: None,
+            token_file: None,
+            token_var: None,
+            models: vec![],
+            slots: Slots::default(),
+        };
+        let account = add_endpoint(
+            &f.paths,
+            &f.cfg,
+            &f.host,
+            "endpoint",
+            endpoint,
+            Some("secret"),
+            None,
+        )
+        .unwrap();
+        let key = f.paths.key_file("endpoint");
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            account,
+            AccountFile::load(&f.paths.account_file("endpoint")).unwrap()
+        );
+        assert_eq!(
+            account.endpoint.unwrap().token_file.as_deref(),
+            key.to_str()
+        );
+        assert!(f.d.path().join(".local/bin/endpoint").exists());
+        remove(&f.paths, &f.cfg, &f.host, "endpoint", true).unwrap();
+        assert!(!key.exists());
     }
 
     fn mac_fx() -> Fx {

@@ -167,6 +167,9 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
             let mut row = Map::new();
             row.insert("name".into(), json!(a.name));
             row.insert("harness".into(), json!(a.harness));
+            if let Some(endpoint) = &a.endpoint {
+                row.insert("endpoint".into(), json!(endpoint.preset));
+            }
             match a.signed_in {
                 SignInState::SignedIn => row.insert("signed_in".into(), json!(true)),
                 SignInState::SignedOut => row.insert("signed_in".into(), json!(false)),
@@ -363,6 +366,18 @@ fn account_view(
         })
         .collect();
     AccountView {
+        endpoint: account
+            .endpoint
+            .as_ref()
+            .map(|e| so_core::proto::EndpointView {
+                preset: e.preset.as_str().into(),
+                base_url: e.base_url().into(),
+                models: e.models.clone(),
+                token_source: e
+                    .token_env
+                    .as_ref()
+                    .map_or_else(|| "file".into(), |v| format!("env:{v}")),
+            }),
         name: account.name.clone(),
         harness: account.harness,
         signed_in,
@@ -397,6 +412,7 @@ fn first_line(s: &str) -> &str {
 /// first one stands in; `error` is what tells a reader not to trust the other fields.
 fn broken_account(state: &SupervisorState, path: &std::path::Path, error: &str) -> AccountView {
     AccountView {
+        endpoint: None,
         name: path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())

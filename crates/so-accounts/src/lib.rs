@@ -9,7 +9,7 @@ pub mod scan;
 pub mod signin;
 pub mod wrapper;
 
-pub use env::{Launch, build_launch, resolve_binary};
+pub use env::{Launch, build_launch, resolve_binary, resolve_endpoint_token};
 pub use error::{AccountsError, Result};
 pub use host::HostEnv;
 pub use manage::{
@@ -28,6 +28,7 @@ pub(crate) mod testutil {
 
     pub fn host(home: &Path, platform: Platform) -> HostEnv {
         HostEnv {
+            vars: Default::default(),
             home: home.to_path_buf(),
             path_var: Some(home.join("bin").to_string_lossy().into_owned()),
             platform,

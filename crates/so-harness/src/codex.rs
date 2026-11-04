@@ -1638,6 +1638,7 @@ mod tests {
             account: so_core::AccountFile::new("codex-acc1", Harness::Codex, "~/.codex", "codex")
                 .unwrap(),
             launch: so_accounts::Launch {
+                env_remove: vec![],
                 pass_env: vec![],
                 program: "/bin/codex".into(),
                 vars: vec![],

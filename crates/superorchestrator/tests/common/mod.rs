@@ -188,6 +188,7 @@ pub async fn start_supervisor(e: &Env) -> so_supervisor::SupervisorHandle {
     // The socket directory must be private.
     std::fs::set_permissions(e.tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let host = so_accounts::HostEnv {
+        vars: Default::default(),
         home: e.home.clone(),
         path_var: Some("/usr/bin:/bin".into()),
         platform: so_core::Platform::current(),

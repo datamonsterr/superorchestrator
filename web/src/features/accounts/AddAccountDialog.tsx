@@ -11,7 +11,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useConfig, useCreateAccount } from '@/api/queries'
 import { applyApiFieldErrors } from '@/lib/form-errors'
 import type { AccountView } from '@/api/types'
-import { addAccountSchema, HARNESSES, type AddAccountValues } from './schemas'
+import { EndpointFields } from './EndpointFields'
+import { addAccountSchema, buildAddAccountRequest, HARNESSES, type AddAccountValues } from './schemas'
 
 interface Props {
   open: boolean
@@ -21,6 +22,37 @@ interface Props {
   onCreated: (name: string) => void
 }
 
+const DEFAULTS: AddAccountValues = {
+  harness: 'codex',
+  name: '',
+  home: '',
+  endpointPreset: 'none',
+  baseUrl: '',
+  models: '',
+  slotOpus: '',
+  slotSonnet: '',
+  slotHaiku: '',
+  tokenSource: 'paste',
+  token: '',
+  tokenEnv: '',
+}
+
+// API error keys (dotted for the nested endpoint object) to form fields.
+const API_FIELD: Record<string, keyof AddAccountValues> = {
+  harness: 'harness',
+  name: 'name',
+  home: 'home',
+  token: 'token',
+  endpoint: 'endpointPreset',
+  'endpoint.preset': 'endpointPreset',
+  'endpoint.base_url': 'baseUrl',
+  'endpoint.models': 'models',
+  'endpoint.token_env': 'tokenEnv',
+}
+// No single input owns these, or the input may not be on screen: they go to a form-level message.
+const FORM_LEVEL = new Set(['endpoint.slots'])
+const API_ERROR_FIELDS = [...Object.keys(API_FIELD), ...FORM_LEVEL]
+
 const LABEL: Record<(typeof HARNESSES)[number], string> = { codex: 'Codex', agy: 'Antigravity (agy)', opencode: 'OpenCode', claude: 'Claude' }
 
 export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Props) {
@@ -28,7 +60,7 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
   const create = useCreateAccount()
   const [advanced, setAdvanced] = useState(false)
   const schema = useMemo(() => addAccountSchema(accounts.map((a) => a.name)), [accounts])
-  const form = useForm<AddAccountValues>({ resolver: zodResolver(schema), defaultValues: { harness: 'codex', name: '', home: '' } })
+  const form = useForm<AddAccountValues>({ resolver: zodResolver(schema), defaultValues: DEFAULTS })
   const { control, register, handleSubmit, setError, formState } = form
   // macOS keeps one agy account per machine (SPEC 6.4).
   const agyBlocked = config.data?.platform === 'macos' && accounts.some((a) => a.harness === 'agy')
@@ -37,11 +69,26 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
 
   async function onSubmit(values: AddAccountValues) {
     try {
-      const account = await create.mutateAsync({ harness: values.harness, name: values.name, ...(values.home ? { home: values.home } : {}) })
+      const body = buildAddAccountRequest(values)
+      const account = await create.mutateAsync(body)
       changeOpen(false)
       onCreated(account.name)
     } catch (e) {
-      applyApiFieldErrors(e, setError, ['harness', 'name', 'home'])
+      applyApiFieldErrors(
+        e,
+        (name, error) => {
+          const { tokenSource } = form.getValues()
+          const hidden = (name === 'token' && tokenSource === 'env') || (name === 'endpoint.token_env' && tokenSource !== 'env')
+          if (FORM_LEVEL.has(name) || hidden) setError('root.server', error)
+          else setError(API_FIELD[name] ?? name, error)
+        },
+        API_ERROR_FIELDS,
+      )
+      // The token never stays in form state after a submit, even a failed one.
+      form.setValue('token', '')
+    } finally {
+      // Drops the request (which holds the API key) from the mutation observer.
+      create.reset()
     }
   }
 
@@ -71,7 +118,13 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
                 control={control}
                 name="harness"
                 render={({ field }) => (
-                  <Select value={field.value} onValueChange={field.onChange}>
+                  <Select
+                    value={field.value}
+                    onValueChange={(v) => {
+                      field.onChange(v)
+                      form.setValue('token', '')
+                    }}
+                  >
                     <SelectTrigger id="add-harness" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
@@ -94,6 +147,7 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
               <FieldDescription>Lowercase letters, digits and dashes.</FieldDescription>
               <FieldError errors={[formState.errors.name]} />
             </Field>
+            <EndpointFields form={form} />
             <Collapsible open={advanced} onOpenChange={setAdvanced}>
               <CollapsibleTrigger asChild>
                 <Button type="button" variant="ghost" size="sm" aria-expanded={advanced}>
@@ -111,6 +165,11 @@ export function AddAccountDialog({ open, onOpenChange, accounts, onCreated }: Pr
               </CollapsibleContent>
             </Collapsible>
           </FieldGroup>
+          {formState.errors.root?.server?.message && (
+            <p role="alert" className="text-sm text-destructive">
+              {formState.errors.root.server.message}
+            </p>
+          )}
           {blocked && (
             <p role="alert" className="text-sm text-destructive">
               Only one Antigravity account is supported on macOS, and one already exists.

@@ -79,17 +79,84 @@ pub async fn add(
 ) -> ApiResult<(StatusCode, Json<AccountView>)> {
     let s = st.clone();
     s.blocking(move || {
-        valid_name(&b.name)?;
+        validate_account_name(&b.name).map_err(|e| {
+            let message = e.to_string();
+            ApiError::invalid(&message).with_data(serde_json::json!({"name": message}))
+        })?;
         let cfg = Config::load(&st.sup.paths)?;
         let host = host(&st)?;
-        manage::add(
-            &st.sup.paths,
-            &cfg,
-            &host,
-            b.harness,
-            &b.name,
-            b.home.as_deref(),
-        )?;
+        if let Some(ep) = b.endpoint {
+            let field = |key: &str, msg: &str| {
+                ApiError::invalid(msg).with_data(serde_json::json!({key: msg}))
+            };
+            if b.harness.is_some_and(|h| h != so_core::Harness::Claude) {
+                return Err(field(
+                    "harness",
+                    "Endpoint accounts require the claude harness",
+                ));
+            }
+            if b.token.is_some() == ep.token_env.is_some()
+                || b.token.as_deref().is_some_and(|s| s.trim().is_empty())
+            {
+                return Err(field(
+                    "token",
+                    "Provide exactly one non-empty token or token environment variable",
+                ));
+            }
+            let preset = ep
+                .preset
+                .parse()
+                .map_err(|_| field("endpoint.preset", "Unknown endpoint preset"))?;
+            let endpoint = so_core::Endpoint {
+                preset,
+                base_url: ep.base_url,
+                token_env: ep.token_env,
+                token_file: None,
+                token_var: None,
+                models: ep.models,
+                slots: so_core::Slots {
+                    opus: ep.slots.opus,
+                    sonnet: ep.slots.sonnet,
+                    haiku: ep.slots.haiku,
+                },
+            };
+            manage::add_endpoint(
+                &st.sup.paths,
+                &cfg,
+                &host,
+                &b.name,
+                endpoint,
+                b.token.as_deref(),
+                b.home.as_deref(),
+            )
+            .map_err(|e| match e {
+                so_accounts::AccountsError::Core(so_core::CoreError::InvalidValue { .. }) => {
+                    field("endpoint", &e.to_string())
+                }
+                other => other.into(),
+            })?;
+        } else {
+            if b.token.is_some() {
+                return Err(ApiError::invalid("Token requires an endpoint")
+                    .with_data(serde_json::json!({"token": "Token requires an endpoint"})));
+            }
+            let harness = b.harness.ok_or_else(|| {
+                ApiError::invalid("harness is required")
+                    .with_data(serde_json::json!({"harness": "harness is required"}))
+            })?;
+            manage::add(
+                &st.sup.paths,
+                &cfg,
+                &host,
+                harness,
+                &b.name,
+                b.home.as_deref(),
+            )?;
+        }
+        st.endpoint_logins
+            .lock()
+            .map_err(ApiError::internal)?
+            .remove(&b.name);
         st.refresh_skill();
         Ok((StatusCode::CREATED, Json(publish_view(&st, &b.name)?)))
     })
@@ -180,6 +247,10 @@ pub async fn remove(
         valid_name(&name)?;
         let cfg = Config::load(&st.sup.paths)?;
         manage::remove(&st.sup.paths, &cfg, &host(&st)?, &name, q.purge)?;
+        st.endpoint_logins
+            .lock()
+            .map_err(ApiError::internal)?
+            .remove(&name);
         st.refresh_skill();
         Ok(Json(AckResult { ok: true }))
     })
@@ -224,28 +295,60 @@ pub async fn flag(
     .await
 }
 
-/// `POST /accounts/:name/login`: the command to run in a terminal. Every harness uses the
-/// manual mode today; `device_auth` is reserved for a supervisor-driven codex flow.
+fn endpoint_status(result: Result<(), (String, String)>) -> SignInStatus {
+    match result {
+        Ok(()) => SignInStatus {
+            signed_in: SignInState::SignedIn,
+            mode: SignInMode::Endpoint,
+            state: SignInProgress::Done,
+            message: None,
+            kind: None,
+        },
+        Err((kind, message)) => SignInStatus {
+            signed_in: SignInState::SignedOut,
+            mode: SignInMode::Endpoint,
+            state: SignInProgress::Failed,
+            message: Some(message),
+            kind: Some(kind),
+        },
+    }
+}
+
+/// `POST /accounts/:name/login`: start endpoint validation or return a manual command.
 pub async fn login_start(
     State(st): State<AppState>,
     Path(name): Path<String>,
     _body: OptionalJson<serde_json::Value>,
 ) -> ApiResult<Json<SignInStart>> {
     let s = st.clone();
+    let runtime = tokio::runtime::Handle::current();
     s.blocking(move || {
         let account = load(&st, &name)?;
-        let plan = manage::login_command(&account, &host(&st)?, false)?;
-        // `env` makes each K=V a regular argument, so quoting the entire assignment
-        // preserves both shell safety and environment-assignment semantics.
+        let host = host(&st)?;
+        if account.endpoint.is_some() {
+            let status = endpoint_status(
+                runtime.block_on(so_harness::endpoint::validate_login(&account, &host))?,
+            );
+            st.endpoint_logins
+                .lock()
+                .map_err(ApiError::internal)?
+                .insert(name, status.clone());
+            return Ok(Json(SignInStart::Endpoint {
+                signed_in: status.signed_in,
+                state: status.state,
+                message: status.message,
+                kind: status.kind,
+            }));
+        }
+        let plan = manage::login_command(&account, &host, false)?;
         let mut argv = Vec::new();
         if !plan.env.is_empty() {
             argv.push("env".to_string());
             argv.extend(plan.env.iter().map(|(k, v)| format!("{k}={v}")));
         }
         argv.extend(plan.argv);
-        let command = display_argv(&argv);
         Ok(Json(SignInStart::Manual {
-            command,
+            command: display_argv(&argv),
             cwd: None,
             note: plan.note,
         }))
@@ -253,13 +356,30 @@ pub async fn login_start(
     .await
 }
 
-/// `GET /accounts/:name/login`: sign-in is only an auth-file existence check (SPEC 5.4).
+/// `GET /accounts/:name/login`: return cached endpoint validation or manual sign-in state.
 pub async fn login_status(
     State(st): State<AppState>,
     Path(name): Path<String>,
 ) -> ApiResult<Json<SignInStatus>> {
     let s = st.clone();
     s.blocking(move || {
+        let account = load(&st, &name)?;
+        if account.endpoint.is_some() {
+            let status = st
+                .endpoint_logins
+                .lock()
+                .map_err(ApiError::internal)?
+                .get(&name)
+                .cloned()
+                .unwrap_or(SignInStatus {
+                    signed_in: SignInState::Unknown,
+                    mode: SignInMode::Endpoint,
+                    state: SignInProgress::Pending,
+                    message: None,
+                    kind: None,
+                });
+            return Ok(Json(status));
+        }
         let view = view_of(&st, &name)?;
         let (state, message) = match view.signed_in {
             SignInState::SignedIn => (SignInProgress::Done, None),
@@ -274,6 +394,7 @@ pub async fn login_status(
             mode: SignInMode::Manual,
             state,
             message,
+            kind: None,
         }))
     })
     .await

@@ -11,7 +11,8 @@ use so_core::RunState;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::app::{
-    AddField, App, DetailView, HARNESSES, Modal, SetupStep, StepState, Tab, ToastKind,
+    AddField, App, DetailView, HARNESSES, Modal, STEP_CUSTOM_FIRST, STEP_NAME, STEP_PRESET,
+    STEP_SOURCE, STEP_TOKEN, SetupStep, StepState, Tab, ToastKind,
 };
 use super::data::{Check, Level, RunItem, Snapshot};
 use super::theme::Theme;
@@ -1331,6 +1332,7 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
                     "move; top or bottom (arrows, PgUp, Home work too)",
                 ),
                 row("a", "add accounts (harness, count)"),
+                row("E", "add endpoint account"),
                 row(
                     "l",
                     "sign in (claude and agy: in a session of their wrapper)",
@@ -1544,6 +1546,49 @@ fn draw_modal(f: &mut Frame, app: &App, modal: &Modal, full: Rect) {
                 ],
                 64,
             )
+        }
+        Modal::AddEndpoint(form) => {
+            let (label, value) = match form.step {
+                STEP_NAME => ("Account name", form.name.clone()),
+                STEP_PRESET => (
+                    "Preset (←/→)",
+                    so_core::EndpointPreset::ALL[form.preset]
+                        .as_str()
+                        .to_owned(),
+                ),
+                STEP_SOURCE => (
+                    "Token source (←/→)",
+                    if form.env_source {
+                        "Environment variable"
+                    } else {
+                        "Pasted token"
+                    }
+                    .to_owned(),
+                ),
+                STEP_TOKEN if form.env_source => ("Environment variable name", form.env.clone()),
+                STEP_TOKEN => ("Token", "•".repeat(form.token.0.chars().count())),
+                n => (
+                    [
+                        "Base URL",
+                        "Models (comma separated)",
+                        "Opus slot",
+                        "Sonnet slot",
+                        "Haiku slot",
+                    ][n - STEP_CUSTOM_FIRST],
+                    form.custom[n - STEP_CUSTOM_FIRST].clone(),
+                ),
+            };
+            let mut lines = vec![
+                Line::raw(label),
+                Line::raw(""),
+                input_line(t, &value),
+                Line::raw(""),
+            ];
+            if let Some(error) = &form.error {
+                lines.push(Line::raw(error.clone()));
+            }
+            lines.push(muted("Enter next   Shift-Tab back   Esc cancel"));
+            ("Add endpoint account".into(), lines, 68)
         }
         Modal::AddAccount {
             harness,

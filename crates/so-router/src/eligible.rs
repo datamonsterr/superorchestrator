@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
-use so_core::{AccountFile, Choice, Harness, HeadroomStatus};
+use so_core::{AccountFile, Choice, Harness, HeadroomStatus, Slot};
 use so_store::Store;
 
 use crate::catalog::{Catalog, Cost, Tier};
@@ -103,18 +103,51 @@ pub struct Candidate<'a> {
     pub accounts: Vec<&'a AccountState>,
 }
 
-/// Accounts of `harness` that can take a run in `pool`: enabled, pool available, below cap.
+/// Whether the account can serve this model under the endpoint routing rule.
+pub fn serves(account: &AccountFile, harness: Harness, model: &str, catalog: &Catalog) -> bool {
+    if account.harness != harness {
+        return false;
+    }
+    if harness != Harness::Claude {
+        return true;
+    }
+    match &account.endpoint {
+        None => catalog.endpoint(harness, model).is_none(),
+        Some(endpoint) if !endpoint.models.is_empty() => endpoint.models.iter().any(|m| m == model),
+        Some(endpoint) => catalog.endpoint(harness, model) == Some(endpoint.preset),
+    }
+}
+
+/// The model a pinned account runs when the caller pinned none: an endpoint account's opus
+/// slot, or the first of its `models` when a custom list leaves that slot out. `None` when a
+/// model is pinned or the account is not an endpoint account.
+pub fn pinned_account_model(account: &AccountFile, pinned_model: Option<&str>) -> Option<String> {
+    if pinned_model.is_some() {
+        return None;
+    }
+    let endpoint = account.endpoint.as_ref()?;
+    let opus = endpoint.slot(Slot::Opus);
+    if endpoint.models.is_empty() || endpoint.models.iter().any(|m| m == opus) {
+        Some(opus.to_string())
+    } else {
+        endpoint.models.first().cloned()
+    }
+}
+
+/// Accounts that can serve the model with an available pool and capacity.
 pub fn usable_accounts<'a>(
     snapshot: &'a Snapshot,
     harness: Harness,
     pool: &str,
+    model: &str,
+    catalog: &Catalog,
 ) -> Vec<&'a AccountState> {
     snapshot
         .accounts
         .iter()
         .filter(|a| {
             a.file.enabled
-                && a.file.harness == harness
+                && serves(&a.file, harness, model, catalog)
                 && a.active < a.file.cap
                 && a.pools.get(pool).is_some_and(|p| p.available)
         })
@@ -128,7 +161,7 @@ pub fn candidate<'a>(
     snapshot: &'a Snapshot,
 ) -> Option<Candidate<'a>> {
     let pool = catalog.pool_for(choice.harness, &choice.model);
-    let accounts = usable_accounts(snapshot, choice.harness, &pool);
+    let accounts = usable_accounts(snapshot, choice.harness, &pool, &choice.model, catalog);
     if accounts.is_empty() {
         return None;
     }
@@ -156,16 +189,28 @@ pub fn eligible<'a>(
         .collect()
 }
 
+/// Explicit account model lists also identify endpoint choices absent from the catalog.
+pub fn endpoint_choice(c: &Candidate<'_>, catalog: &Catalog) -> bool {
+    catalog
+        .endpoint(c.choice.harness, &c.choice.model)
+        .is_some()
+        || c.accounts.iter().any(|a| {
+            a.file
+                .endpoint
+                .as_ref()
+                .is_some_and(|ep| ep.models.contains(&c.choice.model))
+        })
+}
+
 /// Claude rank (SPEC 8.4): Claude choices stay in only when no other choice is eligible.
 /// An explicit call pins instead and never reaches this.
-pub fn apply_claude_rank(cands: Vec<Candidate<'_>>) -> Vec<Candidate<'_>> {
-    if cands.iter().all(|c| c.choice.harness == Harness::Claude) {
+pub fn apply_claude_rank<'a>(cands: Vec<Candidate<'a>>, catalog: &Catalog) -> Vec<Candidate<'a>> {
+    let plain =
+        |c: &Candidate<'_>| c.choice.harness == Harness::Claude && !endpoint_choice(c, catalog);
+    if cands.iter().all(plain) {
         return cands;
     }
-    cands
-        .into_iter()
-        .filter(|c| c.choice.harness != Harness::Claude)
-        .collect()
+    cands.into_iter().filter(|c| !plain(c)).collect()
 }
 
 #[cfg(test)]
@@ -253,11 +298,68 @@ pub(crate) mod tests {
             ids(&all),
             ["claude/claude-haiku-5-5/medium", "codex/gpt-6.1-sol/high"]
         );
-        assert_eq!(ids(&apply_claude_rank(all)), ["codex/gpt-6.1-sol/high"]);
+        assert_eq!(
+            ids(&apply_claude_rank(all, &cat)),
+            ["codex/gpt-6.1-sol/high"]
+        );
         let only = eligible(&choices, &cat, &snap, &["codex/gpt-6.1-sol/high".into()]);
         assert_eq!(
-            ids(&apply_claude_rank(only)),
+            ids(&apply_claude_rank(only, &cat)),
             ["claude/claude-haiku-5-5/medium"]
+        );
+    }
+
+    #[test]
+    fn custom_endpoint_survives_claude_rank() {
+        let cat = Catalog::default_catalog();
+        let mut endpoint = account("c1", Harness::Claude, 2, 0);
+        endpoint.file.endpoint = Some(
+            serde_json::from_value(
+                serde_json::json!({"preset":"zai", "token_env":"T", "models":["my-model"]}),
+            )
+            .unwrap(),
+        );
+        let snap = Snapshot {
+            accounts: vec![endpoint, account("x1", Harness::Codex, 2, 0)],
+        };
+        let choices = vec![choice("claude/my-model"), choice("codex/gpt-6.1-sol/high")];
+        let result = apply_claude_rank(eligible(&choices, &cat, &snap, &[]), &cat);
+        assert!(ids(&result).contains(&"claude/my-model".to_string()));
+        let custom = result
+            .iter()
+            .find(|c| c.choice.model == "my-model")
+            .unwrap();
+        assert_eq!(
+            crate::heuristic::choice_priority(
+                &[Harness::Codex, Harness::Claude],
+                &custom.choice,
+                endpoint_choice(custom, &cat)
+            ),
+            crate::heuristic::PRIORITY_STEP / 2.0
+        );
+    }
+
+    #[test]
+    fn pinned_account_model_uses_opus_slot_or_first_listed_model() {
+        let mk = |v: serde_json::Value| {
+            let mut a = account("claude-e", Harness::Claude, 1, 0).file;
+            a.endpoint = Some(serde_json::from_value(v).unwrap());
+            a
+        };
+        let plain = account("claude-p", Harness::Claude, 1, 0).file;
+        assert_eq!(pinned_account_model(&plain, None), None);
+        let zai = mk(serde_json::json!({"preset": "zai", "token_env": "T"}));
+        assert_eq!(pinned_account_model(&zai, None).as_deref(), Some("glm-5.3"));
+        assert_eq!(pinned_account_model(&zai, Some("glm-5.3")), None);
+        let custom =
+            mk(serde_json::json!({"preset": "zai", "token_env": "T", "models": ["x-1", "x-2"]}));
+        assert_eq!(pinned_account_model(&custom, None).as_deref(), Some("x-1"));
+        let with_opus = mk(
+            serde_json::json!({"preset": "zai", "token_env": "T", "models": ["x-1", "glm-5.3"]}),
+        );
+        assert_eq!(
+            pinned_account_model(&with_opus, None).as_deref(),
+            Some("glm-5.3")
         );
     }
 }

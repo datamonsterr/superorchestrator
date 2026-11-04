@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `install` resolves symlinks before editing managed files (dangling links are followed), so a linked config, `CLAUDE.md` or `AGENTS.md` is edited at its target.
-- Codex CLI as a first-class orchestrator. See `docs/guide/codex-orchestrator.md` and ADR-0008.
+- Codex CLI as a first-class orchestrator. See `docs/guide/codex-orchestrator.md` and ADR-0010.
   - `[orchestrator] reserved_accounts`: auto routing never picks them; a call that pins `account` may. `list_harnesses` marks them `reserved: true` and `why: "account reserved"`. The web Settings, web accounts table and TUI accounts view show them.
   - `setup --orchestrator claude|codex [--reserve NAME]... [--dry-run] [--no-agents-md]`.
   - `install` writes `startup_timeout_sec = 30`, `tool_timeout_sec = 1860` and `env_vars = ["XDG_RUNTIME_DIR"]` on the Codex MCP entries, and a managed block in `$CODEX_HOME/AGENTS.md` and each Codex account's `AGENTS.md` (`--no-agents-md` skips it). The three skills are harness-neutral with Codex notes.
@@ -85,6 +85,7 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Added
 
+- Endpoint accounts: a `claude` account with an `[endpoint]` table runs Claude Code against the Z.ai GLM Coding Plan, Kimi Code, MiniMax or a custom Anthropic-compatible URL. Add one with `superorchestrator account add <name> --endpoint <preset> [--token-stdin | --token-env VAR]`. Keys are saved to `<config dir>/keys/<name>.key` (mode 0600), never in account config; reads also accept mode 0400 and symlinks to regular files. Endpoint sign-in validates once through `so_harness::endpoint::validate_login`; the web GET returns its cached result. Endpoint models (`claude/glm-5.3`, `claude/k3.1-pro` and so on) route only to accounts that serve them and are not demoted by the Claude rank. Reserved endpoint accounts route only when pinned. Provider quota and rate-limit errors are classified, and a Z.ai reset time sets the cooldown. There is no usage probe. See `docs/guide/endpoints.md` and ADR 0010.
 - Model refs: `harness/model[/effort]` names a harness, model and effort in one string, and levels list them. Each harness's effort list is checked when the config loads. `agy/claude-sonnet-4-6/thinking` is valid, and `agy/claude-sonnet-4-6/high` is rejected.
 - Model pins accept a ref: `route --model codex/gpt-6.1-sol/high`, `spawn_agent(model: ...)`, the agent file's `model:` and `defaults.model`. A ref sets harness, model and effort. A conflicting `harness` or `effort` is an error. A pinned ref that no level lists still runs.
 - `route --model REF` and `route --agent NAME` replace `route --role`. `--explain` prints an `accounts:` line with the ranked accounts, best first.

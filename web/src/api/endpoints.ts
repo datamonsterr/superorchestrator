@@ -2,6 +2,7 @@ import { request } from './client'
 import type {
   AckResult,
   AccountView,
+  AddAccountRequest,
   AgentDetail,
   AgentWriteResult,
   AgentsView,
@@ -91,7 +92,7 @@ export const endpoints = {
 
   // accounts
   listAccounts: (o?: Opt) => request<AccountView[]>('/accounts', o),
-  createAccount: (body: { harness: Harness; name: string; home?: string }) =>
+  createAccount: (body: AddAccountRequest) =>
     request<AccountView>('/accounts', { method: 'POST', body }),
   importAccount: (body: { name: string; harness: Harness; home: string }) =>
     request<AccountView>('/accounts/import', { method: 'POST', body }),

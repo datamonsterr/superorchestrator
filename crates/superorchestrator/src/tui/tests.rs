@@ -15,6 +15,10 @@ use super::data::*;
 use super::theme::Theme;
 use super::ui;
 
+fn test_paths() -> so_core::Paths {
+    so_core::Paths::from_dir("/tmp/tui-test-config".into())
+}
+
 fn now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 10, 23, 12, 0, 0).unwrap()
 }
@@ -283,7 +287,7 @@ fn detail() -> RunDetail {
 }
 
 fn app() -> App {
-    let mut a = App::new(Theme::plain(), now());
+    let mut a = App::new(Theme::plain(), now(), test_paths());
     a.snap = Some(snapshot());
     a
 }
@@ -431,6 +435,115 @@ fn accounts_selection_stays_inside_the_list() {
     assert_eq!(a.accounts_sel, 3);
     a.on_key(key(KeyCode::PageUp));
     assert_eq!(a.accounts_sel, 0);
+}
+
+#[test]
+fn endpoint_account_flow_masks_token_and_redacts_effect() {
+    let mut a = app();
+    press(&mut a, &[ch('2'), ch('E')]);
+    type_text(&mut a, "endpoint-one");
+    a.on_key(key(KeyCode::Enter));
+    insta::assert_snapshot!("endpoint_preset_80x24", shot(&mut a, 80, 24));
+    press(
+        &mut a,
+        &[
+            key(KeyCode::Right),
+            key(KeyCode::Enter),
+            key(KeyCode::Enter),
+        ],
+    );
+    type_text(&mut a, "secret-token");
+    let display = shot(&mut a, 80, 24);
+    assert!(!display.contains("secret-token"));
+    insta::assert_snapshot!("endpoint_token_80x24", display);
+    let effect = a.on_key(key(KeyCode::Enter)).expect("endpoint effect");
+    assert!(!format!("{effect:?}").contains("secret-token"));
+    assert!(format!("{effect:?}").contains("[REDACTED]"));
+    let Effect::AddEndpointAccount {
+        name,
+        endpoint,
+        token,
+    } = effect
+    else {
+        panic!("wrong effect")
+    };
+    assert_eq!(name, "endpoint-one");
+    assert_eq!(endpoint.preset, so_core::EndpointPreset::Kimi);
+    assert!(endpoint.token_file.is_none());
+    assert!(endpoint.token_env.is_none());
+    assert_eq!(token.unwrap().0, "secret-token");
+    assert!(a.modal.is_none());
+}
+
+#[test]
+fn endpoint_custom_validation_and_cancel() {
+    let mut a = app();
+    press(&mut a, &[ch('2'), ch('E')]);
+    type_text(&mut a, "custom-one");
+    press(
+        &mut a,
+        &[
+            key(KeyCode::Enter),
+            key(KeyCode::Left),
+            key(KeyCode::Enter),
+            key(KeyCode::Right),
+            key(KeyCode::Enter),
+        ],
+    );
+    type_text(&mut a, "MY_TOKEN");
+    a.on_key(key(KeyCode::Enter));
+    for value in ["http://bad.example", "model", "model", "model", "model"] {
+        type_text(&mut a, value);
+        a.on_key(key(KeyCode::Enter));
+    }
+    let Some(Modal::AddEndpoint(form)) = &a.modal else {
+        panic!("expected endpoint form")
+    };
+    let error = form.error.clone().expect("validation error");
+    assert!(shot(&mut a, 80, 24).contains(&error));
+    a.on_key(key(KeyCode::Esc));
+    assert!(a.modal.is_none());
+}
+
+#[test]
+fn endpoint_custom_env_account_submits() {
+    let mut a = app();
+    press(&mut a, &[ch('2'), ch('E')]);
+    type_text(&mut a, "custom-one");
+    press(
+        &mut a,
+        &[
+            key(KeyCode::Enter),
+            key(KeyCode::Left),
+            key(KeyCode::Enter),
+            key(KeyCode::Right),
+            key(KeyCode::Enter),
+        ],
+    );
+    type_text(&mut a, "MY_TOKEN");
+    a.on_key(key(KeyCode::Enter));
+    for value in ["https://example.com", "first, second", "first", "second"] {
+        type_text(&mut a, value);
+        a.on_key(key(KeyCode::Enter));
+    }
+    type_text(&mut a, "first");
+    let Some(Effect::AddEndpointAccount {
+        endpoint, token, ..
+    }) = a.on_key(key(KeyCode::Enter))
+    else {
+        panic!("expected endpoint effect")
+    };
+    assert_eq!(endpoint.token_env.as_deref(), Some("MY_TOKEN"));
+    assert_eq!(endpoint.models, ["first", "second"]);
+    assert_eq!(endpoint.slots.sonnet.as_deref(), Some("second"));
+    assert!(token.is_none());
+}
+
+#[test]
+fn account_help_shows_its_last_row_at_80x24() {
+    let mut a = app();
+    press(&mut a, &[ch('2'), ch('?')]);
+    assert!(shot(&mut a, 80, 24).contains("scan for logins already on disk and import them"));
 }
 
 #[test]
@@ -1095,7 +1208,7 @@ fn empty_states_say_what_to_do() {
 
 #[test]
 fn loading_before_the_first_snapshot() {
-    let mut a = App::new(Theme::plain(), now());
+    let mut a = App::new(Theme::plain(), now(), test_paths());
     for k in ['1', '2', '3'] {
         a.on_key(ch(k));
         let s = shot(&mut a, 80, 24);
@@ -1172,6 +1285,7 @@ fn selected_rows_are_reversed_and_status_has_a_symbol_without_colour() {
             _ => None,
         }),
         now(),
+        test_paths(),
     );
     a.snap = Some(snapshot());
     a.on_key(ch('2'));
@@ -1206,7 +1320,7 @@ fn colour_is_used_when_allowed() {
         color: true,
         unicode: true,
     };
-    let mut a = App::new(theme, now());
+    let mut a = App::new(theme, now(), test_paths());
     a.snap = Some(snapshot());
     let buf = render(&mut a, 80, 24);
     let colored = (0..24)
@@ -1221,7 +1335,7 @@ fn ascii_terminals_get_no_unicode_symbols() {
         color: false,
         unicode: false,
     };
-    let mut a = App::new(theme, now());
+    let mut a = App::new(theme, now(), test_paths());
     a.snap = Some(snapshot());
     for k in ['1', '2', '3', '4', '5'] {
         a.on_key(ch(k));

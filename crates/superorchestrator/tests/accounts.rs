@@ -480,3 +480,106 @@ fn account_add_partial_failure_keeps_hints_and_exits_non_zero() {
         "no second error print"
     );
 }
+
+#[test]
+fn endpoint_add_stdin_and_list_are_secret_free() {
+    let e = Env::new();
+    e.init();
+    let output = e
+        .cmd()
+        .args([
+            "--json",
+            "account",
+            "add",
+            "kimi-test",
+            "--endpoint",
+            "kimi",
+            "--token-stdin",
+        ])
+        .write_stdin("endpoint-secret\n")
+        .assert()
+        .success();
+    assert!(!stdout(&output).contains("endpoint-secret"));
+    let account = so_core::AccountFile::load(&e.cfg.join("accounts/kimi-test.toml")).unwrap();
+    assert_eq!(
+        account.endpoint.unwrap().preset,
+        so_core::EndpointPreset::Kimi
+    );
+    let list = list_json(&e);
+    let entry = list.iter().find(|v| v["name"] == "kimi-test").unwrap();
+    assert_eq!(entry["endpoint"]["token_source"], "file");
+    assert_eq!(entry["endpoint"]["preset"], "kimi");
+    assert!(!entry.to_string().contains("endpoint-secret"));
+    e.cmd()
+        .args(["account", "add", "bad", "--endpoint", "zai"])
+        .assert()
+        .failure();
+    e.cmd()
+        .args([
+            "account",
+            "add",
+            "bad",
+            "--endpoint",
+            "zai",
+            "--token-env",
+            "VAR",
+            "--harness",
+            "codex",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn endpoint_login_validates_with_server() {
+    use std::io::{Read, Write};
+    let e = Env::new();
+    e.init();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0; 4096];
+        let n = stream.read(&mut buf).unwrap();
+        let request = String::from_utf8_lossy(&buf[..n]);
+        assert!(request.starts_with("POST /v1/messages "));
+        stream
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}\n")
+            .unwrap();
+    });
+    std::fs::write(e.cfg.join("accounts/endpoint-test.toml"), format!("name = \"endpoint-test\"\nharness = \"claude\"\nhome = \"~/.endpoint-test\"\nbinary = \"claude\"\n[endpoint]\npreset = \"zai\"\nbase_url = \"http://{address}\"\ntoken_env = \"SO_TEST_ENDPOINT_KEY\"\n")).unwrap();
+    let out = e
+        .cmd()
+        .env("SO_TEST_ENDPOINT_KEY", "private-endpoint-key")
+        .args(["--json", "account", "login", "endpoint-test"])
+        .assert()
+        .success();
+    assert!(!stdout(&out).contains("private-endpoint-key"));
+    server.join().unwrap();
+}
+
+#[test]
+fn endpoint_login_reports_auth_failure() {
+    use std::io::{Read, Write};
+    let e = Env::new();
+    e.init();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut buf = [0; 4096];
+        assert!(stream.read(&mut buf).unwrap() > 0);
+        stream.write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 6\r\nConnection: close\r\n\r\ndenied").unwrap();
+    });
+    std::fs::write(e.cfg.join("accounts/endpoint-test.toml"), format!("name = \"endpoint-test\"\nharness = \"claude\"\nhome = \"~/.endpoint-test\"\nbinary = \"claude\"\n[endpoint]\npreset = \"zai\"\nbase_url = \"http://{address}\"\ntoken_env = \"SO_TEST_ENDPOINT_KEY\"\n")).unwrap();
+    let out = e
+        .cmd()
+        .env("SO_TEST_ENDPOINT_KEY", "private-endpoint-key")
+        .args(["--json", "account", "login", "endpoint-test"])
+        .assert()
+        .failure();
+    let text = stdout(&out);
+    assert!(text.contains("auth"), "{text}");
+    assert!(!text.contains("private-endpoint-key"));
+    server.join().unwrap();
+}
