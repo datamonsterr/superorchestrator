@@ -230,7 +230,7 @@ pub enum AccountCmd {
 
 #[derive(Args, Debug)]
 pub struct AccountAdd {
-    /// codex, agy, opencode or claude
+    /// codex, agy, opencode, claude, copilot, gemini, kimi, cursor or qwen
     pub harness: String,
     /// Account name (default: <harness>-<n> with the lowest free n)
     #[arg(long)]
@@ -302,7 +302,7 @@ pub enum AgentCmd {
 #[derive(Args, Debug)]
 pub struct AgentCreate {
     pub name: String,
-    /// auto, codex, agy, opencode or claude
+    /// auto, codex, agy, opencode, claude, copilot, gemini, kimi, cursor or qwen
     #[arg(long)]
     pub harness: Option<String>,
     #[arg(long)]

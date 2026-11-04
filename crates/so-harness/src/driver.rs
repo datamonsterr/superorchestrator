@@ -776,6 +776,20 @@ mod tests {
     }
 
     #[test]
+    fn acp_harnesses_do_not_support_fork() {
+        for h in [
+            Harness::Copilot,
+            Harness::Gemini,
+            Harness::Kimi,
+            Harness::Cursor,
+            Harness::Qwen,
+        ] {
+            let d = AnyDriver::for_harness(h, DriverConfig::default()).unwrap();
+            assert!(!d.supports_fork(), "{h}");
+        }
+    }
+
+    #[test]
     fn agent_config_merges_deeply_and_keeps_our_server() {
         use serde_json::json;
         let agent = AgentLaunch {

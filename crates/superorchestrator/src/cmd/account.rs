@@ -35,8 +35,10 @@ pub fn run(ctx: &Ctx, cmd: AccountCmd) -> Result<ExitCode> {
 }
 
 fn parse_harness(s: &str) -> Result<Harness> {
-    s.parse::<Harness>()
-        .map_err(|_| anyhow::anyhow!("unknown harness `{s}` (codex, agy, opencode or claude)"))
+    s.parse::<Harness>().map_err(|_| {
+        let all = Harness::ALL.map(|h| h.as_str()).join(", ");
+        anyhow::anyhow!("unknown harness `{s}` ({all})")
+    })
 }
 
 fn load_account(paths: &Paths, name: &str) -> Result<AccountFile> {

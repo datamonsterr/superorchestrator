@@ -32,7 +32,10 @@ impl HarnessPref {
         s.to_ascii_lowercase()
             .parse::<Harness>()
             .map(Self::Fixed)
-            .map_err(|_| format!("unknown harness `{s}` (auto, codex, agy, opencode, claude)"))
+            .map_err(|_| {
+                let all = Harness::ALL.map(|h| h.as_str()).join(", ");
+                format!("unknown harness `{s}` (auto, {all})")
+            })
     }
 
     pub fn as_str(&self) -> &'static str {

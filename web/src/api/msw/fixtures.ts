@@ -81,7 +81,7 @@ export const accounts: AccountView[] = [
   {
     name: 'copilot-acc1',
     harness: 'copilot',
-    signed_in: 'signed_out',
+    signed_in: 'unknown',
     enabled: true,
     cap: 1,
     active_runs: 0,
