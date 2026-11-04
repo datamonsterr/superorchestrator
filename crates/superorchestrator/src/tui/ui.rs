@@ -1139,6 +1139,7 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
                     "move; top or bottom (arrows, PgUp, Home work too)",
                 ),
                 row("a", "add accounts (harness, count)"),
+                row("E", "add endpoint account"),
                 row(
                     "l",
                     "sign in (claude and agy: in a session of their wrapper)",
@@ -1351,6 +1352,49 @@ fn draw_modal(f: &mut Frame, app: &App, modal: &Modal, full: Rect) {
                 ],
                 64,
             )
+        }
+        Modal::AddEndpoint(form) => {
+            let (label, value) = match form.step {
+                0 => ("Account name", form.name.clone()),
+                1 => (
+                    "Preset (←/→)",
+                    so_core::EndpointPreset::ALL[form.preset]
+                        .as_str()
+                        .to_owned(),
+                ),
+                2 => (
+                    "Token source (←/→)",
+                    if form.env_source {
+                        "Environment variable"
+                    } else {
+                        "Pasted token"
+                    }
+                    .to_owned(),
+                ),
+                3 if form.env_source => ("Environment variable name", form.env.clone()),
+                3 => ("Token", "•".repeat(form.token.0.chars().count())),
+                n => (
+                    [
+                        "Base URL",
+                        "Models (comma separated)",
+                        "Opus slot",
+                        "Sonnet slot",
+                        "Haiku slot",
+                    ][n - 4],
+                    form.custom[n - 4].clone(),
+                ),
+            };
+            let mut lines = vec![
+                Line::raw(label),
+                Line::raw(""),
+                input_line(t, &value),
+                Line::raw(""),
+            ];
+            if let Some(error) = &form.error {
+                lines.push(Line::raw(error.clone()));
+            }
+            lines.push(muted("Enter next   Shift-Tab back   Esc cancel"));
+            ("Add endpoint account".into(), lines, 68)
         }
         Modal::AddAccount {
             harness,

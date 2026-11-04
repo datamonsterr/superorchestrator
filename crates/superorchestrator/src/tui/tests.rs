@@ -433,6 +433,102 @@ fn accounts_selection_stays_inside_the_list() {
 }
 
 #[test]
+fn endpoint_account_flow_masks_token_and_redacts_effect() {
+    let mut a = app();
+    press(&mut a, &[ch('2'), ch('E')]);
+    type_text(&mut a, "endpoint-one");
+    a.on_key(key(KeyCode::Enter));
+    insta::assert_snapshot!("endpoint_preset_80x24", shot(&mut a, 80, 24));
+    press(
+        &mut a,
+        &[
+            key(KeyCode::Right),
+            key(KeyCode::Enter),
+            key(KeyCode::Enter),
+        ],
+    );
+    type_text(&mut a, "secret-token");
+    let display = shot(&mut a, 80, 24);
+    assert!(!display.contains("secret-token"));
+    insta::assert_snapshot!("endpoint_token_80x24", display);
+    let effect = a.on_key(key(KeyCode::Enter)).expect("endpoint effect");
+    assert!(!format!("{effect:?}").contains("secret-token"));
+    assert!(format!("{effect:?}").contains("[REDACTED]"));
+    let Effect::AddEndpointAccount {
+        name,
+        endpoint,
+        token,
+    } = effect
+    else {
+        panic!("wrong effect")
+    };
+    assert_eq!(name, "endpoint-one");
+    assert_eq!(endpoint.preset, so_core::EndpointPreset::Kimi);
+    assert_eq!(token.unwrap().0, "secret-token");
+    assert!(a.modal.is_none());
+}
+
+#[test]
+fn endpoint_custom_validation_and_cancel() {
+    let mut a = app();
+    press(&mut a, &[ch('2'), ch('E')]);
+    type_text(&mut a, "custom-one");
+    press(
+        &mut a,
+        &[
+            key(KeyCode::Enter),
+            key(KeyCode::Left),
+            key(KeyCode::Enter),
+            key(KeyCode::Right),
+            key(KeyCode::Enter),
+        ],
+    );
+    type_text(&mut a, "MY_TOKEN");
+    a.on_key(key(KeyCode::Enter));
+    for value in ["http://bad.example", "model", "model", "model", "model"] {
+        type_text(&mut a, value);
+        a.on_key(key(KeyCode::Enter));
+    }
+    assert!(matches!(&a.modal, Some(Modal::AddEndpoint(form)) if form.error.is_some()));
+    a.on_key(key(KeyCode::Esc));
+    assert!(a.modal.is_none());
+}
+
+#[test]
+fn endpoint_custom_env_account_submits() {
+    let mut a = app();
+    press(&mut a, &[ch('2'), ch('E')]);
+    type_text(&mut a, "custom-one");
+    press(
+        &mut a,
+        &[
+            key(KeyCode::Enter),
+            key(KeyCode::Left),
+            key(KeyCode::Enter),
+            key(KeyCode::Right),
+            key(KeyCode::Enter),
+        ],
+    );
+    type_text(&mut a, "MY_TOKEN");
+    a.on_key(key(KeyCode::Enter));
+    for value in ["https://example.com", "first, second", "first", "second"] {
+        type_text(&mut a, value);
+        a.on_key(key(KeyCode::Enter));
+    }
+    type_text(&mut a, "first");
+    let Some(Effect::AddEndpointAccount {
+        endpoint, token, ..
+    }) = a.on_key(key(KeyCode::Enter))
+    else {
+        panic!("expected endpoint effect")
+    };
+    assert_eq!(endpoint.token_env.as_deref(), Some("MY_TOKEN"));
+    assert_eq!(endpoint.models, ["first", "second"]);
+    assert_eq!(endpoint.slots.sonnet.as_deref(), Some("second"));
+    assert!(token.is_none());
+}
+
+#[test]
 fn add_form_picks_a_harness_and_a_count() {
     let mut a = app();
     press(&mut a, &[ch('2'), ch('a')]);

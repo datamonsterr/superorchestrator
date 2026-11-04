@@ -34,6 +34,7 @@ A header (version, supervisor state, config directory), the tabs, the body for t
 | Key | Action |
 | --- | --- |
 | `a` | Add accounts: pick the harness with the arrow keys, type a count (1 to 99). Names follow the same rule as `account add --count`. |
+| `E` | Add a Claude endpoint account: enter a name, choose a preset and token source, and supply custom endpoint settings when needed. |
 | `l` | Sign in. The UI steps aside and runs the login: for codex and opencode the harness's own login, for claude and agy a session of the account's wrapper (type `/login` in Claude, sign in inside agy, then exit). Press Enter afterwards to return. If the wrapper is not on `PATH` it shows the command instead. |
 | `e` | Enable or disable the account. |
 | `f` | Flag a cooldown (asks for hours), or clear one that is set. |

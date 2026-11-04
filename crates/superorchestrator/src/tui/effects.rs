@@ -268,6 +268,22 @@ fn perform(
             }
             text
         }
+        Effect::AddEndpointAccount {
+            name,
+            endpoint,
+            token,
+        } => {
+            let cfg = ctx.config()?;
+            manage::add_endpoint(
+                &ctx.paths,
+                &cfg,
+                host,
+                &name,
+                endpoint,
+                token.as_ref().map(|s| s.0.as_str()),
+            )?;
+            skill_warnings(format!("added endpoint account {name}"))
+        }
         Effect::Login(name) => {
             let account = load_account(&ctx.paths, &name)?;
             if account.endpoint.is_some() {

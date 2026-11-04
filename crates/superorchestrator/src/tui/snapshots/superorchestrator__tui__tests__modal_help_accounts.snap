@@ -1,9 +1,9 @@
 ---
 source: crates/superorchestrator/src/tui/tests.rs
+assertion_line: 1125
 expression: "shot(&mut a, 80, 24)"
 ---
  superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
-   1 Overview     2 Accounts     3 Runs !1     4 Setup     5 Levels
   ╭ Help ────────────────────────────────────────────────────────────────────╮
   │                                                                          │
   │ Everywhere                                                               │
@@ -17,6 +17,7 @@ expression: "shot(&mut a, 80, 24)"
   │ Accounts                                                                 │
   │ j k  g G    move; top or bottom (arrows, PgUp, Home work too)            │
   │ a           add accounts (harness, count)                                │
+  │ E           add endpoint account                                         │
   │ l           sign in (claude and agy: in a session of their wrapper)      │
   │ e           enable or disable                                            │
   │ f           flag a cooldown, or clear it                                 │

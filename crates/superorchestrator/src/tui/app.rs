@@ -8,7 +8,7 @@ use chrono::{DateTime, Duration, Utc};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
 use so_accounts::ImportCandidate;
-use so_core::{Harness, RunState};
+use so_core::{AccountFile, Endpoint, EndpointPreset, Harness, RunState, Slots};
 
 use super::data::{AccountRow, RunDetail, RunItem, Snapshot};
 use super::theme::Theme;
@@ -128,6 +128,60 @@ pub struct StepRow {
     pub lines: Vec<String>,
 }
 
+/// A credential that cannot be exposed by derived Debug implementations.
+#[derive(Clone, Default)]
+pub struct Secret(pub String);
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct EndpointForm {
+    pub step: usize,
+    pub name: String,
+    pub preset: usize,
+    pub env_source: bool,
+    pub token: Secret,
+    pub env: String,
+    pub custom: [String; 5],
+    pub error: Option<String>,
+}
+
+impl EndpointForm {
+    fn endpoint(&self) -> Endpoint {
+        let custom = EndpointPreset::ALL[self.preset] == EndpointPreset::Custom;
+        Endpoint {
+            preset: EndpointPreset::ALL[self.preset],
+            base_url: custom.then(|| self.custom[0].trim().to_owned()),
+            token_env: self.env_source.then(|| self.env.trim().to_owned()),
+            token_file: (!self.env_source).then(|| "pending".into()),
+            token_var: None,
+            models: if custom {
+                self.custom[1]
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            } else {
+                vec![]
+            },
+            slots: if custom {
+                Slots {
+                    opus: Some(self.custom[2].trim().into()),
+                    sonnet: Some(self.custom[3].trim().into()),
+                    haiku: Some(self.custom[4].trim().into()),
+                }
+            } else {
+                Slots::default()
+            },
+        }
+    }
+}
+
 /// Work for a background thread. Reading is `Refresh` and `Detail`; the rest change state.
 #[derive(Debug, Clone)]
 pub enum Effect {
@@ -140,6 +194,11 @@ pub enum Effect {
     AddAccounts {
         harness: Harness,
         count: u32,
+    },
+    AddEndpointAccount {
+        name: String,
+        endpoint: Endpoint,
+        token: Option<Secret>,
     },
     Login(String),
     SetEnabled {
@@ -175,6 +234,7 @@ impl Effect {
         Some(match self {
             Effect::Refresh | Effect::Detail { .. } => return None,
             Effect::AddAccounts { .. } => "adding accounts",
+            Effect::AddEndpointAccount { .. } => "adding endpoint account",
             Effect::Login(_) => "preparing sign-in",
             Effect::SetEnabled { .. } => "updating account",
             Effect::Cooldown { .. } => "updating cooldown",
@@ -271,6 +331,7 @@ pub enum Modal {
         title: String,
         typed: String,
     },
+    AddEndpoint(EndpointForm),
     AddAccount {
         harness: usize,
         count: String,
@@ -539,6 +600,10 @@ impl App {
                     count: "1".into(),
                     field: AddField::Harness,
                 });
+                None
+            }
+            'E' => {
+                self.modal = Some(Modal::AddEndpoint(EndpointForm::default()));
                 None
             }
             'i' => self.start(Effect::ScanImport),
@@ -1010,6 +1075,87 @@ impl App {
                     None
                 }
             },
+            Modal::AddEndpoint(form) => {
+                match code {
+                    KeyCode::Esc => return None,
+                    KeyCode::BackTab if form.step > 0 => {
+                        form.step -= 1;
+                        form.error = None;
+                    }
+                    KeyCode::Left | KeyCode::Right if form.step == 1 => {
+                        form.preset = if code == KeyCode::Left {
+                            (form.preset + 3) % 4
+                        } else {
+                            (form.preset + 1) % 4
+                        };
+                    }
+                    KeyCode::Left | KeyCode::Right if form.step == 2 => {
+                        form.env_source = !form.env_source
+                    }
+                    KeyCode::Enter => {
+                        form.error = None;
+                        let error = match form.step {
+                            0 => AccountFile::new(
+                                form.name.trim(),
+                                Harness::Claude,
+                                "~/.account",
+                                "claude",
+                            )
+                            .err()
+                            .map(|e| e.to_string()),
+                            3 if !form.env_source && form.token.0.is_empty() => {
+                                Some("Enter a token".into())
+                            }
+                            3 if form.env_source && form.env.trim().is_empty() => {
+                                Some("Enter an environment variable name".into())
+                            }
+                            _ => None,
+                        };
+                        if let Some(error) = error {
+                            form.error = Some(error);
+                        } else if form.step == 3 && form.preset != 3 || form.step == 8 {
+                            let endpoint = form.endpoint();
+                            let mut account = AccountFile::new(
+                                form.name.trim(),
+                                Harness::Claude,
+                                "~/.account",
+                                "claude",
+                            )
+                            .expect("name validated");
+                            account.endpoint = Some(endpoint.clone());
+                            if let Err(error) = account.validate() {
+                                form.error = Some(error.to_string());
+                            } else {
+                                let name = form.name.trim().to_owned();
+                                let token =
+                                    (!form.env_source).then(|| std::mem::take(&mut form.token));
+                                return self.start(Effect::AddEndpointAccount {
+                                    name,
+                                    endpoint,
+                                    token,
+                                });
+                            }
+                        } else {
+                            form.step += 1;
+                        }
+                    }
+                    _ => {
+                        let input = match form.step {
+                            0 => Some(&mut form.name),
+                            3 if form.env_source => Some(&mut form.env),
+                            3 => Some(&mut form.token.0),
+                            4..=8 => Some(&mut form.custom[form.step - 4]),
+                            _ => None,
+                        };
+                        if let Some(input) = input {
+                            edit(input, code, 400);
+                            form.error = None;
+                        }
+                    }
+                }
+                self.modal = Some(modal);
+                None
+            }
             Modal::AddAccount {
                 harness,
                 count,
