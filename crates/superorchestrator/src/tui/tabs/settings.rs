@@ -218,6 +218,11 @@ pub fn draw(f: &mut Frame, app: &App, area: Rect) {
             },
         ));
     }
+    lines.push(Line::raw(format!("Running model: {}", v.effective.primary)));
+    lines.push(Line::raw(format!(
+        "Running fallback: {}",
+        v.effective.fallback.as_deref().unwrap_or("none")
+    )));
     lines.push(Line::raw(format!(
         "Key: {:?} {} {}",
         v.key.source,

@@ -33,7 +33,7 @@ The names line up where the feature is the same. They differ for these reasons:
 | Routing instruction | Levels, Routing instruction tab | Not available | Gap, follow-up. Edit `router.instruction` with `config set`. |
 | Models catalog and refresh | Levels page: catalog per harness, Refresh | Models (`7`): catalog per harness, `r` refresh | Parity. |
 | Decider settings and Test decider | Settings, Decider tab | Settings (`8`): edit fields, save and test | Both use the supervisor ([config](config.md#decider)); the TUI tests the built-in sample. |
-| Other config settings | Settings: General, Notifications, Worktrees, UI, System | Settings (`8`): read-only summary (config path, UI bind, caps) | Gap, follow-up: edit with the web UI or `config set`. |
+| Other config settings | Settings: General, Orchestrator, Notifications, Worktrees, UI, System | Settings (`8`): read-only summary (config path, UI bind, caps) | Gap, follow-up: edit with the web UI or `config set`. |
 | Worktrees list and prune | Settings, System tab | Not available | Gap, follow-up. Use the `worktree` CLI command. |
 | Agents | Agents: list, view, edit agent files | Not available | Gap, follow-up. Edit the files or use `agent` commands. |
 | Workflows | Workflows: saved workflows, runs, step status | Not available | Gap, follow-up. Use the `workflow` commands or `run_workflow`. |

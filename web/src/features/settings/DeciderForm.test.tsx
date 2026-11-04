@@ -156,7 +156,7 @@ describe('Decider tab', () => {
     expect((screen.getByLabelText('Key') as HTMLInputElement).value).toBe('')
   })
 
-  it('drops the pasted key after a 4xx rejection but keeps it after a 5xx failure, with no secret in the cache', async () => {
+  it('drops the pasted key after 4xx and 5xx failures, with no secret in the cache', async () => {
     let failure = { status: 422, message: 'key: invalid' }
     server.use(http.patch('/api/v1/decider', () => HttpResponse.json({ error: { code: -32602, message: failure.message } }, { status: failure.status })))
     const { queryClient } = await openDecider()
@@ -168,12 +168,59 @@ describe('Decider tab', () => {
     await waitFor(() => expect((screen.getByLabelText('Key') as HTMLInputElement).value).toBe(''))
     expect(cached()).not.toContain('bad-key')
 
-    failure = { status: 503, message: 'supervisor unavailable, try again' }
+    failure = { status: 500, message: 'supervisor unavailable, try again' }
     await userEvent.type(screen.getByLabelText('Key'), 'kept-key')
     await save()
     expect(await screen.findByText(/supervisor unavailable, try again/)).toBeInTheDocument()
-    expect((screen.getByLabelText('Key') as HTMLInputElement).value).toBe('kept-key')
+    await waitFor(() => expect((screen.getByLabelText('Key') as HTMLInputElement).value).toBe(''))
     expect(cached()).not.toContain('kept-key')
+  })
+
+  it('clears the pasted key after a network failure', async () => {
+    server.use(http.patch('/api/v1/decider', () => HttpResponse.error()))
+    await openDecider()
+    await userEvent.click(screen.getByRole('radio', { name: 'Paste key' }))
+    await userEvent.type(screen.getByLabelText('Key'), 'network-secret')
+    await save()
+    await waitFor(() => expect(screen.getByLabelText('Key')).toHaveValue(''))
+  })
+
+  it('clears pasted keys when leaving the tab and on unmount', async () => {
+    const { unmount } = await openDecider()
+    await userEvent.click(screen.getByRole('radio', { name: 'Paste key' }))
+    const key = screen.getByLabelText('Key') as HTMLInputElement
+    await userEvent.type(key, 'tab-secret')
+    await openTab('General')
+    await openTab('Decider')
+    expect(screen.getByLabelText('Key')).toHaveValue('')
+    await userEvent.type(screen.getByLabelText('Key'), 'unmount-secret')
+    const input = screen.getByLabelText('Key') as HTMLInputElement
+    unmount()
+    expect(input.value).toBe('')
+  })
+
+  it('never stores a pasted key in the mutation cache while pending', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let received = false
+    server.use(http.patch('/api/v1/decider', async () => {
+      received = true
+      await gate
+      return HttpResponse.json(fx.decider)
+    }))
+    const { queryClient } = await openDecider()
+    const seen: string[] = []
+    const unsubscribe = queryClient.getMutationCache().subscribe(() => {
+      seen.push(JSON.stringify(queryClient.getMutationCache().getAll().map((m) => m.state)))
+    })
+    await userEvent.click(screen.getByRole('radio', { name: 'Paste key' }))
+    await userEvent.type(screen.getByLabelText('Key'), 'pending-secret')
+    await save()
+    await waitFor(() => expect(received).toBe(true))
+    release()
+    await waitFor(() => expect(screen.getByTestId('decider-key-current')).toBeInTheDocument())
+    unsubscribe()
+    expect(seen.join()).not.toContain('pending-secret')
   })
 
   it('says which variable to set when no key is found', async () => {

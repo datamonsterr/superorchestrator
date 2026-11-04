@@ -291,6 +291,7 @@ pub async fn config_patch(
     }
     let s = st.clone();
     st.blocking(move || {
+        let _guard = so_supervisor::services::config_write_lock();
         let mut leaves = Vec::new();
         flatten("", &body, &mut leaves);
         let mut trial = Config::load(&s.sup.paths)?;
@@ -345,6 +346,7 @@ pub async fn levels_put(
     }
     let s = st.clone();
     st.blocking(move || {
+        let _guard = so_supervisor::services::config_write_lock();
         let levels = toml::Value::try_from(&b.levels)
             .map_err(ApiError::internal)?
             .to_string();

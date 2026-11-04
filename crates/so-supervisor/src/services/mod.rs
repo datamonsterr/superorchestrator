@@ -7,3 +7,10 @@ pub mod models;
 pub mod sessions;
 pub mod usage;
 pub mod worktrees;
+
+/// Serializes supervisor transactions that update config.toml and associated files.
+pub fn config_write_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}

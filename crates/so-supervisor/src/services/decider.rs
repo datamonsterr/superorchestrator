@@ -230,7 +230,7 @@ pub fn view_with_env(
             overrides.push(EnvOverride {
                 name: name.into(),
                 field: field.into(),
-                value: (name != j.key_env).then_some(value),
+                value: (name != j.key_env && name != running.router.jev.key_env).then_some(value),
             });
         }
     }
@@ -241,14 +241,20 @@ pub fn view_with_env(
             value: None,
         });
     }
-    let mut effective = j.resolve_models(&env);
-    if env(&j.key_env).is_some_and(|v| !v.trim().is_empty()) {
-        if j.key_env == ENV_ROUTER_MODEL {
-            effective.primary = "[REDACTED]".into();
-        }
-        if j.key_env == ENV_ROUTER_FALLBACK_MODEL && effective.fallback.is_some() {
-            effective.fallback = Some("[REDACTED]".into());
-        }
+    let running_jev = &running.router.jev;
+    let mut effective = running_jev.resolve_models(&env);
+    if [j, running_jev].iter().any(|cfg| {
+        cfg.key_env == ENV_ROUTER_MODEL && env(&cfg.key_env).is_some_and(|v| !v.trim().is_empty())
+    }) {
+        effective.primary = "[REDACTED]".into();
+    }
+    if effective.fallback.is_some()
+        && [j, running_jev].iter().any(|cfg| {
+            cfg.key_env == ENV_ROUTER_FALLBACK_MODEL
+                && env(&cfg.key_env).is_some_and(|v| !v.trim().is_empty())
+        })
+    {
+        effective.fallback = Some("[REDACTED]".into());
     }
     let default = Jev::default();
     Ok(DeciderView {
@@ -309,6 +315,7 @@ fn set_with_writer(
     env: impl Fn(&str) -> Option<String>,
     write_config: impl FnOnce(&Paths, &[(&str, &str)]) -> Result<(), String>,
 ) -> Result<DeciderView, DeciderError> {
+    let _guard = super::config_write_lock();
     let mut entries: Vec<(String, String)> = Vec::new();
     let mut push_string = |key: &str, value: &str| {
         entries.push((key.into(), serde_json::to_string(value).unwrap_or_default()))
@@ -519,6 +526,69 @@ pub async fn test_decider(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_set_waits_for_failed_transaction_to_roll_back() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::from_dir(dir.path().to_path_buf());
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let (started_tx, started_rx) = mpsc::channel();
+        std::thread::scope(|scope| {
+            let p = &paths;
+            scope.spawn(move || {
+                let result = set_with_writer(
+                    p,
+                    &Config::default(),
+                    DeciderPatch {
+                        key: Some(KeyPatch::Paste("first-key".into())),
+                        ..Default::default()
+                    },
+                    |_| None,
+                    |_, _| {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv().unwrap();
+                        Err("forced failure".into())
+                    },
+                );
+                assert!(result.is_err());
+            });
+            entered_rx.recv().unwrap();
+            let p = &paths;
+            scope.spawn(move || {
+                started_tx.send(()).unwrap();
+                let result = set_with_env(
+                    p,
+                    &Config::default(),
+                    DeciderPatch {
+                        key: Some(KeyPatch::Paste("second-key".into())),
+                        ..Default::default()
+                    },
+                    |_| None,
+                );
+                done_tx.send(result.is_ok()).unwrap();
+            });
+            started_rx.recv().unwrap();
+            let early = done_rx.recv_timeout(Duration::from_millis(500));
+            release_tx.send(()).unwrap();
+            let completed_early = early.is_ok();
+            if !completed_early {
+                assert!(done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+            }
+            assert!(
+                !completed_early,
+                "second set interleaved with the first transaction"
+            );
+        });
+        assert!(
+            std::fs::read_to_string(paths.config_dir.join("decider.env"))
+                .unwrap()
+                .contains("second-key")
+        );
+    }
 
     #[test]
     fn config_write_failure_restores_previous_key_or_removes_new_key() {

@@ -490,3 +490,28 @@ fn model_override_variables_are_rejected_as_key_env() {
         assert!(message.starts_with("key.env:") && message.contains("model override"));
     }
 }
+
+#[test]
+fn saved_model_is_not_effective_until_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::from_dir(dir.path().to_path_buf());
+    let running = Config::default();
+    let view = decider::set_with_env(
+        &paths,
+        &running,
+        DeciderPatch {
+            model: Some("new/model".into()),
+            fallback_model: Some("none".into()),
+            ..Default::default()
+        },
+        |_| None,
+    )
+    .unwrap();
+    assert_eq!(view.model, "new/model");
+    assert_eq!(view.effective.primary, running.router.jev.model);
+    assert_eq!(
+        view.effective.fallback,
+        running.router.jev.resolve_models(|_| None).fallback
+    );
+    assert!(view.restart_required);
+}

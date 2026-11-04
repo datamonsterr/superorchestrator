@@ -6,6 +6,7 @@ import {
   useQueryClient,
   type QueryKey,
 } from '@tanstack/react-query'
+import { useRef } from 'react'
 import { endpoints } from './endpoints'
 import { qk, type SessionFilter } from './keys'
 import { useStreamState } from './stream'
@@ -217,14 +218,27 @@ export function useDecider() {
 /** The PATCH response is the new view, so it goes straight into the cache. */
 export function usePatchDecider() {
   const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (body: DeciderPatch) => endpoints.patchDecider(body),
-    gcTime: 0, // the variables may hold a pasted key
+  const secret = useRef<string | null>(null)
+  const mutation = useMutation({
+    mutationFn: (body: DeciderPatch) => endpoints.patchDecider(secret.current === null ? body : { ...body, key: { paste: secret.current } }),
+    gcTime: 0,
     onSuccess: (data) => {
       qc.setQueryData(qk.decider(), data)
       return Promise.all([qc.invalidateQueries({ queryKey: qk.config() }), qc.invalidateQueries({ queryKey: qk.status() })])
     },
   })
+  async function save(body: DeciderPatch) {
+    const paste = body.key && 'paste' in body.key ? body.key.paste : null
+    secret.current = paste
+    const redacted = paste === null ? body : { ...body, key: { paste: '[REDACTED]' } }
+    try {
+      return await mutation.mutateAsync(redacted)
+    } finally {
+      secret.current = null
+      mutation.reset()
+    }
+  }
+  return { ...mutation, save }
 }
 export const useTestDecider = () =>
   useMutation({ mutationFn: (body: DeciderTestRequest) => endpoints.testDecider(body), meta: { silent: true } }) // the panel shows the error

@@ -15,10 +15,10 @@ expression: screen
    key env
    key file
  > key paste        ••••••
+ Running model: inception/mercury-decide:free
+ Running fallback: ~typesafe/jev-latest
  Key: Unset OPENROUTER_API_KEY
  Config: /tmp/config.toml  UI: 127.0.0.1:7878  caps: global 16 children 8
-
-
 
 
 

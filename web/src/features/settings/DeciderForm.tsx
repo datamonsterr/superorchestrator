@@ -9,7 +9,6 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { TabsContent } from '@/components/ui/tabs'
 import { usePatchDecider, useTestDecider } from '@/api/queries'
-import { ApiError } from '@/api/client'
 import { errorMessage } from '@/lib/errors'
 import type { DeciderTestResult, DeciderView, EnvOverride } from '@/api/types'
 import { DECIDER_FIELD_PATHS, deciderPatch, deciderSchema, valuesFromDecider, type DeciderValues, type KeyMode } from './schemas'
@@ -100,6 +99,11 @@ export function DeciderForm({ view, hidden = false }: { view: DeciderView; hidde
   }, [mode, setValue])
 
   useEffect(() => {
+    if (hidden) setValue('key_paste', '')
+    return () => setValue('key_paste', '')
+  }, [hidden, setValue])
+
+  useEffect(() => {
     if (!form.formState.isDirty) reset(valuesFromDecider(view))
   }, [view, form.formState.isDirty, reset])
 
@@ -111,7 +115,7 @@ export function DeciderForm({ view, hidden = false }: { view: DeciderView; hidde
       return
     }
     try {
-      const next = await patch.mutateAsync(body)
+      const next = await patch.save(body)
       reset(valuesFromDecider(next)) // also empties the paste field
       toast.success(next.restart_required ? 'Saved. Restart the supervisor to apply.' : 'Decider settings saved')
     } catch (e) {
@@ -120,10 +124,8 @@ export function DeciderForm({ view, hidden = false }: { view: DeciderView; hidde
       const field = message.split(':', 1)[0]
       if (message.includes(':') && DECIDER_FIELD_PATHS.includes(field)) setError(field as Name, { type: 'server', message: message.slice(field.length + 1).trim() })
       else setError('root', { type: 'server', message })
-      // The server rejected the request: drop the pasted key. After a network or 5xx failure it is kept so a retry does not need it typed again.
-      if (e instanceof ApiError && e.status >= 400 && e.status < 500) setValue('key_paste', '')
     } finally {
-      patch.reset() // the mutation's variables hold the pasted key
+      setValue('key_paste', '')
     }
   }
 
@@ -176,7 +178,7 @@ export function DeciderForm({ view, hidden = false }: { view: DeciderView; hidde
             The decider scores each task&apos;s complexity; the router maps that score to a level.
           </p>
           <div data-testid="decider-effective" className="rounded-md border p-3 text-sm">
-            <p className="font-medium">In effect</p>
+            <p className="font-medium">Running supervisor models</p>
             <p>
               Model <span className="font-mono">{eff.primary}</span> ({eff.primary_source})
             </p>
