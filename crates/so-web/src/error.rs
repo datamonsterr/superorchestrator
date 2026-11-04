@@ -210,7 +210,8 @@ impl From<AccountsError> for ApiError {
             AccountsError::AlreadyExists(_) => Self::conflict(e.to_string()),
             AccountsError::Core(c) => c.into(),
             AccountsError::Io { path, source } => Self::io(&path, &source),
-            AccountsError::AgyMultiAccountUnsupported(_)
+            AccountsError::NotEndpoint(_)
+            | AccountsError::AgyMultiAccountUnsupported(_)
             | AccountsError::AgySecondAccount { .. }
             | AccountsError::TokenEnv { .. }
             | AccountsError::TokenFile { .. }

@@ -271,7 +271,9 @@ fn perform(
         Effect::Login(name) => {
             let account = load_account(&ctx.paths, &name)?;
             if account.endpoint.is_some() {
-                let message = match crate::cmd::account::validate_endpoint(&account, host)? {
+                let message = match crate::cmd::runs::runtime()?
+                    .block_on(so_harness::endpoint::validate_login(&account, host))?
+                {
                     Ok(()) => format!("endpoint login validated for {name}"),
                     Err((kind, detail)) => format!("{kind}: {detail}"),
                 };

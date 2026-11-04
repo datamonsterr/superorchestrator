@@ -92,7 +92,10 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
             token.as_deref(),
         )?;
         ctx.refresh_skill();
-        let ep = acc.endpoint.as_ref().expect("endpoint");
+        let ep = acc
+            .endpoint
+            .as_ref()
+            .ok_or_else(|| so_accounts::AccountsError::NotEndpoint(acc.name.clone()))?;
         let source = ep
             .token_env
             .as_ref()
@@ -344,7 +347,8 @@ fn login(ctx: &Ctx, name: &str) -> Result<ExitCode> {
     let host = ctx.host()?;
     let tty = stdin_is_tty();
     if account.endpoint.is_some() {
-        let result = validate_endpoint(&account, &host)?;
+        let result = super::runs::runtime()?
+            .block_on(so_harness::endpoint::validate_login(&account, &host))?;
         match result {
             Ok(()) => {
                 ctx.emit_ok(
@@ -379,28 +383,6 @@ fn login(ctx: &Ctx, name: &str) -> Result<ExitCode> {
         &format!("login finished for {name}"),
     )?;
     Ok(ExitCode::SUCCESS)
-}
-
-pub(crate) fn validate_endpoint(
-    account: &AccountFile,
-    host: &HostEnv,
-) -> Result<std::result::Result<(), (String, String)>> {
-    let endpoint = account
-        .endpoint
-        .as_ref()
-        .context("endpoint not configured")?;
-    let token = match so_accounts::resolve_endpoint_token(account, host) {
-        Ok(token) => token,
-        Err(e) => return Ok(Err(("auth".into(), e.to_string()))),
-    };
-    Ok(super::runs::runtime()?
-        .block_on(so_harness::endpoint::validate(
-            endpoint.base_url(),
-            endpoint.token_var(),
-            &token,
-            endpoint.slot(so_core::Slot::Haiku),
-        ))
-        .map_err(|e| (e.kind.to_string(), e.detail)))
 }
 
 /// Runs the account's login command on the terminal. `Ok(false)` when it exited non-zero.

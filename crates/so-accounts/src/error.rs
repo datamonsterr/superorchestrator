@@ -31,6 +31,8 @@ pub enum AccountsError {
     BinaryNotFound(String),
     #[error("account `{0}` already exists")]
     AlreadyExists(String),
+    #[error("account `{0}` is not an endpoint account")]
+    NotEndpoint(String),
     #[error("account `{0}` not found")]
     NotFound(String),
     #[error("credential home {0} does not exist")]

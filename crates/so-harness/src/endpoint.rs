@@ -150,6 +150,31 @@ pub struct ValidateError {
     pub detail: String,
 }
 
+/// Resolve and validate an endpoint account's credentials using its haiku slot.
+/// Call from a blocking thread when token resolution may perform file I/O.
+pub async fn validate_login(
+    account: &so_core::AccountFile,
+    host: &so_accounts::HostEnv,
+) -> so_accounts::Result<Result<(), (String, String)>> {
+    let endpoint = account
+        .endpoint
+        .as_ref()
+        .ok_or_else(|| so_accounts::AccountsError::NotEndpoint(account.name.clone()))?;
+    account.validate()?;
+    let token = match so_accounts::resolve_endpoint_token(account, host) {
+        Ok(token) => token,
+        Err(e) => return Ok(Err(("auth".into(), e.to_string()))),
+    };
+    Ok(validate(
+        endpoint.base_url(),
+        endpoint.token_var(),
+        &token,
+        endpoint.slot(so_core::Slot::Haiku),
+    )
+    .await
+    .map_err(|e| (e.kind.to_string(), e.detail)))
+}
+
 /// Check credentials with a minimal Anthropic-compatible messages request.
 pub async fn validate(
     base_url: &str,
@@ -214,6 +239,22 @@ pub async fn validate(
 #[cfg(test)]
 mod reset_tests {
     use super::reset_time;
+
+    #[tokio::test]
+    async fn login_rejects_non_endpoint_account_with_typed_error() {
+        let account =
+            so_core::AccountFile::new("plain", so_core::Harness::Claude, "~/.plain", "claude")
+                .unwrap();
+        let host = so_accounts::HostEnv {
+            vars: Default::default(),
+            home: "/tmp".into(),
+            path_var: None,
+            platform: so_core::Platform::current(),
+        };
+        assert!(
+            matches!(super::validate_login(&account, &host).await, Err(so_accounts::AccountsError::NotEndpoint(name)) if name == "plain")
+        );
+    }
 
     #[test]
     fn reset_marker_is_case_insensitive() {
