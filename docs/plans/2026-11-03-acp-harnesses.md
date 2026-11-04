@@ -1,6 +1,6 @@
 # E2: ACP harnesses (2026-11-03)
 
-Design: [ADR-0008](../adr/0008-acp-harnesses-share-one-driver.md). New harnesses: `copilot`, `gemini`, `kimi`, `cursor`, `qwen`.
+Design: [ADR-0011](../adr/0011-acp-harnesses-share-one-driver.md). New harnesses: `copilot`, `gemini`, `kimi`, `cursor`, `qwen`.
 
 ## Per-CLI facts (check against the installed CLI before coding)
 
@@ -32,7 +32,7 @@ The npm packages are installed globally in `~/.npm-global/lib/node_modules/`, so
 
 ### Task 3: Router, usage, supervisor, agents, CLI and TUI
 
-- **Goal:** the new harnesses are routable and usable end to end: so-router catalog entries and discovery, `heuristic.rs`, `eligible.rs`, `select.rs`; so-usage headroom unknown with cooldown from classified errors; so-agents `materialise.rs`/`parse.rs` (agent instructions as a prompt prefix, the rest per ADR-0008); so-supervisor `doctor.rs`, `handlers/harnesses.rs`, `runs/*`; so-mcp `tools.rs` harness lists; CLI `cmd/setup.rs`, `cli.rs`, `cmd/agent.rs`, `cmd/install.rs` (no MCP registration needed for runs); TUI `app.rs` and `effects.rs` harness lists.
+- **Goal:** the new harnesses are routable and usable end to end: so-router catalog entries and discovery, `heuristic.rs`, `eligible.rs`, `select.rs`; so-usage headroom unknown with cooldown from classified errors; so-agents `materialise.rs`/`parse.rs` (agent instructions as a prompt prefix, the rest per ADR-0011); so-supervisor `doctor.rs`, `handlers/harnesses.rs`, `runs/*`; so-mcp `tools.rs` harness lists; CLI `cmd/setup.rs`, `cli.rs`, `cmd/agent.rs`, `cmd/install.rs` (no MCP registration needed for runs); TUI `app.rs` and `effects.rs` harness lists.
 - **Acceptance:** `cargo test -p so-router -p so-usage -p so-agents -p so-supervisor -p so-mcp -p superorchestrator`; clippy and fmt clean.
 - **Out of scope:** driver internals, web.
 
