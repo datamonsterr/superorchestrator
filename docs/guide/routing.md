@@ -103,6 +103,8 @@ If no level has an eligible candidate, every eligible model is ranked by the heu
 
 `route --explain` shows the complexity, where it came from and the level, for example `complexity: 55.0 (jev)` and `level: mid`, followed by the ranked accounts. The MCP `route` tool returns the same fields.
 
+Models served by [endpoint accounts](endpoints.md) (`claude/glm-5.3`, `claude/k3.1-pro` and so on) route like any other model once a level lists them or a tier selects them.
+
 ## Account choice
 
 Once the model is chosen, the router picks one of its harness's accounts. Only enabled accounts that are below their cap and whose pool is available are considered, in this order:
