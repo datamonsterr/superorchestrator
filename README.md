@@ -37,7 +37,7 @@ superorchestrator setup
 claude
 ```
 
-Ask Claude Code to delegate a task. `setup` initializes the config, offers to add accounts for installed harnesses, and registers the MCP server and skills. Run `superorchestrator doctor` to check the setup. Useful flags: `--yes`, `--codex N`, `--claude N`, `--opencode N`, `--agy N`, `--no-login`, `--no-install` and `--no-claude-md`, `--copilot N`, `--gemini N`, `--kimi N`, `--cursor N` and `--qwen N`. See the [getting started guide](docs/guide/getting-started.md).
+Ask Claude Code to delegate a task. `setup` initializes the config, offers to add accounts for installed harnesses, and registers the MCP server and skills. Run `superorchestrator doctor` to check the setup. Useful flags: `--yes`, `--codex N`, `--claude N`, `--opencode N`, `--agy N`, `--copilot N`, `--gemini N`, `--kimi N`, `--cursor N`, `--qwen N`, `--no-login`, `--no-install` and `--no-claude-md`. See the [getting started guide](docs/guide/getting-started.md).
 
 ## Your first delegation
 
