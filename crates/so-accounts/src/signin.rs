@@ -23,6 +23,12 @@ pub fn sign_in_state(account: &AccountFile, host: &HostEnv) -> Result<SignIn> {
     let home = host.expand(&account.home)?;
     let present = |rels: &[&str]| rels.iter().any(|r| home.join(r).exists());
     Ok(match account.harness {
+        Harness::Copilot => SignIn::Unknown,
+        Harness::Gemini => bool_state(present(&[".gemini/oauth_creds.json"])),
+        Harness::Kimi => bool_state(present(&["credentials/kimi-code.json"])),
+        Harness::Qwen => bool_state(present(&["oauth_creds.json"])),
+        // The CLI does not document a credential file, and may use a keyring.
+        Harness::Cursor => SignIn::Unknown,
         Harness::Codex => bool_state(present(&["auth.json"])),
         Harness::Claude => {
             if present(&[".credentials.json"]) {
@@ -66,6 +72,29 @@ mod tests {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, [0xff, 0xfe, 0x00]).unwrap();
         std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o000)).unwrap();
+    }
+
+    #[test]
+    fn acp_sign_in_files() {
+        let d = tempfile::tempdir().unwrap();
+        let host = host(d.path(), Platform::Linux);
+        for (name, file) in [
+            ("gemini", ".gemini/oauth_creds.json"),
+            ("kimi", "credentials/kimi-code.json"),
+            ("qwen", "oauth_creds.json"),
+        ] {
+            let h: Harness = name.parse().unwrap();
+            let a = acct(h, &format!("~/{name}"));
+            assert_eq!(sign_in_state(&a, &host).unwrap(), SignIn::SignedOut);
+            touch_unreadable(&d.path().join(name).join(file));
+            assert_eq!(sign_in_state(&a, &host).unwrap(), SignIn::SignedIn);
+        }
+        for name in ["copilot", "cursor"] {
+            let a = acct(name.parse().unwrap(), &format!("~/{name}"));
+            assert_eq!(sign_in_state(&a, &host).unwrap(), SignIn::Unknown);
+            touch_unreadable(&d.path().join(name).join("unrelated"));
+            assert_eq!(sign_in_state(&a, &host).unwrap(), SignIn::Unknown);
+        }
     }
 
     #[test]

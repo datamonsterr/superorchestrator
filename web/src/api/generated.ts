@@ -209,7 +209,7 @@ export interface ForkBody {
 }
 
 /** A coding-agent CLI family. */
-export type Harness = "codex" | "agy" | "opencode" | "claude";
+export type Harness = "codex" | "agy" | "opencode" | "claude" | "copilot" | "gemini" | "kimi" | "cursor" | "qwen";
 
 export interface HarnessesView {
   accounts?: AccountView[];

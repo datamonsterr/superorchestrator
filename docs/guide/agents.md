@@ -61,7 +61,7 @@ while an explicit empty map still requires user trust.
 ---
 name: pr-reviewer
 description: Reviews a PR diff for correctness bugs.
-harness: auto            # or codex | agy | opencode | claude
+harness: auto            # or codex | agy | opencode | claude | copilot | gemini | kimi | cursor | qwen
 accounts: [codex-acc2]   # optional allow-list
 model: gpt-6.1-sol
 effort: high

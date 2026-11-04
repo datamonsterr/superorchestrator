@@ -8,7 +8,7 @@ An account is one named login for one harness, such as `codex-acc2`. Superorches
 
 ```toml
 name = "codex-acc2"
-harness = "codex"            # codex | agy | opencode | claude
+harness = "codex"            # codex | agy | opencode | claude | copilot | gemini | kimi | cursor | qwen
 home = "~/.codex-acc2"       # credential home
 binary = "codex"             # resolved on PATH at launch; an absolute path is allowed
 priority = 0                 # tie-breaker inside a harness, higher first
@@ -18,7 +18,7 @@ pools = ["default"]          # agy: ["gemini", "claude"]
 pass_env = []                # exact inherited variable names, e.g. ["GITHUB_TOKEN"]
 ```
 
-A name matches `^[a-z][a-z0-9-]{1,31}$`. The name is also the wrapper command, so it must not be `codex`, `agy`, `opencode` or `claude`, and it must not shadow another command: `account add` and `account import` fail when the name already resolves on `PATH` to an executable that is not one of our wrappers (for example `ls`).
+A name matches `^[a-z][a-z0-9-]{1,31}$`. The name is also the wrapper command, so it must not be `codex`, `agy`, `opencode`, `claude`, `copilot`, `gemini`, `kimi`, `cursor`, `qwen` or `agent`, and it must not shadow another command: `account add` and `account import` fail when the name already resolves on `PATH` to an executable that is not one of our wrappers (for example `ls`).
 
 ## Inherited environment
 
@@ -125,7 +125,7 @@ superorchestrator setup --yes --codex 3 --opencode 2 --no-login
 
 No level lists a Claude model by default, so auto routing does not use Claude accounts unless a level lists one. `setup` adds no Claude account by default (`--claude N` adds them) unless `--orchestrator codex`. To let routing use one as a last resort, run `superorchestrator config edit` and list a Claude ref such as `claude/claude-sonnet-5-5/medium` on a level. Without a terminal and without `--yes`, `setup` prints what it would do and changes nothing.
 
-`--scan` looks for `~/.codex`, `~/.codex-accN`, `~/.agent-farm/profiles/agy_worker_N/.gemini`, `~/.local/share/opencode` and `~/.claude`. `--scan` offers homes you have signed in to: a home counts only when it holds the harness's auth file (checked by existence, never read). Directories that `install` or a harness probe leave behind, such as `~/.claude/backups` or `~/.local/share/opencode/log`, are not offered. Claude may keep its login in the keychain, so `~/.claude` also counts when it has a `projects` directory.
+`--scan` looks for `~/.codex`, `~/.codex-accN`, `~/.agent-farm/profiles/agy_worker_N/.gemini`, `~/.local/share/opencode`, `~/.claude`, and the default `~/.<name>` homes for Gemini, Kimi and Qwen. `--scan` offers homes you have signed in to: a home counts only when it holds the harness's auth file (checked by existence, never read). Directories that `install` or a harness probe leave behind, such as `~/.claude/backups` or `~/.local/share/opencode/log`, are not offered. Claude may keep its login in the keychain, so `~/.claude` also counts when it has a `projects` directory.
 
 ## Logging in, per harness
 
@@ -135,8 +135,27 @@ No level lists a Claude model by default, so auto routing does not use Claude ac
 | opencode | `superorchestrator account login <name>` runs `opencode auth login` with the account's environment. It needs a terminal. |
 | claude | Run the wrapper (`<name>`), then type `/login` inside the session. |
 | agy | Run the wrapper (`<name>`), then sign in from inside the agy session. |
+| copilot | `superorchestrator account login <name>` runs `copilot login`. |
+| gemini | Run the wrapper (`<name>`), start an interactive Gemini session and sign in inside it. |
+| kimi | `superorchestrator account login <name>` runs `kimi login`. |
+| cursor | `superorchestrator account login <name>` runs `agent login`. |
+| qwen | Run the wrapper (`<name>`), start an interactive Qwen session and sign in inside it. |
 
 The web UI shows the same steps on the Accounts page.
+
+### Adding ACP harness accounts
+
+Install each CLI, then add an account with `superorchestrator account add <harness> --name <name> [--login]`. The `--login` option runs sign-in where the CLI supports it; otherwise sign in by running the wrapper.
+
+| Harness | Install | Add an account | Default home |
+|---|---|---|---|
+| copilot | `npm install -g @github/copilot` | `superorchestrator account add copilot --name copilot-1 --login` | `~/.copilot-1` |
+| gemini | `npm install -g @google/gemini-cli` | `superorchestrator account add gemini --name gemini-1` | `~/.gemini-1` |
+| kimi | `npm install -g @moonshot-ai/kimi-code` | `superorchestrator account add kimi --name kimi-1 --login` | `~/.kimi-1` |
+| cursor | Install using Cursor's install script | `superorchestrator account add cursor --name cursor-1 --login` | `~/.cursor-1` |
+| qwen | `npm install -g @qwen-code/qwen-code` | `superorchestrator account add qwen --name qwen-1` | `~/.qwen-1` |
+
+For Gemini and Qwen, run the wrapper and sign in inside the interactive session. Copilot and Cursor cannot be checked from a sign-in file, so `account list` reports `signed in: unknown`; this means the status is undetectable, not that sign-in failed.
 
 ### agy: queued messages
 
@@ -158,8 +177,11 @@ The check only tests that the harness's auth file exists:
 - claude: `.credentials.json`
 - opencode: `auth.json` or `data/opencode/auth.json`
 - agy: a file under `.gemini/` such as `antigravity-cli/antigravity-oauth-token`
+- gemini: `.gemini/oauth_creds.json`
+- kimi: `credentials/kimi-code.json`
+- qwen: `oauth_creds.json`
 
-For Claude on macOS, and for the default `~/.claude`, credentials may live in the system keyring. The state is then `unknown` and the account stays usable. Auth file contents are never read, logged or served.
+For Claude on macOS, and for the default `~/.claude`, credentials may live in the system keyring. The state is then `unknown` and the account stays usable. Copilot and Cursor also show `signed in: unknown` because their sign-in state is not detectable from files; the accounts remain usable. Auth file contents are never read, logged or served.
 
 ## Reserved accounts
 

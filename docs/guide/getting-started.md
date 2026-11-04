@@ -11,7 +11,7 @@ superorchestrator --version
 
 The binary goes to `~/.local/bin`. If that is not on your `PATH`, the installer says so. Add it to your shell profile.
 
-You also need at least one harness CLI installed: `codex`, `opencode`, `agy` or `claude`. Superorchestrator does not install them.
+You also need at least one harness CLI installed: `codex`, `opencode`, `agy`, `claude`, `copilot`, `gemini`, `kimi`, `cursor` or `qwen`. Superorchestrator does not install them.
 
 ## 2. Run `setup`
 
@@ -38,7 +38,7 @@ superorchestrator setup --yes
 superorchestrator setup --yes --codex 3 --opencode 2 --no-login
 ```
 
-Without a terminal and without `--yes`, `setup` only prints its plan. Other flags: `--claude N`, `--agy N`, `--no-install` and `--no-claude-md`.
+Without a terminal and without `--yes`, `setup` only prints its plan. Other flags: `--claude N`, `--agy N`, `--copilot N`, `--gemini N`, `--kimi N`, `--cursor N`, `--qwen N`, `--no-install` and `--no-claude-md`.
 
 ## 3. Sign in
 

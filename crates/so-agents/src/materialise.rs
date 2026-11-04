@@ -146,6 +146,24 @@ pub fn gaps(def: &AgentDef, harness: Harness) -> Vec<String> {
         .iter()
         .any(|m| matches!(m, McpRef::Inline { .. }));
     match harness {
+        Harness::Copilot | Harness::Gemini | Harness::Kimi | Harness::Cursor | Harness::Qwen => {
+            if has_tools {
+                g.push("tools/disallowedTools: per-tool controls are not supported".into());
+            }
+            if has_hooks {
+                g.push("hooks: not supported for ACP harnesses".into());
+            }
+            if !def.skills.is_empty() || def.dir.as_ref().is_some_and(|d| d.join("skills").is_dir())
+            {
+                g.push("skills: not supported for ACP harnesses".into());
+            }
+            if has_inline {
+                g.push(
+                    "mcpServers (inline): agent MCP servers are not configured for ACP harnesses"
+                        .into(),
+                );
+            }
+        }
         Harness::Claude => {
             for t in &def.tools {
                 if t.contains('(') || t.starts_with("mcp__") {
@@ -387,7 +405,7 @@ pub fn materialise(
             McpRef::Name(_) => None,
         })
         .collect();
-    let want_skills = !matches!(harness, Harness::Opencode);
+    let want_skills = matches!(harness, Harness::Claude | Harness::Codex | Harness::Agy);
 
     match harness {
         Harness::Claude => {
@@ -418,7 +436,12 @@ pub fn materialise(
             m.config_fragment = Some(frag);
             m.mcp_extra = inline;
         }
-        Harness::Agy => {}
+        Harness::Agy
+        | Harness::Copilot
+        | Harness::Gemini
+        | Harness::Kimi
+        | Harness::Cursor
+        | Harness::Qwen => {}
     }
 
     if want_skills {
@@ -1073,6 +1096,30 @@ maxTurns: 7";
         assert!(joined.contains("all-or-nothing"), "{joined}");
         assert!(joined.contains("hooks"), "{joined}");
         assert!(joined.contains("inline"), "{joined}");
+    }
+
+    #[test]
+    fn acp_agents_keep_instructions_and_report_unsupported_fields() {
+        for h in [
+            Harness::Copilot,
+            Harness::Gemini,
+            Harness::Kimi,
+            Harness::Cursor,
+            Harness::Qwen,
+        ] {
+            let f = fx();
+            let d = agent(&f, FULL);
+            let m = materialise(&d, h, &f.run, &f.cwd, &f.paths).unwrap();
+            assert_eq!(m.system_addendum_extra, "Be careful.");
+            assert_eq!(m.gaps, gaps(&d, h));
+            let joined = m.gaps.join("\n");
+            for field in ["tools", "skills", "hooks", "inline"] {
+                assert!(joined.contains(field), "{h}: missing {field}: {joined}");
+            }
+            let mut plain = agent(&f, "");
+            plain.dir = None;
+            assert!(gaps(&plain, h).is_empty(), "{h}");
+        }
     }
 
     #[test]

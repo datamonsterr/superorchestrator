@@ -6,7 +6,7 @@ Start with `superorchestrator doctor`. It prints one line per check. A check is 
 
 | Check | Meaning and fix |
 |---|---|
-| `codex`, `agy`, `opencode`, `claude` | The binary is on `PATH` and answers `--version`. A failure means an enabled account needs it. Install the harness or fix `PATH`. A warning means no enabled account needs it. |
+| `codex`, `agy`, `opencode`, `claude`, `copilot`, `gemini`, `kimi`, `cursor` (`agent` binary), `qwen` | The binary is on `PATH` and answers `--version`. A failure means an enabled account needs it. Install the harness or fix `PATH`. A warning means no enabled account needs it. |
 | `bwrap` (Linux) | Optional. Without it, agy runs start without `--die-with-parent`. Install `bubblewrap`. |
 | `config dir` | The directory is missing. Run `superorchestrator init`. |
 | `config.toml` | It does not load. Read the error, then `superorchestrator config edit`. A missing file is a warning, and defaults apply. |

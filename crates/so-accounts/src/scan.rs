@@ -82,6 +82,16 @@ pub fn scan(host: &HostEnv) -> Vec<ImportCandidate> {
     if claude.is_dir() {
         push("claude-acc1".into(), Harness::Claude, claude);
     }
+    // Copilot and Cursor are not discovered because sign-in cannot be detected from files.
+    for (name, harness, path) in [
+        ("gemini", Harness::Gemini, home.to_path_buf()),
+        ("kimi", Harness::Kimi, home.join(".kimi-code")),
+        ("qwen", Harness::Qwen, home.join(".qwen")),
+    ] {
+        if path.is_dir() {
+            push(format!("{name}-acc1"), harness, path);
+        }
+    }
     out.retain(|c| signed_in(c, host));
     dedupe(out)
 }
@@ -101,7 +111,7 @@ fn signed_in(c: &ImportCandidate, host: &HostEnv) -> bool {
     };
     match sign_in_state(&acct, host) {
         Ok(SignIn::SignedIn) => true,
-        Ok(SignIn::Unknown) => c.home.join("projects").is_dir(),
+        Ok(SignIn::Unknown) => c.harness == Harness::Claude && c.home.join("projects").is_dir(),
         _ => false,
     }
 }
@@ -158,6 +168,23 @@ mod tests {
 
     fn scan_at(root: &Path) -> Vec<ImportCandidate> {
         scan(&host(root, Platform::Linux))
+    }
+
+    #[test]
+    fn scans_verified_acp_default_homes() {
+        let d = tempfile::tempdir().unwrap();
+        touch(d.path(), ".gemini/oauth_creds.json");
+        touch(d.path(), ".kimi-code/credentials/kimi-code.json");
+        touch(d.path(), ".qwen/oauth_creds.json");
+        mk(d.path(), ".copilot/projects");
+        mk(d.path(), ".cursor/projects");
+        let c = scan_at(d.path());
+        assert_eq!(names(&c), ["gemini-acc1", "kimi-acc1", "qwen-acc1"]);
+        assert!(
+            !c.iter()
+                .any(|c| matches!(c.harness, Harness::Copilot | Harness::Cursor))
+        );
+        assert_eq!(c[0].home, d.path());
     }
 
     #[test]

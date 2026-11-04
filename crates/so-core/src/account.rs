@@ -9,17 +9,40 @@ use crate::paths::Paths;
 use crate::types::Harness;
 
 /// Names an account must not take: they would shadow a real binary.
-const RESERVED: [&str; 5] = ["codex", "agy", "opencode", "claude", "superorchestrator"];
+const RESERVED: [&str; 11] = [
+    "codex",
+    "agy",
+    "opencode",
+    "claude",
+    "copilot",
+    "gemini",
+    "kimi",
+    "cursor",
+    "qwen",
+    "agent",
+    "superorchestrator",
+];
+const NEW_RESERVED: [&str; 6] = ["copilot", "gemini", "kimi", "cursor", "qwen", "agent"];
 
 /// Checks `^[a-z][a-z0-9-]{1,31}$` and that the name is not reserved.
 pub fn validate_account_name(name: &str) -> Result<()> {
+    validate_name(name, false)
+}
+
+fn validate_loaded_account_name(name: &str) -> Result<()> {
+    validate_name(name, true)
+}
+
+fn validate_name(name: &str, allow_new_reserved: bool) -> Result<()> {
     let b = name.as_bytes();
     let shape_ok = (2..=32).contains(&b.len())
         && b[0].is_ascii_lowercase()
         && b[1..]
             .iter()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-');
-    if shape_ok && !RESERVED.contains(&name) {
+    let reserved =
+        RESERVED.contains(&name) && !(allow_new_reserved && NEW_RESERVED.contains(&name));
+    if shape_ok && !reserved {
         Ok(())
     } else {
         Err(CoreError::InvalidAccountName(name.to_string()))
@@ -115,7 +138,7 @@ impl AccountFile {
 
     /// Checks name, `cap >= 1` and non-empty `pools`.
     pub fn validate(&self) -> Result<()> {
-        validate_account_name(&self.name)?;
+        validate_loaded_account_name(&self.name)?;
         let invalid = |reason: &str| CoreError::InvalidValue {
             key: format!("account {}", self.name),
             reason: reason.to_string(),
@@ -220,7 +243,19 @@ mod tests {
         ] {
             assert!(validate_account_name(bad).is_err(), "{bad}");
         }
-        for reserved in ["codex", "agy", "opencode", "claude", "superorchestrator"] {
+        for reserved in [
+            "codex",
+            "agy",
+            "opencode",
+            "claude",
+            "copilot",
+            "gemini",
+            "kimi",
+            "cursor",
+            "qwen",
+            "agent",
+            "superorchestrator",
+        ] {
             assert!(validate_account_name(reserved).is_err(), "{reserved}");
         }
     }
@@ -231,6 +266,19 @@ mod tests {
         assert!(AccountFile::new("superorchestrator", Harness::Codex, "h", "codex").is_err());
         // Longer names that merely contain it are still fine.
         assert!(validate_account_name("superorchestrator-acc1").is_ok());
+    }
+
+    #[test]
+    fn new_harness_names_remain_loadable_but_cannot_be_created() {
+        assert!(AccountFile::new("gemini", Harness::Gemini, "h", "gemini").is_err());
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gemini.toml");
+        std::fs::write(
+            &path,
+            "name = \"gemini\"\nharness = \"gemini\"\nhome = \"h\"\nbinary = \"gemini\"\n",
+        )
+        .unwrap();
+        assert_eq!(AccountFile::load(&path).unwrap().name, "gemini");
     }
 
     #[test]

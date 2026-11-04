@@ -1552,13 +1552,15 @@ fn draw_modal(f: &mut Frame, app: &App, modal: &Modal, full: Rect) {
         } => {
             let hl = |on: bool| if on { t.selected() } else { t.base() };
             let mut opts = vec![Span::styled("Harness  ", t.muted())];
+            let mut rest = vec![Span::raw("           ")];
             for (i, h) in HARNESSES.iter().enumerate() {
-                opts.push(Span::styled(format!(" {} ", h.as_str()), hl(i == *harness)));
-                opts.push(Span::raw(" "));
+                let row = if i < 5 { &mut opts } else { &mut rest };
+                row.push(Span::styled(format!(" {} ", h.as_str()), hl(i == *harness)));
+                row.push(Span::raw(" "));
             }
             let marker = |on: bool| if on { t.pointer() } else { " " };
             if *field == AddField::Count {
-                cursor = Some((11 + count.width() as u16, 2));
+                cursor = Some((11 + count.width() as u16, 3));
             }
             (
                 "Add accounts".into(),
@@ -1571,6 +1573,7 @@ fn draw_modal(f: &mut Frame, app: &App, modal: &Modal, full: Rect) {
                         .chain(opts)
                         .collect::<Vec<_>>(),
                     ),
+                    Line::from(rest),
                     Line::raw(""),
                     Line::from(vec![
                         Span::raw(format!("{} ", marker(*field == AddField::Count))),

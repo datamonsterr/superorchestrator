@@ -102,13 +102,19 @@ Each driver implements: `launch(run) -> Handle`, an `events()` stream normalised
 | codex | `codex app-server --listen ws://127.0.0.1:<port> --ws-auth …`, one per run, with the account's `CODEX_HOME`. The supervisor starts a thread with `cwd`, `model`, `model_reasoning_effort`, sandbox `danger-full-access` and approval `never`. | thread id from `thread/started` | `turn/start` when idle, `turn/steer` while a turn runs, `turn/interrupt` to cancel | Live: `codex-acc2 resume --remote ws://127.0.0.1:<port> --remote-auth-token-env SO_WS_TOKEN <thread>`. After the run: `codex-acc2 resume <thread>`. |
 | opencode | `opencode serve --hostname 127.0.0.1 --port 0`, one per run, with `OPENCODE_SERVER_PASSWORD` and the account's XDG dirs. A session is created with `POST /session`. | opencode session id | `POST /session/{id}/prompt_async`. Cancel: `POST /session/{id}/abort`. Events: `GET /event` (SSE). | Live: `opencode attach <url> --session <id>`. After the run: `opencode-acc1 --session <id>`. |
 | claude | `claude -p --input-format stream-json --output-format stream-json --dangerously-skip-permissions --session-id <uuid> --mcp-config <run>/mcp.json --append-system-prompt-file <run>/system.md`, with the account's `CLAUDE_CONFIG_DIR` | the `--session-id` uuid | NDJSON user message on stdin | After the run pauses or ends: `claude-acc1 --resume <uuid>`, from the run's cwd |
+| copilot | `copilot --acp --allow-all-tools --allow-all-paths [--model M] [--reasoning-effort E]`, with `COPILOT_HOME=<home>` | ACP `sessionId` | `session/prompt`; while busy, queue for the next prompt. Cancel: `session/cancel`. | After the run: `copilot-acc1 --resume=<id>`. |
+| gemini | `gemini --acp --approval-mode yolo [-m M]`, with `GEMINI_CLI_HOME=<home>` | ACP `sessionId` | `session/prompt`; while busy, queue for the next prompt. Cancel: `session/cancel`. | After the run: `gemini-acc1 --resume <id>`. |
+| kimi | `kimi acp`, with `KIMI_CODE_HOME=<home>`; model set with ACP `session/set_config_option` | ACP `sessionId` | `session/prompt`; while busy, queue for the next prompt. Cancel: `session/cancel`. | After the run: `kimi-acc1 --session <id>`. |
+| cursor | `agent acp --force --approve-mcps [--model M]`, with `CURSOR_CONFIG_DIR=<home>` and `HOME=<home>` | ACP `sessionId` | `session/prompt`; while busy, queue for the next prompt. Cancel: `session/cancel`. | After the run: `cursor-acc1 --resume <id>`. |
+| qwen | `qwen --acp --approval-mode yolo [-m M]`, with `QWEN_HOME=<home>` | ACP `sessionId` | `session/prompt`; while busy, queue for the next prompt. Cancel: `session/cancel`. | After the run: `qwen-acc1 --resume <id>`. |
 | agy | `[bwrap --die-with-parent --new-session --bind / / --dev-bind /dev /dev --] agy --gemini_dir=<run>/gemini -p= --input-format stream-json --output-format stream-json --dangerously-skip-permissions --model M --effort E` | conversation id from the stream | NDJSON user message on stdin | After the run pauses or ends: `agy-acc1 --conversation <id>` |
 
 Rules:
 
+- **ACP harnesses.** Copilot, Gemini, Kimi, Cursor and Qwen use the shared ACP driver. It starts with `initialize` without filesystem or terminal capability, creates sessions with `cwd` and the superorchestrator MCP server in `mcpServers`, and uses the ACP `sessionId`. Resume uses `session/load` or `session/resume`. The handshake waits up to 120 seconds per message; JSON-RPC -32000 during it means auth failure. Permission requests are allowed (`allow_always`, else `allow_once`). The first prompt starts with the system addendum and agent instructions. Messages sent while idle start a prompt; messages sent during a turn queue for the next prompt, including after interrupt. Interrupt uses `session/cancel`. Invalid structured output is re-prompted up to five times; invalid schemas fail as configuration errors. Refusal stop reasons fail as refused turns, and an agent exit mid-turn fails the turn. There is no fork or quota API; headroom is unknown and limits use error classification and cooldown. ACP agent profiles support instructions only; tool lists, hooks, skills and inline MCP servers are gaps. See [ADR-0011](docs/adr/0011-acp-harnesses-share-one-driver.md).
 - **Full permissions.** Children run with every tool allowed. The run's system instructions (section 7.4) tell the child never to wait for a person, and to use `ask_parent` instead.
-- **Structured output.** Use `codex` `outputSchema` on the turn, `claude --json-schema` and `agy --json-schema`. opencode has no schema option: superorchestrator validates the final message and re-prompts up to 5 times.
-- **Model and effort.** Codex uses `model` plus `model_reasoning_effort`. agy uses `--model` plus `--effort` (low, medium, high, xhigh, max). Claude uses `--model` plus `--effort`. OpenCode uses the model id plus a provider `variant`, where the model has one.
+- **Structured output.** Use `codex` `outputSchema` on the turn, `claude --json-schema` and `agy --json-schema`. opencode has no schema option, and ACP has no schema option: superorchestrator validates the final message and re-prompts up to 5 times.
+- **Model and effort.** Codex uses `model` plus `model_reasoning_effort`. agy uses `--model` plus `--effort` (low, medium, high, xhigh, max). Claude uses `--model` plus `--effort`. OpenCode uses the model id plus a provider `variant`, where the model has one. Copilot accepts `--model` and `--reasoning-effort` (none, minimal, low, medium, high, xhigh, max); Gemini, Kimi, Cursor and Qwen accept a model but no effort. Kimi sets its model with ACP `session/set_config_option`.
 - **`join`.** `superorchestrator join <run>` prints the join command, or runs it with `--exec`. Co-drive: the child keeps working while a person is attached, and both see the same native session. The timeline records `user_joined` and `user_left` where the harness reports them, otherwise `join_command_issued`.
 - **Spikes (M3).** These need checking on a real machine before the driver is final:
   - How agy loads per-run MCP servers without `--mcp-config` (candidates: `agy mcp add` scoped to the run's `.gemini`, or a project-scope config in the run cwd).
@@ -125,7 +131,7 @@ An account is one login for one harness. It is defined by `~/.config/superorches
 
 ```toml
 name = "codex-acc2"
-harness = "codex"            # codex | agy | opencode | claude
+harness = "codex"            # codex | agy | opencode | claude | copilot | gemini | kimi | cursor | qwen
 home = "~/.codex-acc2"       # credential home
 binary = "codex"             # resolved on PATH at launch; absolute path allowed
 priority = 0                 # tie-breaker inside a harness, higher first
@@ -134,7 +140,7 @@ enabled = true
 pools = ["default"]          # agy: ["gemini", "claude"]
 ```
 
-Account names match `^[a-z][a-z0-9-]{1,31}$`. The name doubles as the wrapper command name, so it must not shadow a real binary (`codex`, `agy`, `opencode`, `claude`).
+Account names match `^[a-z][a-z0-9-]{1,31}$`. The name doubles as the wrapper command name, so it must not shadow a real binary (`codex`, `agy`, `opencode`, `claude`, `copilot`, `gemini`, `kimi`, `cursor`, `qwen`, `agent`).
 
 ### 5.2 Credential homes and environment
 
@@ -144,6 +150,11 @@ Account names match `^[a-z][a-z0-9-]{1,31}$`. The name doubles as the wrapper co
 | opencode | `~/.<name>` | `XDG_CONFIG_HOME=<home>/config`, `XDG_DATA_HOME=<home>/data`, `XDG_STATE_HOME=<home>/state` |
 | claude | `~/.<name>` | `CLAUDE_CONFIG_DIR=<home>` |
 | agy | `~/.<name>` holding `.gemini/` | `--gemini_dir=<home>/.gemini` (a per-run gemini dir for supervised runs), with `HOME` unchanged ([ADR-0003](docs/adr/0003-agy-accounts-isolate-gemini-dir.md), [ADR-0005](docs/adr/0005-agy-runs-use-per-run-gemini-dir.md)) |
+| copilot | `~/.<name>` | `COPILOT_HOME=<home>` |
+| gemini | `~/.<name>` | `GEMINI_CLI_HOME=<home>` (`.gemini/` under the home) |
+| kimi | `~/.<name>` | `KIMI_CODE_HOME=<home>` |
+| cursor | `~/.<name>` | `CURSOR_CONFIG_DIR=<home>` and `HOME=<home>` |
+| qwen | `~/.<name>` | `QWEN_HOME=<home>` |
 
 Credential homes live in `$HOME`, so a person can log in with the normal CLI through the wrapper. Superorchestrator only links to them.
 
@@ -167,6 +178,7 @@ exec superorchestrator exec codex-acc2 -- "$@"
   - `~/.agent-farm/profiles/agy_worker_N/.gemini`
   - `~/.local/share/opencode`
   - `~/.claude`
+  - the default homes for gemini, kimi and qwen (copilot and cursor are not discovered)
 - `account login <name>`: runs the harness's login with the account's environment. Codex uses `codex login --device-auth` when no TTY is attached. Other harnesses print the command to run in a terminal.
 - `account list`: shows name, harness, signed in, enabled, cap, active runs, and headroom per pool.
 - `account remove <name>`: asks the user to type the name, unless `--yes` is passed. Removes the toml and the wrapper. Deletes the credential home only with `--purge`.
@@ -185,6 +197,7 @@ The sign-in check only tests that the harness's auth file exists. Auth file cont
 | Active probe: `agy --gemini_dir=… --print /usage`, parsed per pool (`gemini`, `claude`) and window (`five_hour`, `weekly`) | agy | Same |
 | Passive capture: rate-limit fields in run events | codex | During every run |
 | Local ledger: runs and tokens in a rolling 5 h and 7 d window | all | Always. The only source for opencode and claude. |
+| No quota API; headroom unknown, limits from error classification and cooldown | copilot, gemini, kimi, cursor, qwen | Always |
 
 ### 6.2 Headroom record
 
@@ -313,6 +326,7 @@ A run whose process died unexpectedly is resumed once from its native session, i
 - `opencode models`, plus free models from models.dev, cached 24 h
 - `agy models`
 - documented Claude model list when an enabled Claude account exists
+- ACP harness catalog: copilot (`gpt-5.4`), gemini (`gemini-2.5-pro`, `gemini-3.1-pro-preview`), kimi (`kimi-for-coding`), qwen (`coder-model`); Cursor has no default model
 
 The catalog is used only for discovery, validation, tiers and the free flag. `models refresh` reports listed models that the catalog does not know and catalog models that no level lists, and never edits config.
 
@@ -320,8 +334,8 @@ The catalog is used only for discovery, validation, tiers and the free flag. `mo
 
 The routable set is the models listed on levels in `config.toml`. Each listed model is a model ref, a single string that binds harness, model and effort, so the router can never produce an unsupported combination. A ref has the form `harness/model[/effort]`:
 
-- `harness` is `codex`, `agy`, `opencode` or `claude`.
-- For `codex`, `agy` and `claude` the last segment is the effort when the harness accepts it: `claude` takes low, medium, high, xhigh and max; `agy` takes low, medium, high, xhigh, max and thinking; `codex` takes minimal, low, medium, high, xhigh, max and ultra. Otherwise the whole rest is the model and there is no effort.
+- `harness` is `codex`, `agy`, `opencode`, `claude`, `copilot`, `gemini`, `kimi`, `cursor` or `qwen`.
+- For `codex`, `agy`, `claude` and `copilot` the last segment is the effort when the harness accepts it: `claude` takes low, medium, high, xhigh and max; `agy` takes low, medium, high, xhigh, max and thinking; `codex` takes minimal, low, medium, high, xhigh, max and ultra; `copilot` takes none, minimal, low, medium, high, xhigh and max. Otherwise the whole rest is the model and there is no effort.
 - For `opencode` the rest is `provider/model[/variant]`. Two segments mean no effort, three or more mean the last one is the effort: `opencode/opencode/muse-spark-1.3` and `opencode/openai/gpt-5/high`.
 - `agy/claude-sonnet-4-6/thinking` and `agy/claude-sonnet-4-6` are valid. `agy/claude-sonnet-4-6/high` is rejected at load, because `high` is not an agy effort for that model.
 
@@ -394,7 +408,7 @@ Every suggestion includes its stable id, rationale, full proposed `levels` and d
 
    - `fit` compares the complexity with the model tier.
    - Within a tier, a model loses 0.05 per step between the effort the complexity wants and its own effort. This only breaks ties. A model with no effort is not penalised.
-   - `priority` is the harness priority from `router.priority`. Default `agy > opencode > codex > claude`.
+   - `priority` is the harness priority from `router.priority`. Default `agy > opencode > codex > claude > copilot > gemini > kimi > cursor > qwen`.
    - Free models get a cost bonus.
 5. **Pick.** Within the level, the first eligible model in list order wins. There are no priorities and no ties: the order the operator wrote is the answer. The rationale says `first in the level`, or `the only eligible choice of the level` when only one model of the level is eligible.
 6. **Account selection.** Among the chosen model's harness's enabled accounts that are below their cap and whose pool is available, the order is: most headroom for the pool, then fewest active runs, then higher account `priority`, then least recently used, then name. `RouteResult.ranked_accounts` lists the accounts best first. The rationale ends with `account <name>: <why>`, where `why` names the criterion that decided it: `most headroom (N%)`, `fewest active runs (N)`, `higher priority`, `least recently used`, `the only usable account` or `name order`.
@@ -458,7 +472,7 @@ An agent is `AGENT.md` with YAML frontmatter, in the same format as Claude Code 
 ---
 name: pr-reviewer
 description: Reviews a PR diff for correctness bugs.
-harness: auto            # or codex | agy | opencode | claude
+harness: auto            # or codex | agy | opencode | claude | copilot | gemini | kimi | cursor | qwen
 accounts: [codex-acc2]   # optional allow-list
 model: gpt-6.1-sol
 effort: high
@@ -601,7 +615,7 @@ Long tools (`spawn_agent` with `wait`, `wait_agent`, `run_workflow`) are MCP tas
 `superorchestrator` with no arguments on a terminal opens the terminal UI (`tui`, below); without a terminal it prints the help. Every action in it is also a subcommand:
 
 ```
-setup [--codex N] [--claude N] [--opencode N] [--agy N] [--no-login] [--no-install] [--no-claude-md]
+setup [--codex N] [--claude N] [--opencode N] [--agy N] [--copilot N] [--gemini N] [--kimi N] [--cursor N] [--qwen N] [--no-login] [--no-install] [--no-claude-md]
       [--orchestrator claude|codex] [--reserve NAME]... [--dry-run] [--no-agents-md]
                           first-run guide: init, detect harnesses, offer account import --scan,
                           add N accounts per harness, sign in, install, doctor summary
@@ -635,7 +649,7 @@ migrate [--apply]
 
 `tui` (also the bare command on a terminal) is a ratatui UI with four tabs: Overview (setup checklist with the fix for each missing item, account and run counts), Accounts (add, sign in (claude and agy in a session of their wrapper), enable or disable, flag a cooldown, remove with a typed-name confirmation, import scan), Runs (recent runs from the store refreshed every 2 s, a detail pane with the diff of a run waiting for review, cancel, open session (`o`), accept (`a` accepts and merges a run with a worktree, `A` only accepts) and reject) and Setup (the `setup` steps one at a time with live status, plus `install` and `doctor`). `?` opens help, `Tab` and `1` to `4` switch tabs, `j`/`k`/`g`/`G` or the arrow keys move, `q` or `Esc` quits from the top level. It calls the same library functions as the commands above and adds no business logic. Sign-in and join hand the terminal to the child process and restore it afterwards. The diff, cancel, open session, accept and reject use the supervisor socket and never start it; when it is not running they report that. It honors `NO_COLOR`, needs at least 60x16, redraws on resize and restores the terminal on every exit path. Without a terminal `tui` exits 2.
 
-`setup` is the first command a new user runs and is idempotent. It runs `init` (silent when nothing is created), prints the installed harnesses, offers the `account import --scan` results, asks for each installed harness how many accounts to add (default 0, or 1 when the harness has no account or importable login; claude defaults to 0, unless `--orchestrator codex`, because no level lists a Claude model by default so auto routing does not use Claude accounts, 8.2), signs in to the new accounts on a terminal (otherwise prints the commands), runs `install`, and prints a short `doctor` summary. `--yes` takes the defaults, `--codex N --claude N --opencode N --agy N` set the counts, `--no-login` and `--no-install` skip those steps, and `--no-claude-md` is passed to `install`. Accounts that are still signed out, new or from an earlier run, are offered a sign-in on a terminal and get their `account login` command printed otherwise. A run that adds nothing prints which accounts are already set up. A harness whose count was asked for but whose binary is not on `PATH` fails the run (exit 1) after the other steps. Ctrl-C at a prompt exits 130. `setup --yes --json` prints one summary object (`ok`, `created`, `imported`, `installed`, `signed_in_needed`, `doctor`). Without a terminal and without `--yes` it prints the plan and exits 0. Counts that are not asked are never added twice, so a second run changes nothing. On macOS only one agy account is added (ADR-0005).
+`setup` is the first command a new user runs and is idempotent. It runs `init` (silent when nothing is created), prints the installed harnesses, offers the `account import --scan` results, asks for each installed harness how many accounts to add (default 0, or 1 when the harness has no account or importable login; claude defaults to 0, unless `--orchestrator codex`, because no level lists a Claude model by default so auto routing does not use Claude accounts, 8.2), signs in to the new accounts on a terminal (otherwise prints the commands), runs `install`, and prints a short `doctor` summary. `--yes` takes the defaults, `--codex N --claude N --opencode N --agy N --copilot N --gemini N --kimi N --cursor N --qwen N` set the counts, `--no-login` and `--no-install` skip those steps, and `--no-claude-md` is passed to `install`. Accounts that are still signed out, new or from an earlier run, are offered a sign-in on a terminal and get their `account login` command printed otherwise. A run that adds nothing prints which accounts are already set up. A harness whose count was asked for but whose binary is not on `PATH` fails the run (exit 1) after the other steps. Ctrl-C at a prompt exits 130. `setup --yes --json` prints one summary object (`ok`, `created`, `imported`, `installed`, `signed_in_needed`, `doctor`). Without a terminal and without `--yes` it prints the plan and exits 0. Counts that are not asked are never added twice, so a second run changes nothing. On macOS only one agy account is added (ADR-0005).
 
 `setup --orchestrator claude|codex` names the harness the person orchestrates from; without it nothing is reserved and the defaults above apply. `--reserve NAME` (repeatable) names the accounts to put in `orchestrator.reserved_accounts`; each must be an account that exists after the account steps (existing, imported or created by this setup), otherwise setup fails with "account NAME does not exist". Defaults for `codex`: 2 Codex accounts when `codex` is installed and there is no account or importable login (one reserved, one for subagents), 1 Claude account when `claude` is installed and there is none; the reserved account is the Codex account whose home is `$CODEX_HOME` or `~/.codex`, else the first Codex account by name. Defaults for `claude`: 0 Claude accounts, and the first Claude account, if any, is reserved. `--reserve` overrides the choice. `--no-agents-md` is passed to `install`. Writes are idempotent. `--dry-run` prints the plan, including `orchestrator` and `reserve`, and writes nothing.
 
@@ -676,7 +690,7 @@ low_pct = 15
 default_cooldown = "5h"
 
 [router]
-priority = ["agy", "opencode", "codex", "claude"]
+priority = ["agy", "opencode", "codex", "claude", "copilot", "gemini", "kimi", "cursor", "qwen"]
 weights = { headroom = 1.0, load = 0.5, cost = 0.3 }
 instruction = "Rate the complexity of task_content against the ordered criteria…"
 # [[router.levels]]                 # optional; defaults: low 0-37 (fast), mid 38-62 (mid), high 63-100 (high)

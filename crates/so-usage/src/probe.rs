@@ -309,6 +309,11 @@ impl UsageService {
                 }
                 Err(e) => Err(e),
             },
+            Harness::Copilot
+            | Harness::Gemini
+            | Harness::Kimi
+            | Harness::Cursor
+            | Harness::Qwen => Ok(Vec::new()),
             Harness::Opencode | Harness::Claude => {
                 let acct = account.clone();
                 blocking(&self.store, move |s| {
@@ -567,6 +572,41 @@ mod tests {
         )
         .unwrap();
         Ok(ProbeOutput::ok(v.to_string()))
+    }
+
+    #[tokio::test]
+    async fn acp_headroom_remains_unknown_and_quota_cooldown_expires() {
+        for h in [
+            Harness::Copilot,
+            Harness::Gemini,
+            Harness::Kimi,
+            Harness::Cursor,
+            Harness::Qwen,
+        ] {
+            let fake = Fake::new(codex_reply());
+            let (_d, svc, acct) = setup(fake.clone(), h, h.binary());
+            let now = Utc::now();
+            assert!(svc.refresh_at(&acct, true, now).await.unwrap().is_empty());
+            assert_eq!(fake.n(), 0);
+            let av = crate::availability(&svc.store, &acct.name, "default", 15.0, now).unwrap();
+            assert!(av.available);
+            assert_eq!(av.status, HeadroomStatus::Unknown);
+            crate::mark_exhausted(
+                &svc.store,
+                &acct.name,
+                "default",
+                None,
+                std::time::Duration::from_secs(3600),
+                "quota",
+                now,
+            )
+            .unwrap();
+            assert!(!crate::is_available(&svc.store, &acct.name, "default", now).unwrap());
+            let later = now + CDur::hours(2);
+            let av = crate::availability(&svc.store, &acct.name, "default", 15.0, later).unwrap();
+            assert!(av.available);
+            assert_eq!(av.status, HeadroomStatus::Unknown);
+        }
     }
 
     #[tokio::test]

@@ -376,6 +376,11 @@ impl Default for Router {
                 Harness::Opencode,
                 Harness::Codex,
                 Harness::Claude,
+                Harness::Copilot,
+                Harness::Gemini,
+                Harness::Kimi,
+                Harness::Cursor,
+                Harness::Qwen,
             ],
             weights: Weights::default(),
             instruction: DEFAULT_ROUTER_INSTRUCTION.to_string(),
@@ -956,7 +961,12 @@ mod tests {
                 Harness::Agy,
                 Harness::Opencode,
                 Harness::Codex,
-                Harness::Claude
+                Harness::Claude,
+                Harness::Copilot,
+                Harness::Gemini,
+                Harness::Kimi,
+                Harness::Cursor,
+                Harness::Qwen
             ]
         );
         assert_eq!(
@@ -1115,7 +1125,7 @@ mod tests {
         ));
         assert!(c.set("limits.global_cap", "-1").is_err());
         assert!(c.set("runs.ask_timeout", "soon").is_err());
-        assert!(c.set("defaults.harness", "gemini").is_err());
+        assert!(c.set("defaults.harness", "unknown-harness").is_err());
         assert!(matches!(
             c.set("limits.nope", "1"),
             Err(CoreError::InvalidConfigKey(_))

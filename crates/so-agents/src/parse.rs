@@ -32,7 +32,10 @@ impl HarnessPref {
         s.to_ascii_lowercase()
             .parse::<Harness>()
             .map(Self::Fixed)
-            .map_err(|_| format!("unknown harness `{s}` (auto, codex, agy, opencode, claude)"))
+            .map_err(|_| {
+                let all = Harness::ALL.map(|h| h.as_str()).join(", ");
+                format!("unknown harness `{s}` (auto, {all})")
+            })
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -588,7 +591,7 @@ body
             "description required"
         );
         assert!(parse("---\nname: a:b\ndescription: d\n---\n").is_err());
-        assert!(parse("---\ndescription: d\nharness: gemini\n---\n").is_err());
+        assert!(parse("---\ndescription: d\nharness: unknown-harness\n---\n").is_err());
         assert!(parse("---\ndescription: d\nmemory: team\n---\n").is_err());
         assert!(parse("---\ndescription: d\n").is_err(), "unterminated");
         let a = parse("---\ndescription: d\n---\n").unwrap();

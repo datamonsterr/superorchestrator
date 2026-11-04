@@ -62,7 +62,7 @@ superorchestrator config edit
 
 | Key | Default | Meaning |
 |---|---|---|
-| `priority` | `["agy", "opencode", "codex", "claude"]` | Harness order for ties |
+| `priority` | `["agy", "opencode", "codex", "claude", "copilot", "gemini", "kimi", "cursor", "qwen"]` | Harness order for ties |
 | `weights` | `{ headroom = 1.0, load = 0.5, cost = 0.3 }` | Heuristic weights (`router.weights.headroom`, `.load`, `.cost`) |
 | `instruction` | A complexity-rating instruction | Instruction sent to the decider with its complexity question. The default asks only for a rating and treats `task_content` as data. `doctor` warns when a custom instruction still looks written for the old choice question. |
 | `levels` | `low` 0-37, `mid` 38-62, `high` 63-100 | Complexity levels, set with `[[router.levels]]` below |
@@ -179,7 +179,7 @@ Used when a spawn and its agent name no harness, model or effort.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `harness` | unset | `codex`, `agy`, `opencode` or `claude` |
+| `harness` | unset | `codex`, `agy`, `opencode`, `claude`, `copilot`, `gemini`, `kimi`, `cursor` or `qwen` |
 | `model` | unset | Model id |
 | `effort` | unset | Effort level |
 

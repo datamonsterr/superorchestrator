@@ -131,11 +131,16 @@ fn list(ctx: &Ctx) -> Result<()> {
     })
 }
 
-const ALL: [Harness; 4] = [
+const ALL: [Harness; 9] = [
     Harness::Claude,
     Harness::Codex,
     Harness::Opencode,
     Harness::Agy,
+    Harness::Copilot,
+    Harness::Gemini,
+    Harness::Kimi,
+    Harness::Cursor,
+    Harness::Qwen,
 ];
 
 fn show(ctx: &Ctx, name: &str) -> Result<()> {

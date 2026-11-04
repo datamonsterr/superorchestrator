@@ -1,7 +1,7 @@
 import { Badge } from '@/components/ui/badge'
 import type { Harness } from '@/api/types'
 
-const LABEL: Record<Harness, string> = { codex: 'Codex', agy: 'Antigravity', opencode: 'OpenCode', claude: 'Claude' }
+const LABEL: Record<Harness, string> = { codex: 'Codex', agy: 'Antigravity', opencode: 'OpenCode', claude: 'Claude', copilot: 'Copilot', gemini: 'Gemini', kimi: 'Kimi', cursor: 'Cursor', qwen: 'Qwen' }
 
 export function HarnessBadge({ harness, className }: { harness: Harness; className?: string }) {
   return (

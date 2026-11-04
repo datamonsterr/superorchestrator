@@ -15,17 +15,22 @@ use so_core::{AccountFile, Harness};
 use so_supervisor::doctor::{Status, run_checks};
 
 use crate::cli::{OrchestratorHarness, SetupArgs};
-use crate::cmd::account::{ask_and_import, login_json, run_login, write_login_hint};
+use crate::cmd::account::{ask_and_import, login_json, login_via_cli, run_login, write_login_hint};
 use crate::cmd::init;
 use crate::ctx::{Ctx, interactive};
 use crate::exit::CliError;
 
 /// Harness order used for listing and prompting.
-const ORDER: [Harness; 4] = [
+const ORDER: [Harness; 9] = [
     Harness::Codex,
     Harness::Claude,
     Harness::Opencode,
     Harness::Agy,
+    Harness::Copilot,
+    Harness::Gemini,
+    Harness::Kimi,
+    Harness::Cursor,
+    Harness::Qwen,
 ];
 
 /// One harness as `setup` sees it.
@@ -60,7 +65,7 @@ pub(crate) fn detect_harnesses(
         .iter()
         .map(|&harness| HarnessInfo {
             harness,
-            binary: resolve_binary(harness.as_str(), host.path_var.as_deref()).ok(),
+            binary: resolve_binary(harness.binary(), host.path_var.as_deref()).ok(),
             accounts: accounts
                 .iter()
                 .filter(|a| a.harness == harness)
@@ -201,6 +206,11 @@ fn asked(args: &SetupArgs, h: Harness) -> Option<u32> {
         Harness::Claude => args.claude,
         Harness::Opencode => args.opencode,
         Harness::Agy => args.agy,
+        Harness::Copilot => args.copilot,
+        Harness::Gemini => args.gemini,
+        Harness::Kimi => args.kimi,
+        Harness::Cursor => args.cursor,
+        Harness::Qwen => args.qwen,
     }
 }
 
@@ -476,7 +486,7 @@ fn run_steps(ctx: &Ctx, args: SetupArgs) -> Result<ExitCode> {
         if !args.no_login {
             say!("{}:", a.name);
             if !ctx.json {
-                let via_cli = matches!(a.harness, Harness::Codex | Harness::Opencode);
+                let via_cli = login_via_cli(a.harness);
                 write_login_hint(&mut std::io::stdout().lock(), &login, via_cli)?;
             }
         }

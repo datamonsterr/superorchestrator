@@ -1,6 +1,7 @@
 //! One driver per harness behind a common, harness-neutral API.
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod acp;
 pub mod agy;
 pub mod claude;
 pub mod codex;

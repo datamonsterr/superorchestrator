@@ -59,6 +59,11 @@ pub enum Harness {
     Agy,
     Opencode,
     Claude,
+    Copilot,
+    Gemini,
+    Kimi,
+    Cursor,
+    Qwen,
 }
 
 str_enum!(Harness, CoreError::UnknownHarness, {
@@ -66,6 +71,11 @@ str_enum!(Harness, CoreError::UnknownHarness, {
     Agy => "agy",
     Opencode => "opencode",
     Claude => "claude",
+    Copilot => "copilot",
+    Gemini => "gemini",
+    Kimi => "kimi",
+    Cursor => "cursor",
+    Qwen => "qwen",
 });
 
 /// The router-level effort hint for a model that reasons by itself (its model id is the
@@ -79,6 +89,15 @@ pub const EFFORT_THINKING: &str = "thinking";
 pub const AGY_NO_EFFORT_MODELS: &[&str] = &["claude-sonnet-4-6", "claude-opus-4-6-thinking"];
 
 impl Harness {
+    /// Executable name used by the harness.
+    pub fn binary(self) -> &'static str {
+        if self == Harness::Cursor {
+            "agent"
+        } else {
+            self.as_str()
+        }
+    }
+
     /// Efforts the harness CLI accepts as a flag or config value, from its help on this
     /// machine (ADR-0004). `None` means the value is provider-specific and not validated
     /// (opencode `--variant`).
@@ -89,6 +108,8 @@ impl Harness {
             Harness::Agy => Some(&["low", "medium", "high", "xhigh", "max", EFFORT_THINKING]),
             Harness::Codex => Some(&["minimal", "low", "medium", "high", "xhigh", "max", "ultra"]),
             Harness::Opencode => None,
+            Harness::Copilot => Some(&["none", "minimal", "low", "medium", "high", "xhigh", "max"]),
+            Harness::Gemini | Harness::Kimi | Harness::Cursor | Harness::Qwen => Some(&[]),
         }
     }
 
@@ -97,6 +118,9 @@ impl Harness {
         let ok = self.accepted_efforts()?;
         if ok.contains(&effort) {
             return None;
+        }
+        if ok.is_empty() {
+            return Some(format!("{self} does not accept an effort"));
         }
         let list = ok
             .iter()
@@ -227,6 +251,8 @@ str_enum!(SessionKind, |s| CoreError::UnknownValue { kind: "session kind", value
 /// For `codex`, `agy` and `claude` the last `/` segment is the effort when the harness accepts
 /// it as one; otherwise the whole rest is the model. For `opencode` the rest is
 /// `provider/model[/variant]`: two segments are a model, a third is the effort (variant).
+/// Copilot follows codex; Gemini, Kimi, Cursor and Qwen accept no effort, so trailing
+/// segments remain part of the model; resolving a ref rejects those ambiguous segments.
 ///
 /// `Display` round-trips only for ids minted by `from_str`: a model containing `/` that is
 /// pinned on codex, agy or claude may not parse back to the same choice.
@@ -283,9 +309,11 @@ impl FromStr for Choice {
         let (h, rest) = s
             .split_once('/')
             .ok_or_else(|| bad("expected harness/model[/effort]".into()))?;
-        let harness = h
-            .parse::<Harness>()
-            .map_err(|_| bad(format!("unknown harness `{h}` (codex|agy|opencode|claude)")))?;
+        let harness = h.parse::<Harness>().map_err(|_| {
+            bad(format!(
+                "unknown harness `{h}` (codex|agy|opencode|claude|copilot|gemini|kimi|cursor|qwen)"
+            ))
+        })?;
         if rest.is_empty() {
             return Err(bad("the model is empty".into()));
         }
@@ -297,6 +325,9 @@ impl FromStr for Choice {
             Some((model, effort)) => (model.to_string(), Some(effort.to_string())),
             None => (rest.to_string(), None),
         };
+        if segments.len() > 1 && harness.accepted_efforts().is_some_and(|ok| ok.is_empty()) {
+            return Err(bad(format!("{harness} does not accept an effort")));
+        }
         let (model, effort) = match harness {
             Harness::Opencode => match segments.len() {
                 1 => return Err(bad("opencode models are provider/model".into())),
@@ -368,6 +399,12 @@ pub fn resolve_model_ref(
     // segment was meant as an effort the harness does not accept.
     if r.harness != Harness::Opencode && r.model.contains('/') {
         let list = r.harness.accepted_efforts().unwrap_or_default().join("|");
+        if list.is_empty() {
+            return Err(format!(
+                "invalid model ref: {} does not accept an effort",
+                r.harness
+            ));
+        }
         return Err(format!(
             "invalid model ref: `{}` is not a {} effort ({list})",
             r.model.rsplit('/').next().unwrap_or_default(),
@@ -623,6 +660,43 @@ pub struct Event {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn acp_harness_refs_and_names() {
+        for name in ["copilot", "gemini", "kimi", "cursor", "qwen"] {
+            let h: Harness = name.parse().unwrap();
+            assert_eq!(h.to_string(), name);
+            assert_eq!(
+                serde_json::from_str::<Harness>(&serde_json::to_string(&h).unwrap()).unwrap(),
+                h
+            );
+        }
+        let (_, model, effort) = resolve_model_ref(None, Some("copilot/gpt-5/high"), None).unwrap();
+        assert_eq!(
+            (model.as_deref(), effort.as_deref()),
+            (Some("gpt-5"), Some("high"))
+        );
+        assert!(resolve_model_ref(None, Some("copilot/gpt-5/bogus"), None).is_err());
+        for name in ["gemini", "kimi", "cursor", "qwen"] {
+            let good = format!("{name}/gemini-2.5-pro");
+            assert!(resolve_model_ref(None, Some(&good), None).is_ok());
+            for suffix in ["high", "anything"] {
+                let bad = format!("{good}/{suffix}");
+                let message = format!("{name} does not accept an effort");
+                assert!(
+                    bad.parse::<Choice>()
+                        .unwrap_err()
+                        .to_string()
+                        .contains(&message)
+                );
+                assert!(
+                    resolve_model_ref(None, Some(&bad), None)
+                        .unwrap_err()
+                        .contains(&message)
+                );
+            }
+        }
+    }
+
+    #[test]
     fn agy_thinking_variant_models_take_no_effort() {
         for m in AGY_NO_EFFORT_MODELS {
             let p = Harness::Agy.model_effort_problem(m, "high").unwrap();
@@ -677,7 +751,7 @@ mod tests {
             assert_eq!(h.to_string().parse::<Harness>().unwrap(), h);
         }
         assert_eq!("agy".parse::<Harness>().unwrap(), Harness::Agy);
-        assert!("gemini".parse::<Harness>().is_err());
+        assert!("unknown-harness".parse::<Harness>().is_err());
         assert_eq!(
             serde_json::to_string(&Harness::Opencode).unwrap(),
             "\"opencode\""
@@ -792,6 +866,13 @@ mod tests {
 
     fn ref_error(s: &str) -> String {
         s.parse::<Choice>().unwrap_err().to_string()
+    }
+
+    #[test]
+    fn acp_without_effort_rejects_effort_suffixes() {
+        for h in ["gemini", "kimi", "cursor", "qwen"] {
+            assert!(format!("{h}/model/high").parse::<Choice>().is_err());
+        }
     }
 
     #[test]

@@ -433,3 +433,29 @@ cost = "paid"
 id = "opencode-go/step-5-preview"
 tier = "mid"
 cost = "paid"
+
+[[copilot.models]]
+id = "gpt-5.4"
+tier = "high"
+cost = "included"
+efforts = ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+
+[[gemini.models]]
+id = "gemini-2.5-pro"
+tier = "high"
+cost = "included"
+
+[[gemini.models]]
+id = "gemini-3.1-pro-preview"
+tier = "high"
+cost = "included"
+
+[[kimi.models]]
+id = "kimi-for-coding"
+tier = "high"
+cost = "included"
+
+[[qwen.models]]
+id = "coder-model"
+tier = "high"
+cost = "included"

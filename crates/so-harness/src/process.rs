@@ -245,7 +245,11 @@ impl Drop for ProcessGuard {
 }
 
 enum StdinCmd {
-    Line(String, oneshot::Sender<Result<(), DriverError>>),
+    Line(
+        String,
+        Option<String>,
+        oneshot::Sender<Result<(), DriverError>>,
+    ),
     Close,
 }
 
@@ -262,7 +266,20 @@ impl StdinHandle {
     pub async fn write_line(&self, line: String) -> Result<(), DriverError> {
         let (reply, rx) = oneshot::channel();
         self.tx
-            .send(StdinCmd::Line(line, reply))
+            .send(StdinCmd::Line(line, None, reply))
+            .map_err(|_| DriverError::Closed)?;
+        rx.await.map_err(|_| DriverError::Closed)?
+    }
+
+    /// Writes a line while recording a redacted representation.
+    pub(crate) async fn write_redacted(
+        &self,
+        line: String,
+        recorded: String,
+    ) -> Result<(), DriverError> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(StdinCmd::Line(line, Some(recorded), reply))
             .map_err(|_| DriverError::Closed)?;
         rx.await.map_err(|_| DriverError::Closed)?
     }
@@ -290,15 +307,22 @@ async fn stdin_actor(
         let Some(cmd) = cmd else { return };
         match cmd {
             StdinCmd::Close => stdin = None,
-            StdinCmd::Line(line, reply) => {
+            StdinCmd::Line(line, redacted, reply) => {
                 let res = match stdin.as_mut() {
                     None => Err(DriverError::Closed),
                     Some(s) => {
-                        let offset =
-                            record(&transcript, Dir::Out, Channel::Stdin, &line, &[], &events);
+                        let recorded = redacted.as_deref().unwrap_or(&line);
+                        let offset = record(
+                            &transcript,
+                            Dir::Out,
+                            Channel::Stdin,
+                            recorded,
+                            &[],
+                            &events,
+                        );
                         let _ = events.send(HarnessEvent::Raw {
                             channel: Channel::Stdin,
-                            line: line.clone(),
+                            line: recorded.to_owned(),
                             offset,
                         });
                         let mut bytes = line.into_bytes();

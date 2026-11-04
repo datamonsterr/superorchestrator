@@ -35,8 +35,10 @@ pub fn run(ctx: &Ctx, cmd: AccountCmd) -> Result<ExitCode> {
 }
 
 fn parse_harness(s: &str) -> Result<Harness> {
-    s.parse::<Harness>()
-        .map_err(|_| anyhow::anyhow!("unknown harness `{s}` (codex, agy, opencode or claude)"))
+    s.parse::<Harness>().map_err(|_| {
+        let all = Harness::ALL.map(|h| h.as_str()).join(", ");
+        anyhow::anyhow!("unknown harness `{s}` ({all})")
+    })
 }
 
 fn load_account(paths: &Paths, name: &str) -> Result<AccountFile> {
@@ -109,7 +111,7 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
             // codex and opencode sign in through `account login`; claude and agy
             // sign in inside their wrapper, which `account login` cannot drive
             // without a terminal.
-            let via_cli = matches!(acc.harness, Harness::Codex | Harness::Opencode);
+            let via_cli = login_via_cli(acc.harness);
             write_login_hint(w, login, via_cli)?;
         }
         Ok(())
@@ -157,6 +159,10 @@ pub(crate) fn login_json(account: &AccountFile, host: &HostEnv) -> Result<Value>
         "cli": format!("superorchestrator account login {}", account.name),
         "note": plan.note,
     }))
+}
+
+pub(crate) fn login_via_cli(harness: Harness) -> bool {
+    !matches!(harness, Harness::Claude | Harness::Agy)
 }
 
 pub(crate) fn write_login_hint(

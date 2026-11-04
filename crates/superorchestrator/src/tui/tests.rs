@@ -15,6 +15,13 @@ use super::data::*;
 use super::theme::Theme;
 use super::ui;
 
+#[test]
+fn account_form_lists_every_harness() {
+    for harness in Harness::ALL {
+        assert!(HARNESSES.contains(&harness), "{harness}");
+    }
+}
+
 fn now() -> DateTime<Utc> {
     Utc.with_ymd_and_hms(2026, 10, 23, 12, 0, 0).unwrap()
 }
@@ -482,6 +489,30 @@ fn add_form_picks_a_harness_and_a_count() {
 }
 
 #[test]
+fn add_form_can_select_each_acp_harness() {
+    for (offset, expected) in [
+        Harness::Copilot,
+        Harness::Gemini,
+        Harness::Kimi,
+        Harness::Cursor,
+        Harness::Qwen,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut a = app();
+        press(&mut a, &[ch('2'), ch('a')]);
+        for _ in 0..(4 + offset) {
+            a.on_key(key(KeyCode::Right));
+        }
+        let Some(Effect::AddAccounts { harness, count }) = a.on_key(key(KeyCode::Enter)) else {
+            panic!("expected AddAccounts for {expected}");
+        };
+        assert_eq!((harness, count), (expected, 1));
+    }
+}
+
+#[test]
 fn add_form_rejects_a_bad_count_and_stays_open() {
     let mut a = app();
     press(
@@ -510,7 +541,7 @@ fn add_form_wraps_the_harness_choice() {
     press(&mut a, &[ch('2'), ch('a'), key(KeyCode::Left)]);
     assert!(matches!(
         a.modal,
-        Some(Modal::AddAccount { harness: 3, .. })
+        Some(Modal::AddAccount { harness: 8, .. })
     ));
     a.on_key(key(KeyCode::Right));
     assert!(matches!(

@@ -197,6 +197,23 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn acp_accounts_with_unknown_headroom_are_eligible() {
+        let cat = Catalog::default_catalog();
+        for (h, model) in [
+            (Harness::Copilot, "copilot/gpt-5.4"),
+            (Harness::Gemini, "gemini/gemini-2.5-pro"),
+            (Harness::Kimi, "kimi/kimi-for-coding"),
+            (Harness::Cursor, "cursor/example"),
+            (Harness::Qwen, "qwen/coder-model"),
+        ] {
+            let snap = Snapshot {
+                accounts: vec![account("acp-1", h, 2, 0)],
+            };
+            assert_eq!(ids(&eligible(&[choice(model)], &cat, &snap, &[])), [model]);
+        }
+    }
+
+    #[test]
     fn filters_exclude_cap_and_exhausted_and_picks_the_agy_pool() {
         let cat = Catalog::default_catalog();
         let choices = vec![

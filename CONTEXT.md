@@ -41,8 +41,12 @@ _Avoid_: Daemon, server, host, runner
 ### Harnesses and accounts
 
 **Harness**:
-A coding-agent CLI family that superorchestrator can drive: `codex`, `agy`, `opencode` or `claude`.
+A coding-agent CLI family that superorchestrator can drive: `codex`, `agy`, `opencode`, `claude`, `copilot`, `gemini`, `kimi`, `cursor` or `qwen`.
 _Avoid_: Provider, backend, tool, CLI
+
+**ACP harness**:
+A harness driven through the Agent Client Protocol by the shared ACP driver: copilot, gemini, kimi, cursor or qwen.
+_Avoid_: ACP provider, protocol adapter
 
 **Account**:
 One named login for one harness, backed by its own credential home, such as `codex-acc2`. An account is the unit that is routed, capped and metered.

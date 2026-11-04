@@ -78,6 +78,17 @@ export const accounts: AccountView[] = [
     pools: ['main'],
     headroom: [headroom('claude-acc1', 'main', 5, 80)],
   },
+  {
+    name: 'copilot-acc1',
+    harness: 'copilot',
+    signed_in: 'unknown',
+    enabled: true,
+    cap: 1,
+    active_runs: 0,
+    priority: 4,
+    pools: ['main'],
+    headroom: [headroom('copilot-acc1', 'main', null, null)],
+  },
 ]
 
 export const levels: LevelsView = {
