@@ -11,7 +11,7 @@ import { qk, type SessionFilter } from './keys'
 import { useStreamState } from './stream'
 
 export { qk, type SessionFilter }
-import type { LevelsPut, ConfigPatch, PruneRequest, ModelCatalog, EventType, Harness, RouteParams, SendMessageParams } from './types'
+import type { LevelsPut, ConfigPatch, PruneRequest, ModelCatalog, EventType, Harness, AddAccountRequest, RouteParams, SendMessageParams } from './types'
 
 /** 5 s polling while the SSE stream is down (design 2.3), otherwise false. */
 export function usePollingInterval(ms = 5000): number | false {
@@ -149,10 +149,11 @@ export function useConfig() {
 // resolves after the affected queries have refetched. Failures toast globally
 // (MutationCache.onError in lib/query-client.ts; set `meta: { silent: true }` to opt out).
 
-function useApiMutation<V, D>(fn: (v: V) => Promise<D>, invalidate: (v: V, d: D) => QueryKey[] = () => []) {
+function useApiMutation<V, D>(fn: (v: V) => Promise<D>, invalidate: (v: V, d: D) => QueryKey[] = () => [], options: { gcTime?: number } = {}) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: fn,
+    ...options,
     onSuccess: (data, vars) => Promise.all(invalidate(vars, data).map((queryKey) => qc.invalidateQueries({ queryKey }))),
   })
 }
@@ -183,7 +184,8 @@ export function usePutLevels() {
 }
 export const useRefreshModels = () => useApiMutation<void, ModelCatalog>(() => endpoints.refreshModels(), () => [qk.models()])
 export const useCreateAccount = () =>
-  useApiMutation((v: { harness: Harness; name: string; home?: string }) => endpoints.createAccount(v), ACCOUNT_KEYS)
+  // gcTime 0: the variables may hold an API key, which must not linger in the mutation cache.
+  useApiMutation((v: AddAccountRequest) => endpoints.createAccount(v), ACCOUNT_KEYS, { gcTime: 0 })
 export const useImportAccount = () =>
   useApiMutation((v: { harness: Harness; name: string; home: string }) => endpoints.importAccount(v), ACCOUNT_KEYS)
 export const usePatchAccount = () =>

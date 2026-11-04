@@ -159,4 +159,33 @@ describe('SignInDialog', () => {
     await settle()
     expect(screen.queryByRole('link')).not.toBeInTheDocument()
   })
+
+  describe('endpoint accounts', () => {
+    const start = (body: object) => server.use(http.post('/api/v1/accounts/:name/login', () => HttpResponse.json({ mode: 'endpoint', ...body })))
+
+    it('closes as success right away when the validation is ok', async () => {
+      start({ signed_in: 'signed_in', state: 'done' })
+      const polls = pollServer([pending])
+      const onClose = vi.fn()
+      renderWithProviders(<SignInDialog name="zai-1" onClose={onClose} />)
+      await settle()
+      expect(onClose).toHaveBeenCalledOnce()
+      expect(screen.queryByText('Waiting for sign-in')).not.toBeInTheDocument()
+      expect(polls()).toBe(0)
+    })
+
+    it('shows the failure message and kind without waiting', async () => {
+      start({ signed_in: 'signed_out', state: 'failed', kind: 'auth', message: 'endpoint rejected the key (401)' })
+      const polls = pollServer([pending])
+      const onClose = vi.fn()
+      renderWithProviders(<SignInDialog name="zai-1" onClose={onClose} />)
+      await settle()
+      expect(screen.getByRole('alert')).toHaveTextContent('Sign-in failed')
+      expect(screen.getByRole('alert')).toHaveTextContent('endpoint rejected the key (401)')
+      expect(screen.getByRole('alert')).toHaveTextContent('auth')
+      expect(screen.queryByText('Waiting for sign-in')).not.toBeInTheDocument()
+      expect(onClose).not.toHaveBeenCalled()
+      expect(polls()).toBe(0)
+    })
+  })
 })
