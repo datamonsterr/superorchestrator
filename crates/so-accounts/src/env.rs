@@ -85,14 +85,18 @@ pub(crate) fn resolve_token(
     if !std::fs::metadata(&path).map_err(|_| err())?.is_file() {
         return Err(err());
     }
-    let mut file = std::fs::File::open(path).map_err(|_| err())?;
+    let file = std::fs::File::open(path).map_err(|_| err())?;
     let metadata = file.metadata().map_err(|_| err())?;
     let mode = metadata.permissions().mode() & 0o777;
     if !metadata.is_file() || (mode != 0o600 && mode != 0o400) {
         return Err(err());
     }
     let mut token = String::new();
-    std::io::Read::read_to_string(&mut file, &mut token).map_err(|_| err())?;
+    std::io::Read::read_to_string(&mut std::io::Read::take(file, 65_537), &mut token)
+        .map_err(|_| err())?;
+    if token.len() > 65_536 {
+        return Err(err());
+    }
     let token = token.trim_end().to_string();
     if token.is_empty() {
         return Err(err());
@@ -278,6 +282,26 @@ mod tests {
         std::os::unix::fs::symlink(&key, &link).unwrap();
         a.endpoint.as_mut().unwrap().token_file = Some(link.display().to_string());
         assert!(build_launch(&a, &host(d.path(), Platform::Linux)).is_ok());
+    }
+
+    #[test]
+    fn endpoint_rejects_oversized_token_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let path = d.path().join("token");
+        std::fs::write(&path, vec![b'x'; 65537]).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut a = acct("endpoint", Harness::Claude, "~/.endpoint");
+        a.endpoint = Some(so_core::Endpoint {
+            preset: so_core::EndpointPreset::Zai,
+            base_url: None,
+            token_env: None,
+            token_file: Some(path.display().to_string()),
+            token_var: None,
+            models: vec![],
+            slots: so_core::Slots::default(),
+        });
+        assert!(resolve_endpoint_token(&a, &host(d.path(), Platform::Linux)).is_err());
     }
 
     #[test]

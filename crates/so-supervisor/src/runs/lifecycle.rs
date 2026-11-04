@@ -245,7 +245,13 @@ impl RunManager {
         resume: Option<String>,
         fork: bool,
     ) -> Result<LaunchSpec, String> {
-        let launch = self.launch_for(account).map_err(|e| e.message)?;
+        let manager = self.clone();
+        let launch_account = account.clone();
+        let launch = self
+            .blocking(move || manager.launch_for(&launch_account))
+            .await
+            .map_err(|e| e.message)?
+            .map_err(|e| e.message)?;
         let run_dir = self.inner.paths.run_dir(&row.id);
         let dir = run_dir.clone();
         self.blocking(move || create_private_dir(&dir))

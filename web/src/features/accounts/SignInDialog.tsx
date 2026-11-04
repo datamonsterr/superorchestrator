@@ -72,7 +72,7 @@ function SignInBody({ name, onClose }: { name: string; onClose: () => void }) {
   const endpoint = info?.mode === 'endpoint' ? info : null
   const status = useSignInStatus(name, !!info && !codeExpired && !endpoint)
   const signedInNow = accounts.data?.find((a) => a.name === name)?.signed_in === 'signed_in'
-  const done = (endpoint !== null && (endpoint.state === 'done' || endpoint.signed_in === 'signed_in')) || status.data?.state === 'done' || (!!info && accountsKnown && !wasSignedIn && signedInNow)
+  const done = endpoint ? endpoint.state === 'done' : status.data?.state === 'done' || (!!info && accountsKnown && !wasSignedIn && signedInNow)
   const endpointFailed = endpoint !== null && !done && (endpoint.state === 'failed' || endpoint.state === 'expired')
   const failed = endpointFailed || status.data?.state === 'failed' || status.data?.state === 'expired'
   const failure = endpointFailed ? endpoint : status.data

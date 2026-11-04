@@ -4,7 +4,9 @@
 use so_core::config::Weights;
 use so_core::{Choice, Harness};
 
-use crate::catalog::{Catalog, Cost, Tier};
+#[cfg(test)]
+use crate::catalog::Catalog;
+use crate::catalog::{Cost, Tier};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Complexity {
@@ -158,13 +160,12 @@ pub fn harness_priority(order: &[Harness], h: Harness) -> f64 {
 }
 
 /// Priority of one choice: its harness priority, plus half a step for a `claude` choice whose
-/// model the catalog serves from an endpoint, so endpoint choices rank between Claude and the
+/// model is identified as an endpoint choice, so endpoint choices rank between Claude and the
 /// harness listed before it. The bonus applies only when Claude is in `priority`: without a
 /// Claude position there is nothing to sit above, so endpoint choices get no bonus.
-pub fn choice_priority(priority: &[Harness], catalog: &Catalog, choice: &Choice) -> f64 {
-    let bonus = choice.harness == Harness::Claude
-        && priority.contains(&Harness::Claude)
-        && catalog.endpoint(choice.harness, &choice.model).is_some();
+pub fn choice_priority(priority: &[Harness], choice: &Choice, endpoint: bool) -> f64 {
+    let bonus =
+        choice.harness == Harness::Claude && priority.contains(&Harness::Claude) && endpoint;
     harness_priority(priority, choice.harness) + if bonus { PRIORITY_STEP / 2.0 } else { 0.0 }
 }
 
@@ -345,7 +346,11 @@ mod tests {
     }
 
     fn prio(order: &[Harness], c: &str) -> f64 {
-        choice_priority(order, &Catalog::default_catalog(), &c.parse().unwrap())
+        let choice: Choice = c.parse().unwrap();
+        let endpoint = Catalog::default_catalog()
+            .endpoint(choice.harness, &choice.model)
+            .is_some();
+        choice_priority(order, &choice, endpoint)
     }
 
     #[test]

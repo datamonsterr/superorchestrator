@@ -127,6 +127,7 @@ pub async fn add(
                 &b.name,
                 endpoint,
                 b.token.as_deref(),
+                b.home.as_deref(),
             )
             .map_err(|e| match e {
                 so_accounts::AccountsError::Core(so_core::CoreError::InvalidValue { .. }) => {

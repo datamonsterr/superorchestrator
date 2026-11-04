@@ -168,8 +168,9 @@ pub fn add_endpoint(
     name: &str,
     mut endpoint: Endpoint,
     token: Option<&str>,
+    home: Option<&str>,
 ) -> Result<AccountFile> {
-    let home = format!("~/.{name}");
+    let home = home.map_or_else(|| format!("~/.{name}"), str::to_owned);
     let mut account = AccountFile::new(name, Harness::Claude, &home, "claude")?;
     ensure_new(paths, name)?;
     ensure_no_shadow(cfg, host, name)?;
@@ -187,7 +188,13 @@ pub fn add_endpoint(
     account.validate()?;
     so_core::fsutil::create_private_dirs(&dir).map_err(|e| AccountsError::io(&dir, e))?;
     if let Some(token) = token {
-        so_core::fsutil::write_key_file(&key, token)?;
+        so_core::fsutil::write_key_file_new(&key, token).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                AccountsError::AlreadyExists(name.to_string())
+            } else {
+                AccountsError::io(&key, e)
+            }
+        })?;
     }
     let result = finish(paths, cfg, host, &account);
     if result.is_err() && token.is_some() {
@@ -533,6 +540,36 @@ mod tests {
     }
 
     #[test]
+    fn endpoint_add_preserves_existing_key() {
+        let f = fx();
+        let key = f.paths.key_file("endpoint");
+        std::fs::create_dir_all(key.parent().unwrap()).unwrap();
+        std::fs::write(&key, "existing").unwrap();
+        let endpoint = Endpoint {
+            preset: so_core::EndpointPreset::Zai,
+            base_url: None,
+            token_env: None,
+            token_file: None,
+            token_var: None,
+            models: vec![],
+            slots: so_core::Slots::default(),
+        };
+        assert!(matches!(
+            add_endpoint(
+                &f.paths,
+                &f.cfg,
+                &f.host,
+                "endpoint",
+                endpoint,
+                Some("new"),
+                None
+            ),
+            Err(AccountsError::AlreadyExists(_))
+        ));
+        assert_eq!(std::fs::read_to_string(key).unwrap(), "existing");
+    }
+
+    #[test]
     fn endpoint_add_and_purge_key() {
         use so_core::{Endpoint, EndpointPreset, Slots};
         let f = fx();
@@ -552,6 +589,7 @@ mod tests {
             "endpoint",
             endpoint,
             Some("secret"),
+            None,
         )
         .unwrap();
         let key = f.paths.key_file("endpoint");

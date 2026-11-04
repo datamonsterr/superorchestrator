@@ -174,6 +174,19 @@ describe('SignInDialog', () => {
       expect(polls()).toBe(0)
     })
 
+    it('keeps endpoint failure when the account becomes signed in', async () => {
+      start({ signed_in: 'signed_out', state: 'failed', kind: 'auth', message: 'rejected' })
+      const client = createTestQueryClient()
+      client.setQueryData(qk.accounts(), [{ ...fx.accounts[0], name: 'zai-1', signed_in: 'signed_out' }])
+      const onClose = vi.fn()
+      renderWithProviders(<SignInDialog name="zai-1" onClose={onClose} />, { queryClient: client })
+      await settle()
+      act(() => client.setQueryData(qk.accounts(), [{ ...fx.accounts[0], name: 'zai-1', signed_in: 'signed_in' }]))
+      await settle()
+      expect(screen.getByRole('alert')).toHaveTextContent('rejected')
+      expect(onClose).not.toHaveBeenCalled()
+    })
+
     it('shows the failure message and kind without waiting', async () => {
       start({ signed_in: 'signed_out', state: 'failed', kind: 'auth', message: 'endpoint rejected the key (401)' })
       const polls = pollServer([pending])

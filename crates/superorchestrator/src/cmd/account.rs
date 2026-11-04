@@ -52,7 +52,7 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
         if a.endpoint_harness.as_deref().is_some_and(|h| h != "claude") {
             bail!("endpoint accounts require the claude harness");
         }
-        if a.name.is_some() || a.count != 1 || a.home.is_some() {
+        if a.name.is_some() || a.count != 1 {
             bail!("endpoint add takes the account name as its positional argument");
         }
         if a.token_env.is_some() == a.token_stdin {
@@ -90,6 +90,7 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
             &a.harness,
             endpoint,
             token.as_deref(),
+            a.home.as_deref(),
         )?;
         ctx.refresh_skill();
         let ep = acc
@@ -103,6 +104,9 @@ fn add(ctx: &Ctx, a: AccountAdd) -> Result<ExitCode> {
             .unwrap_or_else(|| "file".into());
         ctx.emit_ok(json!({"name":acc.name,"harness":"claude","home":acc.home,"endpoint":{"preset":ep.preset.as_str(),"base_url":ep.base_url(),"token_source":source}}), &format!("added endpoint account {} ({}, {}, {})", acc.name, ep.preset.as_str(), ep.base_url(), source))?;
         return Ok(ExitCode::SUCCESS);
+    }
+    if a.home.is_some() && a.name.is_none() {
+        bail!("--home requires --name");
     }
     let harness = parse_harness(&a.harness)?;
     if a.name.is_some() && a.count > 1 {

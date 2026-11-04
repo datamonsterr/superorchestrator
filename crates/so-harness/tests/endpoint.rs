@@ -158,6 +158,44 @@ async fn validation_requests_and_errors() {
 }
 
 #[tokio::test]
+async fn validation_scrubs_json_escaped_token() {
+    let token = "quote\"and\\slash";
+    let body = serde_json::json!({"error": token}).to_string();
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move || async move { (StatusCode::UNAUTHORIZED, body) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let err = validate(&url, "ANTHROPIC_API_KEY", token, "test-model")
+        .await
+        .unwrap_err();
+    let escaped = serde_json::to_string(token).unwrap();
+    for text in [err.detail.clone(), format!("{err:?}"), format!("{err}")] {
+        assert!(!text.contains(token));
+        assert!(!text.contains(&escaped[1..escaped.len() - 1]));
+    }
+}
+
+#[tokio::test]
+async fn validation_scrubs_alternate_json_unicode_escape() {
+    let token = "secret-token";
+    let body = r#"{"error":"\u0073ecret-token"}"#;
+    let app = Router::new().route(
+        "/v1/messages",
+        post(move || async move { (StatusCode::UNAUTHORIZED, body) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let err = validate(&url, "ANTHROPIC_API_KEY", token, "test-model")
+        .await
+        .unwrap_err();
+    assert!(!err.detail.contains("ecret-token"));
+}
+
+#[tokio::test]
 async fn transport_errors_do_not_expose_credentials() {
     let error = validate(
         "invalid url containing secret-token",

@@ -2722,6 +2722,17 @@ async fn endpoint_login_status_is_cached_until_next_login() {
 }
 
 #[tokio::test]
+async fn endpoint_account_uses_requested_home() {
+    let f = fx().await;
+    let home = f.path("custom-endpoint-home");
+    let (status, _value) = post(&f.app, "/api/v1/accounts", Some(json!({"name":"endpoint-home", "home":home, "endpoint":{"preset":"zai"}, "token":"fixture secret"}))).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let saved = so_core::AccountFile::load(&f.path("cfg/accounts/endpoint-home.toml")).unwrap();
+    assert_eq!(saved.home, home.to_string_lossy());
+    assert!(home.is_dir());
+}
+
+#[tokio::test]
 async fn endpoint_accounts_keep_tokens_private() {
     use std::os::unix::fs::PermissionsExt;
     let f = fx().await;

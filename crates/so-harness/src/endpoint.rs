@@ -150,6 +150,12 @@ pub struct ValidateError {
     pub detail: String,
 }
 
+impl std::fmt::Display for ValidateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.detail)
+    }
+}
+
 /// Resolve and validate an endpoint account's credentials using its haiku slot.
 /// Call from a blocking thread when token resolution may perform file I/O.
 pub async fn validate_login(
@@ -173,6 +179,24 @@ pub async fn validate_login(
     )
     .await
     .map_err(|e| (e.kind.to_string(), e.detail)))
+}
+
+// Decode JSON strings before scrubbing so alternate Unicode escapes cannot conceal a token.
+fn scrub_json(value: &mut serde_json::Value, token: &str) {
+    match value {
+        serde_json::Value::String(text) => *text = text.replace(token, "[REDACTED]"),
+        serde_json::Value::Array(items) => items.iter_mut().for_each(|v| scrub_json(v, token)),
+        serde_json::Value::Object(fields) => {
+            *fields = std::mem::take(fields)
+                .into_iter()
+                .map(|(key, mut value)| {
+                    scrub_json(&mut value, token);
+                    (key.replace(token, "[REDACTED]"), value)
+                })
+                .collect();
+        }
+        _ => {}
+    }
 }
 
 /// Check credentials with a minimal Anthropic-compatible messages request.
@@ -226,7 +250,15 @@ pub async fn validate(
     let safe = if token.is_empty() {
         body
     } else {
-        body.replace(token, "[REDACTED]")
+        let escaped = serde_json::to_string(token).expect("string serialization cannot fail");
+        let mut safe = body
+            .replace(&escaped[1..escaped.len() - 1], "[REDACTED]")
+            .replace(token, "[REDACTED]");
+        if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&safe) {
+            scrub_json(&mut value, token);
+            safe = value.to_string();
+        }
+        safe
     };
     let detail = so_core::redact::redact(&safe).chars().take(500).collect();
     Err(ValidateError {

@@ -189,15 +189,24 @@ pub fn eligible<'a>(
         .collect()
 }
 
+/// Explicit account model lists also identify endpoint choices absent from the catalog.
+pub fn endpoint_choice(c: &Candidate<'_>, catalog: &Catalog) -> bool {
+    catalog
+        .endpoint(c.choice.harness, &c.choice.model)
+        .is_some()
+        || c.accounts.iter().any(|a| {
+            a.file
+                .endpoint
+                .as_ref()
+                .is_some_and(|ep| ep.models.contains(&c.choice.model))
+        })
+}
+
 /// Claude rank (SPEC 8.4): Claude choices stay in only when no other choice is eligible.
 /// An explicit call pins instead and never reaches this.
 pub fn apply_claude_rank<'a>(cands: Vec<Candidate<'a>>, catalog: &Catalog) -> Vec<Candidate<'a>> {
-    let plain = |c: &Candidate<'_>| {
-        c.choice.harness == Harness::Claude
-            && catalog
-                .endpoint(c.choice.harness, &c.choice.model)
-                .is_none()
-    };
+    let plain =
+        |c: &Candidate<'_>| c.choice.harness == Harness::Claude && !endpoint_choice(c, catalog);
     if cands.iter().all(plain) {
         return cands;
     }
@@ -297,6 +306,36 @@ pub(crate) mod tests {
         assert_eq!(
             ids(&apply_claude_rank(only, &cat)),
             ["claude/claude-haiku-5-5/medium"]
+        );
+    }
+
+    #[test]
+    fn custom_endpoint_survives_claude_rank() {
+        let cat = Catalog::default_catalog();
+        let mut endpoint = account("c1", Harness::Claude, 2, 0);
+        endpoint.file.endpoint = Some(
+            serde_json::from_value(
+                serde_json::json!({"preset":"zai", "token_env":"T", "models":["my-model"]}),
+            )
+            .unwrap(),
+        );
+        let snap = Snapshot {
+            accounts: vec![endpoint, account("x1", Harness::Codex, 2, 0)],
+        };
+        let choices = vec![choice("claude/my-model"), choice("codex/gpt-6.1-sol/high")];
+        let result = apply_claude_rank(eligible(&choices, &cat, &snap, &[]), &cat);
+        assert!(ids(&result).contains(&"claude/my-model".to_string()));
+        let custom = result
+            .iter()
+            .find(|c| c.choice.model == "my-model")
+            .unwrap();
+        assert_eq!(
+            crate::heuristic::choice_priority(
+                &[Harness::Codex, Harness::Claude],
+                &custom.choice,
+                endpoint_choice(custom, &cat)
+            ),
+            crate::heuristic::PRIORITY_STEP / 2.0
         );
     }
 

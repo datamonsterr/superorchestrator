@@ -248,7 +248,11 @@ fn heuristic_rank<'a>(
                 headroom: (headroom_of(account, &cand.pool) / 100.0).clamp(0.0, 1.0),
                 active_runs: account.active,
                 cost: cand.cost,
-                priority: choice_priority(&ctx.config.router.priority, ctx.catalog, &cand.choice),
+                priority: choice_priority(
+                    &ctx.config.router.priority,
+                    &cand.choice,
+                    crate::eligible::endpoint_choice(cand, ctx.catalog),
+                ),
                 effort_gap: effort_gap(complexity, cand.choice.effort.as_deref()),
             };
             Some(Ranked {
