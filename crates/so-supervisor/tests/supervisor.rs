@@ -972,6 +972,7 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
         a.save(&env.paths).unwrap();
     };
     account("codex-a", Harness::Codex, 1, true);
+    account("codex-b", Harness::Codex, 1, true);
     account("oc-a", Harness::Opencode, 2, true);
     account("claude-a", Harness::Claude, 1, false);
     account("agy-a", Harness::Agy, 1, true);
@@ -1004,6 +1005,7 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
         .unwrap();
 
     let mut config = Config::default();
+    config.orchestrator.reserved_accounts.push("codex-b".into());
     config.router.levels = vec![
         level(
             "low",
@@ -1078,6 +1080,8 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
     // Nothing known about a pool: no headroom key; disabled is only shown when true.
     assert!(account("codex-a").get("headroom").is_none());
     assert_eq!(account("codex-a")["load"], "1/1");
+    assert_eq!(account("codex-b")["reserved"], true);
+    assert!(account("codex-a").get("reserved").is_none());
     assert_eq!(account("claude-a")["disabled"], true);
     assert!(oc.get("disabled").is_none());
 

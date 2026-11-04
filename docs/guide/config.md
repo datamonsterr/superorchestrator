@@ -69,7 +69,7 @@ superorchestrator config edit
 
 ### `[router.jev]`
 
-The decider settings. The web UI (Settings, Decider) and the TUI (Settings tab) edit them; see [Decider](#decider) below.
+The decider settings. The web UI (Settings, Decider) edits them; see [Decider](#decider) below.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -78,7 +78,7 @@ The decider settings. The web UI (Settings, Decider) and the TUI (Settings tab) 
 | `fallback_model` | `~typesafe/jev-latest` | Tried only when the primary model cannot be reached. Env `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL` overrides it; `none` disables it |
 | `on_unreachable` | `"error"` | When a configured decider cannot be reached: `"error"` fails the call, `"heuristic"` degrades |
 | `key_env` | `OPENROUTER_API_KEY` | Environment variable that holds the key |
-| `key_file` | unset | Optional dotenv file that holds the key. Pasting a key in the web UI or TUI sets this to `<config dir>/decider.env` |
+| `key_file` | unset | Optional dotenv file that holds the key. Pasting a key in the web UI sets this to `<config dir>/decider.env` |
 | `timeout` | `"20s"` | Decider timeout, shared by the primary and the fallback |
 
 ### `[router.policy]`
@@ -98,7 +98,7 @@ The decider is `[router.jev]` plus `[router.policy]`. You can edit it in `config
 
 - **Environment variable.** `key_env` names the variable (default `OPENROUTER_API_KEY`). The supervisor reads it from its own environment.
 - **Key file.** `key_file` points at a dotenv file with a `<key_env>=<key>` line.
-- **Paste.** Paste the key in the web UI or TUI. The supervisor writes `<config dir>/decider.env` as `<key_env>=<key>` with mode 0600, atomically, and sets `router.jev.key_file` to it. If the config write fails, the file change is rolled back. The key is never returned by the API, logged, or stored in events. The UI shows only the source (`env`, `file` or `unset`), the variable or file name, and the key masked to its last four characters. See [ADR-0008](../adr/0008-supervisor-writes-decider-key-file.md).
+- **Paste.** Paste the key in the web UI. The supervisor writes `<config dir>/decider.env` as `<key_env>=<key>` with mode 0600, atomically, and sets `router.jev.key_file` to it. If the config write fails, the file change is rolled back. The key is never returned by the API, logged, or stored in events. The UI shows only the source (`env`, `file` or `unset`), the variable or file name, and the key masked to its last four characters. See [ADR-0012](../adr/0012-supervisor-writes-decider-key-file.md).
 
 **Environment overrides and precedence.** Environment variables win over `config.toml`:
 
@@ -171,6 +171,14 @@ The file is refused at load when:
 | `port` | `7878` | Port |
 | `token` | unset | Shared-secret override for the UI (plain text). When unset, the supervisor reuses or creates the private `ui-token` file. The API cannot set it. |
 | `enabled` | `false` | Start the UI whenever the supervisor starts. `ui --install-service` sets it. |
+
+### `[orchestrator]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `reserved_accounts` | `[]` | Account names kept for the orchestrator. Auto routing never picks them. A `spawn_agent` or `route` call that pins `account` may. |
+
+`list_harnesses` marks reserved accounts `reserved: true`, and models reachable only through them show `why: "account reserved"`. Set it with `superorchestrator config set orchestrator.reserved_accounts '["codex-1"]'`, the Settings "Orchestrator" tab in the web UI, or `setup --orchestrator`. See [Codex as orchestrator](codex-orchestrator.md).
 
 ### `[supervisor]`
 

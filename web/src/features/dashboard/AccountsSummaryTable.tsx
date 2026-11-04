@@ -2,6 +2,7 @@ import { Link } from 'react-router'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { SignInState } from '@/components/common/SignInState'
 import { HarnessBadge } from '@/components/common/HarnessBadge'
+import { ReservedBadge } from '@/components/common/ReservedBadge'
 import { HeadroomBar } from '@/components/common/HeadroomBar'
 import { CooldownBadge } from '@/components/common/CooldownBadge'
 import { EmptyState } from '@/components/common/EmptyState'
@@ -52,6 +53,7 @@ export function AccountsSummaryTable({ accounts }: { accounts: AccountView[] }) 
                     <Link to="/accounts" className="underline-offset-4 hover:underline">
                       {a.name}
                     </Link>
+                    {a.reserved && <ReservedBadge />}
                     {!a.enabled && <span className="ml-2 text-xs text-muted-foreground">disabled</span>}
                     {(a.flags ?? []).length > 0 && (
                       <div className="mt-1 flex flex-wrap gap-1 font-normal">

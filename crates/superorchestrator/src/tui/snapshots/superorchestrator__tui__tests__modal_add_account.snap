@@ -1,14 +1,15 @@
 ---
 source: crates/superorchestrator/src/tui/tests.rs
+assertion_line: 1061
 expression: "shot(&mut a, 80, 24)"
 ---
  superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
  1 Dash 2 Sess 3 Runs 4 Acct 5 Usage 6 Lvls 7 Model 8 Conf 9 Setup
-    NAME               HARNESS   SIGNED IN  ACTIVE HEADROOM
-  ▸ codex-1            codex     ✓ yes      1      codex: ok 82%
-    codex-2            codex     ✓ yes      0      codex: cooldown 3h
-    opencode-1         opencode  ✗ no       0
-    claude-1 (off)     claude    ? unknown  0
+    NAME               HARNESS   SIGNED IN  RSV ACTIVE HEADROOM
+  ▸ codex-1            codex     ✓ yes          1      codex: ok 82%
+    codex-2            codex     ✓ yes          0      codex: cooldown 3h
+    opencode-1         opencode  ✗ no           0
+    claude-1 (off)     claude    ? unknown      0
       ╭ Add accounts ────────────────────────────────────────────────────╮
       │                                                                  │
       │ ▸ Harness   codex   opencode   agy   claude                      │

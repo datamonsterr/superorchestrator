@@ -6,6 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { Switch } from '@/components/ui/switch'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { HarnessBadge } from '@/components/common/HarnessBadge'
+import { ReservedBadge } from '@/components/common/ReservedBadge'
 import { HeadroomBar } from '@/components/common/HeadroomBar'
 import { SignInState } from '@/components/common/SignInState'
 import type { AccountView } from '@/api/types'
@@ -47,6 +48,7 @@ export function AccountsTable({ accounts, actions }: { accounts: AccountView[]; 
           <TableRow key={a.name} data-account={a.name}>
             <TableCell className="font-medium">
               {a.name}
+              {a.reserved && <ReservedBadge />}
               {a.error && <p className="max-w-48 truncate text-xs font-normal text-destructive" title={a.error}>{a.error}</p>}
             </TableCell>
             <TableCell>

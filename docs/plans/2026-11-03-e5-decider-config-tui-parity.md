@@ -72,7 +72,7 @@ Goal: a "Decider" section on the web Settings page using `/api/v1/decider`.
 ### Task 6: web parity and docs
 
 - Web: nav label "Routing" becomes "Levels"; nav order matches the parity table; Dashboard and Accounts show cooldowns with their end time next to headroom where missing (reset times are already shown).
-- Docs: `docs/guide/parity.md` with the feature map table (feature, web page, TUI tab, gap reason), linked from `web-ui.md` and `tui.md`; update `web-ui.md`, `tui.md`, `config.md` (decider section, key paste); SPEC sections for the web UI and TUI; ADR `0008-supervisor-writes-decider-key-file.md`; CHANGELOG entry.
+- Docs: `docs/guide/parity.md` with the feature map table (feature, web page, TUI tab, gap reason), linked from `web-ui.md` and `tui.md`; update `web-ui.md`, `tui.md`, `config.md` (decider section, key paste); SPEC sections for the web UI and TUI; ADR `0012-supervisor-writes-decider-key-file.md`; CHANGELOG entry.
 - Acceptance: `pnpm -C web lint && pnpm -C web typecheck && pnpm -C web test`.
 - Out of scope: code outside `web/` and `docs/`, SPEC, CHANGELOG.
 

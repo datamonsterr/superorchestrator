@@ -32,7 +32,7 @@ The names line up where the feature is the same. They differ for these reasons:
 | Route log and records | Levels, Route log tab | Not available | Gap, follow-up. Use `runs list` or `route eval`. |
 | Routing instruction | Levels, Routing instruction tab | Not available | Gap, follow-up. Edit `router.instruction` with `config set`. |
 | Models catalog and refresh | Levels page: catalog per harness, Refresh | Models (`7`): catalog per harness, `r` refresh | Parity. |
-| Decider settings and Test decider | Settings, Decider tab | Settings (`8`): decider form, `t` Test decider | Parity. Both use the supervisor's decider API ([config](config.md#decider)). |
+| Decider settings and Test decider | Settings, Decider tab | Settings (`8`): placeholder | Web only ([config](config.md#decider)). |
 | Other config settings | Settings: General, Notifications, Worktrees, UI, System | Settings (`8`): read-only summary (config path, UI bind, caps) | Gap, follow-up: edit with the web UI or `config set`. |
 | Worktrees list and prune | Settings, System tab | Not available | Gap, follow-up. Use the `worktree` CLI command. |
 | Agents | Agents: list, view, edit agent files | Not available | Gap, follow-up. Edit the files or use `agent` commands. |

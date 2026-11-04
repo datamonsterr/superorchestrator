@@ -1,4 +1,4 @@
-# The supervisor writes the decider key file
+# ADR-0012: The supervisor writes the decider key file
 
 Status: accepted · 2026-11-04
 

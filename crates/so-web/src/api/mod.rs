@@ -77,6 +77,7 @@ pub fn routes() -> Router<AppState> {
         )
         .route("/api/v1/workflows/{name}/run", post(workflows::run))
         .route("/api/v1/routing/records", get(system::routing_records))
+        .route("/api/v1/routing/insights", get(system::routing_insights))
         .route("/api/v1/accounts", get(accounts::list).post(accounts::add))
         .route("/api/v1/accounts/import", post(accounts::import))
         .route("/api/v1/accounts/scan", get(accounts::scan))

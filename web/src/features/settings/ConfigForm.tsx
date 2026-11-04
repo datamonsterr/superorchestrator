@@ -99,6 +99,11 @@ export function ConfigForm({ view, hidden = false }: { view: ConfigView; hidden?
           {text('worktrees.branch_prefix', 'Branch prefix', 'Prefix for the branches runs work on.', { mono: true })}
         </FieldGroup>
       </TabsContent>
+      <TabsContent value="orchestrator">
+        <FieldGroup className="max-w-xl">
+          {text('orchestrator.reserved_accounts', 'Reserved accounts', 'Comma-separated account names kept for the orchestrator. Automatic routing skips these accounts.')}
+        </FieldGroup>
+      </TabsContent>
       <TabsContent value="ui">
         <FieldGroup className="max-w-xl">
           {text('ui.bind', 'Bind address', 'Changing the address or port takes effect after a restart.', { mono: true })}

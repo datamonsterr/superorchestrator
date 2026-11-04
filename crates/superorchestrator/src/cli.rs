@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{ArgGroup, Args, Parser, Subcommand};
+use clap::{ArgGroup, Args, Parser, Subcommand, ValueEnum};
 
 /// Command line interface for superorchestrator.
 #[derive(Parser, Debug)]
@@ -76,6 +76,9 @@ pub enum Command {
     /// Manage run worktrees
     #[command(subcommand)]
     Worktrees(WorktreesCmd),
+    /// Handle a harness lifecycle event
+    #[command(subcommand, hide = true)]
+    Hook(HookCmd),
     /// Run the supervisor
     #[command(hide = true)]
     Daemon(DaemonArgs),
@@ -87,12 +90,36 @@ pub enum Command {
     Mcp(McpArgs),
 }
 
+#[derive(Subcommand, Debug, Clone, Copy)]
+pub enum HookCmd {
+    /// Report runs that wait at the review gate or on an answer, as session context
+    SessionStart,
+    /// Report runs that still wait at the review gate, as a system message
+    Stop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OrchestratorHarness {
+    Claude,
+    Codex,
+}
+
 #[derive(Args, Debug)]
 pub struct SetupArgs {
+    /// Harness used by the orchestrator
+    #[arg(long, value_enum)]
+    pub orchestrator: Option<OrchestratorHarness>,
+    /// Reserve an existing account (repeatable)
+    #[arg(long, value_name = "NAME")]
+    pub reserve: Vec<String>,
+    /// Print the setup plan without changing anything
+    #[arg(long)]
+    pub dry_run: bool,
     /// Codex accounts to add (default: 1 when there is none yet)
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
     pub codex: Option<u32>,
-    /// Claude accounts to add (default: 0; claude is kept for the orchestrator)
+    /// Claude accounts to add (default: 0, or 1 with --orchestrator codex)
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(0..=99))]
     pub claude: Option<u32>,
     /// OpenCode accounts to add (default: 1 when there is none yet)
@@ -110,6 +137,9 @@ pub struct SetupArgs {
     /// Do not add the delegation block to ~/.claude/CLAUDE.md
     #[arg(long)]
     pub no_claude_md: bool,
+    /// Do not add the delegation block to Codex AGENTS.md files.
+    #[arg(long)]
+    pub no_agents_md: bool,
 }
 
 #[derive(Args, Debug)]
@@ -144,6 +174,9 @@ pub struct InstallArgs {
     /// Do not add the delegation block to ~/.claude/CLAUDE.md.
     #[arg(long)]
     pub no_claude_md: bool,
+    /// Do not add the delegation block to Codex AGENTS.md files.
+    #[arg(long)]
+    pub no_agents_md: bool,
 }
 
 #[derive(Args, Debug)]
@@ -403,6 +436,11 @@ pub enum ConfigCmd {
 pub enum LevelsCmd {
     /// List levels, their ranges and the models each allows
     List,
+    /// Analyze levels and optionally apply a suggestion
+    Suggest {
+        #[arg(long)]
+        apply: Option<String>,
+    },
     /// Add a level
     Add(LevelAdd),
     /// Change a level's name, range or tier

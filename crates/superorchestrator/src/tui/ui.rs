@@ -323,23 +323,31 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
             ],
             "quit",
         ),
-        Tab::Levels => (
-            vec![
+        Tab::Levels if app.suggest_focus => (
+            vec![("j/k", "select"), ("A/Enter", "apply"), ("s", "levels")],
+            "levels",
+        ),
+        Tab::Levels => {
+            let mut items = vec![
                 ("j/k", "move"),
                 ("Enter", "open"),
                 ("a/x", "model refs"),
                 ("J/K", "reorder"),
                 ("r", "range"),
-                ("n", "new"),
-                ("D", "delete"),
-                ("u", "reset"),
-            ],
-            if app.level_open.is_some() {
-                "back"
-            } else {
-                "quit"
-            },
-        ),
+            ];
+            if app.level_open.is_none() && !app.suggestions().is_empty() {
+                items.push(("s", "suggestions"));
+            }
+            items.extend([("n", "new"), ("D", "delete"), ("u", "reset")]);
+            (
+                items,
+                if app.level_open.is_some() {
+                    "back"
+                } else {
+                    "quit"
+                },
+            )
+        }
         Tab::Setup => (
             vec![
                 ("j/k", "move"),
@@ -626,6 +634,7 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(9),
             Constraint::Length(10),
             Constraint::Length(8),
+            Constraint::Length(3),
             Constraint::Length(4),
             Constraint::Length(6),
             Constraint::Fill(1),
@@ -635,6 +644,7 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             Constraint::Length(18),
             Constraint::Length(9),
             Constraint::Length(10),
+            Constraint::Length(3),
             Constraint::Length(6),
             Constraint::Fill(1),
         ]
@@ -667,6 +677,10 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             ];
             if wide {
                 cells.push(Cell::new(if a.enabled { "yes" } else { "no" }));
+            }
+            // Reservation has its own column so it never eats into the name.
+            cells.push(Cell::new(if a.reserved { "yes" } else { "" }));
+            if wide {
                 cells.push(Cell::new(a.cap.to_string()));
             }
             cells.push(Cell::new(a.active.to_string()));
@@ -680,12 +694,13 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
             "HARNESS",
             "SIGNED IN",
             "ENABLED",
+            "RSV",
             "CAP",
             "ACTIVE",
             "HEADROOM",
         ]
     } else {
-        vec!["NAME", "HARNESS", "SIGNED IN", "ACTIVE", "HEADROOM"]
+        vec!["NAME", "HARNESS", "SIGNED IN", "RSV", "ACTIVE", "HEADROOM"]
     })
     .style(t.header());
     let table = Table::new(rows, widths)
@@ -698,6 +713,9 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 // ---------------------------------------------------------------------- levels
+
+/// Body height from which the Levels tab also draws the insights and suggestions panels.
+const INSIGHTS_MIN_HEIGHT: u16 = 14;
 
 fn draw_levels(f: &mut Frame, app: &mut App, area: Rect) {
     if app.snap.is_none() {
@@ -719,7 +737,38 @@ fn draw_levels(f: &mut Frame, app: &mut App, area: Rect) {
         Paragraph::new("Config edits need a supervisor restart to apply.").style(t.muted()),
         intro,
     );
-    if let Some(l) = app.focused_level().filter(|_| app.level_open.is_some()) {
+    let open = app.level_open.is_some();
+    // The insights panels need room; on a short screen only the levels are drawn.
+    let roomy = body.height >= INSIGHTS_MIN_HEIGHT;
+    let report = app.insights.as_ref().filter(|_| roomy);
+    let error = app.insights_error.as_ref().filter(|_| roomy);
+    let sugg = report
+        .filter(|_| !open)
+        .map(|r| suggestion_lines(app, r, body.width.saturating_sub(2)))
+        .filter(|(lines, _)| !lines.is_empty());
+    let sugg_h = sugg.as_ref().map_or(0, |(lines, _)| {
+        (lines.len() as u16 + 2).min(body.height / 3).max(3)
+    });
+    let has_panel = report.is_some() || error.is_some();
+    let third = body.height / 3;
+    let main_h = match (has_panel, open) {
+        (false, _) => body.height,
+        (true, true) => third.max(4),
+        (true, false) => (s.levels.len() as u16 + 3).max(4).min(third),
+    };
+    let [body, panel, sugg_area] = Layout::vertical([
+        Constraint::Length(main_h),
+        Constraint::Min(0),
+        Constraint::Length(sugg_h),
+    ])
+    .areas(body);
+    if has_panel {
+        draw_insights_panel(f, app, report, error, panel);
+    }
+    if let Some((lines, starts)) = sugg {
+        draw_suggestions(f, app, lines, &starts, sugg_area);
+    }
+    if let Some(l) = app.focused_level().filter(|_| open) {
         let title = format!(
             " {}  {}-{} · model refs (most preferred first) ",
             super::data::clean(&l.name),
@@ -794,6 +843,149 @@ fn draw_levels(f: &mut Frame, app: &mut App, area: Rect) {
         app.levels_state.select(Some(app.levels_sel));
         f.render_stateful_widget(table, body, &mut app.levels_state);
     }
+}
+
+/// Panel with the focused level's stats and example tasks, or the load error.
+fn draw_insights_panel(
+    f: &mut Frame,
+    app: &App,
+    report: Option<&so_supervisor::services::insights::InsightsReport>,
+    error: Option<&String>,
+    area: Rect,
+) {
+    let t = &app.theme;
+    let lines = match (report, error) {
+        (_, Some(e)) => vec![Line::styled(super::data::clean(e), t.bad())],
+        (Some(r), None) => insight_lines(app, r, area.width.saturating_sub(2)),
+        _ => Vec::new(),
+    };
+    let title = match app.focused_level() {
+        Some(l) => format!(" insights · {} ", super::data::clean(&l.name)),
+        None => " insights ".to_string(),
+    };
+    let b = block(t, Span::styled(title, t.bold()));
+    let inner = b.inner(area);
+    f.render_widget(b, area);
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// Suggestions list; `starts` holds the first line of each, to keep the selection in view.
+fn draw_suggestions(
+    f: &mut Frame,
+    app: &App,
+    lines: Vec<Line<'static>>,
+    starts: &[usize],
+    area: Rect,
+) {
+    let t = &app.theme;
+    let title = if app.suggest_focus {
+        " suggestions · j/k select, A apply "
+    } else {
+        " suggestions · s to focus "
+    };
+    let b = block(t, Span::styled(title, t.bold()));
+    let inner = b.inner(area);
+    f.render_widget(b, area);
+    let end = starts
+        .get(app.suggest_sel + 1)
+        .copied()
+        .unwrap_or(lines.len());
+    let scroll = end.saturating_sub(usize::from(inner.height)) as u16;
+    f.render_widget(Paragraph::new(lines).scroll((scroll, 0)), inner);
+}
+
+/// Stats and example tasks of the focused level, cut to `width` columns.
+fn insight_lines(
+    app: &App,
+    report: &so_supervisor::services::insights::InsightsReport,
+    width: u16,
+) -> Vec<Line<'static>> {
+    use crate::cmd::levels::{number, percent};
+    let t = &app.theme;
+    let w = usize::from(width);
+    let cut = |s: String| Line::raw(truncate(&super::data::clean(&s), w, t.ellipsis()));
+    let Some(name) = app.focused_level().map(|l| &l.name) else {
+        return Vec::new();
+    };
+    let Some(l) = report.levels.iter().find(|l| &l.name == name) else {
+        return vec![Line::styled("no insights for this level yet", t.muted())];
+    };
+    let mut out = vec![
+        cut(format!(
+            "{} runs, complexity median {} (range {}-{}), median duration {} ms",
+            l.runs,
+            number(l.complexity_median),
+            number(l.complexity_min),
+            number(l.complexity_max),
+            number(l.median_duration_ms)
+        )),
+        cut(format!(
+            "accepted {} rejected {} failed {} failover {}",
+            percent(l.accepted_rate),
+            percent(l.rejected_rate),
+            percent(l.failed_rate),
+            percent(l.failover_rate)
+        )),
+    ];
+    for m in l.models.iter().take(3) {
+        out.push(cut(format!(
+            "model {}: {} runs, {} success",
+            m.choice_id.as_deref().unwrap_or("unknown"),
+            m.runs,
+            percent(m.success_rate)
+        )));
+    }
+    for e in &l.examples {
+        out.push(cut(format!(
+            "[{}] c={:.0} {} {}{}",
+            e.source,
+            e.complexity,
+            e.outcome.map_or("-", so_router::insights::Outcome::as_str),
+            e.excerpt,
+            if e.borderline { " (borderline)" } else { "" }
+        )));
+    }
+    out
+}
+
+/// One header line (id, rationale) and its diff lines per suggestion, plus where each starts.
+fn suggestion_lines(
+    app: &App,
+    report: &so_supervisor::services::insights::InsightsReport,
+    width: u16,
+) -> (Vec<Line<'static>>, Vec<usize>) {
+    let t = &app.theme;
+    let w = usize::from(width);
+    let mut lines = Vec::new();
+    let mut starts = Vec::new();
+    for (i, sg) in report.suggestions.iter().enumerate() {
+        starts.push(lines.len());
+        let picked = app.suggest_focus && i == app.suggest_sel;
+        let mark = if picked { t.pointer() } else { " " };
+        let head = truncate(
+            &super::data::clean(&format!("{mark} {}: {}", sg.id, sg.rationale)),
+            w,
+            t.ellipsis(),
+        );
+        lines.push(Line::styled(
+            head,
+            if picked { t.selected() } else { t.bold() },
+        ));
+        for c in &sg.diff {
+            lines.push(Line::styled(
+                truncate(
+                    &super::data::clean(&format!(
+                        "    {}.{}: {} -> {}",
+                        c.level, c.field, c.before, c.after
+                    )),
+                    w,
+                    t.ellipsis(),
+                ),
+                t.muted(),
+            ));
+        }
+    }
+    (lines, starts)
 }
 
 // ------------------------------------------------------------------------ runs
@@ -1223,6 +1415,7 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
             out.extend([
                 row("j k  g G", "move (arrows, PgUp/PgDn, Home/End too)"),
                 row("Enter", "open a level's model refs"),
+                row("s", "suggestions: j/k pick, A/Enter apply"),
                 row("a / x", "add from the catalog / remove the selected ref"),
                 row("J / K", "move the selected ref down / up"),
                 row("r", "edit min and max complexity (0-100)"),

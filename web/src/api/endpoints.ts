@@ -18,6 +18,7 @@ import type {
   HarnessesView,
   ImportCandidate,
   JoinView,
+  InsightsReport,
   LevelsPut,
   LevelsView,
   MessageView,
@@ -88,6 +89,7 @@ export const endpoints = {
     request<Page<RouteRecord>>('/routing/records', { query: q, ...o }),
   getLevels: (o?: Opt) => request<LevelsView>('/levels', o),
   putLevels: (body: LevelsPut) => request<LevelsView>('/levels', { method: 'PUT', body }),
+  getInsights: (o?: Opt) => request<InsightsReport>('/routing/insights', o),
   getModels: (o?: Opt) => request<ModelCatalog>('/models', o),
   refreshModels: () => request<ModelCatalog>('/models/refresh', { method: 'POST' }),
 

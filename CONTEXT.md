@@ -48,6 +48,10 @@ _Avoid_: Provider, backend, tool, CLI
 One named login for one harness, backed by its own credential home, such as `codex-acc2`. An account is the unit that is routed, capped and metered.
 _Avoid_: Profile, login, credential, worker
 
+**Reserved account**:
+An account kept for the orchestrator; auto routing never picks it, but a spawn that pins it may.
+_Avoid_: Orchestrator account, held account
+
 **Credential home**:
 The folder that holds one account's login and harness state, selected through the harness's own environment variable.
 _Avoid_: Home dir, config dir, profile folder
@@ -96,6 +100,18 @@ _Avoid_: Difficulty, size
 **Level**:
 A named, operator-defined range of complexity, with the models allowed for tasks in that range, in preference order, or a model tier when it lists none. A level's model list is not a Pool.
 _Avoid_: Tier, bucket, band, pool
+
+**level insight**:
+The history analysis for one current Level: its complexity distribution, outcomes, model success rates and example tasks.
+_Avoid_: Level scorecard
+
+**suggestion**:
+A deterministic proposed change to the full level configuration, with a stable id, rationale and diff, validated before it is offered.
+_Avoid_: Recommendation
+
+**bad outcome**:
+A rejected or failed run, or a run that escalated or failed over.
+_Avoid_: Unsuccessful outcome
 
 **Pool**:
 A separately metered slice of one account's usage, such as agy's Gemini and Claude model families. Most accounts have one pool.

@@ -32,6 +32,7 @@ export function SettingsPage() {
           <TabsTrigger value="notifications">Notifications</TabsTrigger>
           <TabsTrigger value="worktrees">Worktrees</TabsTrigger>
           <TabsTrigger value="decider">Decider</TabsTrigger>
+          <TabsTrigger value="orchestrator">Orchestrator</TabsTrigger>
           <TabsTrigger value="ui">UI</TabsTrigger>
           <TabsTrigger value="system">System</TabsTrigger>
         </TabsList>

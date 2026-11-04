@@ -160,7 +160,7 @@ async fn spawn_agent(m: &RunManager, ctx: ConnCtx, p: SpawnParams) -> Result<Val
             &ctx,
             std::slice::from_ref(&run_id),
             sub,
-            None,
+            Some(so_core::MAX_WAIT),
             WaitMode::Finish,
         )
         .await?;
@@ -174,6 +174,12 @@ async fn spawn_agent(m: &RunManager, ctx: ConnCtx, p: SpawnParams) -> Result<Val
         warnings,
         error_kind: finished.then_some(row.error_kind).flatten(),
     })
+}
+
+fn wait_timeout(timeout_ms: Option<u64>) -> Duration {
+    timeout_ms
+        .map_or(DEFAULT_WAIT, Duration::from_millis)
+        .min(so_core::MAX_WAIT)
 }
 
 async fn wait_agent(m: &RunManager, ctx: ConnCtx, p: WaitParams) -> Result<Value, RpcError> {
@@ -191,7 +197,7 @@ async fn wait_agent(m: &RunManager, ctx: ConnCtx, p: WaitParams) -> Result<Value
         ids.push(row.id);
     }
     let mut sub = m.subscribe(&sessions, Some(&ids));
-    let timeout = p.timeout_ms.map_or(DEFAULT_WAIT, Duration::from_millis);
+    let timeout = wait_timeout(p.timeout_ms);
     let WaitOutcome {
         finished,
         updates,
@@ -215,4 +221,16 @@ async fn wait_agent(m: &RunManager, ctx: ConnCtx, p: WaitParams) -> Result<Value
         updates,
         timed_out,
     })
+}
+
+#[cfg(test)]
+mod wait_limit_tests {
+    use super::*;
+
+    #[test]
+    fn clamps_wait_timeout() {
+        assert_eq!(wait_timeout(None), DEFAULT_WAIT);
+        assert_eq!(wait_timeout(Some(25)), Duration::from_millis(25));
+        assert_eq!(wait_timeout(Some(u64::MAX)), so_core::MAX_WAIT);
+    }
 }

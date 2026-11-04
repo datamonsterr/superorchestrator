@@ -14,6 +14,7 @@ const baseSchema = z.object({
   runs: z.object({ stall_ms: whole(1000), ask_timeout: z.string().trim().min(1, 'Enter a duration such as 10m') }),
   notifications: z.object({ desktop: z.boolean(), discord_webhook_env: z.string().trim() }),
   worktrees: z.object({ dir: z.string().trim(), branch_prefix: z.string().trim() }),
+  orchestrator: z.object({ reserved_accounts: z.string() }),
   ui: z.object({ bind: z.string().trim().min(1, 'Enter an address'), port: whole(1, 65535), enabled: z.boolean() }),
 })
 export type SettingsValues = z.infer<typeof baseSchema>
@@ -36,29 +37,37 @@ export function valuesFromConfig(view: ConfigView): SettingsValues {
     runs: { stall_ms: c.runs?.stall_ms ?? 300_000, ask_timeout: c.runs?.ask_timeout ?? '10m' },
     notifications: { desktop: c.notifications?.desktop ?? false, discord_webhook_env: c.notifications?.discord_webhook_env ?? '' },
     worktrees: { dir: c.worktrees?.dir ?? '', branch_prefix: c.worktrees?.branch_prefix ?? '' },
+    orchestrator: { reserved_accounts: (c.orchestrator?.reserved_accounts ?? []).join(', ') },
     ui: { bind: c.ui?.bind ?? '127.0.0.1', port: c.ui?.port ?? 7878, enabled: c.ui?.enabled ?? false },
   }
 }
+
+/** The reserved-accounts field is edited as one comma-separated string. */
+const splitNames = (s: string) => s.split(',').map((name) => name.trim()).filter(Boolean)
 
 type Tree = { [k: string]: Tree | string | number | boolean }
 
 /** Only the leaves that changed, as a nested partial config. */
 export function diffToPatch(before: SettingsValues, after: SettingsValues): ConfigPatch {
-  const walk = (a: Tree, b: Tree): Tree => {
-    const out: Tree = {}
+  const walk = (a: Tree, b: Tree, path: string): Record<string, unknown> => {
+    const out: Record<string, unknown> = {}
     for (const k of Object.keys(b)) {
       const x = a[k]
       const y = b[k]
+      const here = path ? `${path}.${k}` : k
       if (typeof y === 'object') {
-        const sub = walk(x as Tree, y)
+        const sub = walk(x as Tree, y, here)
         if (Object.keys(sub).length > 0) out[k] = sub
+      } else if (here === 'orchestrator.reserved_accounts' && typeof x === 'string' && typeof y === 'string') {
+        const names = splitNames(y)
+        if (JSON.stringify(splitNames(x)) !== JSON.stringify(names)) out[k] = names
       } else if (x !== y) {
         out[k] = y
       }
     }
     return out
   }
-  return walk(before as unknown as Tree, after as unknown as Tree) as ConfigPatch
+  return walk(before as unknown as Tree, after as unknown as Tree, '') as ConfigPatch
 }
 
 // ---- Decider -------------------------------------------------------------------------------

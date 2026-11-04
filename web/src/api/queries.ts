@@ -103,6 +103,10 @@ export function useRunMessages(id: string) {
   return useQuery({ queryKey: qk.runMessages(id), queryFn: ({ signal }) => endpoints.listRunMessages(id, { signal }), enabled: !!id })
 }
 
+export function useInsights() {
+  return useQuery({ queryKey: qk.insights(), queryFn: ({ signal }) => endpoints.getInsights({ signal }) })
+}
+
 export function useLevels() {
   return useQuery({ queryKey: qk.levels(), queryFn: ({ signal }) => endpoints.getLevels({ signal }) })
 }
@@ -177,7 +181,7 @@ export function usePutLevels() {
     mutationFn: (body: LevelsPut) => endpoints.putLevels(body),
     onSuccess: (data) => {
       qc.setQueryData(qk.levels(), data)
-      return qc.invalidateQueries({ queryKey: qk.harnesses() })
+      return Promise.all([qc.invalidateQueries({ queryKey: qk.harnesses() }), qc.invalidateQueries({ queryKey: qk.insights() })])
     },
   })
 }

@@ -9,15 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- E5: the routing decider is configurable from the web UI and the TUI through one supervisor API. The Settings page has a Decider tab (endpoint, model, fallback model, on-unreachable, timeout, minimum confidence and margin, key from an environment variable, a key file or a pasted key, env override notices, restart notice and Test decider). `GET`/`PATCH /api/v1/decider`, `POST /api/v1/decider/test` and the RPC methods `decider_get`, `decider_set` and `decider_test` (inspect connections only) share `so_supervisor::services::decider`. A pasted key is written by the supervisor to `<config dir>/decider.env` (mode 0600, atomic, rolled back if the config write fails) and `router.jev.key_file` points at it. The key is never returned, logged or stored in events. See ADR-0008 and `docs/guide/config.md`.
-- The TUI has nine tabs: Dashboard, Sessions (sessions, their runs, run detail with events and transcript), Runs, Accounts, Usage (headroom bars with reset times, cooldowns, 14-day usage sparkline), Levels, Models (catalog, `r` to refresh), Settings (decider form, `t` to test, read-only config summary) and Setup. Keys `1` to `9` select them and titles are compact at 80 columns.
+- E5: the routing decider is configurable from the web UI through one supervisor API. The Settings page has a Decider tab (endpoint, model, fallback model, on-unreachable, timeout, minimum confidence and margin, key from an environment variable, a key file or a pasted key, env override notices, restart notice and Test decider). `GET`/`PATCH /api/v1/decider`, `POST /api/v1/decider/test` and the RPC methods `decider_get`, `decider_set` and `decider_test` (inspect connections only) share `so_supervisor::services::decider`. A pasted key is written by the supervisor to `<config dir>/decider.env` (mode 0600, atomic, rolled back if the config write fails) and `router.jev.key_file` points at it. The key is never returned, logged or stored in events. See ADR-0012 and `docs/guide/config.md`.
+- The TUI has nine tabs: Dashboard, Sessions (sessions, their runs, run detail with events and transcript), Runs, Accounts, Usage (headroom bars with reset times, cooldowns, 14-day usage sparkline), Levels, Models (catalog, `r` to refresh), Settings (placeholder) and Setup. Keys `1` to `9` select them and titles are compact at 80 columns.
 - The web Dashboard shows cooldowns with their end time and time left beside the account headroom, as the Accounts page does.
 - `docs/guide/parity.md` maps each feature to the web UI and the TUI and records the gaps.
+
+- `install` resolves symlinks before editing managed files (dangling links are followed), so a linked config, `CLAUDE.md` or `AGENTS.md` is edited at its target.
+- Codex CLI as a first-class orchestrator. See `docs/guide/codex-orchestrator.md` and ADR-0008.
+  - `[orchestrator] reserved_accounts`: auto routing never picks them; a call that pins `account` may. `list_harnesses` marks them `reserved: true` and `why: "account reserved"`. The web Settings, web accounts table and TUI accounts view show them.
+  - `setup --orchestrator claude|codex [--reserve NAME]... [--dry-run] [--no-agents-md]`.
+  - `install` writes `startup_timeout_sec = 30`, `tool_timeout_sec = 1860` and `env_vars = ["XDG_RUNTIME_DIR"]` on the Codex MCP entries, and a managed block in `$CODEX_HOME/AGENTS.md` and each Codex account's `AGENTS.md` (`--no-agents-md` skips it). The three skills are harness-neutral with Codex notes.
+  - Codex plugin in `plugin-codex/` and marketplace `.agents/plugins/marketplace.json`.
+  - Hidden `superorchestrator hook session-start|stop` for Claude Code and Codex hooks.
+- Model refresh includes the documented Claude model list when a Claude account is enabled and reports catalog models not assigned to levels.
+- Level insights and deterministic suggestions are available in the CLI, web UI and TUI.
 
 ### Changed
 
 - The TUI "Overview" tab is renamed "Dashboard", and Setup moves from `4` to `9` and Levels from `5` to `6`.
 - The web nav label "Routing" is now "Levels" (the URL `/routing` is unchanged). `min_confidence`, `min_margin`, `key_env` and `key_file` are edited in the Decider tab only, and the Routing tab of Settings is gone.
+
+- `wait_agent` caps its timeout at 30 minutes, and `spawn_agent(wait: true)` returns after at most 30 minutes with the current state. The run continues.
+
+### Fixed
+
+- Routing record prompt excerpts now contain a redacted, whitespace-collapsed excerpt of the run prompt (up to 160 characters).
 
 ### Security
 
@@ -57,6 +73,9 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Changed
 
+- `models refresh --json` renames `unused_models` to `unassigned_models`.
+- `models list` gains a `LEVELS` column and a `levels` field in `--json`.
+- `levels suggest` prints deterministic level suggestions, and the TUI Levels tab shows insights and suggestions (`s` focuses the suggestions, `A` or Enter asks to apply the selected one).
 - Seeded complexity levels route harder work to Codex first: `moderate` leads with `codex/gpt-6-luna/medium`, `complex` with `codex/gpt-6.1-sol/high` and `expert` with `codex/gpt-6.1-sol/xhigh`. `simple` also lists `gpt-6-luna`, which is seeded only for `moderate` and below. The seed no longer lists `opencode/opencode/muse-spark-1.3`. `gpt-6-luna` is added to the bundled catalog and the bundled eval labels follow the new seed. Existing configs are not changed; copy the levels from `seed/` to adopt them.
 
 - The seeded choice `opencode-muse-long` uses `opencode/muse-spark-1.3`; the old model id

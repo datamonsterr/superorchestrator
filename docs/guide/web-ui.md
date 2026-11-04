@@ -27,6 +27,8 @@ The browser's global history may still record the original fragment. A history e
 
 The terminal UI covers most of the same ground; the [feature map](parity.md) lists what each surface can do.
 
+The Routing page's Insights panel shows per-level history, example tasks and suggestions. Apply a suggestion to save its proposed levels through the existing levels API; restart the supervisor to use the change. See [Level insights and suggestions](routing.md#level-insights-and-suggestions).
+
 ![Dashboard](../img/web-dashboard.png)
 
 ![Sessions](../img/web-sessions.png)

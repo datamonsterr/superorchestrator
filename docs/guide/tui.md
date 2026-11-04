@@ -30,7 +30,7 @@ The tabs follow the web UI where the feature is the same. See the [feature map](
 | `5` | Usage | Headroom with reset times, cooldowns, 14-day usage |
 | `6` | Levels | Level ranges and model refs in preference order |
 | `7` | Models | The model catalog per harness |
-| `8` | Settings | Decider settings, Test decider, config summary |
+| `8` | Settings | Placeholder |
 | `9` | Setup | First-run setup steps |
 
 **1 Dashboard.** (Called Overview in earlier versions.) Four counters (accounts, active runs, runs waiting for review, checklist progress), the setup checklist, the latest runs and a Levels block. The Levels block lists each level as `name  min-max  ref, ref` (the model refs in order). It is shown when rows remain after the recent runs, so at 80x24 with runs listed it may be out of view. When no level lists models, the block shows one line: no levels list models (nothing routes until one does). The checklist covers the config, the harnesses found on `PATH`, accounts, sign-ins, whether superorchestrator is registered with Claude Code, and the OpenRouter router key. Each missing item shows the fix beside it.
@@ -64,7 +64,7 @@ The list is read from the store. The diff, cancel, join, accept and reject go th
 
 **7 Models.** The model catalog per harness: model, efforts, whether it is free, and when the catalog was last refreshed. `r` refreshes it through the supervisor's model refresh, the same as the web Levels page. Models you add to a level come from this catalog.
 
-**8 Settings.** The decider (`[router.jev]` and `[router.policy]`) as a form: endpoint, model, fallback model, on-unreachable behaviour, timeout, minimum confidence and margin, and the key source (environment variable, key file, or paste a key). A pasted key is masked as you type and is never shown again; the tab shows only where the key comes from and its last four characters. A notice appears beside any field an environment variable overrides. Changes go to the supervisor through the `decider_set` call, which validates and writes `config.toml`; the TUI itself validates nothing. `t` runs **Test decider** against the saved config and shows the complexity, level, confidence, model and latency, or the error. Below the form is a read-only summary of the rest of the config (config path, UI bind, caps); change those with the web UI or `config set`. The tab needs the supervisor; without it, it says the supervisor is not running. See [config](config.md#decider) for the fields.
+**8 Settings.** A placeholder for a future settings screen.
 
 **9 Setup.** The first-run steps one by one with live status: `init`, `harnesses`, `import`, `add accounts`, `sign in`, `install` and `doctor`. `Enter` runs the selected step, `a` runs them all in order (it stops at the first failure), and `i` and `d` jump to `install` and `doctor`. Steps do only what is missing, so running them again is safe. `sign in` lists the accounts that are signed out and how to sign in; use the Accounts tab (`4`) for that.
 
@@ -80,7 +80,10 @@ The list is read from the store. The diff, cancel, join, accept and reject go th
 | `n` | Create a level: enter its name, min and max, then pick its first model ref. |
 | `D` | Delete the selected or open level by typing its exact name. The last level cannot be deleted. |
 | `u` | Reset to the default levels after a `y` confirmation. |
+| `s` | Focus the routing suggestions list (list view only). There `j` / `k` select a suggestion, `A` or `Enter` asks `Apply suggestion <id>? (y/n)` and `y` writes its levels like `levels suggest --apply`, `s` or `Esc` returns to the levels. |
 | `Esc` / `q` | Return from the model-ref pane to the level list, or quit from the list. |
+
+Below the levels, a panel shows the selected level's routing insights from `state.db` (runs, complexity, accepted/rejected/failed/failover rates, median duration, top three models and example tasks with a `[history]` or `[eval]` label), and a second panel lists the suggestions with their `level.field: before -> after` changes. Both are hidden when no `state.db` exists yet.
 
 Edits are saved locally. **Restart the supervisor to apply them**; the UI displays this reminder after a change and never restarts the supervisor. The Dashboard Levels block remains a summary; use this tab to edit levels.
 

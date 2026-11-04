@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod decider;
+pub mod insights;
 pub mod models;
 pub mod sessions;
 pub mod usage;

@@ -9,6 +9,10 @@ Prefix commands below with `superorchestrator`. Use `--help` for flags; globals:
 If the shell lacks it, export `XDG_RUNTIME_DIR=/run/user/$(id -u)` so the CLI finds the supervisor socket.
 Delegate through `use-superorchestrator-mcp`; edit setup through `superorchestrator-config`.
 
+## Codex orchestrator
+
+`superorchestrator install` manages `~/.codex/AGENTS.md`. Set `orchestrator.reserved_accounts` for the orchestrator (or run `superorchestrator setup --orchestrator codex`); never pin a reserved account for a subagent. Resume a native session with `superorchestrator join <run>` (or the `join_command` from `get_run`).
+
 | Status / setup | Command |
 |---|---|
 | Headroom / diagnose | `status`; `doctor` |

@@ -40,6 +40,7 @@ describe('base handlers cover every endpoint in design 2.1', () => {
     ['getLoginStatus', () => endpoints.getLoginStatus('agy-acc1')],
     ['getLevels', () => endpoints.getLevels()],
     ['putLevels', () => endpoints.putLevels({ levels: fx.levels.levels, routing_instruction: '' })],
+    ['getInsights', () => endpoints.getInsights()],
     ['getModels', () => endpoints.getModels()],
     ['refreshModels', () => endpoints.refreshModels()],
     ['listWorktrees', () => endpoints.listWorktrees()],

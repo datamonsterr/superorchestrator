@@ -14,6 +14,12 @@ async function openMenu(name: string, item: string) {
 }
 
 describe('AccountsPage', () => {
+  it('marks reserved accounts', async () => {
+    server.use(http.get('/api/v1/accounts', () => HttpResponse.json(fx.accounts.map((a, i) => ({ ...a, reserved: i === 0 })))))
+    renderWithProviders(<AccountsPage />)
+    expect(within(await row('codex-acc1')).getByTitle('Kept for the orchestrator; auto routing skips it')).toHaveTextContent('reserved')
+    expect(within(await row('agy-acc1')).queryByText('reserved')).not.toBeInTheDocument()
+  })
   it('lists accounts with sign-in, pools, cooldown and headroom', async () => {
     renderWithProviders(<AccountsPage />)
     const agy = await row('agy-acc1')

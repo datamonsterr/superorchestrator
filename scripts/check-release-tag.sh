@@ -21,9 +21,10 @@ if ! grep -Eq "^## \[$(printf '%s' "$version" | sed 's/[.]/\\./g')\]" "$root/CHA
   exit 1
 fi
 
-manifest="$root/plugin/.claude-plugin/plugin.json"
-if ! grep -Eq "\"version\"[[:space:]]*:[[:space:]]*\"$(printf '%s' "$version" | sed 's/[.]/\\./g')\"" "$manifest"; then
-  echo "release-check: plugin/.claude-plugin/plugin.json version is not $version" >&2
-  exit 1
-fi
+for rel in plugin/.claude-plugin/plugin.json plugin-codex/.codex-plugin/plugin.json; do
+  if ! grep -Eq "\"version\"[[:space:]]*:[[:space:]]*\"$(printf '%s' "$version" | sed 's/[.]/\\./g')\"" "$root/$rel"; then
+    echo "release-check: $rel version is not $version" >&2
+    exit 1
+  fi
+done
 echo "release-check: ok ($tag)"
