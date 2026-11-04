@@ -163,7 +163,7 @@ To check a pick: `superorchestrator route "task" --model claude/glm-5.3 --explai
 
 ## Check sign-in
 
-An endpoint account is signed in when its key resolves: the variable is set and non-empty, or the key file exists with mode 0600 or 0400. CLI `account login`, TUI `l`, and web `POST /accounts/:name/login` all call the shared `so_harness::endpoint::validate_login`: one `POST {base_url}/v1/messages` with `max_tokens: 1` on the haiku slot model. Web `GET /accounts/:name/login` returns that cached result and does not validate again. The call uses one token of plan usage.
+An endpoint account is signed in when its key resolves: the variable is set and non-empty, or the key file exists with mode 0600 or 0400. CLI `account login`, TUI `l`, and web `POST /accounts/:name/login` all call the shared `so_harness::endpoint::validate_login`: one `POST {base_url}/v1/messages` with `max_tokens: 1` on the haiku slot model. The web POST validates and caches the result; `GET /accounts/:name/login` returns the cached result and does not validate again. The call uses one token of plan usage.
 
 ## Security
 
