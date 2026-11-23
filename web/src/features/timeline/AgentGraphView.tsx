@@ -172,7 +172,7 @@ export function AgentGraphView({
   }, [layout.width])
 
   // Keyboard navigation across nodes in the graph
-  const onNodeKeyDown = (e: KeyboardEvent<HTMLDivElement>, node: GraphNode) => {
+  const onNodeKeyDown = (e: KeyboardEvent<HTMLElement>, node: GraphNode) => {
     const { id, colIndex } = node
     let nextId: string | null = null
 
@@ -521,7 +521,7 @@ export function AgentGraphView({
             </svg>
 
             {/* HTML Node Cards */}
-            <div className="absolute inset-0" role="list" aria-label="Agents list">
+            <ul className="absolute inset-0 list-none m-0 p-0 pointer-events-none" aria-label="Agents list">
               {layout.nodes.map((node) => {
                 const isSelected = node.id === selectedRunId
                 const isFocused = node.id === effectiveFocusId
@@ -530,38 +530,40 @@ export function AgentGraphView({
                 const stateStyle = STATE_STYLES[node.state]
 
                 return (
-                  <div
+                  <li
                     key={node.id}
-                    role="listitem"
-                    tabIndex={isFocused ? 0 : -1}
-                    data-node-id={node.id}
-                    data-testid={`graph-node-${node.id}`}
-                    aria-label={`${node.title}, state ${node.state}, duration ${node.formattedDuration}${node.isOrphan ? ', orphan' : ''}`}
-                    aria-current={isSelected ? 'true' : undefined}
+                    className="absolute list-none m-0 p-0"
                     style={{
-                      position: 'absolute',
                       left: node.x,
                       top: node.y,
                       width: node.width,
                       height: node.height,
                     }}
-                    onMouseEnter={() => setHoveredNodeId(node.id)}
-                    onMouseLeave={() => setHoveredNodeId(null)}
-                    onFocus={() => setFocusedNodeId(node.id)}
-                    onClick={() => {
-                      setFocusedNodeId(node.id)
-                      if (!isOrch) onSelect(node.id)
-                    }}
-                    onKeyDown={(e) => onNodeKeyDown(e, node)}
-                    className={cn(
-                      'group rounded-lg border bg-card p-2.5 shadow-xs transition-all outline-none select-none flex flex-col justify-between',
-                      !isOrch && 'cursor-pointer hover:border-primary/60 hover:shadow-md',
-                      isSelected && 'ring-2 ring-primary border-primary bg-accent/25 shadow-md',
-                      isFocused && !isSelected && 'ring-2 ring-ring/80 border-ring',
-                      !isMatch && 'opacity-25 grayscale-[50%]',
-                      node.isOrphan && 'border-amber-500/60 dark:border-amber-500/40',
-                    )}
                   >
+                    <button
+                      type="button"
+                      tabIndex={isFocused ? 0 : -1}
+                      data-node-id={node.id}
+                      data-testid={`graph-node-${node.id}`}
+                      aria-label={`${node.title}, state ${node.state}, duration ${node.formattedDuration}${node.isOrphan ? ', orphan' : ''}`}
+                      aria-current={isSelected ? 'true' : undefined}
+                      onMouseEnter={() => setHoveredNodeId(node.id)}
+                      onMouseLeave={() => setHoveredNodeId(null)}
+                      onFocus={() => setFocusedNodeId(node.id)}
+                      onClick={() => {
+                        setFocusedNodeId(node.id)
+                        if (!isOrch) onSelect(node.id)
+                      }}
+                      onKeyDown={(e) => onNodeKeyDown(e, node)}
+                      className={cn(
+                        'pointer-events-auto text-left w-full h-full group rounded-lg border bg-card p-2.5 shadow-xs transition-all outline-none select-none flex flex-col justify-between',
+                        !isOrch && 'cursor-pointer hover:border-primary/60 hover:shadow-md',
+                        isSelected && 'ring-2 ring-primary border-primary bg-accent/25 shadow-md',
+                        isFocused && !isSelected && 'ring-2 ring-ring/80 border-ring',
+                        !isMatch && 'opacity-25 grayscale-[50%]',
+                        node.isOrphan && 'border-amber-500/60 dark:border-amber-500/40',
+                      )}
+                    >
                     {/* Header Row: State & Depth */}
                     <div className="flex items-center justify-between gap-1.5">
                       <div className="flex items-center gap-1.5 min-w-0">
@@ -636,10 +638,11 @@ export function AgentGraphView({
                         )}
                       </div>
                     </div>
-                  </div>
-                )
-              })}
-            </div>
+                  </button>
+                </li>
+              )
+            })}
+          </ul>
           </div>
         </div>
       </div>

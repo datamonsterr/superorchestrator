@@ -1,8 +1,9 @@
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import type { RunState } from '@/api/generated'
 import type { Event, RunViewPublic } from '@/api/types'
+import { applyEvent } from './applyEvent'
 import { deriveTimeline } from './derive'
 import { AgentGraphView } from './AgentGraphView'
 
@@ -226,5 +227,102 @@ describe('AgentGraphView', () => {
 
     await user.click(msgBtn)
     expect(msgBtn).toHaveAttribute('aria-pressed', 'true')
+  })
+
+  it('renders run cards as native buttons in a valid list structure with roving keyboard focus', async () => {
+    const user = userEvent.setup()
+    const runs = [
+      makeRun('run-1', 'agent-one', null, 0, 'running'),
+      makeRun('run-2', 'agent-two', 'run-1', 1, 'succeeded'),
+    ]
+    const model = deriveTimeline(runs, [], Date.UTC(2026, 0, 1, 12, 10))
+    const onSelect = vi.fn()
+
+    render(<AgentGraphView model={model} onSelect={onSelect} />)
+
+    // Valid list semantics: ul > li > button
+    const list = screen.getByRole('list', { name: 'Agents list' })
+    expect(list.tagName).toBe('UL')
+
+    const listItems = within(list).getAllByRole('listitem')
+    expect(listItems.length).toBe(3) // Orchestrator + run-1 + run-2
+    for (const item of listItems) {
+      expect(item.tagName).toBe('LI')
+    }
+
+    // Run nodes are native button elements with accessible names
+    const btn1 = screen.getByRole('button', { name: /agent-one/i })
+    expect(btn1.tagName).toBe('BUTTON')
+    expect(btn1).toHaveAttribute('type', 'button')
+
+    const btn2 = screen.getByRole('button', { name: /agent-two/i })
+    expect(btn2.tagName).toBe('BUTTON')
+
+    // Click triggers selection
+    await user.click(btn1)
+    expect(onSelect).toHaveBeenCalledWith('run-1')
+
+    // Keyboard roving focus
+    btn1.focus()
+    expect(btn1).toHaveFocus()
+    await user.keyboard('{ArrowRight}')
+    expect(btn2).toHaveFocus()
+    await user.keyboard('{Enter}')
+    expect(onSelect).toHaveBeenCalledWith('run-2')
+  })
+
+  it('displays authoritative current snapshot state when history is incomplete and ensures newer live transitions win', async () => {
+    // API snapshot has state: pending_review (like write-tests in fixtures),
+    // but event history only has run_queued and escalated marker (omits state_changed to pending_review)
+    const runPending = makeRun('run-write-tests', 'write-tests', null, 0, 'pending_review')
+    const initialEvents: Event[] = [
+      {
+        id: 'ev-1',
+        session_id: 'sess-test',
+        run_id: 'run-write-tests',
+        ts: new Date(Date.UTC(2026, 0, 1, 12, 0)).toISOString(),
+        type: 'run_queued',
+        data: {},
+      },
+      {
+        id: 'ev-2',
+        session_id: 'sess-test',
+        run_id: 'run-write-tests',
+        ts: new Date(Date.UTC(2026, 0, 1, 12, 2)).toISOString(),
+        type: 'escalated',
+        data: { reason: 'stalled' },
+      },
+    ]
+
+    const now = Date.UTC(2026, 0, 1, 12, 10)
+    const initialModel = deriveTimeline([runPending], initialEvents, now)
+    const onSelect = vi.fn()
+
+    const { rerender } = render(<AgentGraphView model={initialModel} onSelect={onSelect} />)
+
+    // Displays authoritative snapshot state 'Pending review' on the card, not 'Queued'
+    const card = screen.getByTestId('graph-node-run-write-tests')
+    expect(card).toHaveAttribute('aria-label', expect.stringContaining('state pending_review'))
+    expect(within(card).getByText('Pending review')).toBeInTheDocument()
+    expect(within(card).queryByText('Queued')).toBeNull()
+
+    // Now a newer live transition arrives (e.g. review rejected, retrying -> running)
+    const liveTransitionEvent: Event = {
+      id: 'ev-3',
+      session_id: 'sess-test',
+      run_id: 'run-write-tests',
+      ts: new Date(Date.UTC(2026, 0, 1, 12, 5)).toISOString(),
+      type: 'state_changed',
+      data: { from: 'pending_review', to: 'running' },
+    }
+    const updatedModel = applyEvent(initialModel, liveTransitionEvent, now + 1000)
+
+    rerender(<AgentGraphView model={updatedModel} onSelect={onSelect} />)
+
+    // The newer live transition MUST win
+    const updatedCard = screen.getByTestId('graph-node-run-write-tests')
+    expect(updatedCard).toHaveAttribute('aria-label', expect.stringContaining('state running'))
+    expect(within(updatedCard).getByText('Running')).toBeInTheDocument()
+    expect(within(updatedCard).queryByText('Pending review')).toBeNull()
   })
 })

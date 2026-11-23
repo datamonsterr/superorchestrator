@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { RunState } from '@/api/generated'
-import type { RunViewPublic } from '@/api/types'
+import type { Event, RunViewPublic } from '@/api/types'
+import { applyEvent } from './applyEvent'
 import { deriveTimeline } from './derive'
 import { computeGraphLayout, NODE_HEIGHT, NODE_WIDTH, ORCHESTRATOR_LANE } from './graphLayout'
 
@@ -159,5 +160,45 @@ describe('graphLayout', () => {
       expect(edge.targetY).toBeGreaterThanOrEqual(0)
       expect(edge.path).toMatch(/^M \d+(\.\d+)? \d+(\.\d+)? C/)
     }
+  })
+
+  it('displays authoritative current snapshot state when history is incomplete and newer live transitions win', () => {
+    // Snapshot state is pending_review, but event history only has run_queued
+    const runs = [makeRun('run-review', 'agent-review', null, 0, 'pending_review')]
+    const initialEvents: Event[] = [
+      {
+        id: 'ev-1',
+        session_id: 'sess-test',
+        run_id: 'run-review',
+        ts: new Date(Date.UTC(2026, 0, 1, 12, 0)).toISOString(),
+        type: 'run_queued',
+        data: {},
+      },
+    ]
+    const now = Date.UTC(2026, 0, 1, 12, 10)
+    const model = deriveTimeline(runs, initialEvents, now)
+
+    const layout = computeGraphLayout(model, 'hierarchy', now)
+    const node = layout.nodeMap.get('run-review')!
+    expect(node.state).toBe('pending_review')
+
+    // In status grouping, pending_review falls into attention column (colIndex: 2)
+    const statusLayout = computeGraphLayout(model, 'status', now)
+    const statusNode = statusLayout.nodeMap.get('run-review')!
+    expect(statusNode.colIndex).toBe(2) // attention column
+
+    // Now a newer live transition arrives (succeeded)
+    const liveEvent: Event = {
+      id: 'ev-2',
+      session_id: 'sess-test',
+      run_id: 'run-review',
+      ts: new Date(Date.UTC(2026, 0, 1, 12, 5)).toISOString(),
+      type: 'run_finished',
+      data: { status: 'succeeded' },
+    }
+    const updatedModel = applyEvent(model, liveEvent, now + 1000)
+    const updatedLayout = computeGraphLayout(updatedModel, 'hierarchy', now + 1000)
+    const updatedNode = updatedLayout.nodeMap.get('run-review')!
+    expect(updatedNode.state).toBe('succeeded')
   })
 })

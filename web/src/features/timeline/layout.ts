@@ -1,5 +1,5 @@
 import type { RunLane, StateSegment, TimelineModel } from './model'
-import { ORCHESTRATOR_LANE } from './model'
+import { isTerminalState, ORCHESTRATOR_LANE } from './model'
 import { STATE_STYLES } from './colors'
 import { formatDuration } from '@/lib/format'
 import { formatClock } from '@/lib/time'
@@ -24,7 +24,39 @@ export function laneTitle(lane: RunLane): string {
 }
 
 export function laneCurrentState(lane: RunLane): StateSegment['state'] | undefined {
-  return lane.segments[lane.segments.length - 1]?.state ?? lane.run?.state
+  const lastSeg = lane.segments[lane.segments.length - 1]
+  const lastState = lastSeg?.state
+  const snapshotState = lane.run?.state
+  if (!snapshotState) return lastState
+  if (!lastState) return snapshotState
+  if (lastState === snapshotState) return lastState
+
+  // 1. Authoritative snapshot state when history is incomplete:
+  // A run is never in queued or starting once its snapshot has reached an advanced state
+  // (such as pending_review, running, stalled, escalated, succeeded, failed, cancelled).
+  if ((lastState === 'queued' || lastState === 'starting') && snapshotState !== lastState) {
+    return snapshotState
+  }
+
+  // 2. Terminal snapshot states are authoritative over non-terminal event states:
+  if (isTerminalState(snapshotState) && !isTerminalState(lastState)) {
+    return snapshotState
+  }
+
+  // 3. If snapshot is pending_review, check whether any event was emitted after entering pending_review.
+  // When replayed events omitted later transitions, earlier state events (with later markers on lane)
+  // defer to the authoritative snapshot.
+  if (snapshotState === 'pending_review' && lastState !== 'pending_review') {
+    let latestActivity = lastSeg.start
+    for (const m of lane.markers) if (m.at > latestActivity) latestActivity = m.at
+    for (const t of lane.ticks) if (t.at > latestActivity) latestActivity = t.at
+    if (latestActivity > lastSeg.start) {
+      return snapshotState
+    }
+  }
+
+  // 4. Otherwise, newer live transitions from events win.
+  return lastState
 }
 
 /** Account the lane was running on at time `t` (the attempt covering it, else the latest started). */

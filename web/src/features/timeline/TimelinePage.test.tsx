@@ -402,4 +402,36 @@ describe('TimelinePage graph view and readability enhancements', () => {
     expect(screen.getByText('Timeline (Gantt)')).toBeInTheDocument()
     expect(screen.getAllByText('Agent Graph').length).toBeGreaterThanOrEqual(2)
   })
+
+  it('shows authoritative snapshot pending_review for write-tests in graph view and filters by status correctly', async () => {
+    renderPage('/sessions/sess-1')
+    await screen.findByRole('group', { name: 'Session timeline' })
+
+    // Switch to Agent graph view
+    await userEvent.click(screen.getByRole('radio', { name: 'Agent graph view' }))
+    const list = await screen.findByRole('list', { name: 'Agents list' })
+    expect(list.tagName).toBe('UL')
+
+    // write-tests is run-2 in fixtures: snapshot state is pending_review, but events omitted the state transition
+    const writeTestsNode = await screen.findByTestId('graph-node-run-2')
+    expect(writeTestsNode.tagName).toBe('BUTTON')
+    expect(writeTestsNode).toHaveAttribute('aria-label', expect.stringContaining('state pending_review'))
+    expect(within(writeTestsNode).getByText('Pending review')).toBeInTheDocument()
+    expect(within(writeTestsNode).queryByText('Queued')).toBeNull()
+
+    // Test status filter for Needs Attention: write-tests must match
+    const filterSelect = screen.getByRole('combobox', { name: 'Filter by state' })
+    await userEvent.click(filterSelect)
+    await userEvent.click(screen.getByRole('option', { name: 'Needs Attention' }))
+
+    expect(await screen.findByText('1 of 2 runs')).toBeInTheDocument()
+    expect(writeTestsNode.className).not.toContain('opacity-25')
+
+    // Test status filter for Queued: write-tests must NOT match
+    await userEvent.click(filterSelect)
+    await userEvent.click(screen.getByRole('option', { name: 'Queued' }))
+
+    expect(await screen.findByText('0 of 2 runs')).toBeInTheDocument()
+    expect(writeTestsNode.className).toContain('opacity-25')
+  })
 })
