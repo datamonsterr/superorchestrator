@@ -215,7 +215,9 @@ fn pinned_candidates<'a>(
             model,
             effort: pins.effort.clone(),
         };
-        cands.extend(candidate(&synthetic, ctx.catalog, ctx.snapshot));
+        if matches(&synthetic) {
+            cands.extend(candidate(&synthetic, ctx.catalog, ctx.snapshot));
+        }
     }
     if let Some(name) = &pins.account {
         for c in &mut cands {

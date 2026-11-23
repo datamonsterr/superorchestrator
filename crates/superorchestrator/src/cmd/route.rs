@@ -211,11 +211,17 @@ async fn run_eval(
             report.errors_count
         ));
     }
-    if require_live && report.fallback_count > 0 {
-        failures.push(format!(
-            "{} case(s) fell back from Jev",
-            report.fallback_count
-        ));
+    if require_live {
+        let without_live_score = report
+            .cases
+            .iter()
+            .filter(|case| case.error.is_none() && case.source != "jev")
+            .count();
+        if without_live_score > 0 {
+            failures.push(format!(
+                "{without_live_score} case(s) routed without a live Jev score"
+            ));
+        }
     }
     if failures.is_empty() {
         return Ok(ExitCode::SUCCESS);

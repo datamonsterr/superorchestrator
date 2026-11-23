@@ -7,6 +7,11 @@ all-features = true
 # RustSec advisories. Yanked crates are errors. Add an `ignore` entry (with a reason) only for
 # an advisory that cannot be fixed by an update and does not affect us.
 yanked = "deny"
+ignore = [
+  # This is a maintenance notice. No patched version exists; migrating also needs
+  # to address chrono in the rmcp and schemars dependency graph.
+  { id = "RUSTSEC-2026-0543", reason = "Unmaintained advisory only; chrono is still required directly and transitively" },
+]
 
 [licenses]
 confidence-threshold = 0.9

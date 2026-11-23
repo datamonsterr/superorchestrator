@@ -204,8 +204,8 @@ impl Default for Jev {
     fn default() -> Self {
         Self {
             endpoint: "https://openrouter.ai/api/alpha/decisions".to_string(),
-            model: "inception/mercury-decide:free".to_string(),
-            fallback_model: Some("~typesafe/jev-latest".to_string()),
+            model: "typesafe/jev-1.14".to_string(),
+            fallback_model: Some("typesafe/jev-1.13".to_string()),
             on_unreachable: OnUnreachable::Error,
             key_env: "OPENROUTER_API_KEY".to_string(),
             key_file: None,
@@ -991,10 +991,10 @@ mod tests {
             "https://openrouter.ai/api/alpha/decisions"
         );
         assert_eq!(c.router.jev.on_unreachable, OnUnreachable::Error);
-        assert_eq!(c.router.jev.model, "inception/mercury-decide:free");
+        assert_eq!(c.router.jev.model, "typesafe/jev-1.14");
         assert_eq!(
             c.router.jev.fallback_model.as_deref(),
-            Some("~typesafe/jev-latest")
+            Some("typesafe/jev-1.13")
         );
         assert_eq!(c.router.jev.key_env, "OPENROUTER_API_KEY");
         assert_eq!(c.router.jev.key_file, None);
@@ -1325,9 +1325,9 @@ mod tests {
         let m = j.resolve_models(envmap(&[]));
         assert_eq!(
             (m.primary.as_str(), m.primary_source),
-            ("inception/mercury-decide:free", ModelSource::Default)
+            ("typesafe/jev-1.14", ModelSource::Default)
         );
-        assert_eq!(m.fallback.as_deref(), Some("~typesafe/jev-latest"));
+        assert_eq!(m.fallback.as_deref(), Some("typesafe/jev-1.13"));
         assert_eq!(m.fallback_source, ModelSource::Default);
 
         j.model = "acme/decider".into();
@@ -1374,7 +1374,7 @@ mod tests {
             assert_eq!(m.fallback_source, ModelSource::Env);
         }
         // `none` in the config, empty, or equal to the primary also disable it.
-        for v in ["none", "", "inception/mercury-decide:free"] {
+        for v in ["none", "", "typesafe/jev-1.14"] {
             j.fallback_model = Some(v.into());
             assert_eq!(j.resolve_models(envmap(&[])).fallback, None, "{v:?}");
         }

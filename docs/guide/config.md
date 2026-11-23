@@ -74,8 +74,8 @@ The decider settings. The web UI (Settings, Decider) and TUI (Settings, `8`) edi
 | Key | Default | Meaning |
 |---|---|---|
 | `endpoint` | `https://openrouter.ai/api/alpha/decisions` | Decider URL |
-| `model` | `inception/mercury-decide:free` | Decider model, any OpenRouter id. Env `SUPERORCHESTRATOR_ROUTER_MODEL` overrides it |
-| `fallback_model` | `~typesafe/jev-latest` | Tried only when the primary model cannot be reached. Env `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL` overrides it; `none` disables it |
+| `model` | `typesafe/jev-1.14` | Decider model, any OpenRouter id. Env `SUPERORCHESTRATOR_ROUTER_MODEL` overrides it |
+| `fallback_model` | `typesafe/jev-1.13` | Tried only when the primary model cannot be reached. Env `SUPERORCHESTRATOR_ROUTER_FALLBACK_MODEL` overrides it; `none` disables it |
 | `on_unreachable` | `"error"` | When a configured decider cannot be reached: `"error"` fails the call, `"heuristic"` degrades |
 | `key_env` | `OPENROUTER_API_KEY` | Environment variable that holds the key |
 | `key_file` | unset | Optional dotenv file that holds the key. Pasting a key in the web UI sets this to `<config dir>/decider.env` |

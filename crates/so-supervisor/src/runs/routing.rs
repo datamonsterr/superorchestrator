@@ -17,6 +17,7 @@ use so_core::{AccountFile, Config, Harness};
 use so_router::{Catalog, RouteOutcome, Snapshot, route::MAX_PROMPT_CHARS};
 
 use super::{R, RunManager, lock, rpc};
+use crate::catalog::cached_catalog;
 use crate::handlers::route::{RouteEnv, decision_data, route_decide};
 
 /// What fixed a run's route.
@@ -64,6 +65,38 @@ pub(crate) struct ChoiceFilter<'a> {
 const REROUTE_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl RunManager {
+    /// The model's usage pool, shared by attempts, usage observations and cooldowns.
+    pub(crate) async fn run_pool(
+        &self,
+        harness: Harness,
+        model: Option<&str>,
+        account: &AccountFile,
+    ) -> String {
+        let Some(model) = model.filter(|m| !m.is_empty()).map(str::to_string) else {
+            // Without a model, preserve the account's default pool; agy has no "default" pool.
+            return account
+                .pools
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "default".into());
+        };
+        let (paths, name) = (self.inner.paths.clone(), model.clone());
+        match self
+            .blocking(move || {
+                cached_catalog(&paths).map(|catalog| catalog.pool_for(harness, &name))
+            })
+            .await
+            .map_err(|error| error.message)
+            .and_then(|result| result.map_err(|error| error.to_string()))
+        {
+            Ok(pool) => pool,
+            Err(error) => {
+                tracing::warn!(%error, "could not read model catalog; using default catalog");
+                Catalog::default_catalog().pool_for(harness, &model)
+            }
+        }
+    }
+
     fn route_env<'a>(&'a self, config: &'a Config, ignore_caps: bool) -> RouteEnv<'a> {
         RouteEnv {
             store: &self.inner.store,
@@ -220,27 +253,40 @@ impl RunManager {
             .as_deref()
             .and_then(|h| h.parse().ok())
             .ok_or_else(|| why.clone())?;
+        let model = params.model.clone().unwrap_or_default();
+        // With no model named the harness itself is the choice ID.
+        let choice_id = if model.is_empty() {
+            harness.to_string()
+        } else {
+            so_core::Choice {
+                harness,
+                model: model.clone(),
+                effort: params.effort.clone(),
+            }
+            .id()
+        };
+        if params.exclude.contains(&choice_id) {
+            return Err(why.clone());
+        }
         let (store, paths, low) = (
             self.inner.store.clone(),
             self.inner.paths.clone(),
             f64::from(self.config().usage.low_pct),
         );
         let reserved = self.config().orchestrator.clone();
-        let (exclude, pin_account, model) = (
-            params.exclude_accounts.clone(),
-            params.account.clone(),
-            params.model.clone(),
-        );
+        let exclude = params.exclude_accounts.clone();
+        let pin_account = params.account.clone();
+        let model_for_pool = model.clone();
         let ranked = self
             .blocking(move || -> Result<Vec<String>, String> {
                 let accounts = AccountFile::list(&paths).map_err(|e| e.to_string())?;
-                let catalog = Catalog::load(&paths).map_err(|e| e.to_string())?;
+                let catalog = cached_catalog(&paths).map_err(|e| e.to_string())?;
                 let mut snap = Snapshot::collect(&store, &accounts, low, Utc::now())
                     .map_err(|e| e.to_string())?;
                 if queue_over_cap {
                     snap.accounts.iter_mut().for_each(|a| a.active = 0);
                 }
-                let pool = catalog.pool_for(harness, model.as_deref().unwrap_or_default());
+                let pool = catalog.pool_for(harness, &model_for_pool);
                 let usable: Vec<_> = so_router::eligible::usable_accounts(&snap, harness, &pool)
                     .into_iter()
                     .filter(|a| !exclude.contains(&a.file.name))
@@ -260,19 +306,6 @@ impl RunManager {
             .map_err(|e| rpc(UNAVAILABLE, e))?;
         let Some(first) = ranked.first().cloned() else {
             return Err(why.clone());
-        };
-        let model = params.model.clone().unwrap_or_default();
-        // No level lists this pin, so its id is a ref built from what was pinned; with no model
-        // named there is no ref to form and the id is the harness name.
-        let choice_id = if model.is_empty() {
-            harness.to_string()
-        } else {
-            so_core::Choice {
-                harness,
-                model: model.clone(),
-                effort: params.effort.clone(),
-            }
-            .id()
         };
         Ok(RouteOutcome {
             result: RouteResult {
@@ -403,10 +436,52 @@ impl RunManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runs::lifecycle::Limit;
     use crate::runs::testutil::insert_run;
     use so_accounts::HostEnv;
     use so_core::{Config, Harness, Paths, Platform, RunState};
     use so_store::Store;
+
+    #[tokio::test]
+    async fn flags_without_an_explicit_pool_use_the_model_even_with_an_invalid_catalog() {
+        let (m, _dir) = crate::runs::testutil::manager();
+        let account = AccountFile::new("agy-t", Harness::Agy, "~/.agy-t", "agy").unwrap();
+        account.save(&m.inner.paths).unwrap();
+        std::fs::write(m.inner.paths.models_toml(), "invalid = [").unwrap();
+        let row = insert_run(&m, RunState::Queued);
+        assert!(
+            m.store()
+                .retarget_queued(
+                    &row.id,
+                    "claude-t",
+                    &so_store::Reassign {
+                        account: account.name.clone(),
+                        harness: Harness::Agy,
+                        model: Some("claude-sonnet-4-6".into()),
+                        choice_id: None,
+                        effort: None,
+                    }
+                )
+                .unwrap()
+        );
+        for limit in [None, Some(Limit::default())] {
+            m.flag_account(&row.id, "quota", limit.as_ref()).await;
+            let flag = m.store().get_flag("agy-t", "claude").unwrap().unwrap();
+            assert!(flag.reason.contains(&row.id));
+            assert!(m.store().get_flag("agy-t", "gemini").unwrap().is_none());
+            m.store().clear_flag("agy-t", "claude").unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_model_preserves_the_account_default_pool() {
+        let (m, _dir) = crate::runs::testutil::manager();
+        let mut account = AccountFile::new("agy-t", Harness::Agy, "~/.agy-t", "agy").unwrap();
+        assert_eq!(m.run_pool(Harness::Agy, None, &account).await, "gemini");
+        assert_eq!(m.run_pool(Harness::Agy, Some(""), &account).await, "gemini");
+        account.pools.clear();
+        assert_eq!(m.run_pool(Harness::Agy, None, &account).await, "default");
+    }
 
     /// A manager with a host (so accounts can be launched) and two claude accounts, the
     /// first of which is full.
@@ -450,6 +525,32 @@ mod tests {
             .unwrap();
         m.store().set_run_turn_prompt(&run.id, "do it").unwrap();
         run
+    }
+
+    #[tokio::test]
+    async fn failover_cannot_fall_back_to_the_excluded_pinned_choice() {
+        let (m, _d) = two_accounts();
+        for (model, choice_id) in [
+            (None, "claude"),
+            (Some("claude-haiku-5-5"), "claude/claude-haiku-5-5"),
+        ] {
+            let pins = RoutePins {
+                harness: Some("claude".into()),
+                model: model.map(str::to_string),
+                ..RoutePins::default()
+            };
+            let choice = ChoiceFilter {
+                avoid: Some(choice_id),
+                ..ChoiceFilter::default()
+            };
+            let result = m
+                .route_run("fix a typo", &pins, &[], choice, false, None)
+                .await;
+            assert!(
+                matches!(result, Err(e) if e.code == UNAVAILABLE),
+                "{choice_id}"
+            );
+        }
     }
 
     #[tokio::test]
