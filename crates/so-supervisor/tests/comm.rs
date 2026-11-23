@@ -796,6 +796,85 @@ async fn quiet_wait_agent_wakes_on_escalation() {
     h.shutdown().await;
 }
 
+#[tokio::test]
+async fn cancel_quiet_wait_agent_on_shared_connection_resumes_subagent_and_keeps_concurrent_requests()
+ {
+    let env = Env::new();
+    env.simple("claude-a", 2, &idle_script());
+    env.simple("claude-b", 2, &idle_script());
+    let h = env.start().await;
+    let orch = Arc::new(env.client(&h).await);
+
+    // Spawn subagent
+    let sub_id = spawn(&orch, env.params("claude-a")).await;
+    wait_state(&orch, &sub_id, RunState::Running).await;
+
+    // Connect subagent on its own client (as_run)
+    let sub_client = Arc::new(env.as_run(&h, &sub_id).await);
+
+    // Subagent spawns child
+    let child_id = spawn(&sub_client, env.params("claude-b")).await;
+    wait_state(&orch, &child_id, RunState::Running).await;
+
+    // Subagent quiet-waits on child with a large timeout (30 seconds)
+    let sub_c = sub_client.clone();
+    let c_id = child_id.clone();
+    let wait_task = tokio::spawn(async move {
+        sub_c
+            .call::<_, WaitResult>(
+                METHOD_WAIT_AGENT,
+                WaitParams {
+                    runs: vec![c_id],
+                    include_progress: false,
+                    timeout_ms: Some(30_000),
+                },
+            )
+            .await
+    });
+
+    // Verify subagent transitioned to Waiting because of wait_agent
+    wait_state(&orch, &sub_id, RunState::Waiting).await;
+
+    // Start another concurrent request on the SHARED sub_client connection
+    let other_req = sub_client.call::<_, RunView>(
+        METHOD_GET_RUN,
+        GetRunParams {
+            run: child_id.clone(),
+            diff: false,
+            verbose: false,
+        },
+    );
+
+    // Drop the quiet-wait future while the wait is active
+    wait_task.abort();
+    let _ = wait_task.await;
+
+    // The other request on the shared connection succeeds and is unaffected
+    let view = other_req.await.unwrap();
+    assert_eq!(view.run_id, child_id);
+
+    // Subagent state resumes to Running (WaitGuard ended cleanly)
+    wait_state(&orch, &sub_id, RunState::Running).await;
+
+    // Watched child was not cancelled
+    let child_view: RunView = orch
+        .call(
+            METHOD_GET_RUN,
+            GetRunParams {
+                run: child_id.clone(),
+                diff: false,
+                verbose: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(child_view.state, RunState::Running);
+
+    cancel(&orch, &sub_id).await;
+    cancel(&orch, &child_id).await;
+    h.shutdown().await;
+}
+
 // ------------------------------------------------------------------ ask_parent
 
 #[tokio::test]

@@ -52,6 +52,8 @@ pub const METHOD_ASK_PARENT: &str = "ask_parent";
 pub const METHOD_JOIN_RUN: &str = "join_run";
 /// Starts the web UI inside the supervisor (CLI `ui`).
 pub const METHOD_UI_START: &str = "ui_start";
+/// JSON-RPC notification to cancel an in-flight request on the connection.
+pub const NOTIFICATION_CANCEL_REQUEST: &str = "$/cancel_request";
 
 fn jsonrpc() -> String {
     JSONRPC.to_string()

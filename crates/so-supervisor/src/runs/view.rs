@@ -337,7 +337,16 @@ impl RunManager {
                     out.timed_out = true;
                     return Ok(out);
                 }
-                () = ctx.closed() => return Err(rpc(UNAVAILABLE, "client disconnected")),
+                () = ctx.closed() => {
+                    return Err(rpc(
+                        UNAVAILABLE,
+                        if ctx.is_cancelled() {
+                            "request cancelled"
+                        } else {
+                            "client disconnected"
+                        },
+                    ));
+                }
                 () = tokio::time::sleep(POLL) => {}
             }
         }
