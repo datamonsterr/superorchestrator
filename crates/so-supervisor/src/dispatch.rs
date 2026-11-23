@@ -47,14 +47,24 @@ impl Notifier {
             params,
         };
         match serde_json::to_string(&note) {
-            Ok(line) => self.send_line(line).await,
+            Ok(line) => self.send_line_after(line, || {}).await,
             Err(_) => false,
         }
     }
 
-    pub(crate) async fn send_line(&self, mut line: String) -> bool {
+    /// Reserves a queue slot before running the callback and making the line visible to the writer.
+    pub(crate) async fn send_line_after(
+        &self,
+        mut line: String,
+        before_send: impl FnOnce(),
+    ) -> bool {
         line.push('\n');
-        self.tx.send(line).await.is_ok()
+        let Ok(slot) = self.tx.reserve().await else {
+            return false;
+        };
+        before_send();
+        slot.send(line);
+        true
     }
 
     /// Non-blocking send for protocol-level replies; `false` when the queue is full or the

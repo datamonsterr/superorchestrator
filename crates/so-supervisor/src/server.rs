@@ -671,8 +671,8 @@ async fn run_handler(
     state: Arc<SupervisorState>,
     ctx: ConnCtx,
     req: Request,
-    _permit: OwnedSemaphorePermit,
-    _guard: CancelGuard,
+    permit: OwnedSemaphorePermit,
+    guard: CancelGuard,
 ) {
     let id = req.id.clone();
     let method = req.method.clone();
@@ -690,7 +690,14 @@ async fn run_handler(
             )
         }
     };
-    notifier.send_line(response_line(&resp)).await;
+    // Keep both guards while waiting for queue space. Once the reply can reach the
+    // client, the request ID and slot must already be available for reuse.
+    notifier
+        .send_line_after(response_line(&resp), move || {
+            drop(guard);
+            drop(permit);
+        })
+        .await;
 }
 
 async fn serve_connection(

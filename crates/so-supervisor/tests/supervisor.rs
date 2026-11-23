@@ -879,6 +879,43 @@ async fn saturated_connection_replies_unavailable_and_keeps_reading() {
     h.shutdown().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn completed_reply_releases_request_id_and_slot() {
+    let env = Env::new();
+    let h = Supervisor::start(
+        env.opts(Duration::from_secs(600))
+            .with_max_inflight(1)
+            .with_setup(|st| {
+                st.router
+                    .register("ping", |_c, _p| async { Ok(json!("pong")) });
+            }),
+    )
+    .await
+    .unwrap();
+    let stream = UnixStream::connect(&env.sock).await.unwrap();
+    let (rd, mut wr) = stream.into_split();
+    let mut lines = BufReader::new(rd).lines();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        wr.write_all(
+            b"{\"id\":1,\"method\":\"hello\",\"params\":{\"client\":\"t\",\"cwd\":\"/\"}}\n",
+        )
+        .await
+        .unwrap();
+        lines.next_line().await.unwrap().unwrap();
+        for _ in 0..128 {
+            wr.write_all(b"{\"id\":2,\"method\":\"ping\"}\n")
+                .await
+                .unwrap();
+            let reply: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(reply, json!({"jsonrpc":"2.0","id":2,"result":"pong"}));
+        }
+    })
+    .await
+    .unwrap();
+    h.shutdown().await;
+}
+
 #[tokio::test]
 async fn respawn_right_after_idle_exit_succeeds() {
     let env = Env::new();
