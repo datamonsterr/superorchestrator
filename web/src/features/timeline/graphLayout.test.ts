@@ -4,6 +4,7 @@ import type { Event, RunViewPublic } from '@/api/types'
 import { applyEvent, refreshNow } from './applyEvent'
 import { deriveTimeline } from './derive'
 import { computeGraphLayout, NODE_HEIGHT, NODE_WIDTH, ORCHESTRATOR_LANE } from './graphLayout'
+import { laneCurrentState } from './layout'
 
 function makeRun(id: string, name: string, parentRun: string | null = null, depth = 0, state: RunState = 'running'): RunViewPublic {
   return {
@@ -281,5 +282,37 @@ describe('graphLayout', () => {
     // Duration MUST remain frozen at 10000ms, not advance to 70000ms
     expect(laterLayout.nodeMap.get('run-live')!.durationMs).toBe(10000)
     expect(laterLayout.nodeMap.get('run-live')!.state).toBe('succeeded')
+  })
+
+  it('uses live state and duration when a finished run resumes and finishes again', () => {
+    const start = Date.UTC(2026, 0, 1, 12, 0)
+    const run = makeRun('run-resumed', 'agent-resumed', null, 0, 'succeeded')
+    const transition = (seconds: number, from: RunState, to: RunState): Event => ({
+      id: `ev-${seconds}`,
+      session_id: run.session_id,
+      run_id: run.run_id,
+      ts: new Date(start + seconds * 1000).toISOString(),
+      type: 'state_changed',
+      data: { from, to },
+    })
+    let model = deriveTimeline([run], [transition(1, 'starting', 'running')], start + 301_000)
+    const graphNode = () => computeGraphLayout(model).nodeMap.get(run.run_id)
+    const timelineState = () => laneCurrentState(model.lanes[model.index[run.run_id]])
+
+    // With the first finish missing from history, the snapshot still supplies it.
+    expect(timelineState()).toBe('succeeded')
+    expect(graphNode()).toMatchObject({ state: 'succeeded', durationMs: 300_000 })
+
+    // The resume is newer than the previous finish recorded in the snapshot.
+    model = applyEvent(model, transition(305, 'succeeded', 'running'), start + 306_000)
+    expect(timelineState()).toBe('running')
+    expect(graphNode()).toMatchObject({ state: 'running', durationMs: 306_000 })
+    model = refreshNow(model, start + 307_000)
+    expect(graphNode()).toMatchObject({ state: 'running', durationMs: 307_000 })
+
+    model = applyEvent(model, transition(310, 'running', 'failed'), start + 311_000)
+    model = refreshNow(model, start + 360_000)
+    expect(timelineState()).toBe('failed')
+    expect(graphNode()).toMatchObject({ state: 'failed', durationMs: 310_000 })
   })
 })

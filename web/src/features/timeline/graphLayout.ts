@@ -82,29 +82,24 @@ const STATE_GROUPS: { id: string; label: string; states: RunState[] }[] = [
   { id: 'failed', label: 'Failed / Cancelled', states: ['failed', 'cancelled'] },
 ]
 
-function computeDuration(lane: RunLane, now: number): number {
+function computeDuration(lane: RunLane, state: RunState, now: number): number {
   let start = lane.run?.created_at ? Date.parse(lane.run.created_at) : NaN
   if (!Number.isFinite(start) && lane.segments.length > 0) {
     start = lane.segments[0].start
   }
   if (!Number.isFinite(start)) return 0
 
-  if (lane.run?.finished_at) {
-    const end = Date.parse(lane.run.finished_at)
-    if (Number.isFinite(end) && end >= start) return end - start
+  if (!lane.terminal && !isTerminalState(state)) {
+    return Math.max(0, now - start)
   }
 
   const lastSeg = lane.segments[lane.segments.length - 1]
-  if (
-    lane.terminal ||
-    (lastSeg && !lastSeg.open && isTerminalState(lastSeg.state)) ||
-    (lane.run?.state && isTerminalState(lane.run.state))
-  ) {
-    const end = lastSeg ? lastSeg.end : start
-    return Math.max(0, end - start)
+  const snapshotEnd = Date.parse(lane.run?.finished_at ?? '')
+  if (Number.isFinite(snapshotEnd) && snapshotEnd >= start) {
+    const eventEnd = lastSeg && isTerminalState(lastSeg.state) ? lastSeg.end : start
+    return Math.max(snapshotEnd, eventEnd) - start
   }
-
-  return Math.max(0, now - start)
+  return Math.max(0, (lastSeg?.end ?? start) - start)
 }
 
 /**
@@ -179,7 +174,7 @@ export function computeGraphLayout(
     if (lane.runId === ORCHESTRATOR_LANE) continue
     const run = lane.run
     const state: RunState = laneCurrentState(lane) ?? run?.state ?? 'queued'
-    const durationMs = computeDuration(lane, now)
+    const durationMs = computeDuration(lane, state, now)
 
     let parentId: string
     let isOrphan = false
