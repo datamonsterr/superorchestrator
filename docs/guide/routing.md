@@ -249,6 +249,38 @@ superorchestrator config set router.jev.model '~typesafe/jev-latest'
 
 `route --explain`, `doctor` and `route eval` show the models in effect and where each came from (`env`, `config` or `default`). The environment is read by the supervisor, so set it before the supervisor starts.
 
+### OpenRouter workspace classifier
+
+OpenRouter Custom Classifiers add tags to completed generations for usage reporting. An OpenRouter workspace admin can create a classifier under the workspace's **Classifiers** page. For Superorchestrator reporting, start from **Agent complexity** or build a classifier with a single `task_family` dimension. Set the instruction to classify the primary deliverable in the latest task. Use the following categories for the `task_family` dimension. [OpenRouter Custom Classifiers](https://openrouter.ai/docs/guides/features/classifiers)
+
+| Value | Primary deliverable | Example |
+|---|---|---|
+| `code_implementation` | Implement or refactor code | Add CSV export to a report |
+| `code_review` | Evaluate an existing change and report findings | Review a proposed parser change |
+| `debugging` | Diagnose a failure or fix a defect | Find why a queued worker never starts |
+| `documentation` | Write or edit technical documentation | Document account configuration |
+| `research` | Gather evidence or compare options | Compare provider pricing |
+| `planning` | Design a technical approach or implementation plan | Plan a database migration |
+| `ui_design` | Design or polish a user interface or visual interaction | Improve an agent graph's readability |
+| `other` | Work outside the listed categories | Organize project labels |
+
+Choose a structured-output model available in the dashboard and a sampling rate. Start with 10% in a test workspace, save the classifier, and verify tags on representative generations in **Logs**. The classifier can see a serialized version of the generation prompt, including tool names and prior tool results. Classification happens after the generation finishes. The router uses the synchronous [Decisions API](https://openrouter.ai/docs/guides/features/decisions) at dispatch. Workspace tags cover only supported generations that actually pass through that OpenRouter workspace.
+
+### Classification cost estimates
+
+The following estimates use OpenRouter list prices checked on November 23, 2026. They exclude platform fees and the cost of the generation being classified. Actual cost depends on the model and billed input and output tokens, including the taxonomy and serialized context. OpenRouter bills workspace classification against the administrative user who configured it. [OpenRouter pricing](https://openrouter.ai/pricing) · [Classifier billing](https://openrouter.ai/docs/guides/features/classifiers#billing)
+
+| Use | Model | Input / output per million tokens | Assumption | Cost per 10,000 eligible requests |
+|---|---|---:|---|---:|
+| Live routing, current default | [Jev 1.14](https://openrouter.ai/typesafe/jev-1.14) | $0.042 / $0 | 1,000 input tokens per decision | $0.42 |
+| Live routing, evaluation candidate | [Liquid d1.2](https://openrouter.ai/liquid/d1.2) | $0.020 / $0 | 1,000 input tokens per decision | $0.20 |
+| Workspace reporting, full sampling | [Gemini 3.1 Flash Lite](https://openrouter.ai/google/gemini-3.1-flash-lite/pricing) | $0.25 / $1.50 | 1,000 input and 50 output tokens per classification | $3.25 |
+| Workspace reporting, 10% sampling | [Gemini 3.1 Flash Lite](https://openrouter.ai/google/gemini-3.1-flash-lite/pricing) | $0.25 / $1.50 | Same prompt and output, 1,000 classifications | $0.325 |
+
+An extra 200 billed input tokens to describe and ask for the task family would cost about $0.084 per 10,000 decisions at the Jev 1.14 rate. The family question shares the complexity request. Compare accuracy on your own review, debugging, and design tasks before switching the decisions model.
+
+In a live smoke test, both models matched the expected family and returned a complexity score for all eight synthetic examples, one per family. OpenRouter reported 4,394 billed input tokens and $0.000185 for Jev 1.14, and 1,564 billed input tokens and $0.000031 for Liquid d1.2. Those costs scale to about $0.23 and $0.04 per 10,000 requests of the same shape. The sample checks the schema and measures cost on short prompts. Evaluate classification and complexity on representative traffic before changing models.
+
 ### When the decider cannot be reached
 
 If a key is set but no model can be reached (after the fallback), `route` fails instead of quietly routing by heuristic. The error names the models, the HTTP status or cause, and the next step (check the key, the model id or the network, or choose another model). `route` exits non-zero, the MCP `route` tool returns an error, `spawn_agent` with `harness: auto` spawns nothing, `POST /api/v1/route` returns 502, and `route eval` counts an error. This applies to explicit requests only. A failover, or the re-routing of a queued run, never fails a run because the decider is down: it routes with the heuristic, records `decider unreachable: <models>` as the decision's fallback reason, logs a warning, and asks the decider only once for that recovery. To degrade to the heuristic instead, set `router.jev.on_unreachable = "heuristic"`. With no key at all, routing always uses the heuristic and records why.
