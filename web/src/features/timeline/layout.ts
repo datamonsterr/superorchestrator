@@ -1,5 +1,5 @@
 import type { RunLane, StateSegment, TimelineModel } from './model'
-import { ORCHESTRATOR_LANE } from './model'
+import { isTerminalState, ORCHESTRATOR_LANE } from './model'
 import { STATE_STYLES } from './colors'
 import { formatDuration } from '@/lib/format'
 import { formatClock } from '@/lib/time'
@@ -24,7 +24,42 @@ export function laneTitle(lane: RunLane): string {
 }
 
 export function laneCurrentState(lane: RunLane): StateSegment['state'] | undefined {
-  return lane.segments[lane.segments.length - 1]?.state ?? lane.run?.state
+  const lastSeg = lane.segments[lane.segments.length - 1]
+  const lastState = lastSeg?.state
+  const snapshotState = lane.run?.state
+  if (!snapshotState) return lastState
+  if (!lastState) return snapshotState
+  if (lastState === snapshotState) return lastState
+
+  // 1. Terminal snapshot states are authoritative over non-terminal replayed states
+  // (e.g. historical events omitted run_finished).
+  if (isTerminalState(snapshotState) && !isTerminalState(lastState)) {
+    return snapshotState
+  }
+
+  // 2. Explicit state transition events (e.g. live state_changed or run_finished)
+  // take precedence over a stale snapshot. Routine tool ticks must never undo this.
+  if (lane.hasStateTransition) {
+    return lastState
+  }
+
+  // 3. Authoritative snapshot state when history is incomplete:
+  // A run is never in queued or starting once its snapshot has reached an advanced state
+  // (such as pending_review, running, stalled, escalated, succeeded, failed, cancelled).
+  if ((lastState === 'queued' || lastState === 'starting') && snapshotState !== lastState) {
+    return snapshotState
+  }
+
+  // 4. Attention snapshot states are authoritative over queued / starting:
+  if (
+    (snapshotState === 'pending_review' || snapshotState === 'escalated' || snapshotState === 'stalled') &&
+    (lastState === 'queued' || lastState === 'starting')
+  ) {
+    return snapshotState
+  }
+
+  // 5. Otherwise, event state wins.
+  return lastState
 }
 
 /** Account the lane was running on at time `t` (the attempt covering it, else the latest started). */

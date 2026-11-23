@@ -349,3 +349,109 @@ describe('TimelinePage cache lifetime and hidden tabs', () => {
     expect(await screen.findByText('4 of 4 events')).toBeInTheDocument()
   })
 })
+
+describe('TimelinePage graph view and readability enhancements', () => {
+  it('toggles between Timeline and Agent Graph view, selecting runs across both views', async () => {
+    renderPage('/sessions/sess-1')
+    expect(await screen.findByRole('group', { name: 'Session timeline' })).toBeInTheDocument()
+
+    // View mode toggle
+    const graphToggle = screen.getByRole('radio', { name: 'Agent graph view' })
+    await userEvent.click(graphToggle)
+
+    // Agent graph is rendered
+    expect(await screen.findByTestId('agent-graph')).toBeInTheDocument()
+    expect(screen.getByTestId('graph-node-orchestrator')).toBeInTheDocument()
+    expect(screen.getByTestId('graph-node-run-1')).toBeInTheDocument()
+
+    // Click run node in graph view
+    await userEvent.click(screen.getByTestId('graph-node-run-1'))
+    expect(screen.getByTestId('where')).toHaveTextContent('/sessions/sess-1/runs/run-1')
+    expect(await screen.findByRole('heading', { name: 'refactor-api' })).toBeInTheDocument()
+
+    // Toggle back to Timeline view
+    await userEvent.click(screen.getByRole('radio', { name: 'Timeline view' }))
+    expect(await screen.findByRole('group', { name: 'Session timeline' })).toBeInTheDocument()
+    expect(screen.getByTestId('label-run-1')).toHaveAttribute('aria-current', 'true')
+  })
+
+  it('filters runs by query and updates matching counts, with reset button', async () => {
+    renderPage('/sessions/sess-1')
+    await screen.findByRole('group', { name: 'Session timeline' })
+
+    const input = screen.getByRole('searchbox', { name: 'Filter runs' })
+    await userEvent.type(input, 'write-tests')
+
+    expect(await screen.findByText('1 of 2 runs')).toBeInTheDocument()
+    expect(screen.getByTestId('label-run-2')).not.toHaveClass('opacity-35')
+
+    // Click Reset
+    await userEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    expect(input).toHaveValue('')
+    expect(screen.queryByText('1 of 2 runs')).toBeNull()
+  })
+
+  it('opens keyboard shortcuts popover with guidance for timeline and graph', async () => {
+    renderPage('/sessions/sess-1')
+    await screen.findByRole('group', { name: 'Session timeline' })
+
+    const shortcutsBtn = screen.getByRole('button', { name: 'Keyboard shortcuts' })
+    await userEvent.click(shortcutsBtn)
+
+    expect(await screen.findByText('Keyboard Shortcuts')).toBeInTheDocument()
+    expect(screen.getByText('Timeline (Gantt)')).toBeInTheDocument()
+    expect(screen.getAllByText('Agent Graph').length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('shows authoritative snapshot pending_review for write-tests in graph view and filters by status correctly', async () => {
+    renderPage('/sessions/sess-1')
+    await screen.findByRole('group', { name: 'Session timeline' })
+
+    // Switch to Agent graph view
+    await userEvent.click(screen.getByRole('radio', { name: 'Agent graph view' }))
+    const list = await screen.findByRole('list', { name: 'Agents list' })
+    expect(list.tagName).toBe('UL')
+
+    // write-tests is run-2 in fixtures: snapshot state is pending_review, but events omitted the state transition
+    const writeTestsNode = await screen.findByTestId('graph-node-run-2')
+    expect(writeTestsNode.tagName).toBe('BUTTON')
+    expect(writeTestsNode).toHaveAttribute('aria-label', expect.stringContaining('state pending_review'))
+    expect(within(writeTestsNode).getByText('Pending review')).toBeInTheDocument()
+    expect(within(writeTestsNode).queryByText('Queued')).toBeNull()
+
+    // Test status filter for Needs Attention: write-tests must match
+    const filterSelect = screen.getByRole('combobox', { name: 'Filter by state' })
+    await userEvent.click(filterSelect)
+    await userEvent.click(screen.getByRole('option', { name: 'Needs Attention' }))
+
+    expect(await screen.findByText('1 of 2 runs')).toBeInTheDocument()
+    expect(writeTestsNode.className).not.toContain('opacity-25')
+
+    // Test status filter for Queued: write-tests must NOT match
+    await userEvent.click(filterSelect)
+    await userEvent.click(screen.getByRole('option', { name: 'Queued' }))
+
+    expect(await screen.findByText('0 of 2 runs')).toBeInTheDocument()
+    expect(writeTestsNode.className).toContain('opacity-25')
+  })
+
+  it('preserves accessible label on zoom slider after Graph -> Timeline remount', async () => {
+    renderPage('/sessions/sess-1')
+    await screen.findByRole('group', { name: 'Session timeline' })
+
+    // Slider is initially labeled
+    expect(screen.getByRole('slider', { name: 'Zoom' })).toBeInTheDocument()
+
+    // Toggle to Agent Graph view (slider is unmounted)
+    await userEvent.click(screen.getByRole('radio', { name: 'Agent graph view' }))
+    expect(await screen.findByRole('list', { name: 'Agents list' })).toBeInTheDocument()
+    expect(screen.queryByRole('slider', { name: 'Zoom' })).toBeNull()
+
+    // Toggle back to Timeline view (slider remounts)
+    await userEvent.click(screen.getByRole('radio', { name: 'Timeline view' }))
+    expect(await screen.findByRole('group', { name: 'Session timeline' })).toBeInTheDocument()
+
+    // Slider thumb must retain its accessible label after remount
+    expect(await screen.findByRole('slider', { name: 'Zoom' })).toBeInTheDocument()
+  })
+})

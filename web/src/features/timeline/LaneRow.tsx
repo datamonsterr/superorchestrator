@@ -15,6 +15,7 @@ interface Props {
   highlighted: boolean
   /** Index of the keyboard-focused segment in this lane, if any. */
   activeSegment: number | null
+  dimmed?: boolean
 }
 
 const ATTEMPT_FILL = {
@@ -30,7 +31,7 @@ const clampX = (x: number, width: number) => Math.min(Math.max(x, -40), width + 
  * One lane of the plot, culled to the viewport: segments, attempts and spans by binary search, ticks clustered in
  * 3 px buckets, markers. Memoised on lane identity and viewport, so a live append re-renders only the touched lane.
  */
-export const LaneRow = memo(function LaneRow({ lane, y, t0, t1, width, selected, highlighted, activeSegment }: Props) {
+export const LaneRow = memo(function LaneRow({ lane, y, t0, t1, width, selected, highlighted, activeSegment, dimmed }: Props) {
   const vp = { t0, t1 }
   const padT = (12 / width) * (t1 - t0)
   const x = (t: number) => timeToX(t, vp, width)
@@ -42,7 +43,7 @@ export const LaneRow = memo(function LaneRow({ lane, y, t0, t1, width, selected,
   const clusters = clusterTicks(lane.ticks, vp, width)
 
   return (
-    <g transform={`translate(0 ${y})`} data-lane={id} data-testid={`lane-${id}`}>
+    <g transform={`translate(0 ${y})`} data-lane={id} data-testid={`lane-${id}`} opacity={dimmed ? 0.35 : 1} className="transition-opacity">
       <rect
         x={0}
         y={0}

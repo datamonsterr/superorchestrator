@@ -13,10 +13,11 @@ interface Props {
   tabStop: boolean
   position: number
   setSize: number
+  dimmed?: boolean
 }
 
 /** Sticky-left lane label (HTML): indent by depth, state dot, name, state and account. Collapses to initials below `sm`. */
-export const LaneLabel = memo(function LaneLabel({ lane, y, selected, onSelect, tabStop, position, setSize }: Props) {
+export const LaneLabel = memo(function LaneLabel({ lane, y, selected, onSelect, tabStop, position, setSize, dimmed }: Props) {
   const title = laneTitle(lane)
   const state = laneCurrentState(lane)
   const acct = accountAt(lane, lane.segments[lane.segments.length - 1]?.start ?? 0)
@@ -36,8 +37,9 @@ export const LaneLabel = memo(function LaneLabel({ lane, y, selected, onSelect, 
       onClick={() => onSelect(lane.runId)}
       style={{ position: 'absolute', top: y, left: 0, right: 0, height: LANE_H }}
       className={cn(
-        'flex cursor-pointer items-center gap-1.5 border-b px-1.5 outline-none select-none hover:bg-muted/60 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring sm:px-2',
+        'flex cursor-pointer items-center gap-1.5 border-b px-1.5 outline-none select-none hover:bg-muted/60 focus-visible:z-10 focus-visible:ring-2 focus-visible:ring-ring sm:px-2 transition-opacity',
         selected && 'bg-accent',
+        dimmed && 'opacity-35',
       )}
     >
       <span aria-hidden style={{ width: lane.depth * 12 }} className="hidden shrink-0 sm:block" />
