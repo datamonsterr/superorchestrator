@@ -224,4 +224,4 @@ The old top-level choices table, and a `choices = [...]` list on a level, are no
 | `SO_DISCORD_WEBHOOK` | The Discord webhook URL (name set by `notifications.discord_webhook_env`) |
 | `SUPERORCHESTRATOR_INSTALL_DIR`, `SUPERORCHESTRATOR_RELEASE_URL` | Used by `install.sh` only |
 
-The socket is `$XDG_RUNTIME_DIR/superorchestrator.sock` on Linux, with `/tmp/superorchestrator-<uid>/` as the fallback. On macOS it is `~/Library/Caches/superorchestrator/sock`.
+The socket is `$XDG_RUNTIME_DIR/superorchestrator.sock` on Linux (or `/run/user/<uid>/superorchestrator.sock` if safely usable when `XDG_RUNTIME_DIR` is unset), with `/tmp/superorchestrator-<uid>/` as the fallback. On macOS it is `~/Library/Caches/superorchestrator/sock`.

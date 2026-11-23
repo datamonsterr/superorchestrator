@@ -45,7 +45,7 @@ env_vars = ["XDG_RUNTIME_DIR"]
 
 `install` writes the absolute path of the running binary (the example shows a typical one). Only the plugin's `.mcp.json` uses the bare `superorchestrator` from `PATH`.
 
-Codex defaults are 10 s to start a server and 60 s per tool call. Codex also starts MCP servers with a scrubbed environment. Without `XDG_RUNTIME_DIR`, the server cannot find the supervisor socket.
+Codex defaults are 10 s to start a server and 60 s per tool call. Codex also starts MCP servers with a scrubbed environment. Forwarding `XDG_RUNTIME_DIR` ensures the server finds the supervisor socket; if the variable is absent (for example, in a graphical Codex app server on Linux), the MCP server automatically falls back to the user's standard runtime directory (`/run/user/<uid>`) or `/tmp/superorchestrator-<uid>/`.
 
 The plugin lives in `plugin-codex/`, separate from the Claude Code `plugin/`. Add it with:
 
@@ -105,7 +105,7 @@ Codex runs only hooks you trust. Open `/hooks` in Codex and trust the superorche
 codex mcp get superorchestrator --json
 ```
 
-Look for `startup_timeout_sec: 30`, `tool_timeout_sec: 1860` and `XDG_RUNTIME_DIR` in `env_vars`. If they are absent, run `superorchestrator install` again, or check which entry wins (see "Install or plugin"). If the server starts but cannot reach the supervisor, `XDG_RUNTIME_DIR` is not passed. Run `superorchestrator doctor` and see [troubleshooting](troubleshooting.md).
+Look for `startup_timeout_sec: 30`, `tool_timeout_sec: 1860` and `XDG_RUNTIME_DIR` in `env_vars`. If they are absent, run `superorchestrator install` again, or check which entry wins (see "Install or plugin"). If the server starts but cannot reach the supervisor, check that the supervisor is running and that its socket or runtime directory (`$XDG_RUNTIME_DIR` or `/run/user/<uid>`) is accessible. Run `superorchestrator doctor` and see [troubleshooting](troubleshooting.md).
 
 **A long wait fails at 60 s.** `tool_timeout_sec` is missing from the entry Codex uses. Fix it as above.
 
