@@ -3,6 +3,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
+use std::sync::OnceLock;
 
 use assert_cmd::Command;
 use serde_json::{Value, json};
@@ -97,22 +98,54 @@ pub fn exists(p: &Path) -> bool {
 pub const TRANSCRIPT: &str =
     include_str!("../../../so-harness/tests/fixtures/claude/transcript.jsonl");
 
+/// Builds the scripted fake harness with Cargo and returns the executable path Cargo
+/// reports. `current_exe()` is not a reliable base: integration tests can run from a build
+/// directory, and the target directory of the nested build need not be next to the test.
 pub fn fake_harness() -> PathBuf {
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let st = StdCommand::new(cargo)
-        .args([
-            "build",
-            "-p",
-            "so-harness",
-            "--features",
-            "test-support",
-            "--bin",
-            "fake-harness",
-        ])
-        .status()
-        .unwrap();
-    assert!(st.success());
-    sibling_bin("fake-harness")
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+        let out = StdCommand::new(cargo)
+            .args([
+                "build",
+                "-p",
+                "so-harness",
+                "--features",
+                "test-support",
+                "--bin",
+                "fake-harness",
+                "--message-format=json",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "cargo build --bin fake-harness failed:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        for line in stdout.lines() {
+            let Ok(msg) = serde_json::from_str::<Value>(line) else {
+                continue;
+            };
+            if msg["reason"].as_str() != Some("compiler-artifact")
+                || msg["target"]["name"].as_str() != Some("fake-harness")
+            {
+                continue;
+            }
+            if let Some(exe) = msg["executable"].as_str() {
+                let path = PathBuf::from(exe);
+                assert!(
+                    path.exists(),
+                    "cargo reported fake-harness at {} but it is missing",
+                    path.display()
+                );
+                return path;
+            }
+        }
+        panic!("cargo build --bin fake-harness reported no executable:\n{stdout}");
+    })
+    .clone()
 }
 
 /// Script replaying the first recorded claude turn.
@@ -201,12 +234,4 @@ pub async fn start_supervisor(e: &Env) -> so_supervisor::SupervisorHandle {
     .with_idle_exit(std::time::Duration::from_secs(600))
     .with_setup(so_supervisor::default_handlers);
     so_supervisor::Supervisor::start(opts).await.unwrap()
-}
-
-/// A binary of this workspace's `debug` profile, found next to the running test (test
-/// executables live in `<target>/debug/deps`). Works for any target directory.
-pub fn sibling_bin(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let debug = exe.parent().unwrap().parent().unwrap();
-    debug.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
