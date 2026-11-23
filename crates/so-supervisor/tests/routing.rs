@@ -938,11 +938,7 @@ async fn auto_spawn_with_an_unreachable_decider_errors_and_inserts_no_run() {
     };
     assert_eq!(e.code, so_core::proto::DECIDER_UNREACHABLE);
     assert!(e.message.contains("decider unreachable"), "{}", e.message);
-    assert!(
-        e.message.contains("inception/mercury-decide:free"),
-        "{}",
-        e.message
-    );
+    assert!(e.message.contains("typesafe/jev-1.14"), "{}", e.message);
     assert!(!e.message.contains("sk-test-secret"), "{}", e.message);
 
     let store = env.store();

@@ -21,10 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The OpenRouter decider defaults to Jev 1.14 with Jev 1.13 as fallback. Both are paid models.
 - `wait_agent` caps its timeout at 30 minutes, and `spawn_agent(wait: true)` returns after at most 30 minutes with the current state. The run continues.
 
 ### Fixed
 
+- Model exclusions apply to pinned and fallback routes. Live routing evals require a decider score for every case.
 - Routing record prompt excerpts now contain a redacted, whitespace-collapsed excerpt of the run prompt (up to 160 characters).
 
 ### Security

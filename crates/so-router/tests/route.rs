@@ -225,11 +225,8 @@ async fn valid_answer_is_source_jev_and_request_has_the_score_shape() {
     assert_eq!(seen.len(), 1);
     assert_eq!(seen[0].0, "Bearer sk-test-secret");
     let b = &seen[0].1;
-    assert_eq!(b["model"], "inception/mercury-decide:free");
-    assert_eq!(
-        r.decider_model.as_deref(),
-        Some("inception/mercury-decide:free")
-    );
+    assert_eq!(b["model"], "typesafe/jev-1.14");
+    assert_eq!(r.decider_model.as_deref(), Some("typesafe/jev-1.14"));
     assert_eq!(b["state"]["task_content"], "do the thing");
     assert_eq!(b["state"]["agent"], "worker");
     assert!(b["state"].get("role").is_none());
@@ -390,6 +387,20 @@ async fn pinned_and_errors() {
     assert_eq!(r.account, "codex-a");
     assert_eq!(r.choice_id, "codex/gpt-5.3-codex");
     assert!(route_detailed(&w.inputs(), &params("  ")).await.is_err());
+}
+
+#[tokio::test]
+async fn excluding_a_pinned_ref_prevents_routing_to_it() {
+    let w = world("http://127.0.0.1:1/x", false);
+    for model in [CODEX_BIG, "codex/gpt-5.3-codex/high"] {
+        let mut p = params("fix a typo");
+        p.model = Some(model.into());
+        p.exclude = vec![model.into()];
+        assert!(matches!(
+            route_detailed(&w.inputs(), &p).await,
+            Err(RouterError::NoEligible(_))
+        ));
+    }
 }
 
 #[tokio::test]
@@ -769,7 +780,7 @@ async fn primary_answer_does_not_call_the_fallback() {
     assert_eq!(fake.hits.load(Ordering::SeqCst), 1);
     assert_eq!(
         out.result.decider_model.as_deref(),
-        Some("inception/mercury-decide:free")
+        Some("typesafe/jev-1.14")
     );
 }
 
@@ -816,7 +827,7 @@ async fn both_models_unusable_is_an_error_naming_both() {
     let RouterError::DeciderUnreachable(m) = e else {
         panic!("expected DeciderUnreachable, got {e:?}");
     };
-    assert!(m.contains("inception/mercury-decide:free"), "{m}");
+    assert!(m.contains("typesafe/jev-1.14"), "{m}");
     assert!(m.contains("fallback model `fallback/model`"), "{m}");
     assert!(m.contains("HTTP 503"), "{m}");
     assert!(m.contains("router.jev.model"), "{m}");
@@ -911,20 +922,20 @@ async fn rejected_answer_never_reaches_the_fallback() {
     // The rejected answer still names the model that gave it.
     assert_eq!(
         out.result.decider_model.as_deref(),
-        Some("inception/mercury-decide:free")
+        Some("typesafe/jev-1.14")
     );
 }
 
 #[tokio::test]
 async fn response_model_id_is_recorded_when_given() {
     let mut body = good();
-    body["model"] = json!("inception/mercury-decide-20260930");
+    body["model"] = json!("typesafe/jev-1.14-20261014");
     let (url, _) = serve(vec![(200, body, 0)]).await;
     let w = world(&url, true);
     let out = route_detailed(&w.inputs(), &params("x")).await.unwrap();
     assert_eq!(
         out.result.decider_model.as_deref(),
-        Some("inception/mercury-decide-20260930")
+        Some("typesafe/jev-1.14-20261014")
     );
 }
 
@@ -945,10 +956,7 @@ async fn eval_records_decider_model_and_probabilities() {
             .unwrap();
     let rep = evaluate(&ctx, &cases).await;
     let c = &rep.cases[0];
-    assert_eq!(
-        c.decider_model.as_deref(),
-        Some("inception/mercury-decide:free")
-    );
+    assert_eq!(c.decider_model.as_deref(), Some("typesafe/jev-1.14"));
     assert_eq!(c.probabilities.len(), 5);
     assert!(c.fallback_reason.is_none());
 }
@@ -995,7 +1003,7 @@ async fn eval_counts_an_unreachable_decider_as_an_error_not_a_fallback() {
     assert_eq!((rep.errors_count, rep.fallback_count), (1, 0));
     assert_eq!(rep.cases[0].error.as_deref(), Some("decider_unreachable"));
     assert_eq!(rep.sources["error"], 1);
-    assert_eq!(rep.decider_models.primary, "inception/mercury-decide:free");
+    assert_eq!(rep.decider_models.primary, "typesafe/jev-1.14");
 }
 
 #[tokio::test]
@@ -1015,7 +1023,7 @@ async fn a_slow_primary_leaves_the_fallback_its_share_of_the_timeout() {
     assert_eq!(
         models_seen(&fake),
         vec![
-            "inception/mercury-decide:free".to_string(),
+            "typesafe/jev-1.14".to_string(),
             "fallback/model".to_string(),
         ]
     );
@@ -1027,7 +1035,7 @@ async fn connection_refused_tries_the_fallback_and_names_both_models() {
     with_fallback(&mut w);
     let e = route_detailed(&w.inputs(), &params("x")).await.unwrap_err();
     let m = e.to_string();
-    assert!(m.contains("`inception/mercury-decide:free`"), "{m}");
+    assert!(m.contains("`typesafe/jev-1.14`"), "{m}");
     assert!(m.contains("fallback model `fallback/model`"), "{m}");
 }
 

@@ -220,17 +220,30 @@ impl RunManager {
             .as_deref()
             .and_then(|h| h.parse().ok())
             .ok_or_else(|| why.clone())?;
+        let model = params.model.clone().unwrap_or_default();
+        // With no model named the harness itself is the choice ID.
+        let choice_id = if model.is_empty() {
+            harness.to_string()
+        } else {
+            so_core::Choice {
+                harness,
+                model: model.clone(),
+                effort: params.effort.clone(),
+            }
+            .id()
+        };
+        if params.exclude.contains(&choice_id) {
+            return Err(why.clone());
+        }
         let (store, paths, low) = (
             self.inner.store.clone(),
             self.inner.paths.clone(),
             f64::from(self.config().usage.low_pct),
         );
         let reserved = self.config().orchestrator.clone();
-        let (exclude, pin_account, model) = (
-            params.exclude_accounts.clone(),
-            params.account.clone(),
-            params.model.clone(),
-        );
+        let exclude = params.exclude_accounts.clone();
+        let pin_account = params.account.clone();
+        let model_for_pool = model.clone();
         let ranked = self
             .blocking(move || -> Result<Vec<String>, String> {
                 let accounts = AccountFile::list(&paths).map_err(|e| e.to_string())?;
@@ -240,7 +253,7 @@ impl RunManager {
                 if queue_over_cap {
                     snap.accounts.iter_mut().for_each(|a| a.active = 0);
                 }
-                let pool = catalog.pool_for(harness, model.as_deref().unwrap_or_default());
+                let pool = catalog.pool_for(harness, &model_for_pool);
                 let usable: Vec<_> = so_router::eligible::usable_accounts(&snap, harness, &pool)
                     .into_iter()
                     .filter(|a| !exclude.contains(&a.file.name))
@@ -260,19 +273,6 @@ impl RunManager {
             .map_err(|e| rpc(UNAVAILABLE, e))?;
         let Some(first) = ranked.first().cloned() else {
             return Err(why.clone());
-        };
-        let model = params.model.clone().unwrap_or_default();
-        // No level lists this pin, so its id is a ref built from what was pinned; with no model
-        // named there is no ref to form and the id is the harness name.
-        let choice_id = if model.is_empty() {
-            harness.to_string()
-        } else {
-            so_core::Choice {
-                harness,
-                model: model.clone(),
-                effort: params.effort.clone(),
-            }
-            .id()
         };
         Ok(RouteOutcome {
             result: RouteResult {
@@ -450,6 +450,32 @@ mod tests {
             .unwrap();
         m.store().set_run_turn_prompt(&run.id, "do it").unwrap();
         run
+    }
+
+    #[tokio::test]
+    async fn failover_cannot_fall_back_to_the_excluded_pinned_choice() {
+        let (m, _d) = two_accounts();
+        for (model, choice_id) in [
+            (None, "claude"),
+            (Some("claude-haiku-5-5"), "claude/claude-haiku-5-5"),
+        ] {
+            let pins = RoutePins {
+                harness: Some("claude".into()),
+                model: model.map(str::to_string),
+                ..RoutePins::default()
+            };
+            let choice = ChoiceFilter {
+                avoid: Some(choice_id),
+                ..ChoiceFilter::default()
+            };
+            let result = m
+                .route_run("fix a typo", &pins, &[], choice, false, None)
+                .await;
+            assert!(
+                matches!(result, Err(e) if e.code == UNAVAILABLE),
+                "{choice_id}"
+            );
+        }
     }
 
     #[tokio::test]
