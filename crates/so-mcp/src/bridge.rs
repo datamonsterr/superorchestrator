@@ -268,10 +268,14 @@ impl McpBridge {
 }
 
 /// The params sent to the supervisor for a tool call. `list_harnesses` asks for the short view,
-/// which the supervisor builds because it has the catalog and the load.
+/// which the supervisor builds because it has the catalog and the load. The full free-model
+/// catalog is opt-in (`free_models: true`); the brief accounts and choices are always kept.
 pub fn rpc_args(tool: &str, args: &Value) -> Value {
     if tool == METHOD_LIST_HARNESSES {
-        json!({"brief": true})
+        json!({
+            "brief": true,
+            "free_models": args.get("free_models").and_then(Value::as_bool) == Some(true),
+        })
     } else {
         args.clone()
     }
@@ -586,5 +590,29 @@ impl ServerHandler for McpBridge {
         _context: RequestContext<RoleServer>,
     ) -> Result<(), ErrorData> {
         self.inner.tasks.cancel_task(&request.task_id)
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_harnesses_asks_for_a_brief_reply_with_an_opt_in_catalog() {
+        assert_eq!(
+            rpc_args(METHOD_LIST_HARNESSES, &json!({})),
+            json!({"brief": true, "free_models": false})
+        );
+        assert_eq!(
+            rpc_args(METHOD_LIST_HARNESSES, &json!({"free_models": true})),
+            json!({"brief": true, "free_models": true})
+        );
+    }
+
+    #[test]
+    fn other_tools_pass_their_arguments_through_unchanged() {
+        let args = json!({"run": "r1", "diff_stat": true});
+        assert_eq!(rpc_args(METHOD_GET_RUN, &args), args);
     }
 }

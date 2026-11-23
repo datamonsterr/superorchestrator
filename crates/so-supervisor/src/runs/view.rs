@@ -29,6 +29,14 @@ pub enum WaitMode {
     Update,
 }
 
+/// How much of a run's worktree change `get_run` asks for. `Stat` skips the patch git calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffMode {
+    None,
+    Stat,
+    Full,
+}
+
 /// Result of waiting on runs.
 #[derive(Debug, Default)]
 pub struct WaitOutcome {
@@ -60,19 +68,23 @@ impl RunManager {
     }
 
     pub async fn run_view(&self, row: RunRow) -> R<RunView> {
-        self.run_view_with(row, false).await
+        self.run_view_with(row, DiffMode::None).await
     }
 
-    /// `get_run`; with `diff` also what the run changed in its worktree.
-    pub async fn run_view_with(&self, row: RunRow, diff: bool) -> R<RunView> {
+    /// `get_run`; with a diff mode also what the run changed in its worktree.
+    pub async fn run_view_with(&self, row: RunRow, diff: DiffMode) -> R<RunView> {
         self.run_view_capped(row, diff, DIFF_CAP).await
     }
 
-    pub(crate) async fn run_view_capped(&self, row: RunRow, diff: bool, cap: usize) -> R<RunView> {
-        let diff = if diff {
-            self.run_diff(&row, cap).await?
-        } else {
-            None
+    pub(crate) async fn run_view_capped(
+        &self,
+        row: RunRow,
+        diff: DiffMode,
+        cap: usize,
+    ) -> R<RunView> {
+        let diff = match diff {
+            DiffMode::None => None,
+            mode => self.run_diff(&row, cap, mode).await?,
         };
         let id = row.id.clone();
         let events = self
@@ -128,8 +140,9 @@ impl RunManager {
     }
 
     /// The diff of a run with a worktree branch; `None` for a run without one. A diff that
-    /// cannot be made is reported in `error`, never as a failure of `get_run`.
-    async fn run_diff(&self, row: &RunRow, cap: usize) -> R<Option<RunDiff>> {
+    /// cannot be made is reported in `error`, never as a failure of `get_run`. `Stat` leaves
+    /// `patch` empty without running the patch git calls.
+    async fn run_diff(&self, row: &RunRow, cap: usize, mode: DiffMode) -> R<Option<RunDiff>> {
         let Some(created) = crate::services::worktrees::created_of(row) else {
             return Ok(None);
         };
@@ -150,7 +163,10 @@ impl RunManager {
                         created.branch
                     ));
                 }
-                super::worktree::diff(&created, cap)
+                match mode {
+                    DiffMode::Stat => super::worktree::stat(&created, cap),
+                    _ => super::worktree::diff(&created, cap),
+                }
             })
             .await;
         Ok(Some(match out {

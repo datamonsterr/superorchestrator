@@ -26,10 +26,11 @@ pub(super) fn register_harnesses(state: &Arc<SupervisorState>) {
             let state = state.clone();
             async move {
                 let brief = params.get("brief").and_then(Value::as_bool) == Some(true);
+                let free_models = params.get("free_models").and_then(Value::as_bool) == Some(true);
                 // Sign-in checks, directory reads and sqlite calls all block.
                 tokio::task::spawn_blocking(move || {
                     if brief {
-                        harnesses_brief(&state)
+                        harnesses_brief(&state, free_models)
                     } else {
                         harnesses_view(&state)
                             .and_then(|v| serde_json::to_value(v).map_err(|e| e.to_string()))
@@ -118,13 +119,14 @@ fn why_ineligible(
 }
 
 /// `list_harnesses` for an orchestrator, with `{"brief": true}`: one short row per account
-/// and per choice, plus the free models. Omitted keys mean false or empty; `signed_in` and
-/// `headroom` are left out when unknown. A choice row is `{id, harness, model, effort?,
-/// levels, free?, eligible?, why?}`: `id` is the model ref and `levels` names the levels that
-/// list it, in config order. A choice is `eligible` (the key is left out then) when the router
-/// would consider it: an account of its harness can take a run; otherwise `eligible: false`
-/// and `why` say what is missing.
-pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
+/// and per choice, plus the free-model catalog only when `{"free_models": true}` is also set.
+/// Omitted keys mean false or empty; `signed_in` and `headroom` are left out when unknown. A
+/// choice row is `{id, harness, model, effort?, levels, free?, eligible?, why?}`: `id` is the
+/// model ref and `levels` names the levels that list it, in config order. A choice is `eligible`
+/// (the key is left out then) when the router would consider it: an account of its harness can
+/// take a run; otherwise `eligible: false` and `why` say what is missing. Configured choices
+/// keep their `free` flag even when the catalog itself is left out.
+pub fn harnesses_brief(state: &SupervisorState, free_models: bool) -> Result<Value, String> {
     let view = harnesses_view(state)?;
     let accounts = AccountFile::list(&state.paths).map_err(|e| e.to_string())?;
     let catalog = cached_catalog(&state.paths).map_err(|e| e.to_string())?;
@@ -215,14 +217,17 @@ pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
     }
     out.insert("accounts".into(), Value::Array(rows));
     out.insert("choices".into(), Value::Array(choices));
-    // Free models of opencode, once (the catalog is per harness, not per account).
-    let models = catalog.free_models(Harness::Opencode);
-    let has_account = view
-        .accounts
-        .iter()
-        .any(|a| a.harness == Harness::Opencode && a.enabled);
-    if has_account && !models.is_empty() {
-        out.insert("free_models".into(), json!({ "opencode": models }));
+    if free_models {
+        // Free models of opencode, once (the catalog is per harness, not per account). This is
+        // the opt-in part of the brief reply; configured choices already carry `free` above.
+        let models = catalog.free_models(Harness::Opencode);
+        let has_account = view
+            .accounts
+            .iter()
+            .any(|a| a.harness == Harness::Opencode && a.enabled);
+        if has_account && !models.is_empty() {
+            out.insert("free_models".into(), json!({ "opencode": models }));
+        }
     }
     Ok(Value::Object(out))
 }

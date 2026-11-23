@@ -791,6 +791,16 @@ const DIFF_FLAGS: [&str; 3] = ["diff", "--no-color", "--no-ext-diff"];
 /// worktree exists, uncommitted changes and untracked files. The patch is cut at `cap`
 /// bytes; git is stopped there rather than read to the end.
 pub fn diff(c: &Created, cap: usize) -> Result<DiffOut, String> {
+    diff_with(c, cap, false)
+}
+
+/// The changed-files/stat summary only. No patch git call is made (including the per-file
+/// diffs of untracked files), so this is cheap for a review that only needs the file list.
+pub fn stat(c: &Created, cap: usize) -> Result<DiffOut, String> {
+    diff_with(c, cap, true)
+}
+
+fn diff_with(c: &Created, cap: usize, stat_only: bool) -> Result<DiffOut, String> {
     if !is_sha(&c.base) {
         return Err(format!(
             "the run's base commit {:?} is not a commit id",
@@ -821,9 +831,12 @@ pub fn diff(c: &Created, cap: usize) -> Result<DiffOut, String> {
     let mut stat = String::from_utf8_lossy(&stat_out.bytes)
         .trim_end()
         .to_string();
-    let patch_out = run(&[], cap)?;
-    let mut patch = patch_out.bytes;
-    let mut truncated = patch_out.truncated;
+    let (mut patch, mut truncated) = if stat_only {
+        (Vec::new(), false)
+    } else {
+        let patch_out = run(&[], cap)?;
+        (patch_out.bytes, patch_out.truncated)
+    };
     if live {
         let names = git_capped(
             dir,
@@ -842,7 +855,7 @@ pub fn diff(c: &Created, cap: usize) -> Result<DiffOut, String> {
                 stat.push('\n');
             }
             stat.push_str(&format!(" {name} (untracked)"));
-            if !truncated {
+            if !stat_only && !truncated {
                 let left = cap + 1 - patch.len();
                 let mut args: Vec<&str> = DIFF_FLAGS.to_vec();
                 args.extend(["--no-textconv", "--no-index", "--", "/dev/null", name]);
@@ -1004,6 +1017,24 @@ mod tests {
             "{s}"
         );
         assert!(s.ends_with("(+2 more)"), "{s}");
+    }
+
+    #[test]
+    fn stat_only_never_computes_the_patch() {
+        let (_d, p) = repo_with_branch();
+        let created = Created {
+            path: p.join("no-worktree"),
+            branch: "feat".into(),
+            base: git(&p, &["rev-parse", "main"]).unwrap(),
+            repo: p.clone(),
+        };
+        let short = stat(&created, 4096).unwrap();
+        assert!(short.stat.contains('f'), "{}", short.stat);
+        assert!(short.patch.is_empty());
+        assert!(!short.truncated);
+        let full = diff(&created, 4096).unwrap();
+        assert!(full.patch.contains("+f"), "{}", full.patch);
+        assert_eq!(short.stat, full.stat);
     }
 
     #[test]

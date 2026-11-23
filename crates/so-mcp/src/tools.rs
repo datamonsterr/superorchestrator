@@ -196,7 +196,7 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "get_run",
-        "Run state, result, branch, worktree, key events, usage. diff=true adds what the worktree changed (stat, patch cut at 64 KiB): review with this, not by reading files. verbose=true: full record, every event.",
+        "State, result, branch, worktree, events, usage. diff_stat=true: stat only. diff=true: stat+patch (64K). verbose=true: full.",
         false,
         true,
         schema_of::<GetRunParams>,
@@ -245,10 +245,10 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "list_harnesses",
-        "Call first. Accounts (signed_in, headroom, load, cooldown), routing choices (eligible, free) and free models.",
+        "Accounts (sign-in, headroom, load), choices (eligible, free); free_models=true adds catalog.",
         false,
         true,
-        schema_of::<EmptyParams>,
+        schema_of::<ListHarnessesParams>,
     ),
     spec(
         "list_agents",

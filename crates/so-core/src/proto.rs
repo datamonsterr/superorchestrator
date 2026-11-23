@@ -401,6 +401,10 @@ pub struct GetRunParams {
     /// Include `diff`: what the run changed in its worktree (default false).
     #[serde(default)]
     pub diff: bool,
+    /// Include only the changed-files/stat summary, without computing or returning the patch.
+    /// Ignored when `diff` is also set (that still returns the full diff).
+    #[serde(default)]
+    pub diff_stat: bool,
     /// MCP only: return the full record instead of the short view. The supervisor ignores it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub verbose: bool,
@@ -436,7 +440,8 @@ pub struct AcceptResult {
     pub note: Option<String>,
 }
 
-/// What a run changed: `get_run` with `diff: true`.
+/// What a run changed: `get_run` with `diff: true` (patch) or `diff_stat: true` (stat only,
+/// in which case `patch` is empty).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RunDiff {
     /// The commit the diff starts from (the merge base of the run's branch).
@@ -444,7 +449,7 @@ pub struct RunDiff {
     pub branch: String,
     /// `git diff --stat`, plus a line per untracked file.
     pub stat: String,
-    /// Committed and uncommitted changes, truncated at 64 KiB.
+    /// Committed and uncommitted changes, truncated at 64 KiB; empty in stat-only mode.
     pub patch: String,
     #[serde(default)]
     pub truncated: bool,
@@ -563,6 +568,17 @@ pub struct MessageView {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EmptyParams {}
+
+/// Parameters of `list_harnesses`. The brief reply is the default; the full free-model catalog
+/// is opt-in because most dispatches only need the configured choices.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListHarnessesParams {
+    /// Include the full free-model catalog (`free_models`) in the brief reply. Configured
+    /// choices still carry their own `free` flag either way.
+    #[serde(default)]
+    pub free_models: bool,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ReadMessagesResult {

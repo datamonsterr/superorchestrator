@@ -2151,6 +2151,21 @@ async fn view_diff(c: &SupervisorClient, run: &str) -> RunView {
         GetRunParams {
             run: run.into(),
             diff: true,
+            diff_stat: false,
+            verbose: false,
+        },
+    )
+    .await
+    .unwrap()
+}
+
+async fn view_diff_stat(c: &SupervisorClient, run: &str) -> RunView {
+    c.call(
+        METHOD_GET_RUN,
+        GetRunParams {
+            run: run.into(),
+            diff: false,
+            diff_stat: true,
             verbose: false,
         },
     )
@@ -2182,6 +2197,31 @@ async fn get_run_diff_shows_committed_uncommitted_and_untracked_changes() {
         "{}",
         d.stat
     );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn get_run_diff_stat_returns_the_file_list_without_a_patch() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let steps = [
+        write_step("b.txt", "committed", true),
+        write_step("a.txt", "edited", false),
+        write_step("new.txt", "fresh", false),
+    ];
+    let v = gated(&env, &c, &steps, "stat").await;
+    let d = view_diff_stat(&c, &v.run_id).await.diff.unwrap();
+    assert_eq!(d.base, git(&env.repo, &["rev-parse", "HEAD"]));
+    assert!(!d.truncated);
+    assert!(d.patch.is_empty(), "stat-only must not compute a patch");
+    for want in ["b.txt", "a.txt", "new.txt (untracked)"] {
+        assert!(d.stat.contains(want), "{want} in {}", d.stat);
+    }
+    // The detail path still returns the patch for the same run.
+    let full = view_diff(&c, &v.run_id).await.diff.unwrap();
+    assert!(full.patch.contains("+committed"));
+    assert_eq!(full.stat, d.stat);
     h.shutdown().await;
 }
 
