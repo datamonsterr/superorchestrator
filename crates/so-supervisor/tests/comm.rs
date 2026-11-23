@@ -817,6 +817,7 @@ async fn cancel_quiet_wait_agent_on_shared_connection_resumes_subagent_and_keeps
         GetRunParams {
             run: child_id.clone(),
             diff: false,
+            diff_stat: false,
             verbose: false,
         },
     );
@@ -839,6 +840,7 @@ async fn cancel_quiet_wait_agent_on_shared_connection_resumes_subagent_and_keeps
             GetRunParams {
                 run: child_id.clone(),
                 diff: false,
+                diff_stat: false,
                 verbose: false,
             },
         )
