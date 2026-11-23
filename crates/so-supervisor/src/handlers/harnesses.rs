@@ -127,7 +127,7 @@ fn why_ineligible(
 pub fn harnesses_brief(state: &SupervisorState) -> Result<Value, String> {
     let view = harnesses_view(state)?;
     let accounts = AccountFile::list(&state.paths).map_err(|e| e.to_string())?;
-    let catalog = cached_catalog(&state.paths);
+    let catalog = cached_catalog(&state.paths).map_err(|e| e.to_string())?;
     let mut snapshot = Snapshot::collect(
         &state.store,
         &accounts,

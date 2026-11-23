@@ -17,7 +17,7 @@ use so_harness::{
 use so_store::{FinishPatch, RunPatch, RunRow, StoreError};
 
 use super::instructions::{MAX_DEPTH, child_instructions};
-use super::pump::PumpCtx;
+use super::pump::{PumpCtx, limit_reset};
 use super::worktree;
 use super::{LiveRun, R, RunManager, SHUTDOWN_DEADLINE, lock};
 use crate::run_identity::run_token_hash;
@@ -45,10 +45,11 @@ impl Limit {
         pool: &str,
         kind: ErrorKind,
         reset: Option<chrono::DateTime<Utc>>,
+        reason: &str,
     ) -> Self {
         Self {
             pool: Some(pool.to_string()),
-            reset,
+            reset: limit_reset(reset, kind, reason),
             all_pools: kind == ErrorKind::Auth,
         }
     }
@@ -330,7 +331,7 @@ impl RunManager {
         let pool = self
             .run_pool(row.harness, row.model.as_deref(), account)
             .await;
-        let limit = Limit::for_run(&pool, fail.kind, None);
+        let limit = Limit::for_run(&pool, fail.kind, None, &fail.message);
         // The failed launch is an attempt: failover counts it and never goes back to it.
         self.record_launch_attempt(&row.id, account).await;
         if self

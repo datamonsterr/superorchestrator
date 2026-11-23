@@ -5,7 +5,9 @@ use std::sync::Arc;
 use so_router::Catalog;
 
 /// The catalog, re-read only when `models.toml` changes on disk.
-pub(crate) fn cached_catalog(paths: &so_core::Paths) -> Arc<Catalog> {
+pub(crate) fn cached_catalog(
+    paths: &so_core::Paths,
+) -> Result<Arc<Catalog>, so_router::RouterError> {
     type Slot = Option<(
         std::path::PathBuf,
         Option<std::time::SystemTime>,
@@ -19,18 +21,11 @@ pub(crate) fn cached_catalog(paths: &so_core::Paths) -> Arc<Catalog> {
         && *path == file
         && *seen == mtime
     {
-        return catalog.clone();
+        return Ok(catalog.clone());
     }
-    let catalog = match Catalog::load(paths) {
-        Ok(catalog) => Arc::new(catalog),
-        Err(error) => {
-            // Not cached: a failed load leaves the mtime unchanged, so the next call must retry.
-            tracing::warn!(%error, path = %file.display(), "could not load model catalog; using default catalog");
-            return Arc::new(Catalog::default_catalog());
-        }
-    };
+    let catalog = Arc::new(Catalog::load(paths)?);
     *slot = Some((file, mtime, catalog.clone()));
-    catalog
+    Ok(catalog)
 }
 
 #[cfg(test)]
@@ -43,14 +38,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::from_dir(dir.path().to_path_buf());
         std::fs::write(paths.models_toml(), "invalid = [").unwrap();
-        assert_eq!(
-            cached_catalog(&paths).pool_for(Harness::Agy, "claude-sonnet-4-6"),
-            "claude"
-        );
-        assert_eq!(
-            cached_catalog(&paths).pool_for(Harness::Codex, "gpt-6-luna"),
-            "default"
-        );
+        assert!(cached_catalog(&paths).is_err());
         std::fs::write(
             paths.models_toml(),
             r#"[[agy.models]]
@@ -62,7 +50,9 @@ pool = "gemini"
         )
         .unwrap();
         assert_eq!(
-            cached_catalog(&paths).pool_for(Harness::Agy, "custom-model"),
+            cached_catalog(&paths)
+                .unwrap()
+                .pool_for(Harness::Agy, "custom-model"),
             "gemini"
         );
     }

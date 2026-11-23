@@ -269,7 +269,7 @@ impl RunManager {
     ) {
         st.done = true;
         // A limit on the account may only mean another account should take over (SPEC 8.5).
-        let limit = Limit::for_run(&pc.pool, kind, limit_reset(st, kind, text));
+        let limit = Limit::for_run(&pc.pool, kind, st.reset, text);
         if self
             .begin_failover(&pc.run_id, Some(control), kind, text, &limit)
             .await
@@ -428,7 +428,7 @@ impl RunManager {
             // A quota, auth or similar error: resuming would only repeat it, but another
             // account may take the run over.
             Some((kind, text)) => {
-                let limit = Limit::for_run(&pc.pool, kind, limit_reset(st, kind, &text));
+                let limit = Limit::for_run(&pc.pool, kind, st.reset, &text);
                 if self
                     .begin_failover(&pc.run_id, Some(control), kind, &text, &limit)
                     .await
@@ -634,8 +634,12 @@ fn duration_secs(token: &str) -> Option<u64> {
 
 /// When a failed turn puts its pool in cooldown: the harness's rate-limit report, else a
 /// reset hint in the error text of a quota or rate-limit failure.
-fn limit_reset(st: &State, kind: ErrorKind, text: &str) -> Option<chrono::DateTime<Utc>> {
-    st.reset.or_else(|| match kind {
+pub(super) fn limit_reset(
+    reported: Option<chrono::DateTime<Utc>>,
+    kind: ErrorKind,
+    text: &str,
+) -> Option<chrono::DateTime<Utc>> {
+    reported.or_else(|| match kind {
         ErrorKind::Quota | ErrorKind::RateLimit => reset_hint(text, Utc::now()),
         _ => None,
     })
@@ -712,18 +716,11 @@ mod tests {
     #[test]
     fn the_harness_reset_wins_over_a_hint() {
         let reported = chrono::DateTime::from_timestamp(1_900_000_000, 0).unwrap();
-        let st = State {
-            reset: Some(reported),
-            ..State::default()
-        };
         assert_eq!(
-            limit_reset(&st, ErrorKind::Quota, "Resets in 5m"),
+            limit_reset(Some(reported), ErrorKind::Quota, "Resets in 5m"),
             Some(reported)
         );
-        assert_eq!(
-            limit_reset(&State::default(), ErrorKind::Auth, "Resets in 5m"),
-            None
-        );
+        assert_eq!(limit_reset(None, ErrorKind::Auth, "Resets in 5m"), None);
     }
 
     #[test]

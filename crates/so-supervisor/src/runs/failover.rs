@@ -184,7 +184,7 @@ impl RunManager {
                     // The new account's harness did not come up and said why: a limit or
                     // auth error there moves the run on again (within MAX_FAILOVERS).
                     Err(fail) => {
-                        let limit = Limit::for_run(&pool, fail.kind, None);
+                        let limit = Limit::for_run(&pool, fail.kind, None, &fail.message);
                         // The failed launch is an attempt, so it counts and is not retried.
                         self.record_launch_attempt(&run_id, &account).await;
                         if self

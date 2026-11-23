@@ -704,9 +704,10 @@ async fn agy_claude_quota_tries_the_next_account_before_the_next_model() {
     assert_eq!(moves[1].data["from"], "agy-2");
     assert_eq!(moves[1].data["to"], "codex-a");
     for name in ["agy-1", "agy-2"] {
+        let flag = env.store().get_flag(name, "claude").unwrap().unwrap();
         assert!(
-            env.store().get_flag(name, "claude").unwrap().is_some(),
-            "{name}"
+            flag.until > chrono::Utc::now() + chrono::Duration::hours(134),
+            "{flag:?}"
         );
         assert!(
             env.store().get_flag(name, "gemini").unwrap().is_none(),

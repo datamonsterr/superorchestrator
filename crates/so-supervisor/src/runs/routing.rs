@@ -82,12 +82,16 @@ impl RunManager {
         };
         let (paths, name) = (self.inner.paths.clone(), model.clone());
         match self
-            .blocking(move || cached_catalog(&paths).pool_for(harness, &name))
+            .blocking(move || {
+                cached_catalog(&paths).map(|catalog| catalog.pool_for(harness, &name))
+            })
             .await
+            .map_err(|error| error.message)
+            .and_then(|result| result.map_err(|error| error.to_string()))
         {
             Ok(pool) => pool,
             Err(error) => {
-                tracing::warn!(error = %error.message, "could not read model catalog; using default catalog");
+                tracing::warn!(%error, "could not read model catalog; using default catalog");
                 Catalog::default_catalog().pool_for(harness, &model)
             }
         }
@@ -276,7 +280,7 @@ impl RunManager {
         let ranked = self
             .blocking(move || -> Result<Vec<String>, String> {
                 let accounts = AccountFile::list(&paths).map_err(|e| e.to_string())?;
-                let catalog = cached_catalog(&paths);
+                let catalog = cached_catalog(&paths).map_err(|e| e.to_string())?;
                 let mut snap = Snapshot::collect(&store, &accounts, low, Utc::now())
                     .map_err(|e| e.to_string())?;
                 if queue_over_cap {
