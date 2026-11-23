@@ -187,25 +187,23 @@ pub fn validate(data: &Value) -> Result<Validated, String> {
     let mut task_family = None;
     let mut task_family_confidence = None;
     let mut task_family_probabilities = BTreeMap::new();
-    if let Some(tf_answer) = data.pointer("/answers/task_family") {
-        if tf_answer.get("type").and_then(Value::as_str) == Some("choice") {
-            if let Some(choice_str) = tf_answer.get("choice").and_then(Value::as_str) {
-                if let Ok(fam) = choice_str.parse::<TaskFamily>() {
-                    task_family = Some(fam);
-                    if let Some(map) = tf_answer.get("probabilities").and_then(Value::as_object) {
-                        for (k, v) in map {
-                            if let Some(p) = unit(v) {
-                                task_family_probabilities.insert(k.clone(), p);
-                            }
-                        }
-                    }
-                    task_family_confidence = tf_answer
-                        .get("confidence")
-                        .and_then(unit)
-                        .or_else(|| task_family_probabilities.get(choice_str).copied());
+    if let Some(tf_answer) = data.pointer("/answers/task_family")
+        && tf_answer.get("type").and_then(Value::as_str) == Some("choice")
+        && let Some(choice_str) = tf_answer.get("choice").and_then(Value::as_str)
+        && let Ok(fam) = choice_str.parse::<TaskFamily>()
+    {
+        task_family = Some(fam);
+        if let Some(map) = tf_answer.get("probabilities").and_then(Value::as_object) {
+            for (k, v) in map {
+                if let Some(p) = unit(v) {
+                    task_family_probabilities.insert(k.clone(), p);
                 }
             }
         }
+        task_family_confidence = tf_answer
+            .get("confidence")
+            .and_then(unit)
+            .or_else(|| task_family_probabilities.get(choice_str).copied());
     }
 
     Ok(Validated {
