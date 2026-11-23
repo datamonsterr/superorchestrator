@@ -22,6 +22,8 @@ export interface GanttCanvasProps {
   /** Called with a lane id when a lane label, bar or marker is clicked, or Enter is pressed on a lane. */
   onSelect: (runId: string) => void
   className?: string
+  matchingRunIds?: Set<string>
+  hasFilter?: boolean
 }
 
 const FALLBACK_WIDTH = 960
@@ -48,7 +50,16 @@ function useWidth(): [(el: HTMLElement | null) => void, number] {
  * The Gantt plot (design 4): SVG, culled to the viewport, lanes virtualised above 60. It renders only from
  * `TimelineModel` and a `Viewport`, so a canvas renderer could replace it without touching derivation.
  */
-export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, onSelect, className }: GanttCanvasProps) {
+export function GanttCanvas({
+  model,
+  viewport,
+  onViewportChange,
+  selectedRunId,
+  onSelect,
+  className,
+  matchingRunIds,
+  hasFilter = false,
+}: GanttCanvasProps) {
   const [plotRef, width] = useWidth()
   const plotElRef = useRef<HTMLDivElement | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -255,18 +266,23 @@ export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, 
               if (active && active.lane !== id) setActive(null)
             }}
           >
-            {rendered.map((i) => (
-              <LaneLabel
-                key={lanes[i].runId}
-                lane={lanes[i]}
-                y={i * LANE_H}
-                selected={lanes[i].runId === selectedRunId}
-                onSelect={onSelect}
-                tabStop={lanes[i].runId === stopId}
-                position={i + 1}
-                setSize={lanes.length}
-              />
-            ))}
+            {rendered.map((i) => {
+              const lane = lanes[i]
+              const dimmed = hasFilter && matchingRunIds ? !matchingRunIds.has(lane.runId) : false
+              return (
+                <LaneLabel
+                  key={lane.runId}
+                  lane={lane}
+                  y={i * LANE_H}
+                  selected={lane.runId === selectedRunId}
+                  onSelect={onSelect}
+                  tabStop={lane.runId === stopId}
+                  position={i + 1}
+                  setSize={lanes.length}
+                  dimmed={dimmed}
+                />
+              )
+            })}
           </ul>
 
           <div
@@ -284,6 +300,7 @@ export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, 
               ))}
               {rendered.map((i) => {
                 const lane = lanes[i]
+                const dimmed = hasFilter && matchingRunIds ? !matchingRunIds.has(lane.runId) : false
                 return (
                   <LaneRow
                     key={lane.runId}
@@ -295,6 +312,7 @@ export function GanttCanvas({ model, viewport, onViewportChange, selectedRunId, 
                     selected={lane.runId === selectedRunId}
                     highlighted={highlighted.has(lane.runId)}
                     activeSegment={active?.lane === lane.runId ? active.i : null}
+                    dimmed={dimmed}
                   />
                 )
               })}

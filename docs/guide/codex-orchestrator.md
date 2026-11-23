@@ -69,10 +69,10 @@ If `install` also wrote `[mcp_servers.superorchestrator]` to `config.toml`, that
 
 ## Waiting for subagents
 
-Codex limits how long a tool call may run, so wait in short steps:
+Codex limits how long a tool call may run. Batch all active runs into one wait.
 
 1. Call `spawn_agent` with `wait: false`. It returns a run id at once.
-2. Call `wait_agent` with `timeout_ms` of 30 minutes or less. It returns when a run finishes, posts a question, or the timeout ends. On timeout, call it again.
+2. Call `wait_agent` with the active run IDs, `include_progress: false`, and a `timeout_ms` of at most `1800000`. It streams progress and returns on finish, a question, escalation, review or timeout. Keep waiting on the remaining active runs after handling the result.
 
 `wait_agent` caps its timeout at 30 minutes. `spawn_agent(wait: true)` also returns after at most 30 minutes with the run's current state. The run keeps going. `tool_timeout_sec = 1860` (31 minutes) leaves room for that cap. A 600 s `wait_agent` call was verified end to end with codex-cli 0.166.
 

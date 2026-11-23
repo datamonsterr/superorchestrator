@@ -1,17 +1,25 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ArrowLeft, Maximize, Minus, Plus, Radio } from 'lucide-react'
+import { ArrowLeft, Clock, Keyboard, Maximize, Minus, Network, Plus, Radio, Search, X } from 'lucide-react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { EmptyState } from '@/components/common/EmptyState'
 import { ErrorAlert } from '@/components/common/ErrorAlert'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Progress } from '@/components/ui/progress'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Slider } from '@/components/ui/slider'
 import { Toggle } from '@/components/ui/toggle'
+import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
+import { AgentGraphView } from './AgentGraphView'
 import { GanttCanvas } from './GanttCanvas'
+import { PatternDefs } from './glyphs'
+import { laneCurrentState, laneTitle } from './layout'
 import { Legend, LegendContent } from './Legend'
 import { ORCHESTRATOR_LANE } from './model'
+import { SummaryTable } from './SummaryTable'
 import { useTimelineModel } from './useTimelineModel'
 import {
   clampViewport, fitViewport, sliderToSpan, span, spanToSlider, withSpan, zoomAt, type Viewport,
@@ -59,12 +67,51 @@ function TimelineView({ sessionId, renderRunPanel }: TimelinePageProps & { sessi
   // `null` viewport = fit. Following pins the right edge to `now`; any pan or zoom turns it off.
   const [userViewport, setUserViewport] = useState<Viewport | null>(null)
   const [follow, setFollow] = useState(!reduced)
+  const [viewMode, setViewMode] = useState<'timeline' | 'graph'>('timeline')
+  const [searchQuery, setSearchQuery] = useState('')
+  const [stateFilter, setStateFilter] = useState('all')
+
+  const queryLower = searchQuery.trim().toLowerCase()
+  const hasFilter = queryLower !== '' || stateFilter !== 'all'
+  const matchingRunIds = useMemo(() => {
+    if (!model) return new Set<string>()
+    const set = new Set<string>()
+    for (const lane of model.lanes) {
+      if (lane.runId === ORCHESTRATOR_LANE) {
+        if (!queryLower && stateFilter === 'all') set.add(lane.runId)
+        else if (queryLower && 'orchestrator coordinator'.includes(queryLower)) set.add(lane.runId)
+        continue
+      }
+      const run = lane.run
+      const st = laneCurrentState(lane) ?? run?.state ?? 'queued'
+      if (stateFilter !== 'all') {
+        if (stateFilter === 'active' && !['starting', 'running', 'waiting'].includes(st)) continue
+        if (stateFilter === 'attention' && !['stalled', 'escalated', 'pending_review'].includes(st)) continue
+        if (stateFilter === 'succeeded' && st !== 'succeeded') continue
+        if (stateFilter === 'failed' && !['failed', 'cancelled'].includes(st)) continue
+        if (stateFilter === 'queued' && st !== 'queued') continue
+      }
+      if (queryLower) {
+        const titleMatch = laneTitle(lane).toLowerCase().includes(queryLower)
+        const idMatch = lane.runId.toLowerCase().includes(queryLower)
+        const harnessMatch = run?.harness?.toLowerCase().includes(queryLower) ?? false
+        const acctMatch = run?.account?.toLowerCase().includes(queryLower) ?? false
+        const modelMatch = run?.model?.toLowerCase().includes(queryLower) ?? false
+        if (!titleMatch && !idMatch && !harnessMatch && !acctMatch && !modelMatch) continue
+      }
+      set.add(lane.runId)
+    }
+    return set
+  }, [model, queryLower, stateFilter])
+
   // Radix puts the thumb's name on the thumb only; shadcn's Slider cannot take one, so name it here.
   const zoomRef = useRef<HTMLDivElement>(null)
   const ready = !!model
   useEffect(() => {
-    zoomRef.current?.querySelector('[role="slider"]')?.setAttribute('aria-label', 'Zoom')
-  }, [ready])
+    if (viewMode === 'timeline') {
+      zoomRef.current?.querySelector('[role="slider"]')?.setAttribute('aria-label', 'Zoom')
+    }
+  }, [ready, viewMode])
 
   const tMin = model?.tMin
   const tMax = model?.tMax
@@ -140,67 +187,227 @@ function TimelineView({ sessionId, renderRunPanel }: TimelinePageProps & { sessi
 
       {model && viewport && bounds && s && (
         <>
-          <div className="flex flex-wrap items-center gap-2" role="toolbar" aria-label="Timeline controls">
-            <Button type="button" variant="outline" size="sm" onClick={() => { setUserViewport(null); setFollow(false) }}>
-              <Maximize aria-hidden />
-              Fit
-            </Button>
-            <Button type="button" variant="outline" size="icon-sm" aria-label="Zoom out" onClick={() => change(zoomAt(viewport, 1 / 0.6, viewport.t0 + span(viewport) / 2, bounds))}>
-              <Minus aria-hidden />
-            </Button>
-            <div ref={zoomRef} role="group" aria-label="Zoom" className="flex w-32 items-center sm:w-48">
-            <Slider
-              className="w-full"
-              min={0}
-              max={100}
-              step={1}
-              value={[spanToSlider(span(viewport), bounds)]}
-              onValueChange={([v]) => change(withSpan(viewport, sliderToSpan(v, bounds), bounds))}
-            />
-            </div>
-            <Button type="button" variant="outline" size="icon-sm" aria-label="Zoom in" onClick={() => change(zoomAt(viewport, 0.6, viewport.t0 + span(viewport) / 2, bounds))}>
-              <Plus aria-hidden />
-            </Button>
-            {reduced ? (
-              <Button type="button" variant="outline" size="sm" disabled={!model.active} onClick={() => { setUserViewport(userViewport ?? viewport); setFollow(true) }}>
-                <Radio aria-hidden />
-                Jump to live
-              </Button>
-            ) : (
-              <Toggle
+          <svg width={0} height={0} className="absolute" aria-hidden focusable="false">
+            <PatternDefs />
+          </svg>
+
+          {/* View mode toggle, filter bar, and shortcuts */}
+          <div className="flex flex-wrap items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2 flex-wrap">
+              <ToggleGroup
+                type="single"
+                value={viewMode}
+                onValueChange={(v) => v && setViewMode(v as 'timeline' | 'graph')}
+                aria-label="View mode"
                 variant="outline"
                 size="sm"
-                pressed={follow && model.active}
-                disabled={!model.active}
-                onPressedChange={(on) => {
-                  setUserViewport(userViewport ?? viewport)
-                  setFollow(on)
-                }}
-                aria-label="Follow live"
               >
-                <Radio aria-hidden />
-                Live
-              </Toggle>
-            )}
-            <div className="ml-auto flex items-center gap-2">
-              <Legend />
+                <ToggleGroupItem value="timeline" aria-label="Timeline view">
+                  <Clock aria-hidden className="size-3.5" />
+                  <span>Timeline</span>
+                </ToggleGroupItem>
+                <ToggleGroupItem value="graph" aria-label="Agent graph view">
+                  <Network aria-hidden className="size-3.5" />
+                  <span>Agent Graph</span>
+                </ToggleGroupItem>
+              </ToggleGroup>
+
+              {/* Filter search input */}
+              <div className="relative flex items-center min-w-[170px] sm:min-w-[220px]">
+                <Search aria-hidden className="absolute left-2.5 size-3.5 text-muted-foreground pointer-events-none" />
+                <Input
+                  type="search"
+                  placeholder="Filter runs…"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="h-8 pl-8 pr-7 text-xs"
+                  aria-label="Filter runs"
+                />
+                {searchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-2 text-muted-foreground hover:text-foreground"
+                    aria-label="Clear search"
+                  >
+                    <X aria-hidden className="size-3.5" />
+                  </button>
+                )}
+              </div>
+
+              {/* State filter dropdown */}
+              <Select value={stateFilter} onValueChange={setStateFilter}>
+                <SelectTrigger className="h-8 w-32 sm:w-36 text-xs" aria-label="Filter by state">
+                  <SelectValue placeholder="All states" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All States</SelectItem>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="attention">Needs Attention</SelectItem>
+                  <SelectItem value="succeeded">Succeeded</SelectItem>
+                  <SelectItem value="failed">Failed / Cancelled</SelectItem>
+                  <SelectItem value="queued">Queued</SelectItem>
+                </SelectContent>
+              </Select>
+
+              {hasFilter && (
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className="tabular-nums font-medium">
+                    {matchingRunIds.has(ORCHESTRATOR_LANE) ? matchingRunIds.size - 1 : matchingRunIds.size} of {Math.max(0, model.lanes.length - 1)} runs
+                  </span>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setSearchQuery('')
+                      setStateFilter('all')
+                    }}
+                    className="h-7 px-1.5 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    Reset
+                  </Button>
+                </div>
+              )}
             </div>
-          </div>
-          <div className="hidden xl:block">
-            <LegendContent compact />
+
+            {/* Shortcuts help button */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button type="button" variant="outline" size="sm" aria-label="Keyboard shortcuts" title="Keyboard shortcuts" className="gap-1.5">
+                  <Keyboard aria-hidden className="size-3.5" />
+                  <span className="hidden sm:inline">Shortcuts</span>
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-80 p-3 text-xs">
+                <div className="font-semibold mb-2 text-foreground">Keyboard Shortcuts</div>
+                <div className="space-y-2">
+                  <div>
+                    <div className="font-medium text-muted-foreground mb-1">Timeline (Gantt)</div>
+                    <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1">
+                      <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">+</kbd><span>Zoom in</span>
+                      <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">-</kbd><span>Zoom out</span>
+                      <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">0</kbd><span>Fit whole session</span>
+                      <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">← / →</kbd><span>Pan plot / walk segments</span>
+                      <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">↑ / ↓</kbd><span>Move between runs</span>
+                      <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">Enter</kbd><span>Open run details</span>
+                    </div>
+                  </div>
+                  <div className="border-t pt-1.5">
+                    <div className="font-medium text-muted-foreground mb-1">Agent Graph</div>
+                    <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1">
+                      <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">Arrows</kbd><span>Navigate nodes (parent/child/sibling)</span>
+                      <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">Enter / Space</kbd><span>Open run details</span>
+                      <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">Home / End</kbd><span>Jump to Root / Last node</span>
+                    </div>
+                  </div>
+                  <div className="border-t pt-1.5">
+                    <div className="grid grid-cols-[auto_1fr] gap-x-2">
+                      <kbd className="rounded border bg-muted px-1 font-mono text-[10px]">Esc</kbd><span>Close details panel</span>
+                    </div>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
           </div>
 
-          {loading && (
-            <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status" aria-busy="true">
-              <span>Loading events…</span>
-              <Progress value={progress} className="max-w-48" aria-label="Events loaded" />
-            </div>
-          )}
+          {viewMode === 'timeline' ? (
+            <>
+              <div className="flex flex-wrap items-center gap-2" role="toolbar" aria-label="Timeline controls">
+                <Button type="button" variant="outline" size="sm" onClick={() => { setUserViewport(null); setFollow(false) }}>
+                  <Maximize aria-hidden />
+                  Fit
+                </Button>
+                <Button type="button" variant="outline" size="icon-sm" aria-label="Zoom out" onClick={() => change(zoomAt(viewport, 1 / 0.6, viewport.t0 + span(viewport) / 2, bounds))}>
+                  <Minus aria-hidden />
+                </Button>
+                <div ref={zoomRef} role="group" aria-label="Zoom" className="flex w-32 items-center sm:w-48">
+                <Slider
+                  className="w-full"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={[spanToSlider(span(viewport), bounds)]}
+                  onValueChange={([v]) => change(withSpan(viewport, sliderToSpan(v, bounds), bounds))}
+                />
+                </div>
+                <Button type="button" variant="outline" size="icon-sm" aria-label="Zoom in" onClick={() => change(zoomAt(viewport, 0.6, viewport.t0 + span(viewport) / 2, bounds))}>
+                  <Plus aria-hidden />
+                </Button>
+                {reduced ? (
+                  <Button type="button" variant="outline" size="sm" disabled={!model.active} onClick={() => { setUserViewport(userViewport ?? viewport); setFollow(true) }}>
+                    <Radio aria-hidden />
+                    Jump to live
+                  </Button>
+                ) : (
+                  <Toggle
+                    variant="outline"
+                    size="sm"
+                    pressed={follow && model.active}
+                    disabled={!model.active}
+                    onPressedChange={(on) => {
+                      setUserViewport(userViewport ?? viewport)
+                      setFollow(on)
+                    }}
+                    aria-label="Follow live"
+                  >
+                    <Radio aria-hidden />
+                    Live
+                  </Toggle>
+                )}
+                <div className="ml-auto flex items-center gap-2">
+                  <Legend />
+                </div>
+              </div>
+              <div className="hidden xl:block">
+                <LegendContent compact />
+              </div>
 
-          {hasRuns || loadedEvents > 0 ? (
-            <GanttCanvas model={model} viewport={viewport} onViewportChange={change} selectedRunId={runId} onSelect={select} />
+              {loading && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status" aria-busy="true">
+                  <span>Loading events…</span>
+                  <Progress value={progress} className="max-w-48" aria-label="Events loaded" />
+                </div>
+              )}
+
+              {hasRuns || loadedEvents > 0 ? (
+                <GanttCanvas
+                  model={model}
+                  viewport={viewport}
+                  onViewportChange={change}
+                  selectedRunId={runId}
+                  onSelect={select}
+                  matchingRunIds={matchingRunIds}
+                  hasFilter={hasFilter}
+                />
+              ) : (
+                !loading && <EmptyState title="No runs in this session yet" description="Runs appear here as soon as the orchestrator spawns them." />
+              )}
+            </>
           ) : (
-            !loading && <EmptyState title="No runs in this session yet" description="Runs appear here as soon as the orchestrator spawns them." />
+            <>
+              {loading && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground" role="status" aria-busy="true">
+                  <span>Loading events…</span>
+                  <Progress value={progress} className="max-w-48" aria-label="Events loaded" />
+                </div>
+              )}
+
+              {hasRuns || loadedEvents > 0 ? (
+                <>
+                  <AgentGraphView
+                    model={model}
+                    selectedRunId={runId}
+                    onSelect={select}
+                    searchQuery={searchQuery}
+                    stateFilter={stateFilter}
+                  />
+                  <SummaryTable model={model} />
+                </>
+              ) : (
+                !loading && <EmptyState title="No runs in this session yet" description="Runs appear here as soon as the orchestrator spawns them." />
+              )}
+            </>
           )}
         </>
       )}

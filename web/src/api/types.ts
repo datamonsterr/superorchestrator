@@ -30,7 +30,7 @@ import type {
   DashboardView as GenDashboard,
 } from './generated'
 
-export type { Page, SessionSummary } from './generated'
+export type { Page, SessionSummary, TaskFamily } from './generated'
 export type { Event, Headroom }
 
 /** `T` with the listed fields required: the server always serialises them. */

@@ -112,6 +112,13 @@ async fn canonical_flow_report() {
     r.call("list_harnesses", &c, METHOD_LIST_HARNESSES, json!({}))
         .await;
     r.call(
+        "list_harnesses (free catalog)",
+        &c,
+        METHOD_LIST_HARNESSES,
+        json!({"free_models": true}),
+    )
+    .await;
+    r.call(
         "route",
         &c,
         METHOD_ROUTE,
@@ -135,6 +142,13 @@ async fn canonical_flow_report() {
         &c,
         METHOD_GET_RUN,
         json!({"run": id, "diff": true}),
+    )
+    .await;
+    r.call(
+        "get_run (diff_stat)",
+        &c,
+        METHOD_GET_RUN,
+        json!({"run": id, "diff_stat": true}),
     )
     .await;
     let second = r

@@ -18,7 +18,7 @@ The browser's global history may still record the original fragment. A history e
 
 - **Dashboard.** Accounts with sign-in state, 5-hour and weekly headroom per pool with reset times, cooldowns ("cooling down until 14:30 (in 2h 10m)"), active runs against the cap, live runs, recent escalations, and cost and tokens per day.
 - **Sessions.** Orchestrator and interactive sessions. Filter by active, escalated or failed.
-- **Session timeline.** One lane per run, nested under its parent, updated live. Click a lane for the run panel: brief, route decision, events, transcript, result, worktree, join command, and actions (message, cancel, accept, reject).
+- **Session timeline and agent graph.** Follow runs in a live Gantt timeline with a minimap or use **Agent Graph** to see their parent and subagent links. Filter by state or text, group the graph by hierarchy, status, or harness, and use the keyboard to select a run. Both views open the run panel with the brief, route decision, events, transcript, result, worktree, join command, and run actions.
 - **Accounts.** Add, import, edit cap, priority and pools, enable or disable, flag a cooldown (shown with its end time), remove, and sign in.
 - **Levels.** Edit levels and the routing instruction, preview a route, read the decision log, and see the model catalog with a refresh button. The nav label was "Routing" in earlier versions; the page is still at `/routing`. Each level lists its models in order, with add, remove and move controls.
 - **Agents.** List, view and edit agent files.

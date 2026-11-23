@@ -387,6 +387,7 @@ mod tests {
             max: 62,
             tier: None,
             models: vec![],
+            families: std::collections::BTreeMap::new(),
         }
     }
     fn rec(id: &str, complexity: f64) -> HistoryRecord {

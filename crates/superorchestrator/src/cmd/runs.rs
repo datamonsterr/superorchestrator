@@ -171,6 +171,7 @@ async fn get_with(client: &SupervisorClient, run: &str, diff: bool) -> Result<Ru
             GetRunParams {
                 run: run.into(),
                 diff,
+                diff_stat: false,
                 verbose: false,
             },
         )
@@ -285,6 +286,7 @@ async fn watch(ctx: &Ctx, run: &str) -> Result<ExitCode> {
         let params = WaitParams {
             runs: vec![v.run_id.clone()],
             timeout_ms: Some(30_000),
+            include_progress: true,
         };
         let call = client.call::<_, WaitResult>(METHOD_WAIT_AGENT, params);
         tokio::pin!(call);

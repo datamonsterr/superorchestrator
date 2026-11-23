@@ -56,6 +56,7 @@ async fn runs_list_show_and_join_print() {
             WaitParams {
                 runs: vec![r.run_id.clone()],
                 timeout_ms: Some(20_000),
+                include_progress: true,
             },
         )
         .await

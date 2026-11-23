@@ -30,6 +30,24 @@ pub struct RouteEnv<'a> {
     pub ignore_caps: bool,
 }
 
+/// Helper to map `RouterError::NoEligible` message to a concise actionable error with concrete recovery.
+pub fn map_no_eligible(m: &str) -> String {
+    if m.contains("add models =") {
+        // Existing behavior already gives a specific action on this path: keep it.
+        m.to_string()
+    } else if m.contains("nothing matches the named harness") {
+        format!(
+            "{m}; unpin to auto-route or check list_harnesses for available accounts and models"
+        )
+    } else if m.starts_with("no eligible choice") {
+        "no eligible choice: every model listed on a level is excluded, over its cap or out of headroom; check list_harnesses for available accounts and models, or wait for active runs or headroom to clear".to_string()
+    } else {
+        format!(
+            "{m}; check list_harnesses for available accounts and models or unpin to auto-route"
+        )
+    }
+}
+
 /// Runs the routing procedure (SPEC 8.3) and returns the outcome without recording it.
 /// Blocking reads (account files, sqlite, the key file) run off the async threads.
 pub async fn route_decide(
@@ -67,7 +85,7 @@ pub async fn route_decide(
     route_with(&rc, params).await.map_err(|e| match e {
         RouterError::NoEligible(m) => RpcError {
             code: UNAVAILABLE,
-            message: m,
+            message: map_no_eligible(&m),
             data: Some(json!({"reason": NO_ELIGIBLE})),
         },
         RouterError::Invalid(m) => RpcError::new(INVALID_PARAMS, m),
@@ -189,6 +207,8 @@ mod tests {
                 probabilities: Default::default(),
                 complexity: None,
                 level: None,
+                task_family: None,
+                task_family_probabilities: Default::default(),
                 usage: Default::default(),
                 alternatives: vec![],
                 config_fingerprint: "f".into(),

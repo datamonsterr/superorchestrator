@@ -58,6 +58,8 @@ pub const METHOD_DECIDER_SET: &str = "decider_set";
 pub const METHOD_DECIDER_TEST: &str = "decider_test";
 /// Starts the web UI inside the supervisor (CLI `ui`).
 pub const METHOD_UI_START: &str = "ui_start";
+/// JSON-RPC notification to cancel an in-flight request on the connection.
+pub const NOTIFICATION_CANCEL_REQUEST: &str = "$/cancel_request";
 
 fn jsonrpc() -> String {
     JSONRPC.to_string()
@@ -152,6 +154,10 @@ impl Response {
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+fn yes() -> bool {
+    true
 }
 
 // ---------------------------------------------------------------- params
@@ -292,6 +298,12 @@ pub struct RouteResult {
     /// Name of the level the complexity falls in (or is nearest to).
     #[serde(default)]
     pub level: Option<String>,
+    /// Task family classified by the decider, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_family: Option<crate::config::TaskFamily>,
+    /// Task family probabilities from the decider, keyed by task family name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub task_family_probabilities: BTreeMap<String, f64>,
     #[serde(default)]
     pub usage: RouteUsage,
     #[serde(default)]
@@ -378,6 +390,21 @@ pub struct WaitParams {
     pub runs: Vec<String>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Include routine progress in updates and return when progress is posted (default true).
+    /// With `false`, progress notifications are streamed to the client, but routine progress
+    /// does not end the wait or appear in updates.
+    #[serde(default = "yes")]
+    pub include_progress: bool,
+}
+
+impl Default for WaitParams {
+    fn default() -> Self {
+        Self {
+            runs: Vec::new(),
+            timeout_ms: None,
+            include_progress: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -407,6 +434,10 @@ pub struct GetRunParams {
     /// Include `diff`: what the run changed in its worktree (default false).
     #[serde(default)]
     pub diff: bool,
+    /// Include only the changed-files/stat summary, without computing or returning the patch.
+    /// Ignored when `diff` is also set (that still returns the full diff).
+    #[serde(default)]
+    pub diff_stat: bool,
     /// MCP only: return the full record instead of the short view. The supervisor ignores it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub verbose: bool,
@@ -442,7 +473,8 @@ pub struct AcceptResult {
     pub note: Option<String>,
 }
 
-/// What a run changed: `get_run` with `diff: true`.
+/// What a run changed: `get_run` with `diff: true` (patch) or `diff_stat: true` (stat only,
+/// in which case `patch` is empty).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct RunDiff {
     /// The commit the diff starts from (the merge base of the run's branch).
@@ -450,7 +482,7 @@ pub struct RunDiff {
     pub branch: String,
     /// `git diff --stat`, plus a line per untracked file.
     pub stat: String,
-    /// Committed and uncommitted changes, truncated at 64 KiB.
+    /// Committed and uncommitted changes, truncated at 64 KiB; empty in stat-only mode.
     pub patch: String,
     #[serde(default)]
     pub truncated: bool,
@@ -569,6 +601,17 @@ pub struct MessageView {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EmptyParams {}
+
+/// Parameters of `list_harnesses`. The brief reply is the default; the full free-model catalog
+/// is opt-in because most dispatches only need the configured choices.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ListHarnessesParams {
+    /// Include the full free-model catalog (`free_models`) in the brief reply. Configured
+    /// choices still carry their own `free` flag either way.
+    #[serde(default)]
+    pub free_models: bool,
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct ReadMessagesResult {
@@ -696,10 +739,6 @@ pub struct AgentView {
 pub struct AgentsView {
     #[serde(default)]
     pub agents: Vec<AgentView>,
-}
-
-fn yes() -> bool {
-    true
 }
 
 /// Parameters of `run_workflow` (SPEC 11): a saved workflow by `name`, or an inline `script`.
@@ -963,6 +1002,8 @@ mod tests {
             probabilities: BTreeMap::new(),
             complexity: None,
             level: None,
+            task_family: None,
+            task_family_probabilities: BTreeMap::new(),
             usage: RouteUsage::default(),
             alternatives: vec![],
             config_fingerprint: "f".into(),
@@ -984,5 +1025,21 @@ mod tests {
         let debug = format!("{hello:?}");
         assert!(!debug.contains("private-test-token"));
         assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn wait_params_default_and_round_trip() {
+        let p: WaitParams = serde_json::from_str(r#"{"runs":["r1"]}"#).unwrap();
+        assert!(p.include_progress);
+        assert_eq!(p.runs, vec!["r1"]);
+        assert_eq!(p.timeout_ms, None);
+
+        let quiet: WaitParams =
+            serde_json::from_str(r#"{"runs":["r1"],"include_progress":false}"#).unwrap();
+        assert!(!quiet.include_progress);
+
+        let explicit_true: WaitParams =
+            serde_json::from_str(r#"{"runs":["r1"],"include_progress":true}"#).unwrap();
+        assert!(explicit_true.include_progress);
     }
 }

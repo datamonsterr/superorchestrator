@@ -1,5 +1,5 @@
 import type { RunLane, StateSegment, TimelineModel } from './model'
-import { ORCHESTRATOR_LANE } from './model'
+import { isTerminalState, ORCHESTRATOR_LANE } from './model'
 import { STATE_STYLES } from './colors'
 import { formatDuration } from '@/lib/format'
 import { formatClock } from '@/lib/time'
@@ -24,7 +24,30 @@ export function laneTitle(lane: RunLane): string {
 }
 
 export function laneCurrentState(lane: RunLane): StateSegment['state'] | undefined {
-  return lane.segments[lane.segments.length - 1]?.state ?? lane.run?.state
+  const lastSeg = lane.segments[lane.segments.length - 1]
+  const lastState = lastSeg?.state
+  const snapshotState = lane.run?.state
+  if (!snapshotState) return lastState
+  if (!lastState) return snapshotState
+  if (lastState === snapshotState) return lastState
+
+  // A terminal snapshot fills gaps in history until a newer state segment records a resume.
+  if (isTerminalState(snapshotState) && !isTerminalState(lastState)) {
+    const finishedAt = Date.parse(lane.run?.finished_at ?? '')
+    return lastSeg.start > finishedAt ? lastState : snapshotState
+  }
+
+  // Explicit transitions take precedence over an older snapshot across subsequent tool ticks.
+  if (lane.hasStateTransition) {
+    return lastState
+  }
+
+  // The snapshot can supply the current state when history contains only the initial state.
+  if (lastState === 'queued' || lastState === 'starting') {
+    return snapshotState
+  }
+
+  return lastState
 }
 
 /** Account the lane was running on at time `t` (the attempt covering it, else the latest started). */

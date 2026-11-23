@@ -77,3 +77,100 @@ async fn route_previews_and_records_a_route_decision_event() {
     assert!(matches!(bad, Err(ClientError::Rpc(_))));
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn route_errors_give_actionable_recovery() {
+    let dir = tempfile::Builder::new()
+        .prefix("so-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let paths = Paths::from_dir(dir.path().join("cfg"));
+    AccountFile::new("codex-a", Harness::Codex, "/h/c", "codex")
+        .unwrap()
+        .save(&paths)
+        .unwrap();
+    let mut config = Config::default();
+    config.router.levels = vec![level("high", 0, 100, &["codex/gpt-6.1-sol"])];
+    let opts = SupervisorOptions::new(paths.clone(), config, dir.path().join("run/s.sock"))
+        .with_idle_exit(Duration::from_secs(600))
+        .with_lock_wait(Duration::ZERO)
+        .with_setup(so_supervisor::default_handlers);
+    let h = Supervisor::start(opts).await.unwrap();
+    let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
+    c.hello("test", "/w", None, Some(7)).await.unwrap();
+
+    // 1. Unavailable manual pin: pinned harness/account has no available account
+    let err = c
+        .call::<_, Value>("route", json!({"prompt": "test task", "harness": "claude"}))
+        .await
+        .unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::UNAVAILABLE);
+            assert!(
+                r.message.contains("nothing matches the named harness, account, model and effort with an available account; unpin to auto-route or check list_harnesses for available accounts and models"),
+                "unexpected message: {}",
+                r.message
+            );
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 2. No eligible choice: all choices excluded
+    let err = c
+        .call::<_, Value>(
+            "route",
+            json!({"prompt": "test task", "exclude": ["codex/gpt-6.1-sol"]}),
+        )
+        .await
+        .unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::UNAVAILABLE);
+            assert!(
+                r.message.contains("no eligible choice: every model listed on a level is excluded, over its cap or out of headroom; check list_harnesses for available accounts and models, or wait for active runs or headroom to clear"),
+                "unexpected message: {}",
+                r.message
+            );
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn route_no_level_lists_model_preserves_specific_action() {
+    let dir = tempfile::Builder::new()
+        .prefix("so-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let paths = Paths::from_dir(dir.path().join("cfg"));
+    let mut config = Config::default();
+    config.router.levels = Vec::new();
+    let opts = SupervisorOptions::new(paths.clone(), config, dir.path().join("run/s.sock"))
+        .with_idle_exit(Duration::from_secs(600))
+        .with_lock_wait(Duration::ZERO)
+        .with_setup(so_supervisor::default_handlers);
+    let h = Supervisor::start(opts).await.unwrap();
+    let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
+    c.hello("test", "/w", None, Some(7)).await.unwrap();
+
+    let err = c
+        .call::<_, Value>("route", json!({"prompt": "test task"}))
+        .await
+        .unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::UNAVAILABLE);
+            assert!(
+                r.message.contains("no level lists a model: add models = [\"harness/model/effort\"] to a [[router.levels]] entry"),
+                "unexpected message: {}",
+                r.message
+            );
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    h.shutdown().await;
+}

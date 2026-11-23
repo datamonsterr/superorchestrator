@@ -59,7 +59,14 @@ pub(crate) fn rpc(code: i64, msg: impl Into<String>) -> RpcError {
 }
 
 pub(super) fn not_found(entity: &str) -> RpcError {
-    rpc(NOT_FOUND, format!("{entity} not found"))
+    if entity == "run" {
+        rpc(
+            NOT_FOUND,
+            "run not found; use exact run_id emitted by spawn or a longer prefix",
+        )
+    } else {
+        rpc(NOT_FOUND, format!("{entity} not found"))
+    }
 }
 
 fn store_rpc(e: StoreError) -> RpcError {
@@ -70,6 +77,15 @@ fn store_rpc(e: StoreError) -> RpcError {
             ..
         } => not_found("workflow run"),
         StoreError::NotFound { .. } => rpc(NOT_FOUND, e.to_string()),
+        StoreError::AmbiguousPrefix {
+            entity: "run",
+            prefix,
+        } => rpc(
+            INVALID_PARAMS,
+            format!(
+                "run prefix `{prefix}` is ambiguous; use exact run_id emitted by spawn or a longer prefix"
+            ),
+        ),
         StoreError::AmbiguousPrefix { .. } => rpc(INVALID_PARAMS, e.to_string()),
         other => rpc(INTERNAL_ERROR, other.to_string()),
     }
@@ -88,6 +104,8 @@ pub(crate) enum LockKind {
     Worktree,
     /// `accept_run` and `reject_run` of one run: exactly one of them acts.
     Review,
+    /// Serializes wait counts with their state transitions.
+    Wait,
     /// Merging into one repository (keyed by its canonical path): one merge at a time.
     Repo,
 }

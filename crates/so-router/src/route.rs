@@ -8,7 +8,7 @@ use std::str::FromStr;
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use so_core::config::{JevModels, OnUnreachable};
+use so_core::config::{JevModels, OnUnreachable, TaskFamily};
 use so_core::proto::{RouteAlternative, RouteParams, RouteResult, RouteSource, RouteUsage};
 use so_core::{AccountFile, Choice, Config, Harness};
 use so_store::Store;
@@ -325,6 +325,8 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
         note,
         confidence: fail.and_then(|f| f.confidence),
         probabilities: fail.map(|f| f.probabilities.clone()).unwrap_or_default(),
+        task_family: None,
+        task_family_probabilities: BTreeMap::new(),
         usage: fail.map(|f| f.usage.clone()).unwrap_or_default(),
         decider_model: fail.and_then(|f| f.model.clone()),
         decider_models: None,
@@ -386,6 +388,8 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
                 note: None,
                 confidence: Some(d.validated.confidence),
                 probabilities: d.validated.probabilities,
+                task_family: d.validated.task_family,
+                task_family_probabilities: d.validated.task_family_probabilities,
                 usage: d.usage,
                 decider_model: Some(d.model),
                 decider_models: Some(models),
@@ -415,6 +419,8 @@ struct Rated {
     note: Option<String>,
     confidence: Option<f64>,
     probabilities: BTreeMap<String, f64>,
+    task_family: Option<TaskFamily>,
+    task_family_probabilities: BTreeMap<String, f64>,
     usage: RouteUsage,
     decider_model: Option<String>,
     decider_models: Option<JevModels>,
@@ -457,6 +463,7 @@ fn finish(
             cands,
             rated.complexity,
             &fallback_order,
+            rated.task_family,
         )
     };
     if let Some(w) = rated
@@ -493,11 +500,16 @@ fn finish(
     let c = rated.complexity;
     let id = cand.choice.id();
     let rationale = match (rated.source, &rated.note, rated.confidence) {
-        (RouteSource::Jev, _, conf) => format!(
-            "Jev rated complexity {c:.1} (confidence {:.2}); {level}; `{id}` chosen: {}; {account_note}.",
-            conf.unwrap_or(0.0),
-            sel.why
-        ),
+        (RouteSource::Jev, _, conf) => {
+            let family_info = rated
+                .task_family
+                .map_or(String::new(), |f| format!(", task family `{}`", f.as_str()));
+            format!(
+                "Jev rated complexity {c:.1} (confidence {:.2}{family_info}); {level}; `{id}` chosen: {}; {account_note}.",
+                conf.unwrap_or(0.0),
+                sel.why
+            )
+        }
         (RouteSource::Pinned, _, _) => format!(
             "complexity {c:.1} (heuristic estimate); {level}; `{id}` chosen: {}; {account_note}.",
             sel.why
@@ -520,6 +532,8 @@ fn finish(
         probabilities: rated.probabilities,
         complexity: Some(c),
         level: sel.level,
+        task_family: rated.task_family,
+        task_family_probabilities: rated.task_family_probabilities,
         usage: rated.usage,
         alternatives,
         config_fingerprint: fingerprint.to_string(),

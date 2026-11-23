@@ -254,6 +254,20 @@ async fn wait_for(c: &SupervisorClient, runs: &[&str], ms: u64) -> WaitResult {
         WaitParams {
             runs: runs.iter().map(|r| r.to_string()).collect(),
             timeout_ms: Some(ms),
+            include_progress: true,
+        },
+    )
+    .await
+    .unwrap()
+}
+
+async fn wait_for_quiet(c: &SupervisorClient, runs: &[&str], ms: u64) -> WaitResult {
+    c.call(
+        METHOD_WAIT_AGENT,
+        WaitParams {
+            runs: runs.iter().map(|r| r.to_string()).collect(),
+            timeout_ms: Some(ms),
+            include_progress: false,
         },
     )
     .await
@@ -558,6 +572,323 @@ async fn report_progress_wakes_wait_agent() {
     assert_eq!(w.updates[0].event_type, EventType::Progress);
     assert_eq!(w.updates[0].data["step"], "tests");
     cancel(&c, &id).await;
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn quiet_wait_agent_ignores_routine_progress_and_streams_it() {
+    let env = Env::new();
+    env.simple("claude-a", 2, &idle_script());
+    let h = env.start().await;
+    let c = Arc::new(env.client(&h).await);
+    let mut notes = c.notifications().unwrap();
+    let id = spawn(&c, env.params("claude-a")).await;
+    wait_state(&c, &id, RunState::Running).await;
+    let child = env.as_run(&h, &id).await;
+    let waiter = {
+        let (c, id) = (c.clone(), id.clone());
+        tokio::spawn(async move { wait_for_quiet(&c, &[&id], 800).await })
+    };
+    // Child repeatedly reports progress
+    let reporter = {
+        let child = Arc::new(child);
+        tokio::spawn(async move {
+            loop {
+                let _: AckResult = child
+                    .call(
+                        METHOD_REPORT_PROGRESS,
+                        ReportProgressParams {
+                            step: "tests".into(),
+                            status: "passing".into(),
+                            note: None,
+                        },
+                    )
+                    .await
+                    .unwrap();
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+    };
+
+    // The event is streamed as a notification to the client
+    let mut received_progress_note = false;
+    let note_check = tokio::time::timeout(Duration::from_secs(2), async {
+        while let Some(n) = notes.recv().await {
+            if n.method == "event" && n.params["type"] == "progress" {
+                received_progress_note = true;
+                break;
+            }
+        }
+    })
+    .await;
+    assert!(
+        note_check.is_ok() && received_progress_note,
+        "progress notification was streamed"
+    );
+
+    // But the quiet waiter did NOT wake on progress! It waits until the deadline.
+    let w = tokio::time::timeout(Duration::from_secs(3), waiter)
+        .await
+        .unwrap()
+        .unwrap();
+    reporter.abort();
+    assert!(w.timed_out);
+    assert!(w.finished.is_empty());
+    assert!(w.updates.is_empty());
+
+    cancel(&c, &id).await;
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn quiet_wait_agent_wakes_on_question() {
+    let env = Env::new();
+    env.simple("claude-a", 2, &idle_script());
+    let h = env.start().await;
+    let c = Arc::new(env.client(&h).await);
+    let id = spawn(&c, env.params("claude-a")).await;
+    wait_state(&c, &id, RunState::Running).await;
+    let child = env.as_run(&h, &id).await;
+
+    // Emit routine progress while waiting in quiet mode, followed by a question.
+    let child_ask = Arc::new(child);
+    let asker = {
+        let child = child_ask.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let _: AckResult = child
+                .call(
+                    METHOD_REPORT_PROGRESS,
+                    ReportProgressParams {
+                        step: "thinking".into(),
+                        status: "deeply".into(),
+                        note: None,
+                    },
+                )
+                .await
+                .unwrap();
+            child
+                .call::<_, AskParentResult>(
+                    METHOD_ASK_PARENT,
+                    AskParentParams {
+                        question: "which color?".into(),
+                        options: None,
+                    },
+                )
+                .await
+                .unwrap()
+        })
+    };
+
+    let w = wait_for_quiet(&c, &[&id], 20_000).await;
+    assert!(w.finished.is_empty() && !w.timed_out);
+    assert_eq!(w.updates.len(), 1);
+    assert_eq!(w.updates[0].event_type, EventType::QuestionAsked);
+    assert_eq!(w.updates[0].data["question"], "which color?");
+
+    // Standing update: calling quiet wait again while the question is unanswered returns it immediately.
+    let standing = wait_for_quiet(&c, &[&id], 20_000).await;
+    assert_eq!(standing.updates.len(), 1);
+    assert_eq!(standing.updates[0].event_type, EventType::QuestionAsked);
+
+    // Answer the question so the child task completes.
+    c.call::<_, AckResult>(
+        METHOD_SEND_MESSAGE,
+        SendMessageParams {
+            run: id.clone(),
+            text: "blue".into(),
+            kind: Some(MessageKind::Answer),
+        },
+    )
+    .await
+    .unwrap();
+    let _ = asker.await.unwrap();
+
+    cancel(&c, &id).await;
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn quiet_wait_agent_wakes_on_pending_review_and_finish() {
+    let env = Env::new();
+    env.simple("claude-a", 2, &ok_script(&[]));
+    let h = env.start().await;
+    let c = Arc::new(env.client(&h).await);
+    let mut p = env.params("claude-a");
+    p.review = true;
+    p.checks = vec!["cmd:true".into()];
+    let id = spawn(&c, p).await;
+
+    // 1. The run proceeds through its turn and checks to pending_review: quiet wait wakes immediately.
+    let w = wait_for_quiet(&c, &[&id], 20_000).await;
+    assert!(w.finished.is_empty() && !w.timed_out);
+    assert_eq!(w.updates.len(), 1);
+    assert_eq!(w.updates[0].event_type, EventType::StateChanged);
+    assert_eq!(w.updates[0].data["to"], "pending_review");
+
+    // 2. Standing update: calling quiet wait again when already at pending_review returns immediately.
+    let standing = wait_for_quiet(&c, &[&id], 20_000).await;
+    assert_eq!(standing.updates.len(), 1);
+    assert_eq!(standing.updates[0].data["to"], "pending_review");
+
+    // 3. Accept the run so it finishes: quiet wait returns finished.
+    c.call::<_, AcceptResult>(
+        METHOD_ACCEPT_RUN,
+        AcceptParams {
+            run: id.clone(),
+            merge: false,
+        },
+    )
+    .await
+    .unwrap();
+    let w = wait_for_quiet(&c, &[&id], 20_000).await;
+    assert_eq!(w.finished, vec![id.clone()]);
+    assert!(w.updates.is_empty());
+
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn quiet_wait_agent_wakes_on_escalation() {
+    let mut env = Env::new();
+    env.config.runs.stall_ms = 300;
+    env.simple("claude-a", 2, &idle_script());
+    let h = env.start().await;
+    let c = Arc::new(env.client(&h).await);
+    let id = spawn(&c, env.params("claude-a")).await;
+    wait_state(&c, &id, RunState::Running).await;
+
+    let w = wait_for_quiet(&c, &[&id], 20_000).await;
+    assert!(w.finished.is_empty() && !w.timed_out);
+    assert_eq!(w.updates.len(), 1);
+    assert_eq!(w.updates[0].event_type, EventType::Escalated);
+
+    // Standing escalation check:
+    let standing = wait_for_quiet(&c, &[&id], 20_000).await;
+    assert_eq!(standing.updates.len(), 1);
+    assert_eq!(standing.updates[0].event_type, EventType::Escalated);
+
+    cancel(&c, &id).await;
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancel_quiet_wait_agent_on_shared_connection_resumes_subagent_and_keeps_concurrent_requests()
+ {
+    let env = Env::new();
+    env.simple("claude-a", 2, &idle_script());
+    env.simple("claude-b", 2, &idle_script());
+    let h = env.start().await;
+    let orch = Arc::new(env.client(&h).await);
+
+    // Spawn subagent
+    let sub_id = spawn(&orch, env.params("claude-a")).await;
+    wait_state(&orch, &sub_id, RunState::Running).await;
+
+    // Connect subagent on its own client (as_run)
+    let sub_client = Arc::new(env.as_run(&h, &sub_id).await);
+
+    // Subagent spawns child
+    let child_id = spawn(&sub_client, env.params("claude-b")).await;
+    wait_state(&orch, &child_id, RunState::Running).await;
+
+    // Subagent quiet-waits on child with a large timeout (30 seconds)
+    let sub_c = sub_client.clone();
+    let c_id = child_id.clone();
+    let wait_task = tokio::spawn(async move {
+        sub_c
+            .call::<_, WaitResult>(
+                METHOD_WAIT_AGENT,
+                WaitParams {
+                    runs: vec![c_id],
+                    include_progress: false,
+                    timeout_ms: Some(30_000),
+                },
+            )
+            .await
+    });
+
+    // Verify subagent transitioned to Waiting because of wait_agent
+    wait_state(&orch, &sub_id, RunState::Waiting).await;
+
+    // Start another concurrent request on the SHARED sub_client connection
+    let other_client = sub_client.clone();
+    let other_child = child_id.clone();
+    let other_req = tokio::spawn(async move {
+        other_client
+            .call::<_, RunView>(
+                METHOD_GET_RUN,
+                GetRunParams {
+                    run: other_child,
+                    diff: false,
+                    diff_stat: false,
+                    verbose: false,
+                },
+            )
+            .await
+    });
+    let replacement_client = sub_client.clone();
+    let replacement_child = child_id.clone();
+    let replacement = tokio::spawn(async move {
+        replacement_client
+            .call::<_, WaitResult>(
+                METHOD_WAIT_AGENT,
+                WaitParams {
+                    runs: vec![replacement_child],
+                    include_progress: false,
+                    timeout_ms: Some(30_000),
+                },
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Drop the quiet-wait future while the wait is active
+    wait_task.abort();
+    let _ = wait_task.await;
+
+    // The other request on the shared connection succeeds and is unaffected
+    let view = other_req.await.unwrap().unwrap();
+    assert_eq!(view.run_id, child_id);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let parent: RunView = orch
+        .call(
+            METHOD_GET_RUN,
+            GetRunParams {
+                run: sub_id.clone(),
+                diff: false,
+                diff_stat: false,
+                verbose: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(parent.state, RunState::Waiting);
+    assert!(!replacement.is_finished());
+    replacement.abort();
+    let _ = replacement.await;
+
+    // Subagent state resumes to Running (WaitGuard ended cleanly)
+    wait_state(&orch, &sub_id, RunState::Running).await;
+
+    // Watched child was not cancelled
+    let child_view: RunView = orch
+        .call(
+            METHOD_GET_RUN,
+            GetRunParams {
+                run: child_id.clone(),
+                diff: false,
+                diff_stat: false,
+                verbose: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(child_view.state, RunState::Running);
+
+    cancel(&orch, &sub_id).await;
+    cancel(&orch, &child_id).await;
     h.shutdown().await;
 }
 
@@ -2127,6 +2458,21 @@ async fn view_diff(c: &SupervisorClient, run: &str) -> RunView {
         GetRunParams {
             run: run.into(),
             diff: true,
+            diff_stat: false,
+            verbose: false,
+        },
+    )
+    .await
+    .unwrap()
+}
+
+async fn view_diff_stat(c: &SupervisorClient, run: &str) -> RunView {
+    c.call(
+        METHOD_GET_RUN,
+        GetRunParams {
+            run: run.into(),
+            diff: false,
+            diff_stat: true,
             verbose: false,
         },
     )
@@ -2158,6 +2504,31 @@ async fn get_run_diff_shows_committed_uncommitted_and_untracked_changes() {
         "{}",
         d.stat
     );
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn get_run_diff_stat_returns_the_file_list_without_a_patch() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = env.client(&h).await;
+    let steps = [
+        write_step("b.txt", "committed", true),
+        write_step("a.txt", "edited", false),
+        write_step("new.txt", "fresh", false),
+    ];
+    let v = gated(&env, &c, &steps, "stat").await;
+    let d = view_diff_stat(&c, &v.run_id).await.diff.unwrap();
+    assert_eq!(d.base, git(&env.repo, &["rev-parse", "HEAD"]));
+    assert!(!d.truncated);
+    assert!(d.patch.is_empty(), "stat-only must not compute a patch");
+    for want in ["b.txt", "a.txt", "new.txt (untracked)"] {
+        assert!(d.stat.contains(want), "{want} in {}", d.stat);
+    }
+    // The detail path still returns the patch for the same run.
+    let full = view_diff(&c, &v.run_id).await.diff.unwrap();
+    assert!(full.patch.contains("+committed"));
+    assert_eq!(full.stat, d.stat);
     h.shutdown().await;
 }
 

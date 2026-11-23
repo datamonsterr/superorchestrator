@@ -92,6 +92,7 @@ fn level(name: &str, min: u8, max: u8, models: &[&str]) -> Level {
             .iter()
             .map(|m| m.parse::<Choice>().unwrap())
             .collect(),
+        families: std::collections::BTreeMap::new(),
     }
 }
 
@@ -129,6 +130,7 @@ fn world(endpoint: &str, key: bool) -> World {
             max: 62,
             tier: Some(LevelTier::Mid),
             models: Vec::new(),
+            families: std::collections::BTreeMap::new(),
         },
     );
     config.router.jev.endpoint = endpoint.into();
@@ -199,6 +201,20 @@ fn answer(score: f64, conf: f64) -> Value {
     answer_with(score, conf, Value::Object(probs))
 }
 
+fn answer_with_family(score: f64, conf: f64, family: &str, family_conf: f64) -> Value {
+    let mut base = answer(score, conf);
+    base["answers"]["task_family"] = json!({
+        "type": "choice",
+        "choice": family,
+        "confidence": family_conf,
+        "probabilities": {
+            family: family_conf,
+            "other": (1.0 - family_conf).max(0.0)
+        }
+    });
+    base
+}
+
 #[tokio::test]
 async fn valid_answer_is_source_jev_and_request_has_the_score_shape() {
     // Anchor index 3.4 is complexity 85: the default high level, whose tier is high.
@@ -241,6 +257,18 @@ async fn valid_answer_is_source_jev_and_request_has_the_score_shape() {
     let anchors = q["criteria"].as_array().unwrap();
     assert_eq!(anchors.len(), 5);
     assert_eq!(anchors[0], so_core::config::COMPLEXITY_ANCHORS[0]);
+    let tf = &b["questions"]["task_family"];
+    assert_eq!(tf["type"], "choice");
+    let tf_criteria = tf["criteria"].as_object().unwrap();
+    assert_eq!(tf_criteria.len(), 8);
+    assert!(tf_criteria.contains_key("code_implementation"));
+    assert!(tf_criteria.contains_key("code_review"));
+    assert!(tf_criteria.contains_key("debugging"));
+    assert!(tf_criteria.contains_key("documentation"));
+    assert!(tf_criteria.contains_key("research"));
+    assert!(tf_criteria.contains_key("planning"));
+    assert!(tf_criteria.contains_key("ui_design"));
+    assert!(tf_criteria.contains_key("other"));
 }
 
 #[tokio::test]
@@ -1642,4 +1670,394 @@ async fn reserved_account_requires_an_account_pin() {
             .account,
         "codex-a"
     );
+}
+
+#[tokio::test]
+async fn task_family_precedence_preferred_model_wins_and_surfaces_in_rationale_and_metadata() {
+    let (url, _) = serve(vec![(
+        200,
+        answer_with_family(3.4, 0.9, "code_review", 0.85),
+        0,
+    )])
+    .await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST]);
+    high_level
+        .families
+        .insert(so_core::config::TaskFamily::CodeReview, vec![choice_fast]);
+    w.config.router.levels = vec![high_level];
+
+    let out = route_detailed(&w.inputs(), &params("review this PR"))
+        .await
+        .unwrap();
+    let r = out.result;
+    assert_eq!(r.source, RouteSource::Jev);
+    assert_eq!(r.choice_id, AGY_FAST);
+    assert_eq!(r.task_family, Some(so_core::config::TaskFamily::CodeReview));
+    assert!(
+        r.rationale.contains("preferred for code_review"),
+        "rationale: {}",
+        r.rationale
+    );
+    assert!(
+        r.rationale.contains("task family `code_review`"),
+        "rationale: {}",
+        r.rationale
+    );
+}
+
+#[tokio::test]
+async fn task_family_multiple_preferred_models_preserves_order() {
+    let (url, _) = serve(vec![(
+        200,
+        answer_with_family(3.4, 0.9, "planning", 0.9),
+        0,
+    )])
+    .await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let choice_small: Choice = CODEX_SMALL.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST, CODEX_SMALL]);
+    high_level.families.insert(
+        so_core::config::TaskFamily::Planning,
+        vec![choice_small.clone(), choice_fast.clone()],
+    );
+    w.config.router.levels = vec![high_level];
+
+    // First preferred model (CODEX_SMALL) wins over CODEX_BIG and AGY_FAST
+    let out = route_detailed(&w.inputs(), &params("architect the system"))
+        .await
+        .unwrap();
+    assert_eq!(out.result.choice_id, CODEX_SMALL);
+    assert_eq!(
+        out.result.task_family,
+        Some(so_core::config::TaskFamily::Planning)
+    );
+    assert!(out.result.rationale.contains("preferred for planning"));
+
+    // When CODEX_SMALL is excluded, second preferred (AGY_FAST) wins
+    let mut p = params("architect the system");
+    p.exclude = vec![CODEX_SMALL.into()];
+    let out2 = route_detailed(&w.inputs(), &p).await.unwrap();
+    assert_eq!(out2.result.choice_id, AGY_FAST);
+    assert!(out2.result.rationale.contains("preferred for planning"));
+}
+
+#[tokio::test]
+async fn task_family_fallback_when_preferred_model_ineligible() {
+    let (url, _) = serve(vec![(
+        200,
+        answer_with_family(3.4, 0.9, "debugging", 0.9),
+        0,
+    )])
+    .await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, CODEX_SMALL, AGY_FAST]);
+    high_level
+        .families
+        .insert(so_core::config::TaskFamily::Debugging, vec![choice_fast]);
+    w.config.router.levels = vec![high_level];
+
+    // Exclude the preferred model AGY_FAST; CODEX_BIG and CODEX_SMALL remain eligible (>1 choice)
+    let mut p = params("debug crash");
+    p.exclude = vec![AGY_FAST.into()];
+    let out = route_detailed(&w.inputs(), &p).await.unwrap();
+    // Falls back to level ordering (CODEX_BIG)
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert_eq!(
+        out.result.task_family,
+        Some(so_core::config::TaskFamily::Debugging)
+    );
+    assert!(out.result.rationale.contains("first in the level"));
+}
+
+#[tokio::test]
+async fn task_family_fallback_on_missing_or_unknown_family_data() {
+    // Decider returns unknown family string
+    let mut resp = answer(3.4, 0.9);
+    resp["answers"]["task_family"] = json!({
+        "type": "choice",
+        "choice": "unrecognized_family_data",
+        "confidence": 0.5
+    });
+    let (url, _) = serve(vec![(200, resp, 0)]).await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST]);
+    high_level
+        .families
+        .insert(so_core::config::TaskFamily::CodeReview, vec![choice_fast]);
+    w.config.router.levels = vec![high_level];
+
+    let out = route_detailed(&w.inputs(), &params("some prompt"))
+        .await
+        .unwrap();
+    // Falls back to level ordering (CODEX_BIG) with no task_family metadata
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert_eq!(out.result.task_family, None);
+    assert!(out.result.rationale.contains("first in the level"));
+    assert!(!out.result.rationale.contains("task family"));
+}
+
+#[tokio::test]
+async fn task_family_unconfigured_other_falls_back_to_level_order() {
+    let (url, _) = serve(vec![(200, answer_with_family(3.4, 0.9, "other", 0.9), 0)]).await;
+    let mut w = world(&url, true);
+    let high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST]);
+    w.config.router.levels = vec![high_level];
+
+    let out = route_detailed(&w.inputs(), &params("general work"))
+        .await
+        .unwrap();
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert_eq!(
+        out.result.task_family,
+        Some(so_core::config::TaskFamily::Other)
+    );
+    assert!(out.result.rationale.contains("first in the level"));
+}
+
+#[tokio::test]
+async fn pinned_and_single_choice_preserve_legacy_behavior_and_no_decider_call() {
+    // When pinned, decider should not be called
+    let (url, fake) = serve(vec![]).await;
+    let w = world(&url, true);
+    let mut p = params("implement feature");
+    p.model = Some(CODEX_BIG.into());
+    let out = route_detailed(&w.inputs(), &p).await.unwrap();
+    assert_eq!(out.result.source, RouteSource::Pinned);
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert_eq!(out.result.task_family, None);
+    assert_eq!(fake.hits.load(Ordering::SeqCst), 0);
+
+    // Single eligible choice should not call decider
+    let mut w_single = world(&url, true);
+    w_single.config.router.levels = vec![level("high", 0, 100, &[CODEX_BIG])];
+    let out_single = route_detailed(&w_single.inputs(), &params("test"))
+        .await
+        .unwrap();
+    assert_eq!(out_single.result.choice_id, CODEX_BIG);
+    assert_eq!(fake.hits.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn task_family_pref_outside_level_models_preserves_canonical_level_ordering() {
+    let (url, _) = serve(vec![(
+        200,
+        answer_with_family(3.4, 0.9, "code_review", 0.9),
+        0,
+    )])
+    .await;
+    let mut w = world(&url, true);
+    // Level models only lists CODEX_BIG and AGY_FAST
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST]);
+    // Preferred model CODEX_SMALL is outside the level's models
+    let choice_outside: Choice = CODEX_SMALL.parse().unwrap();
+    high_level.families.insert(
+        so_core::config::TaskFamily::CodeReview,
+        vec![choice_outside],
+    );
+    w.config.router.levels = vec![high_level];
+
+    let out = route_detailed(&w.inputs(), &params("review this code"))
+        .await
+        .unwrap();
+    // Falls back to canonical level order: CODEX_BIG wins, CODEX_SMALL is never selected
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert_eq!(
+        out.result.task_family,
+        Some(so_core::config::TaskFamily::CodeReview)
+    );
+    assert!(out.result.rationale.contains("first in the level"));
+}
+
+#[tokio::test]
+async fn task_family_unavailable_preferred_candidate_preserves_canonical_fallback() {
+    let (url, _) = serve(vec![(
+        200,
+        answer_with_family(3.4, 0.9, "debugging", 0.9),
+        0,
+    )])
+    .await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST, CODEX_SMALL]);
+    high_level
+        .families
+        .insert(so_core::config::TaskFamily::Debugging, vec![choice_fast]);
+    w.config.router.levels = vec![high_level];
+
+    // Exclude preferred candidate AGY_FAST
+    let mut p = params("debug crash");
+    p.exclude = vec![AGY_FAST.into()];
+    let out = route_detailed(&w.inputs(), &p).await.unwrap();
+    // Canonical fallback order among remaining candidates: CODEX_BIG wins
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert!(out.result.rationale.contains("first in the level"));
+}
+
+#[tokio::test]
+async fn task_family_absent_question_in_decider_payload_preserves_level_ordering() {
+    // Pure complexity answer without task_family question
+    let resp = answer(3.4, 0.9);
+    let (url, _) = serve(vec![(200, resp, 0)]).await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST]);
+    high_level
+        .families
+        .insert(so_core::config::TaskFamily::CodeReview, vec![choice_fast]);
+    w.config.router.levels = vec![high_level];
+
+    let out = route_detailed(&w.inputs(), &params("review code"))
+        .await
+        .unwrap();
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert_eq!(out.result.task_family, None);
+    assert!(out.result.rationale.contains("first in the level"));
+}
+
+#[tokio::test]
+async fn task_family_low_confidence_preserves_level_order_without_rejecting_complexity() {
+    // Complexity confidence is high (0.90 >= default policy 0.45), but family confidence is low (0.20 < 0.45)
+    let (url, _) = serve(vec![(
+        200,
+        answer_with_family(3.4, 0.9, "code_review", 0.20),
+        0,
+    )])
+    .await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST]);
+    high_level
+        .families
+        .insert(so_core::config::TaskFamily::CodeReview, vec![choice_fast]);
+    w.config.router.levels = vec![high_level];
+
+    let out = route_detailed(&w.inputs(), &params("review code"))
+        .await
+        .unwrap();
+    // Valid complexity is NOT rejected: source is Jev, complexity is 85.0
+    assert_eq!(out.result.source, RouteSource::Jev);
+    assert_eq!(out.result.complexity, Some(85.0));
+    // Low-confidence task_family is dropped: ordinary level ordering preserved (CODEX_BIG wins)
+    assert_eq!(out.result.task_family, None);
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert!(out.result.rationale.contains("first in the level"));
+    assert!(!out.result.rationale.contains("preferred for code_review"));
+}
+
+#[tokio::test]
+async fn task_family_zero_confidence_preserves_level_order() {
+    let (url, _) = serve(vec![(
+        200,
+        answer_with_family(3.4, 0.9, "code_review", 0.0),
+        0,
+    )])
+    .await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST]);
+    high_level
+        .families
+        .insert(so_core::config::TaskFamily::CodeReview, vec![choice_fast]);
+    w.config.router.levels = vec![high_level];
+
+    let out = route_detailed(&w.inputs(), &params("review code"))
+        .await
+        .unwrap();
+    assert_eq!(out.result.source, RouteSource::Jev);
+    assert_eq!(out.result.complexity, Some(85.0));
+    assert_eq!(out.result.task_family, None);
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert!(out.result.rationale.contains("first in the level"));
+}
+
+#[tokio::test]
+async fn task_family_missing_confidence_and_no_probabilities_preserves_level_order() {
+    let mut resp = answer(3.4, 0.9);
+    resp["answers"]["task_family"] = json!({
+        "type": "choice",
+        "choice": "code_review"
+    });
+    let (url, _) = serve(vec![(200, resp, 0)]).await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST]);
+    high_level
+        .families
+        .insert(so_core::config::TaskFamily::CodeReview, vec![choice_fast]);
+    w.config.router.levels = vec![high_level];
+
+    let out = route_detailed(&w.inputs(), &params("review code"))
+        .await
+        .unwrap();
+    assert_eq!(out.result.source, RouteSource::Jev);
+    assert_eq!(out.result.complexity, Some(85.0));
+    assert_eq!(out.result.task_family, None);
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert!(out.result.rationale.contains("first in the level"));
+}
+
+#[tokio::test]
+async fn task_family_invalid_confidence_preserves_level_order() {
+    let mut resp = answer(3.4, 0.9);
+    resp["answers"]["task_family"] = json!({
+        "type": "choice",
+        "choice": "code_review",
+        "confidence": -0.5
+    });
+    let (url, _) = serve(vec![(200, resp, 0)]).await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST]);
+    high_level
+        .families
+        .insert(so_core::config::TaskFamily::CodeReview, vec![choice_fast]);
+    w.config.router.levels = vec![high_level];
+
+    let out = route_detailed(&w.inputs(), &params("review code"))
+        .await
+        .unwrap();
+    assert_eq!(out.result.source, RouteSource::Jev);
+    assert_eq!(out.result.complexity, Some(85.0));
+    assert_eq!(out.result.task_family, None);
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert!(out.result.rationale.contains("first in the level"));
+}
+
+#[tokio::test]
+async fn task_family_choice_probability_used_when_confidence_key_missing() {
+    let mut resp = answer(3.4, 0.9);
+    resp["answers"]["task_family"] = json!({
+        "type": "choice",
+        "choice": "code_review",
+        "probabilities": {
+            "code_review": 0.88,
+            "other": 0.12
+        }
+    });
+    let (url, _) = serve(vec![(200, resp, 0)]).await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST]);
+    high_level
+        .families
+        .insert(so_core::config::TaskFamily::CodeReview, vec![choice_fast]);
+    w.config.router.levels = vec![high_level];
+
+    let out = route_detailed(&w.inputs(), &params("review code"))
+        .await
+        .unwrap();
+    assert_eq!(out.result.source, RouteSource::Jev);
+    assert_eq!(out.result.complexity, Some(85.0));
+    assert_eq!(
+        out.result.task_family,
+        Some(so_core::config::TaskFamily::CodeReview)
+    );
+    // Choice probability >= policy threshold allows preferred model to win
+    assert_eq!(out.result.choice_id, AGY_FAST);
+    assert!(out.result.rationale.contains("preferred for code_review"));
 }

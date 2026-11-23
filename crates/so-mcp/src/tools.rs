@@ -61,6 +61,11 @@ const PARAM_DOCS: &[(&str, &str, &str)] = &[
         "ci, pr_threads; cmd:<shell> only at depth 0",
     ),
     ("spawn_agent", "timeout", "e.g. 30m"),
+    (
+        "wait_agent",
+        "include_progress",
+        "default true; false: quiet mode",
+    ),
     ("send_message", "kind", "answer replies to a question"),
     ("run_workflow", "wait", "default true"),
     ("run_workflow", "fresh", "ignore cached steps"),
@@ -189,14 +194,14 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "wait_agent",
-        "Wait for finish, question or progress (max 30 minutes). Returns finished, updates (send_message kind=answer), timed_out.",
+        "Wait for finish, question or progress (max 30 minutes). Returns finished, updates, timed_out.",
         true,
         true,
         schema_of::<WaitParams>,
     ),
     spec(
         "get_run",
-        "Run state, result, branch, worktree, key events, usage. diff=true adds what the worktree changed (stat, patch cut at 64 KiB): review with this, not by reading files. verbose=true: full record, every event.",
+        "State, result, branch, worktree, events, usage. diff_stat=true: stat only. diff=true: stat+patch (64K). verbose=true: full.",
         false,
         true,
         schema_of::<GetRunParams>,
@@ -224,7 +229,7 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "accept_run",
-        "Accept a run at the review gate. merge=true also merges its branch into the checkout it started from and removes the worktree; refused, run stays at the gate, if that checkout has tracked changes or is on another branch, the worktree is dirty, or the merge conflicts (aborted, files named). Without merge, the result gives branch and merge_command. No-op for isolation none.",
+        "Accept a run at the review gate. merge=true merges branch into checkout and removes worktree; refused if dirty, on another branch, or conflicts. Without merge, gives branch and merge_command. No-op for isolation none.",
         false,
         false,
         schema_of::<AcceptParams>,
@@ -245,10 +250,10 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "list_harnesses",
-        "Call first. Accounts (signed_in, headroom, load, cooldown), routing choices (eligible, free) and free models.",
+        "Accounts (sign-in, headroom, load), choices (eligible, free); free_models=true adds catalog.",
         false,
         true,
-        schema_of::<EmptyParams>,
+        schema_of::<ListHarnessesParams>,
     ),
     spec(
         "list_agents",
@@ -430,5 +435,21 @@ mod tests {
                 "{tool}.{param} is not a parameter"
             );
         }
+    }
+
+    #[test]
+    fn wait_agent_schema_includes_quiet_mode_flag() {
+        let t = tool_specs(false)
+            .find(|t| t.name == "wait_agent")
+            .unwrap()
+            .tool();
+        let props = &t.input_schema["properties"];
+        assert_eq!(props["include_progress"]["type"], "boolean");
+        assert!(
+            props["include_progress"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("default true")
+        );
     }
 }

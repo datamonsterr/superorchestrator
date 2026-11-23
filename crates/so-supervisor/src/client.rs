@@ -67,11 +67,31 @@ fn close_pending(p: &Shared) {
 struct PendingGuard<'a> {
     pending: &'a Shared,
     id: u64,
+    tx: mpsc::Sender<String>,
+    completed: bool,
 }
 
 impl Drop for PendingGuard<'_> {
     fn drop(&mut self) {
         lock(self.pending).map.remove(&self.id);
+        if !self.completed {
+            let note = Notification {
+                jsonrpc: so_core::proto::JSONRPC.to_string(),
+                method: so_core::proto::NOTIFICATION_CANCEL_REQUEST.to_string(),
+                params: serde_json::json!({"id": self.id}),
+            };
+            if let Ok(mut line) = serde_json::to_string(&note) {
+                line.push('\n');
+                if self.tx.try_send(line.clone()).is_err()
+                    && let Ok(rt) = tokio::runtime::Handle::try_current()
+                {
+                    let tx = self.tx.clone();
+                    rt.spawn(async move {
+                        let _ = tx.send(line).await;
+                    });
+                }
+            }
+        }
     }
 }
 
@@ -307,19 +327,37 @@ impl SupervisorClient {
             }
             p.map.insert(id, otx);
         }
-        let _guard = PendingGuard {
+        let mut guard = PendingGuard {
             pending: &self.pending,
             id,
+            tx: self.tx.clone(),
+            completed: false,
         };
         self.tx
             .send(line)
             .await
             .map_err(|_| ClientError::Disconnected)?;
         let resp = orx.await.map_err(|_| ClientError::Disconnected)?;
+        guard.completed = true;
         match (resp.error, resp.result) {
             (Some(e), _) => Err(ClientError::Rpc(e)),
             (None, result) => Ok(serde_json::from_value(result.unwrap_or_default())?),
         }
+    }
+
+    /// Sends a JSON-RPC notification (no response expected).
+    pub async fn notify(&self, method: &str, params: impl Serialize) -> Result<(), ClientError> {
+        let note = Notification {
+            jsonrpc: so_core::proto::JSONRPC.to_string(),
+            method: method.to_string(),
+            params: serde_json::to_value(params)?,
+        };
+        let mut line = serde_json::to_string(&note)?;
+        line.push('\n');
+        self.tx
+            .send(line)
+            .await
+            .map_err(|_| ClientError::Disconnected)
     }
 
     /// [`call`](Self::call) with a deadline; on expiry the call is abandoned.

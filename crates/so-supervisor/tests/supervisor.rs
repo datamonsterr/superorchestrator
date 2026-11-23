@@ -28,6 +28,7 @@ fn level(name: &str, min: u8, max: u8, refs: &[&str]) -> so_core::config::Level 
         max,
         tier: None,
         models: refs.iter().map(|r| r.parse().unwrap()).collect(),
+        families: std::collections::BTreeMap::new(),
     }
 }
 
@@ -421,6 +422,19 @@ async fn unknown_method_and_malformed_line() {
     let v: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(v["error"]["code"], PARSE_ERROR);
     assert!(v["id"].is_null());
+    for malformed in [
+        "{}",
+        "[]",
+        "{\"method\":42}",
+        "{\"jsonrpc\":\"1.0\",\"method\":\"x\"}",
+    ] {
+        wr.write_all(format!("{malformed}\n").as_bytes())
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(v["error"]["code"], INVALID_REQUEST);
+        assert!(v["id"].is_null());
+    }
     // The connection survives a bad line.
     wr.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"status\"}\n")
         .await
@@ -685,6 +699,48 @@ async fn handler_panic_replies_internal_error() {
 }
 
 #[tokio::test]
+async fn cancellation_uses_exact_ids_and_rejects_duplicate_active_ids() {
+    let env = Env::new();
+    let h = Supervisor::start(env.opts(Duration::from_secs(600)).with_setup(|st| {
+        st.router.register("wait_closed", |ctx, _| async move {
+            ctx.closed().await;
+            Ok(json!("cancelled"))
+        });
+    }))
+    .await
+    .unwrap();
+    let stream = UnixStream::connect(&env.sock).await.unwrap();
+    let (rd, mut wr) = stream.into_split();
+    let mut lines = BufReader::new(rd).lines();
+    wr.write_all(b"{\"id\":1,\"method\":\"hello\",\"params\":{\"client\":\"t\",\"cwd\":\"/\"}}\n")
+        .await
+        .unwrap();
+    lines.next_line().await.unwrap().unwrap();
+    wr.write_all(b"{\"id\":2,\"method\":\"wait_closed\"}\n{\"method\":\"$/cancel_request\",\"params\":{\"id\":\"2\"}}\n{\"id\":2,\"method\":\"wait_closed\"}\n").await.unwrap();
+    let duplicate: Value =
+        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(duplicate["error"]["code"], INVALID_REQUEST);
+    assert_eq!(duplicate["id"], 2);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), lines.next_line())
+            .await
+            .is_err()
+    );
+    wr.write_all(b"{\"method\":\"$/cancel_request\",\"params\":{\"id\":2}}\n")
+        .await
+        .unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(2), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let reply: Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(reply["id"], 2);
+    assert_eq!(reply["result"], "cancelled");
+    h.shutdown().await;
+}
+
+#[tokio::test]
 async fn closed_fires_on_eof_and_inflight_handler_still_replies() {
     let env = Env::new();
     let seen = Arc::new(AtomicBool::new(false));
@@ -820,6 +876,43 @@ async fn saturated_connection_replies_unavailable_and_keeps_reading() {
     assert_eq!(v["error"]["code"], so_core::proto::UNAVAILABLE);
     // EOF is still noticed while a handler is stuck: the session ends on shutdown.
     wr.shutdown().await.unwrap();
+    h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn completed_reply_releases_request_id_and_slot() {
+    let env = Env::new();
+    let h = Supervisor::start(
+        env.opts(Duration::from_secs(600))
+            .with_max_inflight(1)
+            .with_setup(|st| {
+                st.router
+                    .register("ping", |_c, _p| async { Ok(json!("pong")) });
+            }),
+    )
+    .await
+    .unwrap();
+    let stream = UnixStream::connect(&env.sock).await.unwrap();
+    let (rd, mut wr) = stream.into_split();
+    let mut lines = BufReader::new(rd).lines();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        wr.write_all(
+            b"{\"id\":1,\"method\":\"hello\",\"params\":{\"client\":\"t\",\"cwd\":\"/\"}}\n",
+        )
+        .await
+        .unwrap();
+        lines.next_line().await.unwrap().unwrap();
+        for _ in 0..128 {
+            wr.write_all(b"{\"id\":2,\"method\":\"ping\"}\n")
+                .await
+                .unwrap();
+            let reply: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(reply, json!({"jsonrpc":"2.0","id":2,"result":"pong"}));
+        }
+    })
+    .await
+    .unwrap();
     h.shutdown().await;
 }
 
@@ -1118,7 +1211,18 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
     }
     assert_eq!(v["choices"].as_array().unwrap().len(), 5);
 
-    let free = v["free_models"]["opencode"].as_array().unwrap();
+    // The free catalog is opt-in: the default brief reply keeps the configured choice's
+    // `free` flag but does not carry the catalog.
+    assert!(v.get("free_models").is_none());
+    assert_eq!(choice(FREE)["free"], true);
+    let with_catalog: Value = c
+        .call(
+            "list_harnesses",
+            json!({"brief": true, "free_models": true}),
+        )
+        .await
+        .unwrap();
+    let free = with_catalog["free_models"]["opencode"].as_array().unwrap();
     assert!(free.contains(&json!("opencode/deepseek-v4.1-flash-free")));
     assert!(!free.contains(&json!("opencode/claude-opus-5-5")));
     // The plain call keeps the full shape for the CLI and the web UI.

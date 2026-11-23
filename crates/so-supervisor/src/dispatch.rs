@@ -47,14 +47,24 @@ impl Notifier {
             params,
         };
         match serde_json::to_string(&note) {
-            Ok(line) => self.send_line(line).await,
+            Ok(line) => self.send_line_after(line, || {}).await,
             Err(_) => false,
         }
     }
 
-    pub(crate) async fn send_line(&self, mut line: String) -> bool {
+    /// Reserves a queue slot before running the callback and making the line visible to the writer.
+    pub(crate) async fn send_line_after(
+        &self,
+        mut line: String,
+        before_send: impl FnOnce(),
+    ) -> bool {
         line.push('\n');
-        self.tx.send(line).await.is_ok()
+        let Ok(slot) = self.tx.reserve().await else {
+            return false;
+        };
+        before_send();
+        slot.send(line);
+        true
     }
 
     /// Non-blocking send for protocol-level replies; `false` when the queue is full or the
@@ -76,6 +86,7 @@ pub struct ConnCtx {
     pub depth: u8,
     pub notifier: Notifier,
     closed: watch::Receiver<bool>,
+    cancelled: Option<watch::Receiver<bool>>,
     /// The caller is the web UI, not an orchestrator or run (recorded in event data).
     pub via_ui: bool,
     /// Keeps the `closed` channel open for contexts that have no connection.
@@ -91,6 +102,7 @@ impl ConnCtx {
             depth: 0,
             notifier,
             closed,
+            cancelled: None,
             via_ui: false,
             _keep: None,
         }
@@ -123,6 +135,7 @@ impl ConnCtx {
             depth: 0,
             notifier: Notifier::new(tx),
             closed,
+            cancelled: None,
             via_ui: true,
             _keep: Some(Arc::new(closed_tx)),
         }
@@ -135,21 +148,40 @@ impl ConnCtx {
         let (closed_tx, closed) = watch::channel(false);
         Self {
             closed,
+            cancelled: None,
             _keep: Some(Arc::new(closed_tx)),
             ..self.clone()
         }
     }
 
-    /// Resolves when the client has disconnected (read EOF or write failure) or the
-    /// supervisor is shutting down. Long-running handlers (for example `wait_agent`)
-    /// should `select!` on this to stop waiting.
+    pub(crate) fn with_cancel(&self, cancelled: watch::Receiver<bool>) -> Self {
+        Self {
+            cancelled: Some(cancelled),
+            ..self.clone()
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.as_ref().is_some_and(|c| *c.borrow())
+    }
+
+    /// Resolves when the client has disconnected (read EOF or write failure), the
+    /// supervisor is shutting down, or this request was cancelled. Long-running handlers
+    /// (for example `wait_agent`) should `select!` on this to stop waiting.
     pub async fn closed(&self) {
         let mut rx = self.closed.clone();
-        let _ = rx.wait_for(|v| *v).await;
+        if let Some(mut crx) = self.cancelled.clone() {
+            tokio::select! {
+                _ = rx.wait_for(|v| *v) => {}
+                _ = crx.wait_for(|v| *v) => {}
+            }
+        } else {
+            let _ = rx.wait_for(|v| *v).await;
+        }
     }
 
     pub fn is_closed(&self) -> bool {
-        *self.closed.borrow()
+        *self.closed.borrow() || self.is_cancelled()
     }
 }
 

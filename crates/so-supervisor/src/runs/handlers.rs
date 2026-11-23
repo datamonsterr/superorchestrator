@@ -15,7 +15,7 @@ use so_core::proto::{
     WorkflowStatusParams,
 };
 
-use super::view::WaitMode;
+use super::view::{DiffMode, WaitMode};
 use super::{RunManager, WaitOutcome};
 use crate::dispatch::{ConnCtx, internal};
 use crate::server::SupervisorState;
@@ -52,7 +52,15 @@ pub(super) fn register(state: &Arc<SupervisorState>) {
             let r: GetRunParams = params(p)?;
             let row = m.resolve_run(&r.run).await?;
             m.authorize_run_or_inspect(&ctx, &row).await?;
-            json(m.run_view_with(row, r.diff).await?)
+            // `diff` keeps the full patch; `diff_stat` is the cheap stat-only summary.
+            let mode = if r.diff {
+                DiffMode::Full
+            } else if r.diff_stat {
+                DiffMode::Stat
+            } else {
+                DiffMode::None
+            };
+            json(m.run_view_with(row, mode).await?)
         }
     });
     let m = runs.clone();
@@ -198,6 +206,11 @@ async fn wait_agent(m: &RunManager, ctx: ConnCtx, p: WaitParams) -> Result<Value
     }
     let mut sub = m.subscribe(&sessions, Some(&ids));
     let timeout = wait_timeout(p.timeout_ms);
+    let mode = if p.include_progress {
+        WaitMode::Update
+    } else {
+        WaitMode::Quiet
+    };
     let WaitOutcome {
         finished,
         updates,
@@ -208,9 +221,7 @@ async fn wait_agent(m: &RunManager, ctx: ConnCtx, p: WaitParams) -> Result<Value
             Some(id) => Some(m.begin_wait(id, false).await),
             None => None,
         };
-        let r = m
-            .wait_runs(&ctx, &ids, &mut sub, Some(timeout), WaitMode::Update)
-            .await;
+        let r = m.wait_runs(&ctx, &ids, &mut sub, Some(timeout), mode).await;
         if let Some(g) = guard {
             g.end().await;
         }

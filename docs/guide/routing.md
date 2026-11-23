@@ -33,6 +33,23 @@ Each level needs `models`, `tier`, or both. `tier` (`high`, `mid` or `fast`) is 
 
 Duplicate refs in one level are rejected.
 
+### Task family preferences
+
+Add a `families` table to any complexity level to give different kinds of work their own model order. For example, a moderate review can prefer a Codex model and a moderate UI task can prefer a Gemini model.
+
+```toml
+[[router.levels]]
+name = "moderate"
+min = 38
+max = 62
+models = ["codex/gpt-6-luna/medium", "agy/gemini-3.8-flash-high/high", "codex/gpt-6.1-sol/medium"]
+families = { code_review = ["codex/gpt-6.1-sol/medium"], ui_design = ["agy/gemini-3.8-flash-high/high"] }
+```
+
+The router scores complexity and classifies the [task family](#openrouter-workspace-classifier) in the same Decisions request. Complexity selects the level. Eligible models preferred for that family lead within the level, followed by the level's usual order. Set preferences for models already available through the level's `models` list or tier. With an absent family answer, an unconfigured family, or unavailable preferred models, the level's usual order applies. Explicit pins still constrain routing.
+
+Use `superorchestrator models list` to check model refs and `superorchestrator route "Review the parser change for regressions" --explain` to verify how a real brief routes.
+
 ### Migrating from the choices table
 
 Older configs defined a choices table and listed its entries by id on each level. That format is gone. A config that still has the old table at the top level, or a `choices` list on a level, fails to load with this message:
@@ -141,10 +158,10 @@ The web Routing page shows the same report in its Insights panel, and the TUI Le
 ## How the router decides
 
 1. **Eligible models.** A listed model is eligible when its harness has an enabled account that is signed in, not flagged, not in cooldown, has headroom for the model's pool and is below its cap. There is no role filter. A call can exclude models with `exclude` (a list of refs), and accounts with `exclude_accounts`. Claude ranks last (see below).
-2. **Complexity.** The router needs a number from 0 to 100 that says how much reasoning, analysis and multi-step work the task needs. If a Jev key is set (below) and more than one model is eligible, the decider rates the task against five fixed anchors, from trivial to highly complex, and the router maps its answer to that scale. Without a key, or when the decider's answer is rejected, the router estimates the complexity from the task's keywords and length. The estimate is 20, 55 or 85.
+2. **Complexity and family.** If a Jev key is set (below) and more than one model is eligible, the decider rates the task against five fixed anchors, from trivial to highly complex, and classifies its primary task family. The router maps the score to a complexity of 0 to 100. Without a key, or when the complexity answer is rejected, the router estimates the complexity from the task's keywords and length. The estimate is 20, 55 or 85.
 3. **Level.** The router finds the level that contains that number (see [Level ranges](#level-ranges)). Outside every level, it takes the nearest one.
 4. **Candidates.** The candidates of a level are its eligible listed models, in list order. With an empty `models` list, they are the eligible models of the level's `tier`, in config order. If the level has no candidate, the other levels are tried, nearest first.
-5. **Pick.** Within the level, the first eligible model in list order wins. There are no priorities and no ties: the order you wrote is the answer. The rationale says `first in the level`, or `the only eligible choice of the level` when only one model of the level is eligible.
+5. **Pick.** Within the level, the first eligible model in the [task family's list](#task-family-preferences) wins when one is available. Otherwise the first eligible model in the level's usual order wins. The rationale explains the selection.
 6. **Account.** Among the chosen model's harness accounts (see [Account choice](#account-choice)).
 
 The decider sees only the task text, the agent profile name and the routing instruction. It never sees account names, quota or usage, and it does not choose a model. A rejected answer is ignored, and the heuristic estimate is used instead. The answer is accepted only when it is a complete score with probabilities over the five anchors that sum to 1 (within 0.02), and its confidence is at least `router.policy.min_confidence` (0.45). `router.policy.min_margin` is deprecated and ignored.
@@ -248,6 +265,38 @@ superorchestrator config set router.jev.model '~typesafe/jev-latest'
 ```
 
 `route --explain`, `doctor` and `route eval` show the models in effect and where each came from (`env`, `config` or `default`). The environment is read by the supervisor, so set it before the supervisor starts.
+
+### OpenRouter workspace classifier
+
+OpenRouter Custom Classifiers add tags to completed generations for usage reporting. An OpenRouter workspace admin can create a classifier under the workspace's **Classifiers** page. For Superorchestrator reporting, start from **Agent complexity** or build a classifier with a single `task_family` dimension. Set the instruction to classify the primary deliverable in the latest task. Use the following categories for the `task_family` dimension. [OpenRouter Custom Classifiers](https://openrouter.ai/docs/guides/features/classifiers)
+
+| Value | Primary deliverable | Example |
+|---|---|---|
+| `code_implementation` | Implement or refactor code | Add CSV export to a report |
+| `code_review` | Evaluate an existing change and report findings | Review a proposed parser change |
+| `debugging` | Diagnose a failure or fix a defect | Find why a queued worker never starts |
+| `documentation` | Write or edit technical documentation | Document account configuration |
+| `research` | Gather evidence or compare options | Compare provider pricing |
+| `planning` | Design a technical approach or implementation plan | Plan a database migration |
+| `ui_design` | Design or polish a user interface or visual interaction | Improve an agent graph's readability |
+| `other` | Work outside the listed categories | Organize project labels |
+
+Choose a structured-output model available in the dashboard and a sampling rate. Start with 10% in a test workspace, save the classifier, and verify tags on representative generations in **Logs**. The classifier can see a serialized version of the generation prompt, including tool names and prior tool results. Classification happens after the generation finishes. The router uses the synchronous [Decisions API](https://openrouter.ai/docs/guides/features/decisions) at dispatch. Workspace tags cover only supported generations that actually pass through that OpenRouter workspace.
+
+### Classification cost estimates
+
+The following estimates use OpenRouter list prices checked on November 23, 2026. They exclude platform fees and the cost of the generation being classified. Actual cost depends on the model and billed input and output tokens, including the taxonomy and serialized context. OpenRouter bills workspace classification against the administrative user who configured it. [OpenRouter pricing](https://openrouter.ai/pricing) · [Classifier billing](https://openrouter.ai/docs/guides/features/classifiers#billing)
+
+| Use | Model | Input / output per million tokens | Assumption | Cost per 10,000 eligible requests |
+|---|---|---:|---|---:|
+| Live routing, current default | [Jev 1.14](https://openrouter.ai/typesafe/jev-1.14) | $0.042 / $0 | 1,000 input tokens per decision | $0.42 |
+| Live routing, evaluation candidate | [Liquid d1.2](https://openrouter.ai/liquid/d1.2) | $0.020 / $0 | 1,000 input tokens per decision | $0.20 |
+| Workspace reporting, full sampling | [Gemini 3.1 Flash Lite](https://openrouter.ai/google/gemini-3.1-flash-lite/pricing) | $0.25 / $1.50 | 1,000 input and 50 output tokens per classification | $3.25 |
+| Workspace reporting, 10% sampling | [Gemini 3.1 Flash Lite](https://openrouter.ai/google/gemini-3.1-flash-lite/pricing) | $0.25 / $1.50 | Same prompt and output, 1,000 classifications | $0.325 |
+
+An extra 200 billed input tokens to describe and ask for the task family would cost about $0.084 per 10,000 decisions at the Jev 1.14 rate. The family question shares the complexity request. Compare accuracy on your own review, debugging, and design tasks before switching the decisions model.
+
+In a live smoke test, both models matched the expected family and returned a complexity score for all eight synthetic examples, one per family. OpenRouter reported 4,394 billed input tokens and $0.000185 for Jev 1.14, and 1,564 billed input tokens and $0.000031 for Liquid d1.2. Those costs scale to about $0.23 and $0.04 per 10,000 requests of the same shape. The sample checks the schema and measures cost on short prompts. Evaluate classification and complexity on representative traffic before changing models.
 
 ### When the decider cannot be reached
 

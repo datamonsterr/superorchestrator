@@ -315,9 +315,9 @@ const WORKFLOW: &str = r#"# Delegate via superorchestrator
 
 1. `list_harnesses` first; inspect signed-in accounts, headroom and eligible choices. `list_agents` discovers agent profiles.
 2. Leave `harness: "auto"` and model/effort unset initially; keep accounts in `orchestrator.reserved_accounts` out of subagent pins. `route` previews a route.
-3. Brief each subagent with goal, acceptance commands, out-of-scope items and file pointers; it has no conversation context.
-4. `spawn_agent(prompt, agent: "implementer", cwd: "/repo", review: true, wait: false)`; use an existing agent profile. Default isolation is `worktree`.
-5. `wait_agent(runs: [id], timeout_ms: 30000)` until finish or `pending_review`. Answer question updates with `send_message(run: id, text: "...", kind: "answer")`, then wait again. Codex orchestrator: prefer `spawn_agent(wait: false)`, then wait with `timeout_ms` ≤ `1800000` (30 min); install writes `startup_timeout_sec = 30` and `tool_timeout_sec = 1860` in `~/.codex/config.toml` or `$CODEX_HOME/config.toml` (rerun `superorchestrator install` if missing); resume with `superorchestrator join <run>` (or the `join_command` from `get_run`).
+3. Reuse the agent profile for standing instructions and send a short goal, acceptance and file pointers; it has no conversation context.
+4. `spawn_agent(prompt, agent: "implementer", cwd: "/repo", review: true, wait: false)`. Default isolation is `worktree`.
+5. `wait_agent(runs: [id], include_progress: false, timeout_ms: 1800000)`: batch active run IDs and prefer quiet mode with up to 30-minute timeout (progress still streams as notifications). Returns on finish, questions, escalation, or `pending_review`; call `get_run` only for missing detail or review. Answer question updates with `send_message(run: id, text: "...", kind: "answer")`, then wait again. Codex orchestrator: prefer `spawn_agent(wait: false)`, then wait with `timeout_ms` ≤ `1800000` (30 min); install writes `startup_timeout_sec = 30` and `tool_timeout_sec = 1860` in `~/.codex/config.toml` or `$CODEX_HOME/config.toml` (rerun `superorchestrator install` if missing); resume with `superorchestrator join <run>` (or the `join_command` from `get_run`).
 6. At the review gate, inspect `get_run(run: id, diff: true)`; `accept_run(run: id, merge: true)` lands the branch, or `reject_run(run: id, feedback: "...")` continues fixes. Wait and review again.
 
 "#;
@@ -328,8 +328,9 @@ const BODY: &str = r#"## Controls
 |---|---|
 | `spawn_agent` | `agent` selects instructions/defaults; `cwd` selects the checkout. Subagent callers must stay inside their run worktree/cwd. |
 | `review: true`, `checks: ["ci", "pr_threads"]` | Hold at the review gate after checks. `"cmd:<shell>"` checks require depth 0. Commit changes and leave a clean tree for merging. |
-| `output_schema` | JSON Schema for the final result; include its required fields in the brief. |
-| `wait: true` | Block until finish or review gate; `false` returns a run id for `wait_agent`. Progress or timeout means wait again. |
+| `output_schema` | JSON Schema for the final result; supply output_schema only when a caller consumes structured fields. |
+| `wait: true` | Block until finish or review gate; `false` returns a run id for `wait_agent`. |
+| `wait_agent` | Batch active IDs (`runs: [ids]`), quiet mode `include_progress: false`, 30-min max (`timeout_ms: 1800000`). Returns on finish, question, escalation, review gate; call `get_run` only for missing detail or review. |
 | `send_message(run, text)` | Steer an active run or resume a finished run. `read_messages` reads unread messages. |
 | `fork_agent(run, prompt)` | Start a new run from a finished run's context. |
 | Escalation | Use a new `spawn_agent` with a `model` ref from a higher level, e.g. `codex/gpt-6.1-sol/high`; use choices from `list_harnesses` and include prior findings. |
@@ -455,11 +456,16 @@ Project `.superorchestrator/agents/` shadows user profiles, then `.claude/agents
 
 Inspect `superorchestrator levels list` and `superorchestrator config get router.levels`. List model refs in preference order; each level needs models or a tier (`fast`, `mid`, `high`). Complexity ranges are 0–100 and cannot overlap.
 
+Task families (`code_implementation`, `code_review`, `debugging`, `documentation`, `research`, `planning`, `ui_design`, `other`): configure ordered preferred model refs per family under `[router.levels.families]` to specialize choices before falling back to level models.
+
+Capability suggestions: `codex/gpt-6.1-sol/high` (code implementation, debugging), `agy/claude-sonnet-4-6/thinking` (code review, research, planning), `agy/gemini-3.8-flash-high/high` (documentation, ui_design, other).
+
 | Change | Command |
 |---|---|
 | Prefer a model | `superorchestrator levels model add complex codex/gpt-6.1-sol/high --position 1` (use `levels model move` if already listed) |
 | Remove a model | `superorchestrator levels model remove complex codex/gpt-6.1-sol/high` |
 | Adjust a range | `superorchestrator levels edit complex --min 63 --max 87` |
+| Set family preference | `superorchestrator config set router.levels '[{name="high", min=63, max=100, models=["codex/gpt-6.1-sol/high", "agy/claude-sonnet-4-6/thinking"], families={code_review=["agy/claude-sonnet-4-6/thinking"]}}]'` |
 | Replace levels | `superorchestrator config set router.levels '[{name="all", min=0, max=100, models=["codex/gpt-6.1-sol/high"]}]'` |
 | Edit routing | `superorchestrator config edit` (the `[router]` settings in `config.toml`) |
 | Verify selection | `superorchestrator route "Review parser correctness" --agent reviewer --explain` |
@@ -499,6 +505,7 @@ mod tests {
             max,
             tier: None,
             models: models.iter().map(|m| m.parse().unwrap()).collect(),
+            families: std::collections::BTreeMap::new(),
         }
     }
 
@@ -601,7 +608,7 @@ mod tests {
             render_skill(&[], &[], &[]),
         ] {
             assert!(
-                skill.lines().count() < 70,
+                skill.lines().count() < 80,
                 "{} lines",
                 skill.lines().count()
             );
@@ -635,6 +642,19 @@ mod tests {
         ] {
             assert!(!skill.contains("codex resume"), "{skill}");
             assert!(skill.contains("superorchestrator join <run>"));
+        }
+    }
+
+    #[test]
+    fn mcp_skill_recommends_batching_and_quiet_mode() {
+        for skill in [render_skill(&[], &[], &[]), render_plugin_mcp_skill()] {
+            assert!(skill.contains("include_progress: false"));
+            assert!(skill.contains("batch active"));
+            assert!(skill.contains("1800000"));
+            assert!(skill.contains("`get_run` only for missing detail or review"));
+            assert!(skill.contains("standing instructions"));
+            assert!(skill.contains("short goal, acceptance and file pointers"));
+            assert!(skill.contains("consumes structured fields"));
         }
     }
 

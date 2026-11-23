@@ -40,7 +40,14 @@ function LevelForm({ target, levels, onClose, onSave }: Omit<Props, 'target'> & 
       setError('tier', { type: 'validate', message: 'A level without models needs a tier' })
       return
     }
-    const next: Level = { name: v.name, min: v.min, max: v.max, models, ...(v.tier !== NO_TIER ? { tier: v.tier as Level['tier'] } : {}) }
+    const next: Level = {
+      name: v.name,
+      min: v.min,
+      max: v.max,
+      models,
+      ...(editing?.families !== undefined ? { families: editing.families } : {}),
+      ...(v.tier !== NO_TIER ? { tier: v.tier as Level['tier'] } : {}),
+    }
     const list = editing ? levels.map((l) => (l.name === editing.name ? next : l)) : [...levels, next]
     try {
       await onSave(list)

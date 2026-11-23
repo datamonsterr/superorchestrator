@@ -27,6 +27,42 @@ pub enum WaitMode {
     /// `wait_agent`: a run is done when it finished; progress, a question, an escalation
     /// or the review gate also end the wait.
     Update,
+    /// `wait_agent` with `include_progress: false`: a run is done when it finished; a question,
+    /// an escalation or the review gate also end the wait. Routine progress is streamed as
+    /// notifications but does not end the wait and is omitted from `updates`.
+    Quiet,
+}
+
+impl WaitMode {
+    /// True when the wait mode listens for intermediate updates (questions, review gate, etc.).
+    pub fn is_interactive(&self) -> bool {
+        matches!(self, WaitMode::Update | WaitMode::Quiet)
+    }
+
+    /// Whether this event ends the wait for this mode and belongs in `updates`.
+    pub fn is_update(&self, ev: &Event) -> bool {
+        match self {
+            WaitMode::Finish => false,
+            WaitMode::Update => match ev.event_type {
+                EventType::Progress | EventType::QuestionAsked | EventType::Escalated => true,
+                EventType::StateChanged => ev.data["to"] == "pending_review",
+                _ => false,
+            },
+            WaitMode::Quiet => match ev.event_type {
+                EventType::QuestionAsked | EventType::Escalated => true,
+                EventType::StateChanged => ev.data["to"] == "pending_review",
+                _ => false,
+            },
+        }
+    }
+}
+
+/// How much of a run's worktree change `get_run` asks for. `Stat` skips the patch git calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffMode {
+    None,
+    Stat,
+    Full,
 }
 
 /// Result of waiting on runs.
@@ -60,19 +96,23 @@ impl RunManager {
     }
 
     pub async fn run_view(&self, row: RunRow) -> R<RunView> {
-        self.run_view_with(row, false).await
+        self.run_view_with(row, DiffMode::None).await
     }
 
-    /// `get_run`; with `diff` also what the run changed in its worktree.
-    pub async fn run_view_with(&self, row: RunRow, diff: bool) -> R<RunView> {
+    /// `get_run`; with a diff mode also what the run changed in its worktree.
+    pub async fn run_view_with(&self, row: RunRow, diff: DiffMode) -> R<RunView> {
         self.run_view_capped(row, diff, DIFF_CAP).await
     }
 
-    pub(crate) async fn run_view_capped(&self, row: RunRow, diff: bool, cap: usize) -> R<RunView> {
-        let diff = if diff {
-            self.run_diff(&row, cap).await?
-        } else {
-            None
+    pub(crate) async fn run_view_capped(
+        &self,
+        row: RunRow,
+        diff: DiffMode,
+        cap: usize,
+    ) -> R<RunView> {
+        let diff = match diff {
+            DiffMode::None => None,
+            mode => self.run_diff(&row, cap, mode).await?,
         };
         let id = row.id.clone();
         let events = self
@@ -128,8 +168,9 @@ impl RunManager {
     }
 
     /// The diff of a run with a worktree branch; `None` for a run without one. A diff that
-    /// cannot be made is reported in `error`, never as a failure of `get_run`.
-    async fn run_diff(&self, row: &RunRow, cap: usize) -> R<Option<RunDiff>> {
+    /// cannot be made is reported in `error`, never as a failure of `get_run`. `Stat` leaves
+    /// `patch` empty without running the patch git calls.
+    async fn run_diff(&self, row: &RunRow, cap: usize, mode: DiffMode) -> R<Option<RunDiff>> {
         let Some(created) = crate::services::worktrees::created_of(row) else {
             return Ok(None);
         };
@@ -150,7 +191,10 @@ impl RunManager {
                         created.branch
                     ));
                 }
-                super::worktree::diff(&created, cap)
+                match mode {
+                    DiffMode::Stat => super::worktree::stat(&created, cap),
+                    _ => super::worktree::diff(&created, cap),
+                }
             })
             .await;
         Ok(Some(match out {
@@ -224,7 +268,8 @@ impl RunManager {
     }
 
     /// The latest question of each listed run that still waits for the caller's answer,
-    /// and the review-gate event of each listed run waiting for a decision.
+    /// the review-gate event of each listed run waiting for a decision, and any standing
+    /// escalation.
     async fn standing_updates(&self, ctx: &ConnCtx, ids: &[String]) -> R<Vec<Event>> {
         let (session, caller, ids) = (ctx.session_id.clone(), ctx.run_id.clone(), ids.to_vec());
         let Some(session) = session else {
@@ -245,6 +290,8 @@ impl RunManager {
                     Some(EventType::QuestionAsked)
                 } else if run.state == so_core::RunState::PendingReview {
                     Some(EventType::StateChanged)
+                } else if run.state == so_core::RunState::Escalated {
+                    Some(EventType::Escalated)
                 } else {
                     None
                 };
@@ -271,8 +318,8 @@ impl RunManager {
         let mut finished_rx = self.inner.finished.subscribe();
         let mut out = WaitOutcome::default();
         let mut open = true;
-        if mode == WaitMode::Update {
-            // Questions and reviews that were raised before this call still need an answer.
+        if mode.is_interactive() {
+            // Questions, escalations and reviews that were raised before this call still need an answer.
             out.updates = self.standing_updates(ctx, ids).await?;
         }
         loop {
@@ -280,20 +327,20 @@ impl RunManager {
             if !done.is_empty() {
                 // Everything the run emitted is already queued: deliver it before returning.
                 while let Ok(d) = sub.try_recv() {
-                    push_event(ctx, ids, d.seq, d.event, &mut out).await;
+                    push_event(ctx, ids, d.seq, d.event, mode, &mut out).await;
                 }
                 out.finished = done;
                 return Ok(out);
             }
-            if mode == WaitMode::Update && !out.updates.is_empty() {
+            if mode.is_interactive() && !out.updates.is_empty() {
                 while let Ok(d) = sub.try_recv() {
-                    push_event(ctx, ids, d.seq, d.event, &mut out).await;
+                    push_event(ctx, ids, d.seq, d.event, mode, &mut out).await;
                 }
                 return Ok(out);
             }
             tokio::select! {
                 d = sub.recv(), if open => match d {
-                    Some(d) => push_event(ctx, ids, d.seq, d.event, &mut out).await,
+                    Some(d) => push_event(ctx, ids, d.seq, d.event, mode, &mut out).await,
                     None => open = false,
                 },
                 _ = finished_rx.changed() => {}
@@ -306,23 +353,30 @@ impl RunManager {
                     out.timed_out = true;
                     return Ok(out);
                 }
-                () = ctx.closed() => return Err(rpc(UNAVAILABLE, "client disconnected")),
+                () = ctx.closed() => {
+                    return Err(rpc(
+                        UNAVAILABLE,
+                        if ctx.is_cancelled() {
+                            "request cancelled"
+                        } else {
+                            "client disconnected"
+                        },
+                    ));
+                }
                 () = tokio::time::sleep(POLL) => {}
             }
         }
     }
 }
 
-/// Events that end a `wait_agent`.
-fn is_update(ev: &Event) -> bool {
-    match ev.event_type {
-        EventType::Progress | EventType::QuestionAsked | EventType::Escalated => true,
-        EventType::StateChanged => ev.data["to"] == "pending_review",
-        _ => false,
-    }
-}
-
-async fn push_event(ctx: &ConnCtx, ids: &[String], seq: u64, ev: Event, out: &mut WaitOutcome) {
+async fn push_event(
+    ctx: &ConnCtx,
+    ids: &[String],
+    seq: u64,
+    ev: Event,
+    mode: WaitMode,
+    out: &mut WaitOutcome,
+) {
     if !ev.run_id.as_ref().is_some_and(|r| ids.contains(r)) {
         return;
     }
@@ -336,7 +390,7 @@ async fn push_event(ctx: &ConnCtx, ids: &[String], seq: u64, ev: Event, out: &mu
     }
     .to_json();
     ctx.notifier.notify("event", payload).await;
-    if is_update(&ev) {
+    if mode.is_update(&ev) {
         out.updates.push(ev);
     }
 }

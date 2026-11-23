@@ -342,7 +342,6 @@ impl Env {
         };
         let opts =
             SupervisorOptions::new(self.paths.clone(), self.config.clone(), self.sock.clone())
-                .with_lock_wait(Duration::ZERO)
                 .with_idle_exit(Duration::from_secs(600))
                 .with_reap_interval(reap)
                 .with_host(host)
@@ -391,6 +390,7 @@ pub fn level(name: &str, min: u8, max: u8, refs: &[&str]) -> Level {
         max,
         tier: None,
         models: refs.iter().map(|r| r.parse().unwrap()).collect(),
+        families: std::collections::BTreeMap::new(),
     }
 }
 
@@ -404,6 +404,7 @@ pub async fn wait_for(c: &SupervisorClient, run: &str) -> WaitResult {
         WaitParams {
             runs: vec![run.into()],
             timeout_ms: Some(20_000),
+            include_progress: true,
         },
     )
     .await

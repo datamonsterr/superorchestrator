@@ -1,16 +1,17 @@
 //! Unix-socket server: listener, connections, session lifecycle, idle exit, shutdown.
 
+use std::collections::HashMap;
 use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use so_accounts::HostEnv;
 use so_core::proto::{
-    INTERNAL_ERROR, INVALID_REQUEST, METHOD_HELLO, PARSE_ERROR, Request, Response, RpcError,
-    UNAVAILABLE,
+    INTERNAL_ERROR, INVALID_REQUEST, METHOD_HELLO, NOTIFICATION_CANCEL_REQUEST, Notification,
+    PARSE_ERROR, Request, Response, RpcError, UNAVAILABLE,
 };
 use so_core::{Config, Paths};
 use so_store::Store;
@@ -651,12 +652,27 @@ async fn writer_task(
     let _ = wr.shutdown().await;
 }
 
+/// Guards an entry in the in-flight cancellations map, removing it when the handler task finishes.
+struct CancelGuard {
+    cancels: Arc<Mutex<HashMap<Value, watch::Sender<bool>>>>,
+    id: Value,
+}
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        if let Ok(mut map) = self.cancels.lock() {
+            map.remove(&self.id);
+        }
+    }
+}
+
 /// Runs one request in its own task so a panic becomes an INTERNAL_ERROR reply.
 async fn run_handler(
     state: Arc<SupervisorState>,
     ctx: ConnCtx,
     req: Request,
-    _permit: OwnedSemaphorePermit,
+    permit: OwnedSemaphorePermit,
+    guard: CancelGuard,
 ) {
     let id = req.id.clone();
     let method = req.method.clone();
@@ -674,7 +690,14 @@ async fn run_handler(
             )
         }
     };
-    notifier.send_line(response_line(&resp)).await;
+    // Keep both guards while waiting for queue space. Once the reply can reach the
+    // client, the request ID and slot must already be available for reuse.
+    notifier
+        .send_line_after(response_line(&resp), move || {
+            drop(guard);
+            drop(permit);
+        })
+        .await;
 }
 
 async fn serve_connection(
@@ -694,6 +717,7 @@ async fn serve_connection(
     let mut reader = BufReader::new(rd);
     let mut inflight = JoinSet::new();
     let permits = Arc::new(Semaphore::new(state.max_inflight));
+    let cancels: Arc<Mutex<HashMap<Value, watch::Sender<bool>>>> = Arc::default();
 
     let end = 'conn: loop {
         while inflight.try_join_next().is_some() {}
@@ -730,6 +754,36 @@ async fn serve_connection(
                 continue;
             }
         };
+        if value.get("id").is_none() {
+            if !value.is_object() {
+                reply!(error_line(Value::Null, INVALID_REQUEST, "invalid request"));
+                continue;
+            }
+            let note = serde_json::from_value::<Notification>(value);
+            let Ok(note) = note else {
+                reply!(error_line(Value::Null, INVALID_REQUEST, "invalid request"));
+                continue;
+            };
+            if note.jsonrpc != so_core::proto::JSONRPC {
+                reply!(error_line(Value::Null, INVALID_REQUEST, "invalid request"));
+                continue;
+            }
+            if note.method == NOTIFICATION_CANCEL_REQUEST
+                || note.method == "cancel_request"
+                || note.method == "$/cancelRequest"
+            {
+                let target_id = note.params.get("id").cloned().unwrap_or(note.params);
+                let tx = cancels
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&target_id)
+                    .cloned();
+                if let Some(tx) = tx {
+                    tx.send_replace(true);
+                }
+            }
+            continue;
+        }
         let id = value.get("id").cloned().unwrap_or(Value::Null);
         let req: Request = match serde_json::from_value(value) {
             Ok(r) => r,
@@ -739,6 +793,18 @@ async fn serve_connection(
                 continue;
             }
         };
+        if cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&req.id)
+        {
+            reply!(error_line(
+                req.id,
+                INVALID_REQUEST,
+                "request id already in flight"
+            ));
+            continue;
+        }
         if req.method == METHOD_HELLO {
             let resp = dispatch::handle_hello(&state, &mut ctx, req).await;
             if guard.session.is_none() && ctx.run_id.is_none() {
@@ -758,7 +824,17 @@ async fn serve_connection(
                 ));
                 continue;
             };
-            inflight.spawn(run_handler(state.clone(), ctx.clone(), req, permit));
+            let (req_cancel_tx, req_cancel_rx) = watch::channel(false);
+            cancels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(req.id.clone(), req_cancel_tx);
+            let req_ctx = ctx.with_cancel(req_cancel_rx);
+            let guard = CancelGuard {
+                cancels: cancels.clone(),
+                id: req.id.clone(),
+            };
+            inflight.spawn(run_handler(state.clone(), req_ctx, req, permit, guard));
         }
     };
 
