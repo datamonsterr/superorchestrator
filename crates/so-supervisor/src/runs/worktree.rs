@@ -828,9 +828,11 @@ fn diff_with(c: &Created, cap: usize, stat_only: bool) -> Result<DiffOut, String
         Ok(out)
     };
     let stat_out = run(&["--stat"], cap)?;
-    let mut stat = String::from_utf8_lossy(&stat_out.bytes)
-        .trim_end()
-        .to_string();
+    let mut stat = String::from_utf8_lossy(&stat_out.bytes).into_owned();
+    // `git_capped` cuts at a byte boundary, which can split a multi-byte filename. Keep the
+    // text to whole characters and remember that git's stat did not fit in `cap` bytes.
+    let mut stat_truncated = stat_out.truncated || truncate_utf8(&mut stat, cap);
+    let mut stat = stat.trim_end().to_string();
     let (mut patch, mut truncated) = if stat_only {
         (Vec::new(), false)
     } else {
@@ -869,8 +871,12 @@ fn diff_with(c: &Created, cap: usize, stat_only: bool) -> Result<DiffOut, String
             stat.push_str(&format!("\n (+{} more files)", all.len() - MAX_UNTRACKED));
         }
     }
+    // Untracked names are appended after git's stat, so cap the assembled text as well: a
+    // stat-only reply must not grow past `cap` or end in a half-finished line.
+    stat_truncated |= truncate_utf8(&mut stat, cap);
     let mut patch = String::from_utf8_lossy(&patch).into_owned();
     truncated |= truncate_utf8(&mut patch, cap);
+    truncated |= stat_truncated;
     Ok(DiffOut {
         base,
         stat,
@@ -1035,6 +1041,32 @@ mod tests {
         let full = diff(&created, 4096).unwrap();
         assert!(full.patch.contains("+f"), "{}", full.patch);
         assert_eq!(short.stat, full.stat);
+    }
+
+    #[test]
+    fn stat_only_reports_a_stat_that_exceeds_a_small_cap() {
+        let (_d, p) = repo_with_branch();
+        git(&p, &["checkout", "-q", "feat"]).unwrap();
+        for i in 0..12 {
+            std::fs::write(p.join(format!("file-with-a-long-name-{i:02}.txt")), "x\n").unwrap();
+        }
+        git(&p, &["add", "."]).unwrap();
+        git(&p, &["commit", "-q", "-m", "many files"]).unwrap();
+        git(&p, &["checkout", "-q", "main"]).unwrap();
+        let created = Created {
+            path: p.join("no-worktree"),
+            branch: "feat".into(),
+            base: git(&p, &["rev-parse", "main"]).unwrap(),
+            repo: p.clone(),
+        };
+        let short = stat(&created, 200).unwrap();
+        assert!(short.truncated, "a stat over the 200-byte cap must say so");
+        assert!(short.stat.len() <= 200, "{} bytes", short.stat.len());
+        assert!(!short.stat.contains('\u{fffd}'), "{}", short.stat);
+        assert!(short.patch.is_empty());
+        let full = diff(&created, 200).unwrap();
+        assert!(full.truncated);
+        assert!(full.stat.len() <= 200);
     }
 
     #[test]
