@@ -325,4 +325,36 @@ describe('AgentGraphView', () => {
     expect(within(updatedCard).getByText('Running')).toBeInTheDocument()
     expect(within(updatedCard).queryByText('Pending review')).toBeNull()
   })
+
+  it('follows focusedNodeId ahead of selectedRunId to preserve roving focus after navigating away', async () => {
+    const user = userEvent.setup()
+    const runs = [
+      makeRun('run-1', 'agent-one', null, 0, 'running'),
+      makeRun('run-2', 'agent-two', 'run-1', 1, 'running'),
+    ]
+    const model = deriveTimeline(runs, [], Date.UTC(2026, 0, 1, 12, 10))
+    const onSelect = vi.fn()
+
+    // Initially run-1 is selected via prop
+    render(<AgentGraphView model={model} selectedRunId="run-1" onSelect={onSelect} />)
+
+    const btn1 = screen.getByTestId('graph-node-run-1')
+    const btn2 = screen.getByTestId('graph-node-run-2')
+
+    // Initial state: run-1 is selected and has roving tab stop
+    expect(btn1).toHaveAttribute('tabIndex', '0')
+    expect(btn2).toHaveAttribute('tabIndex', '-1')
+
+    // User navigates away to run-2 using keyboard
+    btn1.focus()
+    await user.keyboard('{ArrowRight}')
+
+    // Focus moved to run-2
+    expect(btn2).toHaveFocus()
+
+    // effectiveFocusId must follow focusedNodeId (run-2), NOT stay on selectedRunId (run-1)
+    expect(btn2).toHaveAttribute('tabIndex', '0')
+    expect(btn1).toHaveAttribute('tabIndex', '-1')
+    expect(btn2.className).toContain('ring-ring')
+  })
 })

@@ -108,8 +108,10 @@ function TimelineView({ sessionId, renderRunPanel }: TimelinePageProps & { sessi
   const zoomRef = useRef<HTMLDivElement>(null)
   const ready = !!model
   useEffect(() => {
-    zoomRef.current?.querySelector('[role="slider"]')?.setAttribute('aria-label', 'Zoom')
-  }, [ready])
+    if (viewMode === 'timeline') {
+      zoomRef.current?.querySelector('[role="slider"]')?.setAttribute('aria-label', 'Zoom')
+    }
+  }, [ready, viewMode])
 
   const tMin = model?.tMin
   const tMax = model?.tMax

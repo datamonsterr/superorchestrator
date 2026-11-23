@@ -434,4 +434,24 @@ describe('TimelinePage graph view and readability enhancements', () => {
     expect(await screen.findByText('0 of 2 runs')).toBeInTheDocument()
     expect(writeTestsNode.className).toContain('opacity-25')
   })
+
+  it('preserves accessible label on zoom slider after Graph -> Timeline remount', async () => {
+    renderPage('/sessions/sess-1')
+    await screen.findByRole('group', { name: 'Session timeline' })
+
+    // Slider is initially labeled
+    expect(screen.getByRole('slider', { name: 'Zoom' })).toBeInTheDocument()
+
+    // Toggle to Agent Graph view (slider is unmounted)
+    await userEvent.click(screen.getByRole('radio', { name: 'Agent graph view' }))
+    expect(await screen.findByRole('list', { name: 'Agents list' })).toBeInTheDocument()
+    expect(screen.queryByRole('slider', { name: 'Zoom' })).toBeNull()
+
+    // Toggle back to Timeline view (slider remounts)
+    await userEvent.click(screen.getByRole('radio', { name: 'Timeline view' }))
+    expect(await screen.findByRole('group', { name: 'Session timeline' })).toBeInTheDocument()
+
+    // Slider thumb must retain its accessible label after remount
+    expect(await screen.findByRole('slider', { name: 'Zoom' })).toBeInTheDocument()
+  })
 })

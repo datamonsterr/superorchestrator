@@ -209,14 +209,20 @@ export function computeGraphLayout(
   }
 
   // 2. Cycle detection and validation
-  // Build parent -> children map while detecting any circular references
+  // Build parent -> children map while detecting any circular references.
+  // Sort run IDs deterministically so that cycle breaking is independent of lane input order.
   const childrenMap = new Map<string, string[]>()
   for (const [id] of rawNodes) {
     childrenMap.set(id, [])
   }
 
-  for (const [id, node] of rawNodes) {
-    if (id === ORCHESTRATOR_LANE || !node.parentId) continue
+  const sortedIds = [...rawNodes.keys()]
+    .filter((id) => id !== ORCHESTRATOR_LANE)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
+
+  for (const id of sortedIds) {
+    const node = rawNodes.get(id)
+    if (!node || !node.parentId) continue
 
     // Detect cycle by traversing up ancestry
     let curr: string | null = node.parentId

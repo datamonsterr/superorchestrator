@@ -201,4 +201,26 @@ describe('graphLayout', () => {
     const updatedNode = updatedLayout.nodeMap.get('run-review')!
     expect(updatedNode.state).toBe('succeeded')
   })
+
+  it('breaks circular parent references deterministically regardless of lane input order (reversed-input regression)', () => {
+    // run-a points to run-b, run-b points to run-a (cycle)
+    const runA = makeRun('run-a', 'agent-a', 'run-b', 0)
+    const runB = makeRun('run-b', 'agent-b', 'run-a', 0)
+    const now = Date.UTC(2026, 0, 1, 12, 10)
+
+    const modelNormal = deriveTimeline([runA, runB], [], now)
+    const modelReversed = deriveTimeline([runB, runA], [], now)
+
+    const layoutNormal = computeGraphLayout(modelNormal, 'hierarchy', now)
+    const layoutReversed = computeGraphLayout(modelReversed, 'hierarchy', now)
+
+    // Parent resolution must be identical
+    expect(layoutNormal.nodeMap.get('run-a')!.parentId).toBe(layoutReversed.nodeMap.get('run-a')!.parentId)
+    expect(layoutNormal.nodeMap.get('run-b')!.parentId).toBe(layoutReversed.nodeMap.get('run-b')!.parentId)
+
+    // Edges must be identical regardless of input order
+    const edgesNormal = layoutNormal.edges.map((e) => `${e.source}->${e.target}`).sort()
+    const edgesReversed = layoutReversed.edges.map((e) => `${e.source}->${e.target}`).sort()
+    expect(edgesNormal).toEqual(edgesReversed)
+  })
 })

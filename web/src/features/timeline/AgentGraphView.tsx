@@ -108,11 +108,11 @@ export function AgentGraphView({
     return set
   }, [layout.nodes, isNodeMatch])
 
-  // Effective focused node (syncs with selectedRunId, fallback to user focus or first node)
-  const effectiveFocusId = selectedRunId && layout.nodeMap.has(selectedRunId)
-    ? selectedRunId
-    : focusedNodeId && layout.nodeMap.has(focusedNodeId)
-      ? focusedNodeId
+  // Effective focused node (follows focusedNodeId ahead of selectedRunId to preserve roving focus after navigating)
+  const effectiveFocusId = focusedNodeId && layout.nodeMap.has(focusedNodeId)
+    ? focusedNodeId
+    : selectedRunId && layout.nodeMap.has(selectedRunId)
+      ? selectedRunId
       : layout.nodes[0]?.id ?? null
 
   // Active highlighted edges (connected to hovered or focused or selected node)
