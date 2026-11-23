@@ -68,26 +68,10 @@ pub fn levels_by_distance(levels: &[Level], complexity: f64) -> Vec<usize> {
     idx
 }
 
-/// Candidates a level allows: if a task family is given and the level configures preferred
-/// models for it, those eligible choices come first (in preference order). Next come the
-/// remaining eligible choices of the level (in `models` list order, or tier order).
-fn level_candidates(
-    level: &Level,
-    cands: &[Candidate<'_>],
-    family: Option<TaskFamily>,
-) -> Vec<usize> {
+/// Ordinary candidates allowed by the level: models listed on the level (in list order),
+/// or candidates matching the level's tier.
+fn ordinary_level_candidates(level: &Level, cands: &[Candidate<'_>]) -> Vec<usize> {
     let mut out = Vec::new();
-    if let Some(f) = family
-        && let Some(prefs) = level.families.get(&f)
-    {
-        for m in prefs {
-            if let Some(i) = cands.iter().position(|c| &c.choice == m)
-                && !out.contains(&i)
-            {
-                out.push(i);
-            }
-        }
-    }
     if level.models.is_empty() {
         let Some(tier) = level.tier else {
             return out;
@@ -104,6 +88,42 @@ fn level_candidates(
             {
                 out.push(i);
             }
+        }
+    }
+    out
+}
+
+/// Candidates a level allows: if a task family is given and the level configures preferred
+/// models for it, prioritize the family's intersection with the level's ordinary candidates
+/// (in preference order). Next come the remaining ordinary candidates in their canonical order.
+fn level_candidates(
+    level: &Level,
+    cands: &[Candidate<'_>],
+    family: Option<TaskFamily>,
+) -> Vec<usize> {
+    let base = ordinary_level_candidates(level, cands);
+    let Some(f) = family else {
+        return base;
+    };
+    let Some(prefs) = level.families.get(&f) else {
+        return base;
+    };
+    if prefs.is_empty() {
+        return base;
+    }
+
+    let mut out = Vec::with_capacity(base.len());
+    for p in prefs {
+        for &idx in &base {
+            if &cands[idx].choice == p && !out.contains(&idx) {
+                out.push(idx);
+                break;
+            }
+        }
+    }
+    for &idx in &base {
+        if !out.contains(&idx) {
+            out.push(idx);
         }
     }
     out
@@ -370,5 +390,51 @@ mod tests {
         );
         assert_eq!(sel_fallback.order[0], 0); // choice_a
         assert_eq!(sel_fallback.why, "first in the level");
+
+        // When preferred choice is outside the level's models: falls back to canonical level order
+        let mut level_outside = levels[0].clone();
+        let choice_outside: Choice = "codex/outside/high".parse().unwrap();
+        level_outside
+            .families
+            .insert(TaskFamily::Planning, vec![choice_outside]);
+        let sel_outside = select(
+            &[level_outside],
+            &cands,
+            85.0,
+            &fallback,
+            Some(TaskFamily::Planning),
+        );
+        assert_eq!(sel_outside.order[0], 0); // choice_a
+        assert_eq!(sel_outside.why, "first in the level");
+
+        // On a tier level: preference outside the tier does not rank
+        let choice_fast: Choice = "codex/m-fast/fast".parse().unwrap();
+        let cand_fast = Candidate {
+            choice: choice_fast.clone(),
+            tier: Tier::Fast,
+            cost: crate::catalog::Cost::Included,
+            pool: "default".into(),
+            accounts: vec![&acct_state],
+        };
+        let mut tier_level = Level {
+            name: "tier-high".into(),
+            min: 63,
+            max: 100,
+            tier: Some(so_core::config::LevelTier::High),
+            models: vec![],
+            families: std::collections::BTreeMap::new(),
+        };
+        tier_level
+            .families
+            .insert(TaskFamily::CodeReview, vec![choice_fast]);
+        let tier_cands = vec![cand(choice_a.clone()), cand_fast];
+        let tier_sel = select(
+            &[tier_level],
+            &tier_cands,
+            85.0,
+            &[0, 1],
+            Some(TaskFamily::CodeReview),
+        );
+        assert_eq!(tier_sel.order[0], 0); // choice_a (High tier candidate only)
     }
 }

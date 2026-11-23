@@ -716,7 +716,7 @@ impl Config {
     }
 
     /// Distinct model refs of every level, in level order; a ref listed twice counts once,
-    /// at its first place. Includes models listed under task family preferences.
+    /// at its first place.
     pub fn choices(&self) -> Vec<Choice> {
         let mut out: Vec<Choice> = Vec::new();
         for l in &self.router.levels {
@@ -725,23 +725,16 @@ impl Config {
                     out.push(c.clone());
                 }
             }
-            for family_models in l.families.values() {
-                for c in family_models {
-                    if !out.contains(c) {
-                        out.push(c.clone());
-                    }
-                }
-            }
         }
         out
     }
 
     /// Whether some level lists the model ref `id`.
     pub fn lists_choice(&self, id: &str) -> bool {
-        self.router.levels.iter().any(|l| {
-            l.models.iter().any(|c| c.id() == id)
-                || l.families.values().any(|m| m.iter().any(|c| c.id() == id))
-        })
+        self.router
+            .levels
+            .iter()
+            .any(|l| l.models.iter().any(|c| c.id() == id))
     }
 
     /// Deserialises `text`, first refusing the pre-model-ref keys with a pointer to the new ones.
@@ -1252,6 +1245,25 @@ mod tests {
             ],
         );
         assert!(bad.validate().is_err());
+    }
+
+    #[test]
+    fn family_only_models_do_not_leak_into_choices_or_lists_choice() {
+        let toml_str = r#"
+            [[router.levels]]
+            name = "high"
+            min = 63
+            max = 100
+            models = ["codex/gpt-6.1-sol/high"]
+
+            [router.levels.families]
+            code_review = ["agy/claude-sonnet-4-6/thinking"]
+        "#;
+        let c = Config::parse(toml_str, std::path::Path::new("c.toml")).unwrap();
+        let ids: Vec<String> = c.choices().iter().map(Choice::id).collect();
+        assert_eq!(ids, ["codex/gpt-6.1-sol/high"]);
+        assert!(c.lists_choice("codex/gpt-6.1-sol/high"));
+        assert!(!c.lists_choice("agy/claude-sonnet-4-6/thinking"));
     }
 
     #[test]

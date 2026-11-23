@@ -464,7 +464,7 @@ Capability suggestions: `codex/gpt-6.1-sol/high` (code implementation, debugging
 | Prefer a model | `superorchestrator levels model add complex codex/gpt-6.1-sol/high --position 1` (use `levels model move` if already listed) |
 | Remove a model | `superorchestrator levels model remove complex codex/gpt-6.1-sol/high` |
 | Adjust a range | `superorchestrator levels edit complex --min 63 --max 87` |
-| Set family preference | `superorchestrator config set router.levels '[{name="high", min=63, max=100, models=["codex/gpt-6.1-sol/high"], families={code_review=["agy/claude-sonnet-4-6/thinking"]}}]'` |
+| Set family preference | `superorchestrator config set router.levels '[{name="high", min=63, max=100, models=["codex/gpt-6.1-sol/high", "agy/claude-sonnet-4-6/thinking"], families={code_review=["agy/claude-sonnet-4-6/thinking"]}}]'` |
 | Replace levels | `superorchestrator config set router.levels '[{name="all", min=0, max=100, models=["codex/gpt-6.1-sol/high"]}]'` |
 | Edit routing | `superorchestrator config edit` (the `[router]` settings in `config.toml`) |
 | Verify selection | `superorchestrator route "Review parser correctness" --agent reviewer --explain` |

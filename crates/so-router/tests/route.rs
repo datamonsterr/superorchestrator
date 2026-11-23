@@ -1841,3 +1841,80 @@ async fn pinned_and_single_choice_preserve_legacy_behavior_and_no_decider_call()
     assert_eq!(out_single.result.choice_id, CODEX_BIG);
     assert_eq!(fake.hits.load(Ordering::SeqCst), 0);
 }
+
+#[tokio::test]
+async fn task_family_pref_outside_level_models_preserves_canonical_level_ordering() {
+    let (url, _) = serve(vec![(
+        200,
+        answer_with_family(3.4, 0.9, "code_review", 0.9),
+        0,
+    )])
+    .await;
+    let mut w = world(&url, true);
+    // Level models only lists CODEX_BIG and AGY_FAST
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST]);
+    // Preferred model CODEX_SMALL is outside the level's models
+    let choice_outside: Choice = CODEX_SMALL.parse().unwrap();
+    high_level.families.insert(
+        so_core::config::TaskFamily::CodeReview,
+        vec![choice_outside],
+    );
+    w.config.router.levels = vec![high_level];
+
+    let out = route_detailed(&w.inputs(), &params("review this code"))
+        .await
+        .unwrap();
+    // Falls back to canonical level order: CODEX_BIG wins, CODEX_SMALL is never selected
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert_eq!(
+        out.result.task_family,
+        Some(so_core::config::TaskFamily::CodeReview)
+    );
+    assert!(out.result.rationale.contains("first in the level"));
+}
+
+#[tokio::test]
+async fn task_family_unavailable_preferred_candidate_preserves_canonical_fallback() {
+    let (url, _) = serve(vec![(
+        200,
+        answer_with_family(3.4, 0.9, "debugging", 0.9),
+        0,
+    )])
+    .await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST, CODEX_SMALL]);
+    high_level
+        .families
+        .insert(so_core::config::TaskFamily::Debugging, vec![choice_fast]);
+    w.config.router.levels = vec![high_level];
+
+    // Exclude preferred candidate AGY_FAST
+    let mut p = params("debug crash");
+    p.exclude = vec![AGY_FAST.into()];
+    let out = route_detailed(&w.inputs(), &p).await.unwrap();
+    // Canonical fallback order among remaining candidates: CODEX_BIG wins
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert!(out.result.rationale.contains("first in the level"));
+}
+
+#[tokio::test]
+async fn task_family_absent_question_in_decider_payload_preserves_level_ordering() {
+    // Pure complexity answer without task_family question
+    let resp = answer(3.4, 0.9);
+    let (url, _) = serve(vec![(200, resp, 0)]).await;
+    let mut w = world(&url, true);
+    let choice_fast: Choice = AGY_FAST.parse().unwrap();
+    let mut high_level = level("high", 63, 100, &[CODEX_BIG, AGY_FAST]);
+    high_level
+        .families
+        .insert(so_core::config::TaskFamily::CodeReview, vec![choice_fast]);
+    w.config.router.levels = vec![high_level];
+
+    let out = route_detailed(&w.inputs(), &params("review code"))
+        .await
+        .unwrap();
+    assert_eq!(out.result.choice_id, CODEX_BIG);
+    assert_eq!(out.result.task_family, None);
+    assert!(out.result.rationale.contains("first in the level"));
+}
