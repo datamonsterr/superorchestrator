@@ -33,6 +33,23 @@ Each level needs `models`, `tier`, or both. `tier` (`high`, `mid` or `fast`) is 
 
 Duplicate refs in one level are rejected.
 
+### Task family preferences
+
+Add a `families` table to any complexity level to give different kinds of work their own model order. For example, a moderate review can prefer a Codex model and a moderate UI task can prefer a Gemini model.
+
+```toml
+[[router.levels]]
+name = "moderate"
+min = 38
+max = 62
+models = ["codex/gpt-6-luna/medium", "agy/gemini-3.8-flash-high/high", "codex/gpt-6.1-sol/medium"]
+families = { code_review = ["codex/gpt-6.1-sol/medium"], ui_design = ["agy/gemini-3.8-flash-high/high"] }
+```
+
+The router scores complexity and classifies the [task family](#openrouter-workspace-classifier) in the same Decisions request. Complexity selects the level. Eligible models preferred for that family lead within the level, followed by the level's usual order. With an absent family answer, an unconfigured family, or unavailable preferred models, the level's usual order applies. Explicit pins still constrain routing.
+
+Use `superorchestrator models list` to check model refs and `superorchestrator route "Review the parser change for regressions" --explain` to verify how a real brief routes.
+
 ### Migrating from the choices table
 
 Older configs defined a choices table and listed its entries by id on each level. That format is gone. A config that still has the old table at the top level, or a `choices` list on a level, fails to load with this message:
@@ -141,10 +158,10 @@ The web Routing page shows the same report in its Insights panel, and the TUI Le
 ## How the router decides
 
 1. **Eligible models.** A listed model is eligible when its harness has an enabled account that is signed in, not flagged, not in cooldown, has headroom for the model's pool and is below its cap. There is no role filter. A call can exclude models with `exclude` (a list of refs), and accounts with `exclude_accounts`. Claude ranks last (see below).
-2. **Complexity.** The router needs a number from 0 to 100 that says how much reasoning, analysis and multi-step work the task needs. If a Jev key is set (below) and more than one model is eligible, the decider rates the task against five fixed anchors, from trivial to highly complex, and the router maps its answer to that scale. Without a key, or when the decider's answer is rejected, the router estimates the complexity from the task's keywords and length. The estimate is 20, 55 or 85.
+2. **Complexity and family.** If a Jev key is set (below) and more than one model is eligible, the decider rates the task against five fixed anchors, from trivial to highly complex, and classifies its primary task family. The router maps the score to a complexity of 0 to 100. Without a key, or when the complexity answer is rejected, the router estimates the complexity from the task's keywords and length. The estimate is 20, 55 or 85.
 3. **Level.** The router finds the level that contains that number (see [Level ranges](#level-ranges)). Outside every level, it takes the nearest one.
 4. **Candidates.** The candidates of a level are its eligible listed models, in list order. With an empty `models` list, they are the eligible models of the level's `tier`, in config order. If the level has no candidate, the other levels are tried, nearest first.
-5. **Pick.** Within the level, the first eligible model in list order wins. There are no priorities and no ties: the order you wrote is the answer. The rationale says `first in the level`, or `the only eligible choice of the level` when only one model of the level is eligible.
+5. **Pick.** Within the level, the first eligible model in the [task family's list](#task-family-preferences) wins when one is available. Otherwise the first eligible model in the level's usual order wins. The rationale explains the selection.
 6. **Account.** Among the chosen model's harness accounts (see [Account choice](#account-choice)).
 
 The decider sees only the task text, the agent profile name and the routing instruction. It never sees account names, quota or usage, and it does not choose a model. A rejected answer is ignored, and the heuristic estimate is used instead. The answer is accepted only when it is a complete score with probabilities over the five anchors that sum to 1 (within 0.02), and its confidence is at least `router.policy.min_confidence` (0.45). `router.policy.min_margin` is deprecated and ignored.
