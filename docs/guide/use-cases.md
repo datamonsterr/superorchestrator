@@ -43,12 +43,12 @@ After `superorchestrator setup`, open Claude Code in your project and ask:
 
 > Use superorchestrator to add input validation to `src/api/users.rs`. Send it to a cheap agent, wait for it, and summarise what changed.
 
-Claude Code loads the `use-superorchestrator-mcp` skill and then calls:
+Claude Code loads the `use-superorchestrator-mcp` skill and uses these tools.
 
-1. `list_harnesses` to see the accounts, levels and agents;
-2. `spawn_agent` with your task (`harness` stays `auto`, so the router picks);
-3. `wait_agent` until the run finishes;
-4. `get_run` for the result.
+1. `list_harnesses` shows current accounts, levels and routing choices. Pass `free_models: true` to browse the full free model catalog.
+2. `spawn_agent` starts the task with `harness: auto`. Use the agent profile for standing instructions and give the run a short brief with its goal, acceptance criteria and file pointers.
+3. `wait_agent` with `include_progress: false` waits through routine progress. It returns when a run needs attention, finishes, or the wait expires.
+4. Read the finished result from the wait response. Use `get_run` when the result needs more detail.
 
 To pin a harness, say so in the prompt: "run it on opencode". Claude Code passes `harness: "opencode"`. To use a saved custom agent, name it: "use the `pr-reviewer` agent on this branch". See [custom agents](agents.md).
 
@@ -60,7 +60,7 @@ You want to read the work before it lands. Ask for a review gate:
 
 > Delegate "rename `Config::load` to `Config::read` across the repo" with superorchestrator. Use review with the check `cmd:cargo test`. When it stops, show me the diff.
 
-Claude Code calls `spawn_agent` with `review: true` and `checks: ["cmd:cargo test"]`. The run works in its own git worktree. When it finishes and the check passes, it stops at `pending_review`. Claude Code then calls `get_run` with `diff: true` and shows you the branch, the `git diff --stat` and the patch.
+Claude Code calls `spawn_agent` with `review: true` and `checks: ["cmd:cargo test"]`. The run works in its own git worktree. When it finishes and the check passes, it stops at `pending_review`. Call `get_run` with `diff_stat: true` for the changed files and size, or use `diff: true` to include the patch for review.
 
 From a shell, see the same diff with:
 
@@ -82,7 +82,7 @@ Ask for several tasks at once:
 
 > Start three superorchestrator runs in parallel, one per package: add tests to `parser`, `lexer` and `printer`. Wait for all three.
 
-Claude Code calls `spawn_agent` three times without `wait`, then `wait_agent` with the three run ids. Each run gets its own worktree.
+Claude Code calls `spawn_agent` three times with `wait: false`, then passes the three run IDs to one quiet `wait_agent` call. Each run gets its own worktree. `cancel_agent` returns a compact receipt if a run needs to stop. Use `get_run` for its detailed record.
 
 For a repeatable job, write a workflow. Save this as `.superorchestrator/workflows/review-two.js` in your project:
 
