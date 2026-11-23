@@ -284,6 +284,12 @@ pub async fn mcp_reply(client: &SupervisorClient, tool: &str, args: &Value, raw:
     if tool != METHOD_WAIT_AGENT {
         return compact::project(tool, args, raw);
     }
+    let mut raw = raw;
+    if args.get("include_progress") == Some(&Value::Bool(false))
+        && let Some(updates) = raw.get_mut("updates").and_then(Value::as_array_mut)
+    {
+        updates.retain(|u| u.get("type").and_then(Value::as_str) != Some("progress"));
+    }
     let mut finished = Vec::new();
     for id in raw["finished"].as_array().into_iter().flatten() {
         let Some(id) = id.as_str() else { continue };

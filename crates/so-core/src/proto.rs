@@ -148,6 +148,10 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
+fn yes() -> bool {
+    true
+}
+
 // ---------------------------------------------------------------- params
 
 #[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -372,6 +376,21 @@ pub struct WaitParams {
     pub runs: Vec<String>,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Include routine progress in updates and return when progress is posted (default true).
+    /// With `false`, progress notifications are streamed to the client, but routine progress
+    /// does not end the wait or appear in updates.
+    #[serde(default = "yes")]
+    pub include_progress: bool,
+}
+
+impl Default for WaitParams {
+    fn default() -> Self {
+        Self {
+            runs: Vec::new(),
+            timeout_ms: None,
+            include_progress: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -692,10 +711,6 @@ pub struct AgentsView {
     pub agents: Vec<AgentView>,
 }
 
-fn yes() -> bool {
-    true
-}
-
 /// Parameters of `run_workflow` (SPEC 11): a saved workflow by `name`, or an inline `script`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -978,5 +993,21 @@ mod tests {
         let debug = format!("{hello:?}");
         assert!(!debug.contains("private-test-token"));
         assert!(debug.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn wait_params_default_and_round_trip() {
+        let p: WaitParams = serde_json::from_str(r#"{"runs":["r1"]}"#).unwrap();
+        assert!(p.include_progress);
+        assert_eq!(p.runs, vec!["r1"]);
+        assert_eq!(p.timeout_ms, None);
+
+        let quiet: WaitParams =
+            serde_json::from_str(r#"{"runs":["r1"],"include_progress":false}"#).unwrap();
+        assert!(!quiet.include_progress);
+
+        let explicit_true: WaitParams =
+            serde_json::from_str(r#"{"runs":["r1"],"include_progress":true}"#).unwrap();
+        assert!(explicit_true.include_progress);
     }
 }

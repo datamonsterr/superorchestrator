@@ -198,6 +198,11 @@ async fn wait_agent(m: &RunManager, ctx: ConnCtx, p: WaitParams) -> Result<Value
     }
     let mut sub = m.subscribe(&sessions, Some(&ids));
     let timeout = wait_timeout(p.timeout_ms);
+    let mode = if p.include_progress {
+        WaitMode::Update
+    } else {
+        WaitMode::Quiet
+    };
     let WaitOutcome {
         finished,
         updates,
@@ -208,9 +213,7 @@ async fn wait_agent(m: &RunManager, ctx: ConnCtx, p: WaitParams) -> Result<Value
             Some(id) => Some(m.begin_wait(id, false).await),
             None => None,
         };
-        let r = m
-            .wait_runs(&ctx, &ids, &mut sub, Some(timeout), WaitMode::Update)
-            .await;
+        let r = m.wait_runs(&ctx, &ids, &mut sub, Some(timeout), mode).await;
         if let Some(g) = guard {
             g.end().await;
         }

@@ -151,6 +151,7 @@ async fn main() {
                 WaitParams {
                     runs: left.clone(),
                     timeout_ms: Some(60_000),
+                    include_progress: true,
                 },
             )
             .await

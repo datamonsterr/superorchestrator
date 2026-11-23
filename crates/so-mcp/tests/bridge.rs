@@ -306,6 +306,41 @@ async fn wait_agent_streams_progress() {
 }
 
 #[tokio::test]
+async fn wait_agent_quiet_mode_streams_progress_and_omits_it_from_updates() {
+    let f = fixture(false).await;
+    let mut meta = RequestMetaObject::default();
+    let mut params = CallToolRequestParams::new("wait_agent").with_arguments(
+        json!({"runs": ["abcdefgh1234"], "include_progress": false})
+            .as_object()
+            .unwrap()
+            .clone(),
+    );
+    params.meta = Some(std::mem::take(&mut meta));
+    let handle = f
+        .client
+        .send_cancellable_request(
+            ClientRequest::CallToolRequest(Request::new(params)),
+            PeerRequestOptions::no_options(),
+        )
+        .await
+        .unwrap();
+    let resp = handle.await_response().await.unwrap();
+    let v = serde_json::to_value(&resp).unwrap();
+    assert_eq!(
+        v["structuredContent"]["finished"],
+        json!([{"run_id": "abcdefgh1234", "state": "succeeded", "result": "ok"}])
+    );
+    assert!(v["structuredContent"].get("updates").is_none());
+    let got = f.collector.progress.lock().unwrap().clone();
+    assert!(got.len() >= 2, "got {got:?}");
+    assert_eq!(
+        got[0].message.as_deref(),
+        Some("run abcdefgh: progress step=a status=running")
+    );
+    f.sup.shutdown().await;
+}
+
+#[tokio::test]
 async fn no_progress_without_token_and_calls_are_concurrent() {
     let f = fixture(false).await;
     let a = f.client.call_tool(
