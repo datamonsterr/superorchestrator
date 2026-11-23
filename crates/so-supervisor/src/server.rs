@@ -666,31 +666,6 @@ impl Drop for CancelGuard {
     }
 }
 
-fn find_cancel_tx(
-    cancels: &HashMap<Value, watch::Sender<bool>>,
-    target: &Value,
-) -> Option<watch::Sender<bool>> {
-    if let Some(tx) = cancels.get(target) {
-        return Some(tx.clone());
-    }
-    match target {
-        Value::String(s) => {
-            if let Ok(n) = s.parse::<u64>()
-                && let Some(tx) = cancels.get(&Value::Number(n.into()))
-            {
-                return Some(tx.clone());
-            }
-        }
-        Value::Number(n) => {
-            if let Some(tx) = cancels.get(&Value::String(n.to_string())) {
-                return Some(tx.clone());
-            }
-        }
-        _ => {}
-    }
-    None
-}
-
 /// Runs one request in its own task so a panic becomes an INTERNAL_ERROR reply.
 async fn run_handler(
     state: Arc<SupervisorState>,
@@ -773,16 +748,29 @@ async fn serve_connection(
             }
         };
         if value.get("id").is_none() {
-            if let Ok(note) = serde_json::from_value::<Notification>(value)
-                && (note.method == NOTIFICATION_CANCEL_REQUEST
-                    || note.method == "cancel_request"
-                    || note.method == "$/cancelRequest")
+            if !value.is_object() {
+                reply!(error_line(Value::Null, INVALID_REQUEST, "invalid request"));
+                continue;
+            }
+            let note = serde_json::from_value::<Notification>(value);
+            let Ok(note) = note else {
+                reply!(error_line(Value::Null, INVALID_REQUEST, "invalid request"));
+                continue;
+            };
+            if note.jsonrpc != so_core::proto::JSONRPC {
+                reply!(error_line(Value::Null, INVALID_REQUEST, "invalid request"));
+                continue;
+            }
+            if note.method == NOTIFICATION_CANCEL_REQUEST
+                || note.method == "cancel_request"
+                || note.method == "$/cancelRequest"
             {
                 let target_id = note.params.get("id").cloned().unwrap_or(note.params);
-                let tx = find_cancel_tx(
-                    &cancels.lock().unwrap_or_else(|e| e.into_inner()),
-                    &target_id,
-                );
+                let tx = cancels
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&target_id)
+                    .cloned();
                 if let Some(tx) = tx {
                     tx.send_replace(true);
                 }
@@ -798,6 +786,18 @@ async fn serve_connection(
                 continue;
             }
         };
+        if cancels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&req.id)
+        {
+            reply!(error_line(
+                req.id,
+                INVALID_REQUEST,
+                "request id already in flight"
+            ));
+            continue;
+        }
         if req.method == METHOD_HELLO {
             let resp = dispatch::handle_hello(&state, &mut ctx, req).await;
             if guard.session.is_none() && ctx.run_id.is_none() {
