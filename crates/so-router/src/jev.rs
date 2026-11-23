@@ -192,7 +192,6 @@ pub fn validate(data: &Value) -> Result<Validated, String> {
             if let Some(choice_str) = tf_answer.get("choice").and_then(Value::as_str) {
                 if let Ok(fam) = choice_str.parse::<TaskFamily>() {
                     task_family = Some(fam);
-                    task_family_confidence = tf_answer.get("confidence").and_then(unit);
                     if let Some(map) = tf_answer.get("probabilities").and_then(Value::as_object) {
                         for (k, v) in map {
                             if let Some(p) = unit(v) {
@@ -200,6 +199,10 @@ pub fn validate(data: &Value) -> Result<Validated, String> {
                             }
                         }
                     }
+                    task_family_confidence = tf_answer
+                        .get("confidence")
+                        .and_then(unit)
+                        .or_else(|| task_family_probabilities.get(choice_str).copied());
                 }
             }
         }
@@ -216,10 +219,22 @@ pub fn validate(data: &Value) -> Result<Validated, String> {
     })
 }
 
-/// Policy gate: confidence only.
-pub fn gate(v: &Validated, policy: &Policy) -> Result<(), String> {
+/// Policy gate: checks complexity confidence, and applies the confidence threshold
+/// to optional task_family independently of valid complexity.
+pub fn gate(v: &mut Validated, policy: &Policy) -> Result<(), String> {
     if v.confidence < policy.min_confidence {
         return Err("confidence below the configured threshold".into());
+    }
+    // Optional task_family requires confidence >= min_confidence and > 0.0.
+    // If missing, zero, invalid, or below the policy threshold, drop it so ordinary
+    // level ordering is preserved without rejecting valid complexity.
+    if !v
+        .task_family_confidence
+        .is_some_and(|c| c >= policy.min_confidence && c > 0.0)
+    {
+        v.task_family = None;
+        v.task_family_confidence = None;
+        v.task_family_probabilities.clear();
     }
     Ok(())
 }
@@ -418,14 +433,14 @@ async fn decide_model(
                     .filter(|m| !m.is_empty() && m.len() <= 200)
                     .unwrap_or(model)
                     .to_string();
-                let validated = validate(&data).map_err(|e| {
+                let mut validated = validate(&data).map_err(|e| {
                     Failed::Final(JevFailure {
                         usage: usage.clone(),
                         model: Some(answered.clone()),
                         ..JevFailure::new(format!("Jev returned an invalid response ({e})"))
                     })
                 })?;
-                return match gate(&validated, policy) {
+                return match gate(&mut validated, policy) {
                     Ok(()) => Ok(JevDecision {
                         validated,
                         usage,
@@ -706,15 +721,72 @@ mod tests {
 
     #[test]
     fn gate_checks_confidence_only() {
-        let v = validate(&ok_body()).unwrap();
+        let mut v = validate(&ok_body()).unwrap();
         let p = |c, m| Policy {
             min_confidence: c,
             min_margin: m,
         };
-        assert!(gate(&v, &p(0.6, 0.1)).is_ok());
-        assert!(gate(&v, &p(0.95, 0.1)).is_err());
+        assert!(gate(&mut v, &p(0.6, 0.1)).is_ok());
+        assert!(gate(&mut v, &p(0.95, 0.1)).is_err());
         // The deprecated margin is ignored.
-        assert!(gate(&v, &p(0.6, 0.99)).is_ok());
+        assert!(gate(&mut v, &p(0.6, 0.99)).is_ok());
+    }
+
+    #[test]
+    fn gate_filters_optional_task_family_by_confidence_independently() {
+        let p = |c| Policy {
+            min_confidence: c,
+            min_margin: 0.1,
+        };
+        let mut ok = ok_body();
+        ok["answers"]["task_family"] = json!({
+            "type": "choice",
+            "choice": "code_review",
+            "confidence": 0.88,
+            "probabilities": {"code_review": 0.88}
+        });
+        // High family confidence (0.88 >= 0.6) keeps task_family
+        let mut v = validate(&ok).unwrap();
+        assert!(gate(&mut v, &p(0.6)).is_ok());
+        assert_eq!(v.task_family, Some(TaskFamily::CodeReview));
+        assert_eq!(v.task_family_confidence, Some(0.88));
+
+        // Low family confidence (0.4 < 0.6) drops task_family without rejecting complexity
+        ok["answers"]["task_family"]["confidence"] = json!(0.4);
+        ok["answers"]["task_family"]["probabilities"]["code_review"] = json!(0.4);
+        let mut v_low = validate(&ok).unwrap();
+        assert!(gate(&mut v_low, &p(0.6)).is_ok());
+        assert_eq!(v_low.task_family, None);
+        assert_eq!(v_low.task_family_confidence, None);
+        assert!(v_low.task_family_probabilities.is_empty());
+
+        // Zero family confidence drops task_family even with min_confidence 0.0
+        ok["answers"]["task_family"]["confidence"] = json!(0.0);
+        ok["answers"]["task_family"]["probabilities"]["code_review"] = json!(0.0);
+        let mut v_zero = validate(&ok).unwrap();
+        assert!(gate(&mut v_zero, &p(0.0)).is_ok());
+        assert_eq!(v_zero.task_family, None);
+
+        // Missing confidence field falls back to choice probability
+        ok["answers"]["task_family"] = json!({
+            "type": "choice",
+            "choice": "code_review",
+            "probabilities": {"code_review": 0.85}
+        });
+        let mut v_prob = validate(&ok).unwrap();
+        assert_eq!(v_prob.task_family_confidence, Some(0.85));
+        assert!(gate(&mut v_prob, &p(0.6)).is_ok());
+        assert_eq!(v_prob.task_family, Some(TaskFamily::CodeReview));
+
+        // Missing confidence and missing probability drops task_family
+        ok["answers"]["task_family"] = json!({
+            "type": "choice",
+            "choice": "code_review"
+        });
+        let mut v_missing = validate(&ok).unwrap();
+        assert_eq!(v_missing.task_family_confidence, None);
+        assert!(gate(&mut v_missing, &p(0.6)).is_ok());
+        assert_eq!(v_missing.task_family, None);
     }
 
     #[test]
