@@ -50,6 +50,23 @@ fn events<'a>(v: &'a RunView, name: &str) -> Vec<&'a so_core::Event> {
         .collect()
 }
 
+/// Polls until `name` has read a stdin line containing `needle`. The harness log is shared
+/// by every run on that account, so waiting for a fixed number of lines can return on some
+/// other run's prompt before the note this test cares about has been delivered.
+async fn wait_stdin_containing(env: &Env, name: &str, needle: &str) -> Vec<String> {
+    for _ in 0..400 {
+        let said = env.stdin_lines(name);
+        if said.iter().any(|l| l.contains(needle)) {
+            return said;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!(
+        "{name} never read a stdin line containing {needle:?}: {:?}",
+        env.stdin_lines(name)
+    );
+}
+
 #[tokio::test]
 async fn auto_routing_picks_an_account_and_records_the_decision() {
     let env = routed_env();
@@ -340,11 +357,10 @@ async fn failover_with_every_target_full_waits_in_the_queue_and_starts_on_the_fr
             .unwrap()
             .is_none()
     );
-    let said = env.wait_stdin_lines("claude-b", 1).await;
-    assert!(
-        said.iter().any(|l| l.contains("ran out of quota")),
-        "{said:?}"
-    );
+    // `claude-b` also served the occupant, so wait for the note itself, not for the first
+    // line in the shared log.
+    let said = wait_stdin_containing(&env, "claude-b", "ran out of quota").await;
+    assert!(said.iter().any(|l| l.contains("ran out of quota")));
     let attempts = env.store().list_attempts(&r.run_id, 10).unwrap();
     assert_eq!(attempts[0].outcome.as_deref(), Some("failover"));
     assert_eq!(attempts.len(), 2);
@@ -586,25 +602,6 @@ fn agy_quota_script() -> String {
 #[cfg(target_os = "linux")]
 fn codex_ok_account(env: &Env) {
     use std::os::unix::fs::PermissionsExt;
-    static BUILD: std::sync::Once = std::sync::Once::new();
-    BUILD.call_once(|| {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        assert!(
-            std::process::Command::new(cargo)
-                .args([
-                    "build",
-                    "-p",
-                    "so-harness",
-                    "--features",
-                    "test-support",
-                    "--bin",
-                    "fake-codex"
-                ])
-                .status()
-                .unwrap()
-                .success()
-        );
-    });
     let steps = script(&[
         json!({"expect": "initialize", "respond": {"userAgent": "x", "codexHome": "/h",
             "platformFamily": "unix", "platformOs": "linux"}}),
@@ -626,7 +623,7 @@ fn codex_ok_account(env: &Env) {
             "#!/bin/sh\nexport FAKE_CODEX_SCRIPT={}\nexport FAKE_CODEX_LOG={}\nexec {} \"$@\"\n",
             script_path.display(),
             env.launch_log("codex-a").display(),
-            sibling_bin("fake-codex").display()
+            fake_codex().display()
         ),
     )
     .unwrap();
