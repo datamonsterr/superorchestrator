@@ -207,6 +207,8 @@ mod tests {
                 probabilities: Default::default(),
                 complexity: None,
                 level: None,
+                task_family: None,
+                task_family_probabilities: Default::default(),
                 usage: Default::default(),
                 alternatives: vec![],
                 config_fingerprint: "f".into(),

@@ -357,7 +357,9 @@ pub fn route_view(raw: Value) -> Value {
             "effort",
             "source",
             "complexity",
+            "confidence",
             "level",
+            "task_family",
             "rationale",
         ],
     );
@@ -731,6 +733,26 @@ mod tests {
         let projected = project("cancel_agent", &json!({}), clean);
         assert_eq!(projected, json!({"run_id": "r2", "state": "cancelled"}));
         assert!(projected.get("session_id").is_none());
+    }
+
+    #[test]
+    fn route_includes_task_family_and_confidence_when_present() {
+        let v = route_view(json!({
+            "choice_id": "c", "harness": "codex", "account": "a", "model": "m", "effort": null,
+            "source": "jev", "complexity": 72.0, "level": "high", "rationale": "preferred for code_review",
+            "confidence": 0.95, "task_family": "code_review", "task_family_probabilities": {"code_review": 0.95},
+            "probabilities": {}, "usage": {"cost": 0.0}, "config_fingerprint": "f",
+            "alternatives": [{"choice_id": "d", "account": "b"}],
+        }));
+        assert_eq!(
+            v,
+            json!({
+                "choice_id": "c", "harness": "codex", "account": "a", "model": "m",
+                "source": "jev", "complexity": 72.0, "confidence": 0.95, "level": "high",
+                "task_family": "code_review", "rationale": "preferred for code_review",
+                "alternatives": ["d"]
+            })
+        );
     }
 
     #[test]

@@ -322,6 +322,8 @@ impl RunManager {
                 probabilities: Default::default(),
                 complexity: None,
                 level: None,
+                task_family: None,
+                task_family_probabilities: Default::default(),
                 usage: Default::default(),
                 alternatives: Vec::new(),
                 config_fingerprint: so_router::config_fingerprint(self.config()),

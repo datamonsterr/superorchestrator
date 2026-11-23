@@ -17,6 +17,7 @@ fn level(name: &str, min: u8, max: u8, models: &[&str]) -> Level {
         max,
         tier: None,
         models: models.iter().map(|s| s.parse().unwrap()).collect(),
+        families: std::collections::BTreeMap::new(),
     }
 }
 fn catalog(entries: &[(&str, Tier)]) -> Catalog {

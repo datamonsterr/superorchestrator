@@ -27,6 +27,7 @@ fn level(name: &str, min: u8, max: u8, refs: &[&str]) -> so_core::config::Level 
         max,
         tier: None,
         models: refs.iter().map(|r| r.parse().unwrap()).collect(),
+        families: std::collections::BTreeMap::new(),
     }
 }
 

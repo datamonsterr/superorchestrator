@@ -150,6 +150,8 @@ async fn fx_cfg(token: Option<&str>, config: Config) -> Fx {
         probabilities: Default::default(),
         complexity: None,
         level: None,
+        task_family: None,
+        task_family_probabilities: Default::default(),
         usage: Default::default(),
         alternatives: vec![],
         config_fingerprint: "f".into(),
@@ -2000,6 +2002,7 @@ async fn route_previews_without_recording_anything() {
             model: "gpt-5.5".into(),
             effort: Some("high".into()),
         }],
+        families: std::collections::BTreeMap::new(),
     }];
     let f = fx_cfg(Some(TEST_TOKEN), cfg).await;
     let (s, v) = post(

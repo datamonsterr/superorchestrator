@@ -307,6 +307,8 @@ export interface JoinView {
 
 /** A named range of complexity (`min` to `max`, within 0 to 100) and the models allowed for it, in preference order. Complexity can be fractional, so the integer range reads as the half-open span `[min, max + 1)`: 37.5 is in `0..=37`. A level with `max = 100` also includes 100.0. */
 export interface Level {
+  /** Optional ordered preferred model refs for specific task families within this level. */
+  families?: { code_implementation?: Choice[]; code_review?: Choice[]; debugging?: Choice[]; documentation?: Choice[]; other?: Choice[]; planning?: Choice[]; research?: Choice[]; ui_design?: Choice[] };
   max: number;
   min: number;
   /** Model refs (`harness/model[/effort]`) allowed for this level. List order is the preference order: the first eligible one wins. */
@@ -513,6 +515,10 @@ export interface RouteResult {
   ranked_accounts?: string[];
   rationale: string;
   source: RouteSource;
+  /** Task family classified by the decider, if available. */
+  task_family?: TaskFamily | null;
+  /** Task family probabilities from the decider, keyed by task family name. */
+  task_family_probabilities?: Record<string, number>;
   usage?: RouteUsage;
 }
 
@@ -706,6 +712,9 @@ export interface Suggestion {
 export interface Supervisor {
   idle_exit?: HumanDuration;
 }
+
+/** Typed task family classification (SPEC 8.3). */
+export type TaskFamily = "code_implementation" | "code_review" | "debugging" | "documentation" | "research" | "planning" | "ui_design" | "other";
 
 export interface TokenRequest {
   token: string;

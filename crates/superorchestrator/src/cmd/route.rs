@@ -81,6 +81,9 @@ async fn route(
         if let Some(level) = &r.level {
             writeln!(w, "level:      {level}")?;
         }
+        if let Some(family) = &r.task_family {
+            writeln!(w, "family:     {family}")?;
+        }
         writeln!(w, "why:        {}", r.rationale)?;
         if explain {
             if let Some(c) = r.confidence {
@@ -89,6 +92,12 @@ async fn route(
             if !r.probabilities.is_empty() {
                 writeln!(w, "probabilities:")?;
                 for (id, p) in &r.probabilities {
+                    writeln!(w, "  {id}  {p:.2}")?;
+                }
+            }
+            if !r.task_family_probabilities.is_empty() {
+                writeln!(w, "family probabilities:")?;
+                for (id, p) in &r.task_family_probabilities {
                     writeln!(w, "  {id}  {p:.2}")?;
                 }
             }
