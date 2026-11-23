@@ -43,13 +43,15 @@ export default defineConfig({
     outDir: 'dist',
     rolldownOptions: {
       output: {
-        // Stable vendor chunks. No catch-all group: lazy-only libraries (recharts) must stay with their pages.
+        // Stable vendor chunks. Keep route-only libraries out of the initial load.
         codeSplitting: {
           groups: [
             vendor('react', ['react', 'react-dom', 'scheduler']),
             vendor('radix', ['radix-ui', '@radix-ui', '@floating-ui', 'aria-hidden', 'react-remove-scroll']),
             vendor('router', ['react-router']),
             vendor('query', ['@tanstack/react-query', '@tanstack/query-core']),
+            // Chart math is only imported by the lazy dashboard route.
+            vendor('chart-math', ['victory-vendor']),
           ],
         },
       },
