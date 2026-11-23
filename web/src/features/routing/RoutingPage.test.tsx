@@ -155,6 +155,32 @@ describe('Levels tab', () => {
     expect(screen.getByRole('dialog', { name: 'Edit level simple' })).toBeInTheDocument()
   })
 
+  it('preserves families preferences when editing a level', async () => {
+    const puts = capturePut()
+    server.use(
+      http.get('/api/v1/levels', () =>
+        HttpResponse.json({
+          ...fx.levels,
+          levels: [
+            {
+              ...fx.levels.levels[1],
+              families: { code_review: ['codex/gpt-6.1-sol/high'] },
+            },
+          ],
+        }),
+      ),
+    )
+    renderWithProviders(<RoutingPage />, { route: '/routing' })
+    await userEvent.click(within(await level('simple')).getByRole('button', { name: 'Edit level' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Edit level simple' })
+    await userEvent.clear(within(dialog).getByLabelText('To'))
+    await userEvent.type(within(dialog).getByLabelText('To'), '35')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Save level' }))
+    await waitFor(() => expect(puts).toHaveLength(1))
+    expect(puts[0].levels[0].families).toEqual({ code_review: ['codex/gpt-6.1-sol/high'] })
+    expect(puts[0].levels[0].max).toBe(35)
+  })
+
   it('deletes a level after confirming', async () => {
     const puts = capturePut()
     renderWithProviders(<RoutingPage />, { route: '/routing' })

@@ -350,7 +350,9 @@ pub fn route_view(raw: Value) -> Value {
             "effort",
             "source",
             "complexity",
+            "confidence",
             "level",
+            "task_family",
             "rationale",
         ],
     );
@@ -671,6 +673,26 @@ mod tests {
             json!({"choice_id": "c", "harness": "codex", "account": "a", "model": "m",
                     "source": "heuristic", "complexity": 55.0, "level": "mid", "rationale": "why",
                     "alternatives": ["d"]})
+        );
+    }
+
+    #[test]
+    fn route_includes_task_family_and_confidence_when_present() {
+        let v = route_view(json!({
+            "choice_id": "c", "harness": "codex", "account": "a", "model": "m", "effort": null,
+            "source": "jev", "complexity": 72.0, "level": "high", "rationale": "preferred for code_review",
+            "confidence": 0.95, "task_family": "code_review", "task_family_probabilities": {"code_review": 0.95},
+            "probabilities": {}, "usage": {"cost": 0.0}, "config_fingerprint": "f",
+            "alternatives": [{"choice_id": "d", "account": "b"}],
+        }));
+        assert_eq!(
+            v,
+            json!({
+                "choice_id": "c", "harness": "codex", "account": "a", "model": "m",
+                "source": "jev", "complexity": 72.0, "confidence": 0.95, "level": "high",
+                "task_family": "code_review", "rationale": "preferred for code_review",
+                "alternatives": ["d"]
+            })
         );
     }
 
