@@ -26,8 +26,13 @@ pub(crate) struct WaitGuard {
 
 impl WaitGuard {
     pub(crate) async fn end(mut self) {
+        if !self.armed {
+            return;
+        }
         self.armed = false;
-        self.mgr.end_wait(&self.run_id, self.ask).await;
+        let (mgr, id, ask) = (self.mgr.clone(), self.run_id.clone(), self.ask);
+        // Cleanup must continue even if the handler is aborted while it is ending.
+        let _ = tokio::spawn(async move { mgr.end_wait(&id, ask).await }).await;
     }
 }
 
@@ -100,6 +105,16 @@ impl RunManager {
     /// `ask` marks an `ask_parent`. A run the manager does not track (already wrapped up)
     /// gets an inert guard and no registry entry.
     pub(crate) async fn begin_wait(&self, run_id: &str, ask: bool) -> WaitGuard {
+        let (mgr, id) = (self.clone(), run_id.to_string());
+        // Keep the lock until the database transition finishes even if the caller is dropped.
+        // If it is dropped, the task's returned guard is dropped and schedules cleanup.
+        tokio::spawn(async move { mgr.begin_wait_inner(&id, ask).await })
+            .await
+            .expect("wait transition task failed")
+    }
+
+    async fn begin_wait_inner(&self, run_id: &str, ask: bool) -> WaitGuard {
+        let _turn = self.lock_run(LockKind::Wait, run_id).await;
         let first = {
             let mut runs = lock(&self.inner.runs);
             runs.get_mut(run_id).map(|rt| {
@@ -131,6 +146,7 @@ impl RunManager {
     }
 
     async fn end_wait(&self, run_id: &str, ask: bool) {
+        let _turn = self.lock_run(LockKind::Wait, run_id).await;
         let last = {
             let mut runs = lock(&self.inner.runs);
             match runs.get_mut(run_id) {

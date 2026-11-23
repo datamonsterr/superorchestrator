@@ -812,23 +812,62 @@ async fn cancel_quiet_wait_agent_on_shared_connection_resumes_subagent_and_keeps
     wait_state(&orch, &sub_id, RunState::Waiting).await;
 
     // Start another concurrent request on the SHARED sub_client connection
-    let other_req = sub_client.call::<_, RunView>(
-        METHOD_GET_RUN,
-        GetRunParams {
-            run: child_id.clone(),
-            diff: false,
-            diff_stat: false,
-            verbose: false,
-        },
-    );
+    let other_client = sub_client.clone();
+    let other_child = child_id.clone();
+    let other_req = tokio::spawn(async move {
+        other_client
+            .call::<_, RunView>(
+                METHOD_GET_RUN,
+                GetRunParams {
+                    run: other_child,
+                    diff: false,
+                    diff_stat: false,
+                    verbose: false,
+                },
+            )
+            .await
+    });
+    let replacement_client = sub_client.clone();
+    let replacement_child = child_id.clone();
+    let replacement = tokio::spawn(async move {
+        replacement_client
+            .call::<_, WaitResult>(
+                METHOD_WAIT_AGENT,
+                WaitParams {
+                    runs: vec![replacement_child],
+                    include_progress: false,
+                    timeout_ms: Some(30_000),
+                },
+            )
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Drop the quiet-wait future while the wait is active
     wait_task.abort();
     let _ = wait_task.await;
 
     // The other request on the shared connection succeeds and is unaffected
-    let view = other_req.await.unwrap();
+    let view = other_req.await.unwrap().unwrap();
     assert_eq!(view.run_id, child_id);
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let parent: RunView = orch
+        .call(
+            METHOD_GET_RUN,
+            GetRunParams {
+                run: sub_id.clone(),
+                diff: false,
+                diff_stat: false,
+                verbose: false,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(parent.state, RunState::Waiting);
+    assert!(!replacement.is_finished());
+    replacement.abort();
+    let _ = replacement.await;
 
     // Subagent state resumes to Running (WaitGuard ended cleanly)
     wait_state(&orch, &sub_id, RunState::Running).await;

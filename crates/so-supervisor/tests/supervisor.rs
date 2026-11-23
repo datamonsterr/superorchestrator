@@ -422,6 +422,19 @@ async fn unknown_method_and_malformed_line() {
     let v: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(v["error"]["code"], PARSE_ERROR);
     assert!(v["id"].is_null());
+    for malformed in [
+        "{}",
+        "[]",
+        "{\"method\":42}",
+        "{\"jsonrpc\":\"1.0\",\"method\":\"x\"}",
+    ] {
+        wr.write_all(format!("{malformed}\n").as_bytes())
+            .await
+            .unwrap();
+        let v: Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(v["error"]["code"], INVALID_REQUEST);
+        assert!(v["id"].is_null());
+    }
     // The connection survives a bad line.
     wr.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"status\"}\n")
         .await
@@ -682,6 +695,48 @@ async fn handler_panic_replies_internal_error() {
     c.call::<_, StatusResult>("status", json!({}))
         .await
         .unwrap();
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn cancellation_uses_exact_ids_and_rejects_duplicate_active_ids() {
+    let env = Env::new();
+    let h = Supervisor::start(env.opts(Duration::from_secs(600)).with_setup(|st| {
+        st.router.register("wait_closed", |ctx, _| async move {
+            ctx.closed().await;
+            Ok(json!("cancelled"))
+        });
+    }))
+    .await
+    .unwrap();
+    let stream = UnixStream::connect(&env.sock).await.unwrap();
+    let (rd, mut wr) = stream.into_split();
+    let mut lines = BufReader::new(rd).lines();
+    wr.write_all(b"{\"id\":1,\"method\":\"hello\",\"params\":{\"client\":\"t\",\"cwd\":\"/\"}}\n")
+        .await
+        .unwrap();
+    lines.next_line().await.unwrap().unwrap();
+    wr.write_all(b"{\"id\":2,\"method\":\"wait_closed\"}\n{\"method\":\"$/cancel_request\",\"params\":{\"id\":\"2\"}}\n{\"id\":2,\"method\":\"wait_closed\"}\n").await.unwrap();
+    let duplicate: Value =
+        serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+    assert_eq!(duplicate["error"]["code"], INVALID_REQUEST);
+    assert_eq!(duplicate["id"], 2);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), lines.next_line())
+            .await
+            .is_err()
+    );
+    wr.write_all(b"{\"method\":\"$/cancel_request\",\"params\":{\"id\":2}}\n")
+        .await
+        .unwrap();
+    let reply = tokio::time::timeout(Duration::from_secs(2), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    let reply: Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(reply["id"], 2);
+    assert_eq!(reply["result"], "cancelled");
     h.shutdown().await;
 }
 

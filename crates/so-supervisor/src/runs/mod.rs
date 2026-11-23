@@ -104,6 +104,8 @@ pub(crate) enum LockKind {
     Worktree,
     /// `accept_run` and `reject_run` of one run: exactly one of them acts.
     Review,
+    /// Serializes wait counts with their state transitions.
+    Wait,
     /// Merging into one repository (keyed by its canonical path): one merge at a time.
     Repo,
 }
