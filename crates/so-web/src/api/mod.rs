@@ -2,6 +2,7 @@
 
 pub mod accounts;
 pub mod agents;
+pub mod decider;
 pub mod models;
 pub mod runs;
 pub mod sessions;
@@ -36,6 +37,8 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/api/v1/token", post(post_token))
         .route("/api/v1/auth", post(post_token))
+        .route("/api/v1/decider", get(decider::get).patch(decider::patch))
+        .route("/api/v1/decider/test", post(decider::test))
         .route("/api/v1/status", get(system::status))
         .route("/api/v1/dashboard", get(system::dashboard))
         .route("/api/v1/usage/daily", get(system::usage_daily))

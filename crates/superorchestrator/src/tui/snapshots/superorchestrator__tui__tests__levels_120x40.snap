@@ -3,7 +3,7 @@ source: crates/superorchestrator/src/tui/tests.rs
 expression: "shot(&mut a, 120, 40)"
 ---
  superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
-   1 Overview     2 Accounts     3 Runs !1     4 Setup     5 Levels
+ 1 Dashboard 2 Sessions 3 Runs !1 4 Accounts 5 Usage 6 Levels 7 Models 8 Settings 9 Setup
   Config edits need a supervisor restart to apply.
 
     LEVEL            MIN-MAX  MODELS

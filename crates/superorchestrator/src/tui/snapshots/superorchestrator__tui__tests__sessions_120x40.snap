@@ -1,0 +1,44 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 120, 40)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+ 1 Dashboard 2 Sessions 3 Runs !1 4 Accounts 5 Usage 6 Levels 7 Models 8 Settings 9 Setup
+    SESSION  STARTED  RUNS   ACTIVE TITLE / CWD
+  ▸ session- 2h       16     2      /work/project
+    older-se 3h       16     2      /work/project
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ updated 3s ago
+ j/k move  Enter open  Esc back  ? help  q quit

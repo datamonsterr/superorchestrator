@@ -92,16 +92,15 @@ describe('SettingsPage config', () => {
           config: { ...fx.config.config, ui: { ...fx.config.config.ui, token: SECRET }, router: { jev: { key_env: 'OPENROUTER_API_KEY', key: SECRET } } },
         }),
       ),
+      http.get('/api/v1/decider', () => HttpResponse.json({ ...fx.decider, key: { ...fx.decider.key, value: SECRET } })),
     )
     renderWithProviders(<SettingsPage />)
     await screen.findByLabelText('Global run cap')
-    for (const tab of ['General', 'Notifications', 'Worktrees', 'Routing', 'UI']) {
+    for (const tab of ['General', 'Notifications', 'Worktrees', 'Decider', 'UI']) {
       await openTab(tab)
-      if (tab === 'Routing') {
-        const k = await screen.findByTestId('key-source-OpenRouter key')
-        expect(k).toHaveTextContent('Environment variable')
-        expect(k).toHaveTextContent('OPENROUTER_API_KEY')
-        expect(k).toHaveTextContent('Key set: yes')
+      if (tab === 'Decider') {
+        await screen.findByLabelText('Model')
+        expect(screen.getByTestId('decider-key-current')).toHaveTextContent('a1b2')
       }
       if (tab === 'UI') expect(await screen.findByTestId('key-source-UI token')).toHaveTextContent('File')
       expect(document.body.innerHTML).not.toContain(SECRET)
@@ -122,25 +121,6 @@ describe('SettingsPage drafts and key file', () => {
     await openTab('General')
     expect(await screen.findByLabelText('Global run cap')).toHaveValue(3)
     expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
-  })
-
-  it('rejects clearing a saved key file with an inline error and sends nothing', async () => {
-    let called = false
-    server.use(
-      http.get('/api/v1/config', () =>
-        HttpResponse.json({ ...fx.config, config: { ...fx.config.config, router: { jev: { key_env: 'OPENROUTER_API_KEY', key_file: '/etc/or.env' } } } }),
-      ),
-      http.patch('/api/v1/config', () => ((called = true), HttpResponse.json(fx.config))),
-    )
-    renderWithProviders(<SettingsPage />)
-    await screen.findByLabelText('Global run cap')
-    await openTab('Routing')
-    const file = await screen.findByLabelText('Key file')
-    expect(file).toHaveValue('/etc/or.env')
-    await userEvent.clear(file)
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect(await screen.findByText(/cannot be cleared here/)).toBeInTheDocument()
-    expect(called).toBe(false)
   })
 
   it('says "Nothing to save" and resets when the edit changes nothing', async () => {
