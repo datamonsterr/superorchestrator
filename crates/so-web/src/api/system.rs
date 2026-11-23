@@ -1,6 +1,5 @@
 //! Status, dashboard, usage, doctor, harnesses, routing log, config, levels and worktrees.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use axum::Json;
@@ -13,6 +12,7 @@ use so_core::{Config, EventType, Platform};
 use so_store::EventQuery;
 use so_supervisor::doctor::{DoctorReport, run_checks};
 use so_supervisor::harnesses_view;
+use so_supervisor::services::decider::KeySource;
 use so_supervisor::services::worktrees as wt;
 
 use super::{redact_event, redact_run};
@@ -54,26 +54,19 @@ async fn accounts_of(st: &AppState) -> ApiResult<Vec<AccountView>> {
 
 async fn daily(st: &AppState, days: i64) -> ApiResult<Vec<DailyUsage>> {
     let since = Utc::now() - Duration::days(days);
-    let rows = st.db(move |s| s.ledger_daily(since)).await?;
-    let mut out: Vec<DailyUsage> = Vec::new();
-    for r in rows {
-        if out.last().is_none_or(|d| d.day != r.day) {
-            out.push(DailyUsage {
-                day: r.day.clone(),
-                input_tokens: 0,
-                output_tokens: 0,
-                cost: 0.0,
-                by_account: BTreeMap::new(),
-            });
-        }
-        if let Some(d) = out.last_mut() {
-            d.input_tokens += u64::try_from(r.input_tokens).unwrap_or(0);
-            d.output_tokens += u64::try_from(r.output_tokens).unwrap_or(0);
-            d.cost += r.cost;
-            *d.by_account.entry(r.account).or_default() += r.cost;
-        }
-    }
-    Ok(out)
+    let rows = st
+        .db(move |s| so_supervisor::services::usage::daily(s, since))
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| DailyUsage {
+            day: r.day,
+            input_tokens: r.input_tokens,
+            output_tokens: r.output_tokens,
+            cost: r.cost,
+            by_account: r.by_account,
+        })
+        .collect())
 }
 
 #[derive(Debug, Deserialize)]
@@ -229,22 +222,15 @@ fn secret_sources(cfg: &Config) -> (SecretSource, SecretSource) {
         },
         name: None,
     };
-    let jev = &cfg.router.jev;
-    let key = if std::env::var_os(&jev.key_env).is_some_and(|v| !v.is_empty()) {
-        SecretSource {
-            source: SecretOrigin::Env,
-            name: Some(jev.key_env.clone()),
-        }
-    } else if let Some(f) = &jev.key_file {
-        SecretSource {
-            source: SecretOrigin::File,
-            name: Some(f.clone()),
-        }
-    } else {
-        SecretSource {
-            source: SecretOrigin::Unset,
-            name: Some(jev.key_env.clone()),
-        }
+    let decider_key =
+        so_supervisor::services::decider::key_view(&cfg.router.jev, &so_router::jev::process_env);
+    let key = SecretSource {
+        source: match decider_key.source {
+            KeySource::Env => SecretOrigin::Env,
+            KeySource::File => SecretOrigin::File,
+            KeySource::Unset => SecretOrigin::Unset,
+        },
+        name: decider_key.name,
     };
     (ui, key)
 }
@@ -305,6 +291,7 @@ pub async fn config_patch(
     }
     let s = st.clone();
     st.blocking(move || {
+        let _guard = so_supervisor::services::config_write_lock();
         let mut leaves = Vec::new();
         flatten("", &body, &mut leaves);
         let mut trial = Config::load(&s.sup.paths)?;
@@ -359,6 +346,7 @@ pub async fn levels_put(
     }
     let s = st.clone();
     st.blocking(move || {
+        let _guard = so_supervisor::services::config_write_lock();
         let levels = toml::Value::try_from(&b.levels)
             .map_err(ApiError::internal)?
             .to_string();

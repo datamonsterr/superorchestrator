@@ -5,7 +5,9 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Margin, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Cell, Clear, Padding, Paragraph, Row, Table, Tabs, Wrap};
+use ratatui::widgets::{
+    Block, Cell, Clear, Padding, Paragraph, Row, Table, TableState, Tabs, Wrap,
+};
 use so_accounts::SignIn;
 use so_core::RunState;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -47,7 +49,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_header(f, app, header);
     draw_tabs(f, app, tabs);
     match app.tab {
-        Tab::Overview => draw_overview(f, app, body),
+        Tab::Dashboard => draw_overview(f, app, body),
+        Tab::Sessions if app.detail.is_some() => draw_run_detail(f, app, body),
+        Tab::Sessions => super::tabs::sessions::draw(f, app, body),
+        Tab::Usage => super::tabs::usage::draw(f, app, body),
+        Tab::Models => super::tabs::models::draw(f, app, body),
+        Tab::Settings => super::tabs::settings::draw(f, app, body),
         Tab::Accounts => draw_accounts(f, app, body),
         Tab::Runs => draw_runs(f, app, body),
         Tab::Setup => draw_setup(f, app, body),
@@ -192,20 +199,28 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
     let titles: Vec<Line> = Tab::ALL
         .iter()
         .map(|tab| {
-            let mut label = format!(" {} {} ", tab.index() + 1, tab.title());
-            if let Some(s) = &app.snap {
+            let compact = area.width < 118;
+            let title = if compact {
+                tab.compact_title()
+            } else {
+                tab.title()
+            };
+            let mut label = format!("{} {}", tab.index() + 1, title);
+            if let Some(s) = &app.snap
+                && !compact
+            {
                 match tab {
                     Tab::Runs if s.pending_review > 0 => {
                         label = format!(
-                            " {} {} {}{} ",
+                            "{} {} {}{}",
                             tab.index() + 1,
-                            tab.title(),
+                            title,
                             t.bang(),
                             s.pending_review
                         );
                     }
                     Tab::Runs if s.active_runs > 0 => {
-                        label = format!(" {} {} {} ", tab.index() + 1, tab.title(), s.active_runs);
+                        label = format!("{} {} {}", tab.index() + 1, title, s.active_runs);
                     }
                     _ => {}
                 }
@@ -215,6 +230,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
         .collect();
     f.render_widget(
         Tabs::new(titles)
+            .padding("", "")
             .select(app.tab.index())
             .style(t.muted())
             .highlight_style(t.selected())
@@ -257,9 +273,32 @@ fn hints_for(app: &App) -> (Vec<(&'static str, &'static str)>, &'static str) {
     if app.modal.is_some() {
         return (vec![("Esc", "close")], "");
     }
-    let nav = ("1-5", "tabs");
+    let nav = ("1-9", "tabs");
     match app.tab {
-        Tab::Overview => (vec![nav, ("R", "refresh")], "quit"),
+        Tab::Sessions => (
+            vec![("j/k", "move"), ("Enter", "open"), ("Esc", "back")],
+            if app.sessions_tab.open.is_some() {
+                "back"
+            } else {
+                "quit"
+            },
+        ),
+        Tab::Models => (
+            vec![("j/k", "scroll"), ("r", "refresh models"), nav],
+            "quit",
+        ),
+        Tab::Dashboard => (vec![nav, ("R", "refresh")], "quit"),
+        Tab::Settings => (
+            vec![
+                ("↑/↓", "select"),
+                ("Enter", "edit"),
+                ("s", "save"),
+                ("t", "test"),
+                ("r", "reload"),
+            ],
+            "quit",
+        ),
+        Tab::Usage => (vec![("j/k", "scroll"), nav, ("R", "refresh")], "quit"),
         Tab::Accounts => (
             vec![
                 ("j/k", "move"),
@@ -592,7 +631,7 @@ fn draw_accounts(f: &mut Frame, app: &mut App, area: Rect) {
                 Line::raw(
                     "Press a to add accounts, or i to import logins already on this machine.",
                 ),
-                Line::styled("Setup (4) does both in one go.", t.muted()),
+                Line::styled("Setup (9) does both in one go.", t.muted()),
             ],
         );
     }
@@ -1018,6 +1057,26 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
         }
         return placeholder(f, &t, area, lines);
     }
+    draw_run_table(
+        f,
+        &s.runs,
+        app.now,
+        &t,
+        app.runs_sel,
+        &mut app.runs_state,
+        area,
+    );
+}
+
+pub(super) fn draw_run_table(
+    f: &mut Frame,
+    runs: &[RunItem],
+    now: DateTime<Utc>,
+    t: &Theme,
+    selected: usize,
+    state: &mut TableState,
+    area: Rect,
+) {
     let widths = [
         Constraint::Length(8),
         Constraint::Length(16),
@@ -1032,16 +1091,15 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
         inner.width.saturating_sub(2),
         1,
     ));
-    let rows: Vec<Row> = s
-        .runs
+    let rows: Vec<Row> = runs
         .iter()
         .map(|r| {
-            let (mark, style) = state_mark(&t, r.state);
+            let (mark, style) = state_mark(t, r.state);
             Row::new(vec![
                 Cell::new(short(&r.id)),
                 Cell::new(format!("{mark} {}", r.state)).style(style),
                 Cell::new(truncate(&who(r), cols[2].width as usize, t.ellipsis())),
-                Cell::new(age(app.now, r.created_at)),
+                Cell::new(age(now, r.created_at)),
                 Cell::new(truncate(&r.title, cols[4].width as usize, t.ellipsis())),
             ])
         })
@@ -1052,8 +1110,8 @@ fn draw_runs(f: &mut Frame, app: &mut App, area: Rect) {
         .column_spacing(1)
         .highlight_symbol(format!("{} ", t.pointer()))
         .row_highlight_style(t.selected());
-    app.runs_state.select(Some(app.runs_sel));
-    f.render_stateful_widget(table, inner, &mut app.runs_state);
+    state.select(Some(selected));
+    f.render_stateful_widget(table, inner, state);
 }
 
 const BRIEF_LINES: usize = 10;
@@ -1311,7 +1369,8 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
     let mut out = vec![
         Line::styled("Everywhere", t.accent()),
         row("Tab  S-Tab", "next / previous tab"),
-        row("1 2 3 4 5", "Overview, Accounts, Runs, Setup, Levels"),
+        row("1-5", "Dashboard, Sessions, Runs, Accounts, Usage"),
+        row("6-9", "Levels, Models, Settings, Setup"),
         row("R  F5", "refresh now (the screen refreshes every 2 s)"),
         row("?", "this help"),
         row("q  Esc", "close a pane, or quit at the top level"),
@@ -1319,10 +1378,22 @@ fn help_lines(app: &App) -> Vec<Line<'static>> {
         Line::raw(""),
     ];
     match app.tab {
-        Tab::Overview => out.push(Line::styled(
-            "Overview shows what is set up and what to do next.",
+        Tab::Dashboard => out.push(Line::styled(
+            "Dashboard shows what is set up and what to do next.",
             t.muted(),
         )),
+        Tab::Usage => out.push(row("j k  g", "scroll headroom / top")),
+        Tab::Sessions => out.extend([
+            row("j k", "move / scroll"),
+            row("Enter", "open Session or Run"),
+            row("Esc", "back one level"),
+        ]),
+        Tab::Models => out.extend([row("j k", "scroll"), row("r", "refresh models")]),
+        Tab::Settings => out.extend([
+            row("↑ ↓", "select field"),
+            row("Enter / Esc", "edit / cancel"),
+            row("s / t / r", "save / test / reload"),
+        ]),
         Tab::Accounts => {
             out.push(Line::styled("Accounts", t.accent()));
             out.extend([

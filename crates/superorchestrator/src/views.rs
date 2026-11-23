@@ -18,6 +18,14 @@ pub struct AccountView {
     pub signed_in: SignIn,
     pub active_runs: Option<i64>,
     pub headroom: Vec<(String, String)>,
+    pub pool_headroom: Vec<PoolHeadroom>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PoolHeadroom {
+    pub pool: String,
+    pub headroom: Option<Headroom>,
+    pub cooldown_until: Option<DateTime<Utc>>,
 }
 
 pub fn sign_in_text(s: SignIn) -> &'static str {
@@ -99,8 +107,16 @@ fn headroom_text(
 
 /// [`collect_views`] against a given host (the terminal UI holds one; tests pass a fake).
 pub fn collect_views_with(ctx: &Ctx, host: &so_accounts::HostEnv) -> Result<Vec<AccountView>> {
+    collect_views_at(ctx, host, Utc::now())
+}
+
+/// Collect views at a given time, for a consistent snapshot.
+pub fn collect_views_at(
+    ctx: &Ctx,
+    host: &so_accounts::HostEnv,
+    now: DateTime<Utc>,
+) -> Result<Vec<AccountView>> {
     let store = open_existing_store(&ctx.paths);
-    let now = Utc::now();
     let low_pct = ctx
         .config()
         .map_or(so_usage::headroom::DEFAULT_LOW_PCT, |c| {
@@ -112,7 +128,7 @@ pub fn collect_views_with(ctx: &Ctx, host: &so_accounts::HostEnv) -> Result<Vec<
         let active_runs = store
             .as_ref()
             .and_then(|s| s.count_active_runs_by_account(&account.name).ok());
-        let headroom = account
+        let pool_headroom: Vec<PoolHeadroom> = account
             .pools
             .iter()
             .map(|pool| {
@@ -123,8 +139,20 @@ pub fn collect_views_with(ctx: &Ctx, host: &so_accounts::HostEnv) -> Result<Vec<
                 let stored = store
                     .as_ref()
                     .and_then(|s| s.get_headroom(&account.name, pool).ok().flatten());
-                let text = headroom_text(flag_until, stored.as_ref(), low_pct, now);
-                (pool.clone(), text)
+                PoolHeadroom {
+                    pool: pool.clone(),
+                    headroom: stored.map(|h| so_usage::effective_with(&h, low_pct, false, now)),
+                    cooldown_until: flag_until.filter(|until| *until > now),
+                }
+            })
+            .collect();
+        let headroom = pool_headroom
+            .iter()
+            .map(|p| {
+                (
+                    p.pool.clone(),
+                    headroom_text(p.cooldown_until, p.headroom.as_ref(), low_pct, now),
+                )
             })
             .collect();
         out.push(AccountView {
@@ -132,6 +160,7 @@ pub fn collect_views_with(ctx: &Ctx, host: &so_accounts::HostEnv) -> Result<Vec<
             signed_in,
             active_runs,
             headroom,
+            pool_headroom,
         });
     }
     Ok(out)

@@ -25,7 +25,7 @@ describe('AccountsPage', () => {
     const agy = await row('agy-acc1')
     expect(within(agy).getByText('Signed out')).toBeInTheDocument()
     expect(within(agy).getAllByText('gemini').length).toBeGreaterThan(0)
-    expect(within(agy).getByText(/cooldown claude/)).toBeInTheDocument()
+    expect(agy.querySelector('[data-cooldown="claude"]')).toHaveTextContent(/cooling down claude until .* \(.+\)/)
     expect(within(agy).getAllByRole('progressbar').length).toBeGreaterThan(0)
     expect(within(agy).getByRole('button', { name: /Sign in/ })).toBeInTheDocument()
     expect(within(await row('codex-acc1')).queryByRole('button', { name: /^Sign in/ })).not.toBeInTheDocument()

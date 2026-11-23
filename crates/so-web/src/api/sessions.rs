@@ -20,17 +20,13 @@ use crate::types::{Page, RunViewPublic, SessionDetail, SessionStatus, SessionSum
 const SCAN: usize = 5000;
 
 pub fn summarize(store: &Store, row: &SessionRow) -> so_store::Result<SessionSummary> {
-    let stats = store.session_stats(&row.id)?;
-    let status = if row.ended_at.is_none() {
-        if stats.escalated > 0 {
-            SessionStatus::Escalated
-        } else {
-            SessionStatus::Active
-        }
-    } else if row.status == "failed" || stats.failed > 0 {
-        SessionStatus::Failed
-    } else {
-        SessionStatus::Done
+    let summary = so_supervisor::services::sessions::summarize(store, row)?;
+    let stats = summary.stats;
+    let status = match summary.status {
+        so_supervisor::services::sessions::Status::Active => SessionStatus::Active,
+        so_supervisor::services::sessions::Status::Escalated => SessionStatus::Escalated,
+        so_supervisor::services::sessions::Status::Failed => SessionStatus::Failed,
+        so_supervisor::services::sessions::Status::Done => SessionStatus::Done,
     };
     Ok(SessionSummary {
         id: row.id.clone(),

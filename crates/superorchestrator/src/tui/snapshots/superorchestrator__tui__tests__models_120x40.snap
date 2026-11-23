@@ -1,0 +1,44 @@
+---
+source: crates/superorchestrator/src/tui/tests.rs
+expression: "shot(&mut a, 120, 40)"
+---
+ superorchestrator 0.1.0  ● supervisor up 1h  ~/.config/superorchestrator
+ 1 Dashboard 2 Sessions 3 Runs !1 4 Accounts 5 Usage 6 Levels 7 Models 8 Settings 9 Setup
+ Model catalog  |  last refresh: 2026-10-23 12:00 UTC
+ HARNESS    MODEL                                                                           EFFORTS            FREE
+ codex      gpt-example                                                                     low, high          no
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ updated 3s ago
+ j/k scroll  r refresh models  1-9 tabs  ? help  q quit

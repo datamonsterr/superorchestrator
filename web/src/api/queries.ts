@@ -6,12 +6,13 @@ import {
   useQueryClient,
   type QueryKey,
 } from '@tanstack/react-query'
+import { useRef } from 'react'
 import { endpoints } from './endpoints'
 import { qk, type SessionFilter } from './keys'
 import { useStreamState } from './stream'
 
 export { qk, type SessionFilter }
-import type { LevelsPut, ConfigPatch, PruneRequest, ModelCatalog, EventType, Harness, RouteParams, SendMessageParams } from './types'
+import type { LevelsPut, ConfigPatch, DeciderPatch, DeciderTestRequest, PruneRequest, ModelCatalog, EventType, Harness, RouteParams, SendMessageParams } from './types'
 
 /** 5 s polling while the SSE stream is down (design 2.3), otherwise false. */
 export function usePollingInterval(ms = 5000): number | false {
@@ -211,4 +212,34 @@ export const usePutAgent = () =>
 export const useDeleteAgent = () => useApiMutation(({ name }: Name) => endpoints.deleteAgent(name), () => [qk.agents()])
 export const useRunWorkflow = () =>
   useApiMutation(({ name, args }: Name & { args?: unknown }) => endpoints.runWorkflow(name, args), () => [qk.workflowRuns()])
+export function useDecider() {
+  return useQuery({ queryKey: qk.decider(), queryFn: ({ signal }) => endpoints.getDecider({ signal }) })
+}
+/** The PATCH response is the new view, so it goes straight into the cache. */
+export function usePatchDecider() {
+  const qc = useQueryClient()
+  const secret = useRef<string | null>(null)
+  const mutation = useMutation({
+    mutationFn: (body: DeciderPatch) => endpoints.patchDecider(secret.current === null ? body : { ...body, key: { paste: secret.current } }),
+    gcTime: 0,
+    onSuccess: (data) => {
+      qc.setQueryData(qk.decider(), data)
+      return Promise.all([qc.invalidateQueries({ queryKey: qk.config() }), qc.invalidateQueries({ queryKey: qk.status() })])
+    },
+  })
+  async function save(body: DeciderPatch) {
+    const paste = body.key && 'paste' in body.key ? body.key.paste : null
+    secret.current = paste
+    const redacted = paste === null ? body : { ...body, key: { paste: '[REDACTED]' } }
+    try {
+      return await mutation.mutateAsync(redacted)
+    } finally {
+      secret.current = null
+      mutation.reset()
+    }
+  }
+  return { ...mutation, save }
+}
+export const useTestDecider = () =>
+  useMutation({ mutationFn: (body: DeciderTestRequest) => endpoints.testDecider(body), meta: { silent: true } }) // the panel shows the error
 export const usePatchConfig = () => useApiMutation((body: ConfigPatch) => endpoints.patchConfig(body), () => [qk.config(), qk.status()])

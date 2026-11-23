@@ -1,5 +1,5 @@
 import { http, HttpResponse, type RequestHandler } from 'msw'
-import type { ApiErrorBody, Event, Harness, LevelsPut, LevelsView, Page, TranscriptLine } from '../types'
+import type { ApiErrorBody, DeciderPatch, DeciderView, Event, Harness, LevelsPut, LevelsView, Page, TranscriptLine } from '../types'
 import { LARGE_SESSION_ID, makeLargeSession, type LargeSession } from '@/test/fixtures/large'
 import * as fx from './fixtures'
 
@@ -31,6 +31,7 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
   let cached: LargeSession | null = null
   const getLarge = () => (cached ??= makeLargeSession({ seed: 1, ...largeOptions }))
   let levels: LevelsView = structuredClone(fx.levels)
+  let decider: DeciderView = structuredClone(fx.decider)
   // Harness of accounts created through the mock API, by name.
   const createdHarness = new Map<string, Harness>()
   const harnessOf = (name: string): Harness | undefined => createdHarness.get(name) ?? fx.accounts.find((a) => a.name === name)?.harness
@@ -195,6 +196,23 @@ export function createHandlers({ large = false, largeOptions }: HandlerOptions =
       for (const [k, v] of Object.entries(p)) config[k] = { ...(config[k] as object), ...v }
       return HttpResponse.json({ ...fx.config, config, restart_required: 'ui' in p })
     }),
+    http.get(`${B}/decider`, () => HttpResponse.json(decider)),
+    http.patch(`${B}/decider`, async ({ request }) => {
+      const p = (await request.json()) as DeciderPatch
+      if (p.endpoint != null && !/^(https:\/\/|http:\/\/(localhost|127\.0\.0\.1|\[::1\])([:/]|$))/.test(p.endpoint)) {
+        return apiError(422, -32602, 'endpoint: must be https, or http only to a loopback host')
+      }
+      const { key, ...rest } = p
+      decider = { ...decider, ...Object.fromEntries(Object.entries(rest).filter(([, v]) => v != null)) } as DeciderView
+      if (p.fallback_model === '') decider.fallback_model = null
+      if (p.model != null) decider.effective = { ...decider.effective, primary: p.model }
+      if (key) {
+        const name = 'env' in key ? key.env : 'file' in key ? key.file : null
+        decider.key = 'paste' in key ? { source: 'file', name: '/home/dev/.config/superorchestrator/decider.env', masked: '...' + key.paste.slice(-4) } : { source: 'env' in key ? 'env' : 'file', name, masked: '...a1b2' }
+      }
+      return HttpResponse.json(decider)
+    }),
+    http.post(`${B}/decider/test`, () => HttpResponse.json(fx.deciderTest)),
     http.post(`${B}/auth`, () => new HttpResponse(null, { status: 204 })),
   ]
 }
