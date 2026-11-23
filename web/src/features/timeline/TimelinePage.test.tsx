@@ -349,3 +349,57 @@ describe('TimelinePage cache lifetime and hidden tabs', () => {
     expect(await screen.findByText('4 of 4 events')).toBeInTheDocument()
   })
 })
+
+describe('TimelinePage graph view and readability enhancements', () => {
+  it('toggles between Timeline and Agent Graph view, selecting runs across both views', async () => {
+    renderPage('/sessions/sess-1')
+    expect(await screen.findByRole('group', { name: 'Session timeline' })).toBeInTheDocument()
+
+    // View mode toggle
+    const graphToggle = screen.getByRole('radio', { name: 'Agent graph view' })
+    await userEvent.click(graphToggle)
+
+    // Agent graph is rendered
+    expect(await screen.findByTestId('agent-graph')).toBeInTheDocument()
+    expect(screen.getByTestId('graph-node-orchestrator')).toBeInTheDocument()
+    expect(screen.getByTestId('graph-node-run-1')).toBeInTheDocument()
+
+    // Click run node in graph view
+    await userEvent.click(screen.getByTestId('graph-node-run-1'))
+    expect(screen.getByTestId('where')).toHaveTextContent('/sessions/sess-1/runs/run-1')
+    expect(await screen.findByRole('heading', { name: 'refactor-api' })).toBeInTheDocument()
+
+    // Toggle back to Timeline view
+    await userEvent.click(screen.getByRole('radio', { name: 'Timeline view' }))
+    expect(await screen.findByRole('group', { name: 'Session timeline' })).toBeInTheDocument()
+    expect(screen.getByTestId('label-run-1')).toHaveAttribute('aria-current', 'true')
+  })
+
+  it('filters runs by query and updates matching counts, with reset button', async () => {
+    renderPage('/sessions/sess-1')
+    await screen.findByRole('group', { name: 'Session timeline' })
+
+    const input = screen.getByRole('searchbox', { name: 'Filter runs' })
+    await userEvent.type(input, 'write-tests')
+
+    expect(await screen.findByText('1 of 2 runs')).toBeInTheDocument()
+    expect(screen.getByTestId('label-run-2')).not.toHaveClass('opacity-35')
+
+    // Click Reset
+    await userEvent.click(screen.getByRole('button', { name: 'Reset' }))
+    expect(input).toHaveValue('')
+    expect(screen.queryByText('1 of 2 runs')).toBeNull()
+  })
+
+  it('opens keyboard shortcuts popover with guidance for timeline and graph', async () => {
+    renderPage('/sessions/sess-1')
+    await screen.findByRole('group', { name: 'Session timeline' })
+
+    const shortcutsBtn = screen.getByRole('button', { name: 'Keyboard shortcuts' })
+    await userEvent.click(shortcutsBtn)
+
+    expect(await screen.findByText('Keyboard Shortcuts')).toBeInTheDocument()
+    expect(screen.getByText('Timeline (Gantt)')).toBeInTheDocument()
+    expect(screen.getAllByText('Agent Graph').length).toBeGreaterThanOrEqual(2)
+  })
+})

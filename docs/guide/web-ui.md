@@ -18,7 +18,7 @@ The browser's global history may still record the original fragment. A history e
 
 - **Dashboard.** Accounts with sign-in state, 5-hour and weekly headroom per pool, active runs against the cap, live runs, recent escalations, and cost and tokens per day.
 - **Sessions.** Orchestrator and interactive sessions. Filter by active, escalated or failed.
-- **Session timeline.** One lane per run, nested under its parent, updated live. Click a lane for the run panel: brief, route decision, events, transcript, result, worktree, join command, and actions (message, cancel, accept, reject).
+- **Session timeline and agent graph.** View runs as a live Gantt timeline with minimap or switch to the interactive **Agent Graph** view to inspect parent/subagent hierarchy (DAG) with deterministic layout, orphan/missing parent handling, state indicators, duration, tool call counts, and message flow. Supports real-time filtering by state or text search, grouping (hierarchy, status, harness), accessible keyboard navigation, and deep-linked run details (brief, route decision, events, transcript, result, worktree, join command, and actions).
 - **Accounts.** Add, import, edit cap, priority and pools, enable or disable, flag a cooldown, remove, and sign in.
 - **Levels.** Edit levels and the routing instruction, preview a route, read the decision log. The page is at `/routing`. Each level lists its models in order, with add, remove and move controls.
 - **Agents.** List, view and edit agent files.
