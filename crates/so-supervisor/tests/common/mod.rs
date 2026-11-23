@@ -342,7 +342,6 @@ impl Env {
         };
         let opts =
             SupervisorOptions::new(self.paths.clone(), self.config.clone(), self.sock.clone())
-                .with_lock_wait(Duration::ZERO)
                 .with_idle_exit(Duration::from_secs(600))
                 .with_reap_interval(reap)
                 .with_host(host)

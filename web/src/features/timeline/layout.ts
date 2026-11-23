@@ -31,34 +31,22 @@ export function laneCurrentState(lane: RunLane): StateSegment['state'] | undefin
   if (!lastState) return snapshotState
   if (lastState === snapshotState) return lastState
 
-  // 1. Terminal snapshot states are authoritative over non-terminal replayed states
-  // (e.g. historical events omitted run_finished).
+  // A terminal snapshot fills gaps in history until a newer state segment records a resume.
   if (isTerminalState(snapshotState) && !isTerminalState(lastState)) {
-    return snapshotState
+    const finishedAt = Date.parse(lane.run?.finished_at ?? '')
+    return lastSeg.start > finishedAt ? lastState : snapshotState
   }
 
-  // 2. Explicit state transition events (e.g. live state_changed or run_finished)
-  // take precedence over a stale snapshot. Routine tool ticks must never undo this.
+  // Explicit transitions take precedence over an older snapshot across subsequent tool ticks.
   if (lane.hasStateTransition) {
     return lastState
   }
 
-  // 3. Authoritative snapshot state when history is incomplete:
-  // A run is never in queued or starting once its snapshot has reached an advanced state
-  // (such as pending_review, running, stalled, escalated, succeeded, failed, cancelled).
-  if ((lastState === 'queued' || lastState === 'starting') && snapshotState !== lastState) {
+  // The snapshot can supply the current state when history contains only the initial state.
+  if (lastState === 'queued' || lastState === 'starting') {
     return snapshotState
   }
 
-  // 4. Attention snapshot states are authoritative over queued / starting:
-  if (
-    (snapshotState === 'pending_review' || snapshotState === 'escalated' || snapshotState === 'stalled') &&
-    (lastState === 'queued' || lastState === 'starting')
-  ) {
-    return snapshotState
-  }
-
-  // 5. Otherwise, event state wins.
   return lastState
 }
 
