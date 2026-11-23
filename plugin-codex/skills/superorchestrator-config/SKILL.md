@@ -56,11 +56,16 @@ Project `.superorchestrator/agents/` shadows user profiles, then `.claude/agents
 
 Inspect `superorchestrator levels list` and `superorchestrator config get router.levels`. List model refs in preference order; each level needs models or a tier (`fast`, `mid`, `high`). Complexity ranges are 0–100 and cannot overlap.
 
+Task families (`code_implementation`, `code_review`, `debugging`, `documentation`, `research`, `planning`, `ui_design`, `other`): configure ordered preferred model refs per family under `[router.levels.families]` to specialize choices before falling back to level models.
+
+Capability suggestions: `codex/gpt-6.1-sol/high` (code implementation, debugging), `agy/claude-sonnet-4-6/thinking` (code review, research, planning), `agy/gemini-3.8-flash-high/high` (documentation, ui_design, other).
+
 | Change | Command |
 |---|---|
 | Prefer a model | `superorchestrator levels model add complex codex/gpt-6.1-sol/high --position 1` (use `levels model move` if already listed) |
 | Remove a model | `superorchestrator levels model remove complex codex/gpt-6.1-sol/high` |
 | Adjust a range | `superorchestrator levels edit complex --min 63 --max 87` |
+| Set family preference | `superorchestrator config set router.levels '[{name="high", min=63, max=100, models=["codex/gpt-6.1-sol/high"], families={code_review=["agy/claude-sonnet-4-6/thinking"]}}]'` |
 | Replace levels | `superorchestrator config set router.levels '[{name="all", min=0, max=100, models=["codex/gpt-6.1-sol/high"]}]'` |
 | Edit routing | `superorchestrator config edit` (the `[router]` settings in `config.toml`) |
 | Verify selection | `superorchestrator route "Review parser correctness" --agent reviewer --explain` |

@@ -15,7 +15,7 @@ pub mod redact;
 pub mod types;
 
 pub use account::{AccountFile, validate_account_name};
-pub use config::Config;
+pub use config::{Config, TaskFamily};
 pub use duration::HumanDuration;
 pub use error::{CoreError, Result};
 pub use paths::{Paths, Platform, expand_tilde};

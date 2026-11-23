@@ -374,6 +374,7 @@ fn add(ctx: &Ctx, a: LevelAdd) -> Result<EditResult> {
         max: a.max,
         tier,
         models,
+        families: std::collections::BTreeMap::new(),
     });
     d.save(ctx, &format!("added level {name} ({}-{})", a.min, a.max))
 }

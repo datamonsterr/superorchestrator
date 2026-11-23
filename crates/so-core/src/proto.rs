@@ -286,6 +286,12 @@ pub struct RouteResult {
     /// Name of the level the complexity falls in (or is nearest to).
     #[serde(default)]
     pub level: Option<String>,
+    /// Task family classified by the decider, if available.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_family: Option<crate::config::TaskFamily>,
+    /// Task family probabilities from the decider, keyed by task family name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub task_family_probabilities: BTreeMap<String, f64>,
     #[serde(default)]
     pub usage: RouteUsage,
     #[serde(default)]
@@ -957,6 +963,8 @@ mod tests {
             probabilities: BTreeMap::new(),
             complexity: None,
             level: None,
+            task_family: None,
+            task_family_probabilities: BTreeMap::new(),
             usage: RouteUsage::default(),
             alternatives: vec![],
             config_fingerprint: "f".into(),

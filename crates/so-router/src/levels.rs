@@ -1,7 +1,7 @@
 //! Levels: which level a complexity falls in, and which choice of that level wins.
 //! Pure over the eligible candidates; the account is chosen later by `select_account`.
 
-use so_core::config::{Level, LevelTier};
+use so_core::config::{Level, LevelTier, TaskFamily};
 
 use crate::catalog::Tier;
 use crate::eligible::Candidate;
@@ -68,23 +68,42 @@ pub fn levels_by_distance(levels: &[Level], complexity: f64) -> Vec<usize> {
     idx
 }
 
-/// Candidates a level allows: its listed models in list order, else the eligible choices of
-/// its tier in config order. Both only among the eligible.
-fn level_candidates(level: &Level, cands: &[Candidate<'_>]) -> Vec<usize> {
+/// Candidates a level allows: if a task family is given and the level configures preferred
+/// models for it, those eligible choices come first (in preference order). Next come the
+/// remaining eligible choices of the level (in `models` list order, or tier order).
+fn level_candidates(
+    level: &Level,
+    cands: &[Candidate<'_>],
+    family: Option<TaskFamily>,
+) -> Vec<usize> {
+    let mut out = Vec::new();
+    if let Some(f) = family
+        && let Some(prefs) = level.families.get(&f)
+    {
+        for m in prefs {
+            if let Some(i) = cands.iter().position(|c| &c.choice == m)
+                && !out.contains(&i)
+            {
+                out.push(i);
+            }
+        }
+    }
     if level.models.is_empty() {
         let Some(tier) = level.tier else {
-            return Vec::new();
+            return out;
         };
-        return (0..cands.len())
-            .filter(|&i| cands[i].tier == tier_of(tier))
-            .collect();
-    }
-    let mut out = Vec::new();
-    for m in &level.models {
-        if let Some(i) = cands.iter().position(|c| &c.choice == m)
-            && !out.contains(&i)
-        {
-            out.push(i);
+        for (i, cand) in cands.iter().enumerate() {
+            if cand.tier == tier_of(tier) && !out.contains(&i) {
+                out.push(i);
+            }
+        }
+    } else {
+        for m in &level.models {
+            if let Some(i) = cands.iter().position(|c| &c.choice == m)
+                && !out.contains(&i)
+            {
+                out.push(i);
+            }
         }
     }
     out
@@ -99,19 +118,52 @@ fn load(c: &Candidate<'_>) -> (f64, u32) {
 
 /// Orders a level's candidates. A level that lists models keeps its list order (position is a
 /// total order). A tier level has no list: most headroom first, then fewest active runs, then
-/// config order (the candidates' own order).
-fn rank(level: &Level, mut idx: Vec<usize>, cands: &[Candidate<'_>]) -> Vec<usize> {
+/// config order (the candidates' own order). If family preferences applied on a tier level,
+/// those preferred choices stay at the front.
+fn rank(
+    level: &Level,
+    mut idx: Vec<usize>,
+    cands: &[Candidate<'_>],
+    family: Option<TaskFamily>,
+) -> Vec<usize> {
     if !level.models.is_empty() {
         return idx;
     }
-    idx.sort_by(|&a, &b| {
-        let ((ha, aa), (hb, ab)) = (load(&cands[a]), load(&cands[b]));
-        hb.total_cmp(&ha).then(aa.cmp(&ab)).then(a.cmp(&b))
-    });
+    let family_count = family
+        .and_then(|f| level.families.get(&f))
+        .map_or(0, |prefs| {
+            idx.iter()
+                .take_while(|&&i| prefs.contains(&cands[i].choice))
+                .count()
+        });
+    if family_count > 0 && family_count < idx.len() {
+        let (_preferred, rest) = idx.split_at_mut(family_count);
+        rest.sort_by(|&a, &b| {
+            let ((ha, aa), (hb, ab)) = (load(&cands[a]), load(&cands[b]));
+            hb.total_cmp(&ha).then(aa.cmp(&ab)).then(a.cmp(&b))
+        });
+        return idx;
+    } else if family_count == 0 {
+        idx.sort_by(|&a, &b| {
+            let ((ha, aa), (hb, ab)) = (load(&cands[a]), load(&cands[b]));
+            hb.total_cmp(&ha).then(aa.cmp(&ab)).then(a.cmp(&b))
+        });
+    }
     idx
 }
 
-fn why_won(level: &Level, ranked: &[usize], cands: &[Candidate<'_>]) -> String {
+fn why_won(
+    level: &Level,
+    ranked: &[usize],
+    cands: &[Candidate<'_>],
+    family: Option<TaskFamily>,
+) -> String {
+    if let Some(f) = family
+        && let Some(prefs) = level.families.get(&f)
+        && prefs.contains(&cands[ranked[0]].choice)
+    {
+        return format!("preferred for {}", f.as_str());
+    }
     if ranked.len() == 1 {
         return "the only eligible choice of the level".into();
     }
@@ -130,16 +182,17 @@ pub fn select(
     cands: &[Candidate<'_>],
     complexity: f64,
     fallback_order: &[usize],
+    family: Option<TaskFamily>,
 ) -> Selection {
     let by_distance = levels_by_distance(levels, complexity);
     let mapped = by_distance.first().map(|&i| levels[i].name.clone());
     for &li in &by_distance {
         let level = &levels[li];
-        let ranked = rank(level, level_candidates(level, cands), cands);
+        let ranked = rank(level, level_candidates(level, cands, family), cands, family);
         if ranked.is_empty() {
             continue;
         }
-        let why = why_won(level, &ranked, cands);
+        let why = why_won(level, &ranked, cands, family);
         let mut order = ranked;
         let rest: Vec<usize> = fallback_order
             .iter()
@@ -176,6 +229,7 @@ mod tests {
             max,
             tier: None,
             models: Vec::new(),
+            families: std::collections::BTreeMap::new(),
         }
     }
 
@@ -227,5 +281,94 @@ mod tests {
     #[test]
     fn no_levels_means_no_level() {
         assert!(levels_by_distance(&[], 50.0).is_empty());
+    }
+
+    #[test]
+    fn task_family_preferred_model_ranks_first_within_level() {
+        use crate::catalog::Tier;
+        use crate::eligible::AccountState;
+        use so_core::{AccountFile, Choice, Harness};
+
+        let choice_a: Choice = "codex/m-a/high".parse().unwrap();
+        let choice_b: Choice = "codex/m-b/high".parse().unwrap();
+        let choice_c: Choice = "codex/m-c/high".parse().unwrap();
+
+        let acct_file = AccountFile::new("acc", Harness::Codex, "/h", "codex").unwrap();
+        let acct_state = AccountState {
+            file: acct_file,
+            active: 0,
+            last_attempt: None,
+            pools: std::collections::BTreeMap::new(),
+        };
+        let cand = |c: Choice| Candidate {
+            choice: c,
+            tier: Tier::High,
+            cost: crate::catalog::Cost::Included,
+            pool: "default".into(),
+            accounts: vec![&acct_state],
+        };
+
+        let cands = vec![
+            cand(choice_a.clone()),
+            cand(choice_b.clone()),
+            cand(choice_c.clone()),
+        ];
+
+        let mut level = Level {
+            name: "high".into(),
+            min: 63,
+            max: 100,
+            tier: None,
+            models: vec![choice_a.clone(), choice_b.clone(), choice_c.clone()],
+            families: std::collections::BTreeMap::new(),
+        };
+        level
+            .families
+            .insert(TaskFamily::CodeReview, vec![choice_b.clone()]);
+
+        let levels = vec![level];
+        let fallback = vec![0, 1, 2];
+
+        // With code_review: choice_b (idx 1) is preferred and wins
+        let sel = select(
+            &levels,
+            &cands,
+            85.0,
+            &fallback,
+            Some(TaskFamily::CodeReview),
+        );
+        assert_eq!(sel.order[0], 1); // choice_b
+        assert_eq!(sel.order[1], 0); // choice_a
+        assert_eq!(sel.order[2], 2); // choice_c
+        assert_eq!(sel.why, "preferred for code_review");
+
+        // Without task family (None): level order choice_a (idx 0) wins
+        let sel_none = select(&levels, &cands, 85.0, &fallback, None);
+        assert_eq!(sel_none.order[0], 0); // choice_a
+        assert_eq!(sel_none.why, "first in the level");
+
+        // With unconfigured task family (Debugging): falls back to level order
+        let sel_debug = select(
+            &levels,
+            &cands,
+            85.0,
+            &fallback,
+            Some(TaskFamily::Debugging),
+        );
+        assert_eq!(sel_debug.order[0], 0); // choice_a
+        assert_eq!(sel_debug.why, "first in the level");
+
+        // When preferred choice is not eligible (only cands 0 and 2 available):
+        let cands_no_b = vec![cand(choice_a.clone()), cand(choice_c.clone())];
+        let fallback_no_b = vec![0, 1];
+        let sel_fallback = select(
+            &levels,
+            &cands_no_b,
+            85.0,
+            &fallback_no_b,
+            Some(TaskFamily::CodeReview),
+        );
+        assert_eq!(sel_fallback.order[0], 0); // choice_a
+        assert_eq!(sel_fallback.why, "first in the level");
     }
 }

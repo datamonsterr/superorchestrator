@@ -1,5 +1,8 @@
 //! `config.toml` (SPEC 16): defaults, load, save and dotted-key get/set.
 
+use std::collections::BTreeMap;
+use std::fmt;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -259,6 +262,113 @@ pub enum LevelTier {
     Fast,
 }
 
+/// Typed task family classification (SPEC 8.3).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskFamily {
+    CodeImplementation,
+    CodeReview,
+    Debugging,
+    Documentation,
+    Research,
+    Planning,
+    UiDesign,
+    Other,
+}
+
+impl TaskFamily {
+    pub const ALL: [TaskFamily; 8] = [
+        TaskFamily::CodeImplementation,
+        TaskFamily::CodeReview,
+        TaskFamily::Debugging,
+        TaskFamily::Documentation,
+        TaskFamily::Research,
+        TaskFamily::Planning,
+        TaskFamily::UiDesign,
+        TaskFamily::Other,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CodeImplementation => "code_implementation",
+            Self::CodeReview => "code_review",
+            Self::Debugging => "debugging",
+            Self::Documentation => "documentation",
+            Self::Research => "research",
+            Self::Planning => "planning",
+            Self::UiDesign => "ui_design",
+            Self::Other => "other",
+        }
+    }
+}
+
+impl fmt::Display for TaskFamily {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for TaskFamily {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "code_implementation" | "code-implementation" => Ok(Self::CodeImplementation),
+            "code_review" | "code-review" => Ok(Self::CodeReview),
+            "debugging" => Ok(Self::Debugging),
+            "documentation" => Ok(Self::Documentation),
+            "research" => Ok(Self::Research),
+            "planning" => Ok(Self::Planning),
+            "ui_design" | "ui-design" | "ui/design" => Ok(Self::UiDesign),
+            "other" => Ok(Self::Other),
+            other => Err(format!(
+                "unknown task family `{other}` (expected code_implementation, code_review, debugging, documentation, research, planning, ui_design, other)"
+            )),
+        }
+    }
+}
+
+/// Criteria for each choice in the decider's `task_family` question.
+pub const TASK_FAMILY_CRITERIA: [(&str, &str); 8] = [
+    (
+        "code_implementation",
+        "Writing, implementing, refactoring, or generating code, tests, and software components.",
+    ),
+    (
+        "code_review",
+        "Reviewing code, evaluating pull requests or diffs, identifying defects, and verifying compliance.",
+    ),
+    (
+        "debugging",
+        "Investigating bugs, finding root causes, troubleshooting errors, diagnosing issues, and fixing regressions.",
+    ),
+    (
+        "documentation",
+        "Writing, editing, updating, or maintaining technical documentation, guides, specifications, and comments.",
+    ),
+    (
+        "research",
+        "Exploring codebases, searching documentation, analyzing technical options, benchmarking, or investigating approaches.",
+    ),
+    (
+        "planning",
+        "Designing architecture, scoping tasks, creating roadmaps, decomposing work, and drafting implementation plans.",
+    ),
+    (
+        "ui_design",
+        "User interface, user experience, visual design, layouts, frontend styling, mockups, and interaction design.",
+    ),
+    (
+        "other",
+        "General tasks, administrative work, or requests that do not fit into the other categories.",
+    ),
+];
+
+/// Default routing instruction for the decider's `task_family` choice question.
+pub const DEFAULT_TASK_FAMILY_INSTRUCTION: &str = "Select the task family that best categorizes the primary nature of task_content. Choose other when no specific category fits.";
+
 /// A named range of complexity (`min` to `max`, within 0 to 100) and the models allowed
 /// for it, in preference order. Complexity can be fractional, so the integer range reads as
 /// the half-open span `[min, max + 1)`: 37.5 is in `0..=37`. A level with `max = 100` also
@@ -277,6 +387,13 @@ pub struct Level {
     /// preference order: the first eligible one wins.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub models: Vec<Choice>,
+    /// Optional ordered preferred model refs for specific task families within this level.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        alias = "task_families"
+    )]
+    pub families: BTreeMap<TaskFamily, Vec<Choice>>,
 }
 
 /// Validate a set of router levels without modifying it.
@@ -315,6 +432,18 @@ pub fn validate_levels(levels: &[Level]) -> std::result::Result<(), String> {
                 l.name, l.models[j]
             ));
         }
+        for (family, family_models) in &l.families {
+            if let Some(j) =
+                (1..family_models.len()).find(|&j| family_models[..j].contains(&family_models[j]))
+            {
+                return Err(format!(
+                    "router.levels `{}` family `{}`: duplicate model `{}`",
+                    l.name,
+                    family.as_str(),
+                    family_models[j]
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -349,6 +478,7 @@ fn default_levels() -> Vec<Level> {
         max,
         tier: Some(tier),
         models: Vec::new(),
+        families: BTreeMap::new(),
     };
     vec![
         level("low", 0, 37, LevelTier::Fast),
@@ -586,12 +716,21 @@ impl Config {
     }
 
     /// Distinct model refs of every level, in level order; a ref listed twice counts once,
-    /// at its first place.
+    /// at its first place. Includes models listed under task family preferences.
     pub fn choices(&self) -> Vec<Choice> {
         let mut out: Vec<Choice> = Vec::new();
-        for c in self.router.levels.iter().flat_map(|l| &l.models) {
-            if !out.contains(c) {
-                out.push(c.clone());
+        for l in &self.router.levels {
+            for c in &l.models {
+                if !out.contains(c) {
+                    out.push(c.clone());
+                }
+            }
+            for family_models in l.families.values() {
+                for c in family_models {
+                    if !out.contains(c) {
+                        out.push(c.clone());
+                    }
+                }
             }
         }
         out
@@ -599,11 +738,10 @@ impl Config {
 
     /// Whether some level lists the model ref `id`.
     pub fn lists_choice(&self, id: &str) -> bool {
-        self.router
-            .levels
-            .iter()
-            .flat_map(|l| &l.models)
-            .any(|c| c.id() == id)
+        self.router.levels.iter().any(|l| {
+            l.models.iter().any(|c| c.id() == id)
+                || l.families.values().any(|m| m.iter().any(|c| c.id() == id))
+        })
     }
 
     /// Deserialises `text`, first refusing the pre-model-ref keys with a pointer to the new ones.
@@ -1025,6 +1163,95 @@ mod tests {
         );
         assert_eq!(c.defaults, Defaults::default());
         assert!(c.choices().is_empty());
+    }
+
+    #[test]
+    fn task_family_taxonomy_and_serialization() {
+        let cases = [
+            ("code_implementation", TaskFamily::CodeImplementation),
+            ("code_review", TaskFamily::CodeReview),
+            ("debugging", TaskFamily::Debugging),
+            ("documentation", TaskFamily::Documentation),
+            ("research", TaskFamily::Research),
+            ("planning", TaskFamily::Planning),
+            ("ui_design", TaskFamily::UiDesign),
+            ("other", TaskFamily::Other),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(name.parse::<TaskFamily>().unwrap(), expected);
+            assert_eq!(expected.as_str(), name);
+            assert_eq!(expected.to_string(), name);
+            let serialized = serde_json::to_string(&expected).unwrap();
+            assert_eq!(serialized, format!("\"{name}\""));
+            let deserialized: TaskFamily = serde_json::from_str(&serialized).unwrap();
+            assert_eq!(deserialized, expected);
+        }
+        assert_eq!(
+            "ui/design".parse::<TaskFamily>().unwrap(),
+            TaskFamily::UiDesign
+        );
+        assert_eq!(
+            "ui-design".parse::<TaskFamily>().unwrap(),
+            TaskFamily::UiDesign
+        );
+        assert!("unknown".parse::<TaskFamily>().is_err());
+    }
+
+    #[test]
+    fn level_families_deserialization_and_validation() {
+        let toml_str = r#"
+            [[router.levels]]
+            name = "high"
+            min = 63
+            max = 100
+            models = ["codex/gpt-6.1-sol/high", "agy/claude-sonnet-4-6/thinking"]
+
+            [router.levels.families]
+            code_review = ["agy/claude-sonnet-4-6/thinking"]
+            debugging = ["codex/gpt-6.1-sol/high"]
+        "#;
+        let (_d, paths) = tmp();
+        std::fs::write(paths.config_toml(), toml_str).unwrap();
+        let cfg = Config::load(&paths).unwrap();
+        let l = &cfg.router.levels[0];
+        assert_eq!(l.families.len(), 2);
+        assert_eq!(
+            l.families[&TaskFamily::CodeReview][0].id(),
+            "agy/claude-sonnet-4-6/thinking"
+        );
+        assert_eq!(
+            l.families[&TaskFamily::Debugging][0].id(),
+            "codex/gpt-6.1-sol/high"
+        );
+
+        // Alias task_families also deserializes
+        let json_str = r#"
+            [[router.levels]]
+            name = "mid"
+            min = 38
+            max = 62
+            models = ["codex/gpt-6-luna/high"]
+
+            [router.levels.task_families]
+            research = ["codex/gpt-6-luna/high"]
+        "#;
+        std::fs::write(paths.config_toml(), json_str).unwrap();
+        let cfg_alias = Config::load(&paths).unwrap();
+        assert_eq!(
+            cfg_alias.router.levels[0].families[&TaskFamily::Research][0].id(),
+            "codex/gpt-6-luna/high"
+        );
+
+        // Duplicate model in family triggers validation error
+        let mut bad = cfg.clone();
+        bad.router.levels[0].families.insert(
+            TaskFamily::CodeReview,
+            vec![
+                "codex/gpt-6.1-sol/high".parse().unwrap(),
+                "codex/gpt-6.1-sol/high".parse().unwrap(),
+            ],
+        );
+        assert!(bad.validate().is_err());
     }
 
     #[test]

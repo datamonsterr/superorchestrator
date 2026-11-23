@@ -9,7 +9,10 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use so_core::config::{COMPLEXITY_ANCHORS, Jev, JevModels, Policy};
+use so_core::config::{
+    COMPLEXITY_ANCHORS, DEFAULT_TASK_FAMILY_INSTRUCTION, Jev, JevModels, Policy,
+    TASK_FAMILY_CRITERIA, TaskFamily,
+};
 use so_core::expand_tilde;
 use so_core::proto::RouteUsage;
 
@@ -83,6 +86,12 @@ pub struct Validated {
     pub confidence: f64,
     /// Probability per anchor, keyed "0" to "n-1".
     pub probabilities: BTreeMap<String, f64>,
+    /// Selected task family, if answered and valid.
+    pub task_family: Option<TaskFamily>,
+    /// Task family confidence, if answered.
+    pub task_family_confidence: Option<f64>,
+    /// Task family probabilities, keyed by family name.
+    pub task_family_probabilities: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -172,11 +181,38 @@ pub fn validate(data: &Value) -> Result<Validated, String> {
     if (score - expected_score).abs() > SCORE_TOLERANCE {
         return bad("score disagrees with probabilities");
     }
+
+    // Optional task_family answer: if present and a valid choice, extract it;
+    // on missing or unknown data, gracefully fall back to None.
+    let mut task_family = None;
+    let mut task_family_confidence = None;
+    let mut task_family_probabilities = BTreeMap::new();
+    if let Some(tf_answer) = data.pointer("/answers/task_family") {
+        if tf_answer.get("type").and_then(Value::as_str) == Some("choice") {
+            if let Some(choice_str) = tf_answer.get("choice").and_then(Value::as_str) {
+                if let Ok(fam) = choice_str.parse::<TaskFamily>() {
+                    task_family = Some(fam);
+                    task_family_confidence = tf_answer.get("confidence").and_then(unit);
+                    if let Some(map) = tf_answer.get("probabilities").and_then(Value::as_object) {
+                        for (k, v) in map {
+                            if let Some(p) = unit(v) {
+                                task_family_probabilities.insert(k.clone(), p);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(Validated {
         score,
         complexity: complexity_of(score, n),
         confidence,
         probabilities,
+        task_family,
+        task_family_confidence,
+        task_family_probabilities,
     })
 }
 
@@ -202,6 +238,10 @@ fn parse_usage(data: &Value) -> RouteUsage {
 }
 
 pub fn build_payload(model: &str, req: &JevRequest<'_>) -> Value {
+    let mut criteria_map = serde_json::Map::new();
+    for (k, v) in TASK_FAMILY_CRITERIA {
+        criteria_map.insert(k.to_string(), json!(v));
+    }
     json!({
         "model": model,
         "state": {
@@ -215,6 +255,11 @@ pub fn build_payload(model: &str, req: &JevRequest<'_>) -> Value {
                 "type": "score",
                 "instructions": req.routing_instruction,
                 "criteria": COMPLEXITY_ANCHORS,
+            },
+            "task_family": {
+                "type": "choice",
+                "instructions": DEFAULT_TASK_FAMILY_INSTRUCTION,
+                "criteria": criteria_map,
             },
         },
     })
@@ -673,7 +718,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_asks_one_score_question_and_sends_no_account_context() {
+    fn payload_asks_complexity_and_task_family_and_sends_no_account_context() {
         let req = JevRequest {
             task: "t",
             system_instruction: "",
@@ -686,9 +731,56 @@ mod tests {
         assert_eq!(q["instructions"], "rate it");
         assert_eq!(q["criteria"].as_array().unwrap().len(), 5);
         assert_eq!(q["criteria"][0], COMPLEXITY_ANCHORS[0]);
-        assert_eq!(b["questions"].as_object().unwrap().len(), 1);
+
+        let tf = &b["questions"]["task_family"];
+        assert_eq!(tf["type"], "choice");
+        assert_eq!(tf["instructions"], DEFAULT_TASK_FAMILY_INSTRUCTION);
+        let tf_criteria = tf["criteria"].as_object().unwrap();
+        assert_eq!(tf_criteria.len(), 8);
+        assert_eq!(
+            tf_criteria["code_implementation"],
+            TASK_FAMILY_CRITERIA[0].1
+        );
+        for &(k, _) in &TASK_FAMILY_CRITERIA {
+            assert!(tf_criteria.contains_key(k), "missing criterion key {k}");
+        }
+        assert_eq!(b["questions"].as_object().unwrap().len(), 2);
         assert!(b["state"].get("context").is_none());
         assert_eq!(b["state"]["task_content"], "t");
+    }
+
+    #[test]
+    fn validate_parses_valid_task_family_and_gracefully_ignores_unknown_or_missing() {
+        let mut ok = ok_body();
+        // Missing task_family: validates with None
+        let v = validate(&ok).unwrap();
+        assert_eq!(v.task_family, None);
+        assert!(v.task_family_probabilities.is_empty());
+
+        // Valid task_family: parses TaskFamily and probabilities
+        ok["answers"]["task_family"] = json!({
+            "type": "choice",
+            "choice": "code_review",
+            "confidence": 0.88,
+            "probabilities": {
+                "code_review": 0.88,
+                "debugging": 0.12
+            }
+        });
+        let v2 = validate(&ok).unwrap();
+        assert_eq!(v2.task_family, Some(TaskFamily::CodeReview));
+        assert_eq!(v2.task_family_confidence, Some(0.88));
+        assert_eq!(v2.task_family_probabilities.get("code_review"), Some(&0.88));
+
+        // Unknown choice: falls back to None, does not fail complexity validation
+        ok["answers"]["task_family"]["choice"] = json!("astrology");
+        let v3 = validate(&ok).unwrap();
+        assert_eq!(v3.task_family, None);
+
+        // Malformed task_family: falls back to None, does not fail complexity validation
+        ok["answers"]["task_family"] = json!({"type": "invalid"});
+        let v4 = validate(&ok).unwrap();
+        assert_eq!(v4.task_family, None);
     }
 
     #[test]
