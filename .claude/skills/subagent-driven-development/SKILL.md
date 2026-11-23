@@ -72,7 +72,7 @@ digraph process {
 ### Per task
 
 1. **Dispatch the implementer** with `./implementer-prompt.md`: `spawn_agent(agent: "implementer", review: true, checks, output_schema, wait: false)` from the feature checkout. The run gets its own worktree at the feature branch's `HEAD`.
-2. **Wait** with `wait_agent([run], timeout_ms)`. Answer each `question` update with `send_message(run, text, kind: "answer")`. Progress updates need no action. Keep waiting until the run is in `finished`.
+2. **Wait** with `wait_agent(runs: [run], include_progress: false, timeout_ms: 1800000)` (batch active runs, quiet mode, 30-min max). Answer each `question` update with `send_message(run, text, kind: "answer")`. Keep waiting until the run is in `finished`. Call `get_run` only for missing detail or review.
 3. **Read the result.** The run stops at `pending_review` with a result that matches the schema. Handle its status (below). When `failed_checks` is set, the checks failed twice: reject the run with the check output, or treat it as BLOCKED.
 4. **Look at the change** with `get_run(run, diff: true)`. Note `worktree`, `branch` and `diff.base`. Skim the patch yourself. Review with the diff, not by reading files.
 5. **Spec review.** Spawn `spec-reviewer` with `cwd: <worktree>` (`./spec-reviewer-prompt.md`). Its own worktree starts at the implementer's tip. When it is not compliant, `reject_run(run, feedback)` with the issues. The implementer fixes them on the same native session, the checks run again, and the run returns to `pending_review`. Spawn a fresh spec reviewer with the earlier issues listed. Repeat until compliant.
@@ -116,7 +116,7 @@ The router picks the harness, account and model from the task's complexity. On t
 
 Default to one task at a time. Tasks with no dependency on each other and no shared files may run together, because each run has its own worktree:
 
-- Spawn each implementer with `wait: false`, then `wait_agent` on all of them.
+- Spawn each implementer with `wait: false`, then `wait_agent` on all active run IDs with `include_progress: false` and `timeout_ms: 1800000`.
 - Review each run as above.
 - Land them one at a time with `accept_run(merge: true)`. On a conflict, reject the run and tell the implementer to merge the feature branch into its branch, resolve the conflict and commit.
 

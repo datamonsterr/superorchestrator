@@ -405,6 +405,7 @@ pub async fn wait_for(c: &SupervisorClient, run: &str) -> WaitResult {
         WaitParams {
             runs: vec![run.into()],
             timeout_ms: Some(20_000),
+            include_progress: true,
         },
     )
     .await
