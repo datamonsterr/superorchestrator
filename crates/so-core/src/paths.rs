@@ -140,9 +140,9 @@ pub fn run_tmp_dir(run_dir: &Path) -> PathBuf {
 }
 
 /// Socket path: `SUPERORCHESTRATOR_SOCKET`; else on Linux `$XDG_RUNTIME_DIR/superorchestrator.sock`
-/// (or `/run/user/<uid>/superorchestrator.sock` when the env is absent and safe, with
-/// fallback `/tmp/superorchestrator-<uid>/superorchestrator.sock`); on macOS
-/// `~/Library/Caches/superorchestrator/sock`.
+/// (or `/run/user/<uid>/superorchestrator.sock` when the env is absent and safe, preserving
+/// an existing `/tmp/superorchestrator-<uid>/` socket if the standard socket does not exist);
+/// on macOS `~/Library/Caches/superorchestrator/sock`.
 pub fn socket_path_with(env: EnvFn<'_>, platform: Platform) -> Result<PathBuf> {
     if let Some(p) = non_empty(env, "SUPERORCHESTRATOR_SOCKET") {
         return expand_tilde_with(env, &p);
@@ -155,86 +155,42 @@ pub fn socket_path_with(env: EnvFn<'_>, platform: Platform) -> Result<PathBuf> {
                 .join("sock"))
         }
         Platform::Linux => {
+            let uid = rustix::process::geteuid().as_raw();
+            let tmp_sock = PathBuf::from(format!("/tmp/superorchestrator-{uid}"))
+                .join("superorchestrator.sock");
             if let Some(rt) = non_empty(env, "XDG_RUNTIME_DIR") {
                 if Path::new(&rt).is_absolute() {
                     return Ok(PathBuf::from(rt).join("superorchestrator.sock"));
                 }
-                let uid = rustix::process::geteuid().as_raw();
-                return Ok(PathBuf::from(format!("/tmp/superorchestrator-{uid}"))
-                    .join("superorchestrator.sock"));
+                return Ok(tmp_sock);
             }
-            let uid = rustix::process::geteuid().as_raw();
             let standard_dir = PathBuf::from(format!("/run/user/{uid}"));
-            let tmp_dir = PathBuf::from(format!("/tmp/superorchestrator-{uid}"));
-            Ok(resolve_linux_socket(
-                &standard_dir,
-                &tmp_dir,
-                |dir| is_safe_runtime_dir(dir, uid),
-                socket_answers,
-            ))
+            Ok(resolve_linux_socket(&standard_dir, tmp_sock, uid))
         }
     }
 }
 
-/// Checks that `path` exists, is an actual directory (not a symlink),
-/// is owned by `expected_uid`, and is not group- or world-writable.
-pub fn is_safe_runtime_dir(path: &Path, expected_uid: u32) -> bool {
+fn is_socket(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket())
+}
+
+fn safe_runtime_dir(path: &Path, expected_uid: u32) -> bool {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return false;
     };
     if !meta.is_dir() {
         return false;
     }
-    if meta.uid() != expected_uid {
-        return false;
-    }
-    if (meta.mode() & 0o022) != 0 {
-        return false;
-    }
-    true
+    meta.uid() == expected_uid && (meta.mode() & 0o777) == 0o700
 }
 
-/// Checks whether a unix domain socket exists at `path` and answers connections.
-pub fn socket_answers(path: &Path) -> bool {
-    let Ok(meta) = std::fs::symlink_metadata(path) else {
-        return false;
-    };
-    if !meta.file_type().is_socket() {
-        return false;
-    }
-    std::os::unix::net::UnixStream::connect(path).is_ok()
-}
-
-/// Selects between the standard runtime directory and a `/tmp` fallback directory
-/// on Linux when `XDG_RUNTIME_DIR` is absent.
-///
-/// If `standard_dir` is safely usable:
-/// - If a supervisor is already answering on `standard_sock`, returns it.
-/// - If a supervisor is already answering on `tmp_sock`, returns it to preserve
-///   an already-running `/tmp` daemon.
-/// - Otherwise returns `standard_sock`.
-///
-/// If `standard_dir` is not safely usable, falls back to `tmp_sock`.
-pub fn resolve_linux_socket(
-    standard_dir: &Path,
-    tmp_dir: &Path,
-    is_safe_dir: impl Fn(&Path) -> bool,
-    socket_answers: impl Fn(&Path) -> bool,
-) -> PathBuf {
+fn resolve_linux_socket(standard_dir: &Path, tmp_sock: PathBuf, uid: u32) -> PathBuf {
     let standard_sock = standard_dir.join("superorchestrator.sock");
-    let tmp_sock = tmp_dir.join("superorchestrator.sock");
-
-    if is_safe_dir(standard_dir) {
-        if socket_answers(&standard_sock) {
-            return standard_sock;
-        }
-        if socket_answers(&tmp_sock) {
-            return tmp_sock;
-        }
-        return standard_sock;
+    if safe_runtime_dir(standard_dir, uid) && (is_socket(&standard_sock) || !is_socket(&tmp_sock)) {
+        standard_sock
+    } else {
+        tmp_sock
     }
-
-    tmp_sock
 }
 
 #[cfg(test)]
@@ -373,134 +329,117 @@ mod tests {
             socket_path_with(&env, Platform::MacOs).unwrap(),
             PathBuf::from("/home/u/Library/Caches/superorchestrator/sock")
         );
-
-        let env = env_of(&[]);
-        let p = socket_path_with(&env, Platform::Linux).unwrap();
-        let uid = rustix::process::geteuid().as_raw();
-        let standard_sock = PathBuf::from(format!("/run/user/{uid}/superorchestrator.sock"));
-        let tmp_sock = PathBuf::from(format!(
-            "/tmp/superorchestrator-{uid}/superorchestrator.sock"
-        ));
-        let standard_dir = PathBuf::from(format!("/run/user/{uid}"));
-        if is_safe_runtime_dir(&standard_dir, uid) && !socket_answers(&tmp_sock) {
-            assert_eq!(p, standard_sock);
-        } else {
-            assert_eq!(p, tmp_sock);
-        }
     }
 
     #[test]
-    fn resolve_linux_socket_prefers_active_standard_socket() {
-        let standard_dir = PathBuf::from("/test/run/user/1000");
-        let tmp_dir = PathBuf::from("/test/tmp/superorchestrator-1000");
-        let standard_sock = standard_dir.join("superorchestrator.sock");
-        let tmp_sock = tmp_dir.join("superorchestrator.sock");
-
-        let p = resolve_linux_socket(
-            &standard_dir,
-            &tmp_dir,
-            |_| true,
-            |sock| sock == standard_sock || sock == tmp_sock,
-        );
-        assert_eq!(p, standard_sock);
-    }
-
-    #[test]
-    fn resolve_linux_socket_preserves_active_tmp_daemon() {
-        let standard_dir = PathBuf::from("/test/run/user/1000");
-        let tmp_dir = PathBuf::from("/test/tmp/superorchestrator-1000");
-        let standard_sock = standard_dir.join("superorchestrator.sock");
-        let tmp_sock = tmp_dir.join("superorchestrator.sock");
-
-        let p = resolve_linux_socket(
-            &standard_dir,
-            &tmp_dir,
-            |_| true,
-            |sock| sock != standard_sock && sock == tmp_sock,
-        );
-        assert_eq!(p, tmp_sock);
-    }
-
-    #[test]
-    fn resolve_linux_socket_uses_safe_standard_dir_when_neither_answers() {
-        let standard_dir = PathBuf::from("/test/run/user/1000");
-        let tmp_dir = PathBuf::from("/test/tmp/superorchestrator-1000");
-        let standard_sock = standard_dir.join("superorchestrator.sock");
-
-        let p = resolve_linux_socket(&standard_dir, &tmp_dir, |_| true, |_| false);
-        assert_eq!(p, standard_sock);
-    }
-
-    #[test]
-    fn resolve_linux_socket_falls_back_to_tmp_when_standard_dir_unsafe() {
-        let standard_dir = PathBuf::from("/test/run/user/1000");
-        let tmp_dir = PathBuf::from("/test/tmp/superorchestrator-1000");
-        let tmp_sock = tmp_dir.join("superorchestrator.sock");
-
-        // Even if a socket at standard_sock answers, an unsafe dir rejects it.
-        let p = resolve_linux_socket(&standard_dir, &tmp_dir, |_| false, |_| true);
-        assert_eq!(p, tmp_sock);
-    }
-
-    #[test]
-    fn is_safe_runtime_dir_validates_dir_ownership_and_mode() {
+    fn safe_runtime_dir_checks_ownership_mode_and_type() {
         use std::os::unix::fs::PermissionsExt;
 
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = tempfile::Builder::new()
+            .prefix("so-rt-")
+            .tempdir_in("/tmp")
+            .unwrap();
         let uid = rustix::process::geteuid().as_raw();
 
-        // Valid private dir owned by current user (default 0700)
-        assert!(is_safe_runtime_dir(tmp.path(), uid));
-
-        // Wrong expected uid
-        assert!(!is_safe_runtime_dir(tmp.path(), uid.wrapping_add(1)));
-
-        // World-writable dir
-        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
-        assert!(!is_safe_runtime_dir(tmp.path(), uid));
-
-        // Group-writable dir
-        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o770)).unwrap();
-        assert!(!is_safe_runtime_dir(tmp.path(), uid));
-
-        // Restore safe mode 0700
         std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(is_safe_runtime_dir(tmp.path(), uid));
+        // Mode 0700 owned by current uid is accepted
+        assert!(safe_runtime_dir(tmp.path(), uid));
 
-        // Symlink pointing to the directory is rejected
-        let link = tmp.path().join("link_to_dir");
+        // Wrong uid
+        assert!(!safe_runtime_dir(tmp.path(), uid.wrapping_add(1)));
+
+        // Mode 0755 rejected (requires exact 0700)
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!safe_runtime_dir(tmp.path(), uid));
+
+        // Mode 0777 rejected
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!safe_runtime_dir(tmp.path(), uid));
+
+        // Restore 0700
+        std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(safe_runtime_dir(tmp.path(), uid));
+
+        // Symlink rejected
+        let link = tmp.path().join("link");
         std::os::unix::fs::symlink(tmp.path(), &link).unwrap();
-        assert!(!is_safe_runtime_dir(&link, uid));
+        assert!(!safe_runtime_dir(&link, uid));
 
-        // Regular file is rejected
-        let file = tmp.path().join("regular_file");
-        std::fs::write(&file, b"data").unwrap();
-        assert!(!is_safe_runtime_dir(&file, uid));
+        // File rejected
+        let file = tmp.path().join("file");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(!safe_runtime_dir(&file, uid));
 
-        // Non-existent path is rejected
-        let missing = tmp.path().join("missing");
-        assert!(!is_safe_runtime_dir(&missing, uid));
+        // Missing path rejected
+        assert!(!safe_runtime_dir(&tmp.path().join("missing"), uid));
     }
 
     #[test]
-    fn socket_answers_detects_live_listener_and_stale_or_missing_sockets() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sock_path = tmp.path().join("test.sock");
+    fn is_socket_identifies_sockets() {
+        let tmp = tempfile::Builder::new()
+            .prefix("so-sk-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let sock_path = tmp.path().join("s.sock");
 
-        // Non-existent
-        assert!(!socket_answers(&sock_path));
+        assert!(!is_socket(&sock_path));
 
-        // Regular file
-        std::fs::write(&sock_path, b"not a socket").unwrap();
-        assert!(!socket_answers(&sock_path));
-        std::fs::remove_file(&sock_path).unwrap();
+        let file_path = tmp.path().join("f");
+        std::fs::write(&file_path, b"").unwrap();
+        assert!(!is_socket(&file_path));
 
-        // Live listening unix socket
         let listener = std::os::unix::net::UnixListener::bind(&sock_path).unwrap();
-        assert!(socket_answers(&sock_path));
+        assert!(is_socket(&sock_path));
 
-        // Dropping listener leaves socket file on disk, but nothing answers (stale socket)
+        // Dropping the listener leaves socket file on disk, which remains a socket file type
         drop(listener);
-        assert!(!socket_answers(&sock_path));
+        assert!(is_socket(&sock_path));
+    }
+
+    #[test]
+    fn resolve_linux_socket_branches() {
+        let tmp = tempfile::Builder::new()
+            .prefix("so-rl-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let uid = rustix::process::geteuid().as_raw();
+
+        let standard_dir = tmp.path().join("standard");
+        let tmp_dir = tmp.path().join("tmp");
+        std::fs::create_dir_all(&standard_dir).unwrap();
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&standard_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let standard_sock = standard_dir.join("superorchestrator.sock");
+        let tmp_sock = tmp_dir.join("superorchestrator.sock");
+
+        // 1. Neither socket exists, standard dir is safe -> returns standard_sock
+        assert_eq!(
+            resolve_linux_socket(&standard_dir, tmp_sock.clone(), uid),
+            standard_sock
+        );
+
+        // 2. tmp_sock exists, standard_sock does not -> preserves tmp_sock
+        let _tmp_listener = std::os::unix::net::UnixListener::bind(&tmp_sock).unwrap();
+        assert_eq!(
+            resolve_linux_socket(&standard_dir, tmp_sock.clone(), uid),
+            tmp_sock
+        );
+
+        // 3. Both sockets exist -> standard_sock wins
+        let _std_listener = std::os::unix::net::UnixListener::bind(&standard_sock).unwrap();
+        assert_eq!(
+            resolve_linux_socket(&standard_dir, tmp_sock.clone(), uid),
+            standard_sock
+        );
+
+        // 4. Standard dir unsafe (e.g. mode 0755) -> falls back to tmp_sock
+        std::fs::set_permissions(&standard_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            resolve_linux_socket(&standard_dir, tmp_sock, uid),
+            tmp_dir.join("superorchestrator.sock")
+        );
     }
 }

@@ -45,7 +45,7 @@ env_vars = ["XDG_RUNTIME_DIR"]
 
 `install` writes the absolute path of the running binary (the example shows a typical one). Only the plugin's `.mcp.json` uses the bare `superorchestrator` from `PATH`.
 
-Codex defaults are 10 s to start a server and 60 s per tool call. Codex also starts MCP servers with a scrubbed environment. Forwarding `XDG_RUNTIME_DIR` ensures the server finds the supervisor socket; if the variable is absent (for example, in a graphical Codex app server on Linux), the MCP server automatically falls back to the user's standard runtime directory (`/run/user/<uid>`) or `/tmp/superorchestrator-<uid>/`.
+Codex defaults are 10 s to start a server and 60 s per tool call. Codex also starts MCP servers with a scrubbed environment. Forwarding `XDG_RUNTIME_DIR` ensures the server finds the supervisor socket. If the variable is absent (for example, in a graphical Codex app server on Linux), the MCP server automatically falls back to the user's standard runtime directory (`/run/user/<uid>`). If no standard socket exists but an existing `/tmp/superorchestrator-<uid>/` socket is present, that socket is preserved.
 
 The plugin lives in `plugin-codex/`, separate from the Claude Code `plugin/`. Add it with:
 
