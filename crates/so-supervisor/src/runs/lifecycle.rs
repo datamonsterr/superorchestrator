@@ -17,7 +17,7 @@ use so_harness::{
 use so_store::{FinishPatch, RunPatch, RunRow, StoreError};
 
 use super::instructions::{MAX_DEPTH, child_instructions};
-use super::pump::PumpCtx;
+use super::pump::{PumpCtx, limit_reset};
 use super::worktree;
 use super::{LiveRun, R, RunManager, SHUTDOWN_DEADLINE, lock};
 use crate::run_identity::run_token_hash;
@@ -40,15 +40,16 @@ pub(crate) struct Limit {
 }
 
 impl Limit {
-    /// The limit `account` hit with `kind`: its first pool, or all of them for auth.
-    pub(crate) fn for_account(
-        account: &AccountFile,
+    /// The limit the run hit in `pool`; auth failures still apply to every account pool.
+    pub(crate) fn for_run(
+        pool: &str,
         kind: ErrorKind,
         reset: Option<chrono::DateTime<Utc>>,
+        reason: &str,
     ) -> Self {
         Self {
-            pool: account.pools.first().cloned(),
-            reset,
+            pool: Some(pool.to_string()),
+            reset: limit_reset(reset, kind, reason),
             all_pools: kind == ErrorKind::Auth,
         }
     }
@@ -327,7 +328,10 @@ impl RunManager {
     /// account (SPEC 8.5); anything else, or a run without that option, fails with the
     /// classified kind.
     async fn launch_failed(&self, row: &RunRow, account: &AccountFile, fail: LaunchFail) {
-        let limit = Limit::for_account(account, fail.kind, None);
+        let pool = self
+            .run_pool(row.harness, row.model.as_deref(), account)
+            .await;
+        let limit = Limit::for_run(&pool, fail.kind, None, &fail.message);
         // The failed launch is an attempt: failover counts it and never goes back to it.
         self.record_launch_attempt(&row.id, account).await;
         if self
@@ -361,10 +365,11 @@ impl RunManager {
         let (id, name, pool) = (
             run_id.to_string(),
             account.name.clone(),
-            account.pools.first().cloned(),
+            self.run_pool(row.harness, row.model.as_deref(), account)
+                .await,
         );
         if let Err(e) = self
-            .db(move |s| s.start_attempt(&id, &name, pool.as_deref(), Utc::now()))
+            .db(move |s| s.start_attempt(&id, &name, Some(&pool), Utc::now()))
             .await
         {
             tracing::warn!(%run_id, error = %e.message, "could not record launch attempt");
@@ -671,10 +676,12 @@ impl RunManager {
             let id = id.clone();
             let _ = self.db(move |s| s.patch_run(&id, &patch)).await;
         }
-        let pool = account.pools.first().cloned();
+        let pool = self
+            .run_pool(row.harness, row.model.as_deref(), account)
+            .await;
         let attempt = {
             let (id, name, pool) = (id.clone(), account.name.clone(), pool.clone());
-            self.db(move |s| s.start_attempt(&id, &name, pool.as_deref(), Utc::now()))
+            self.db(move |s| s.start_attempt(&id, &name, Some(&pool), Utc::now()))
                 .await
         };
         if let Err(e) = attempt {
@@ -724,7 +731,7 @@ impl RunManager {
             session_id: row.session_id.clone(),
             harness: row.harness,
             account: account.clone(),
-            pool: pool.unwrap_or_else(|| "default".into()),
+            pool,
             validator,
             review: row.review,
         };
@@ -819,16 +826,21 @@ impl RunManager {
         let Ok(Some(row)) = self.db(move |s| s.get_run(&id)).await else {
             return;
         };
-        let Some(name) = row.account else { return };
+        let Some(name) = row.account.clone() else {
+            return;
+        };
         let Ok(account) = self.load_account(&name).await else {
             return;
         };
         let account_label = account.name.clone();
-        // The pool that failed, else the account's first; every pool for an auth failure.
-        let pool = limit
-            .and_then(|l| l.pool.clone())
-            .or_else(|| account.pools.first().cloned())
-            .unwrap_or_else(|| "default".into());
+        // The explicit limit pool or the run's model pool; every pool for auth failures.
+        let pool = match limit.and_then(|l| l.pool.clone()) {
+            Some(pool) => pool,
+            None => {
+                self.run_pool(row.harness, row.model.as_deref(), &account)
+                    .await
+            }
+        };
         let pools: Vec<String> = if limit.is_some_and(|l| l.all_pools) && !account.pools.is_empty()
         {
             account.pools.clone()

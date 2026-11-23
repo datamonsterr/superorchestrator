@@ -1,6 +1,7 @@
 //! Run lifecycle, caps, stall watcher, notifications and socket API.
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+mod catalog;
 pub mod client;
 pub mod dispatch;
 pub mod doctor;

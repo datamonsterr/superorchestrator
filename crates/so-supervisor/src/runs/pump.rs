@@ -269,7 +269,7 @@ impl RunManager {
     ) {
         st.done = true;
         // A limit on the account may only mean another account should take over (SPEC 8.5).
-        let limit = Limit::for_account(&pc.account, kind, st.reset);
+        let limit = Limit::for_run(&pc.pool, kind, st.reset, text);
         if self
             .begin_failover(&pc.run_id, Some(control), kind, text, &limit)
             .await
@@ -428,7 +428,7 @@ impl RunManager {
             // A quota, auth or similar error: resuming would only repeat it, but another
             // account may take the run over.
             Some((kind, text)) => {
-                let limit = Limit::for_account(&pc.account, kind, st.reset);
+                let limit = Limit::for_run(&pc.pool, kind, st.reset, &text);
                 if self
                     .begin_failover(&pc.run_id, Some(control), kind, &text, &limit)
                     .await
@@ -579,6 +579,72 @@ fn exhausted_reset(r: &so_harness::RateLimits) -> Option<chrono::DateTime<Utc>> 
     at(r.weekly_used_pct, r.weekly_resets_at).or(at(r.five_hour_used_pct, r.five_hour_resets_at))
 }
 
+/// The longest wait a reset hint may set: an absurd number must not park a pool.
+const MAX_RESET_HINT_SECS: u64 = 30 * 24 * 60 * 60;
+
+/// The reset time an error text reports ("Resets in 134h12m3s"), if it reports one.
+fn reset_hint(text: &str, now: chrono::DateTime<Utc>) -> Option<chrono::DateTime<Utc>> {
+    const MARKER: &str = "resets in ";
+    let start = text.to_ascii_lowercase().find(MARKER)? + MARKER.len();
+    let token: String = text
+        .get(start..)?
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric())
+        .collect();
+    let secs = i64::try_from(duration_secs(&token)?.min(MAX_RESET_HINT_SECS)).ok()?;
+    Some(now + chrono::Duration::seconds(secs))
+}
+
+/// Seconds in a `NNhNNmNNs` duration: the parts in that order, each optional.
+fn duration_secs(token: &str) -> Option<u64> {
+    let mut rest = token;
+    let mut total = 0u64;
+    let mut last = 0u8;
+    while !rest.is_empty() {
+        let digits_end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        let (digits, after) = rest.split_at(digits_end);
+        if digits.is_empty() {
+            return None;
+        }
+        let mut chars = after.chars();
+        let rank = match chars.next()? {
+            'h' => 1,
+            'm' => 2,
+            's' => 3,
+            _ => return None,
+        };
+        if rank <= last {
+            return None;
+        }
+        last = rank;
+        let n: u64 = digits.parse().ok()?;
+        let unit = match rank {
+            1 => 3_600,
+            2 => 60,
+            _ => 1,
+        };
+        total = total.checked_add(n.checked_mul(unit)?)?;
+        rest = chars.as_str();
+    }
+    (total > 0).then_some(total)
+}
+
+/// When a failed turn puts its pool in cooldown: the harness's rate-limit report, else a
+/// reset hint in the error text of a quota or rate-limit failure.
+pub(super) fn limit_reset(
+    reported: Option<chrono::DateTime<Utc>>,
+    kind: ErrorKind,
+    text: &str,
+) -> Option<chrono::DateTime<Utc>> {
+    reported.or_else(|| match kind {
+        ErrorKind::Quota | ErrorKind::RateLimit => reset_hint(text, Utc::now()),
+        _ => None,
+    })
+}
+
 /// A JSON value from a final message, tolerating a Markdown code fence around it.
 fn parse_json_result(text: &str) -> Option<Value> {
     let t = text.trim();
@@ -608,6 +674,53 @@ mod tests {
         };
         assert_eq!(exhausted_reset(&both).unwrap().timestamp(), 1_900_000_000);
         assert!(exhausted_reset(&so_harness::RateLimits::default()).is_none());
+    }
+
+    #[test]
+    fn a_reset_hint_sets_the_wait() {
+        let now = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        let at = |text: &str| reset_hint(text, now);
+        let wait = |secs: i64| now + chrono::Duration::seconds(secs);
+        assert_eq!(at("Resets in 40h19m40s."), Some(wait(145_180)));
+        assert_eq!(at("Resets in 134h"), Some(wait(482_400)));
+        assert_eq!(at("Resets in 5m"), Some(wait(300)));
+        assert_eq!(at("Resets in 12s"), Some(wait(12)));
+        assert_eq!(at("Resets in 40h40s"), Some(wait(144_040)));
+        assert_eq!(at("quota reached; resets in 5m"), Some(wait(300)));
+    }
+
+    #[test]
+    fn a_reset_hint_of_zero_or_unknown_is_none() {
+        let now = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        for text in [
+            "Resets in 0h",
+            "Resets in 0s",
+            "Resets in 0h0m0s",
+            "Resets in soon",
+            "Resets in 5m40h",
+            "no reset here",
+        ] {
+            assert_eq!(reset_hint(text, now), None, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_reset_hint_is_capped_at_30_days() {
+        let now = chrono::DateTime::from_timestamp(1_800_000_000, 0).unwrap();
+        assert_eq!(
+            reset_hint("Resets in 1000h", now),
+            Some(now + chrono::Duration::days(30))
+        );
+    }
+
+    #[test]
+    fn the_harness_reset_wins_over_a_hint() {
+        let reported = chrono::DateTime::from_timestamp(1_900_000_000, 0).unwrap();
+        assert_eq!(
+            limit_reset(Some(reported), ErrorKind::Quota, "Resets in 5m"),
+            Some(reported)
+        );
+        assert_eq!(limit_reset(None, ErrorKind::Auth, "Resets in 5m"), None);
     }
 
     #[test]

@@ -21,10 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The OpenRouter decider defaults to Jev 1.14 with Jev 1.13 as fallback. Both are paid models.
 - `wait_agent` caps its timeout at 30 minutes, and `spawn_agent(wait: true)` returns after at most 30 minutes with the current state. The run continues.
 
 ### Fixed
 
+- Model exclusions apply to pinned and fallback routes. Live routing evals require a decider score for every case.
 - Routing record prompt excerpts now contain a redacted, whitespace-collapsed excerpt of the run prompt (up to 160 characters).
 
 ### Security
@@ -126,6 +128,8 @@ Fixes for the GitHub security advisories below. Several change behaviour; see "C
 
 ### Fixed
 
+- A quota or rate-limit failure on a multi-pool account (agy) now puts the pool of the model that failed into cooldown. A `claude-sonnet-4-6` run that hit its quota used to flag `gemini` and leave `claude` open, so the router kept sending claude-model runs to exhausted accounts. Attempts now record the pool of the run's model.
+- An agy quota error that reports `Resets in 134h12m3s` puts the pool in cooldown until that reset instead of the 5 h default.
 - `send_message` to a run that failed with a config error is refused instead of resuming a run
   that cannot succeed (#7).
 - agy live messages need `"queuedMessages": "send-immediately"` in the account's
