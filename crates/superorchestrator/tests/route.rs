@@ -252,6 +252,29 @@ fn route_eval_require_live_fails_without_a_key() {
 }
 
 #[test]
+fn route_eval_require_live_fails_when_only_one_model_skips_the_decider() {
+    let e = setup();
+    let cases = e.tmp.path().join("single.jsonl");
+    std::fs::write(
+        &cases,
+        r#"{"id":"single","task":"fix a typo","expected_choices":["agy/gemini-3.8-flash-low/low"],"available_choice_ids":["agy/gemini-3.8-flash-low/low"]}"#,
+    )
+    .unwrap();
+    let out = e
+        .cmd()
+        .env("SO_CLI_TEST_NO_KEY", "sk-test-secret")
+        .args(["route", "eval", "--require-live", "--json", "--cases"])
+        .arg(&cases)
+        .output()
+        .unwrap();
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(report["sources"]["heuristic"], 1);
+    assert_eq!(report["fallback_count"], 0);
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("without a live Jev score"));
+}
+
+#[test]
 fn route_eval_bundled_cases_report() {
     let e = setup();
     let out = e
@@ -423,7 +446,7 @@ async fn route_fails_when_the_decider_is_unreachable() {
     assert!(!out.status.success());
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(err.contains("decider unreachable"), "{err}");
-    assert!(err.contains("inception/mercury-decide:free"), "{err}");
+    assert!(err.contains("typesafe/jev-1.14"), "{err}");
     assert!(!err.contains("sk-test-secret"), "{err}");
 
     sup.shutdown().await;

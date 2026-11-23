@@ -21,8 +21,8 @@
 # priority = ["agy", "opencode", "codex", "claude"]
 #
 # [router.jev]
-# model = "inception/mercury-decide:free"   # any OpenRouter id; env SUPERORCHESTRATOR_ROUTER_MODEL
-# fallback_model = "~typesafe/jev-latest"   # tried when the model is unreachable; "none" disables
+# model = "typesafe/jev-1.14"   # any OpenRouter id; env SUPERORCHESTRATOR_ROUTER_MODEL
+# fallback_model = "typesafe/jev-1.13"   # tried when the model is unreachable; "none" disables
 # on_unreachable = "error"                  # or "heuristic" to degrade when no decider answers
 # key_file = "~/.config/jev/.env"           # dotenv with OPENROUTER_API_KEY
 

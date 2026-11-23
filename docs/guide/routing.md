@@ -235,7 +235,7 @@ Other keys: `router.jev.endpoint` and `router.jev.timeout` (default `20s`, for t
 
 ### The decider model
 
-The default decider is `inception/mercury-decide:free`, a free OpenRouter model. Free tiers carry risks: they can be rate limited, they can be withdrawn, and the id resolves to a dated snapshot (for example `mercury-decide-20260930`) that changes over time. For that reason `router.jev.fallback_model` (default `~typesafe/jev-latest`) is tried automatically when the primary model cannot be reached: a transport error, a timeout, HTTP 429 or 5xx, or HTTP 400/404 for a missing model. A 429, 5xx or refused connection is retried once first; a timeout is not retried, because it uses up the time left for that model. A rejected answer is never sent to the fallback, and neither is a refused key. Other 4xx responses, invalid bodies and a disallowed endpoint go to the heuristic.
+The default decider is `typesafe/jev-1.14`, a paid OpenRouter Decisions model. The fallback, `router.jev.fallback_model` (default `typesafe/jev-1.13`), is tried automatically when the primary model cannot be reached: a transport error, a timeout, HTTP 429 or 5xx, or HTTP 400/404 for a missing model. A 429, 5xx or refused connection is retried once first; a timeout is not retried, because it uses up the time left for that model. A rejected answer is never sent to the fallback, and neither is a refused key. Other 4xx responses, invalid bodies and a disallowed endpoint go to the heuristic.
 
 Both settings take any OpenRouter model id. Precedence is environment, then `config.toml`, then the default; an empty value counts as unset.
 
@@ -276,7 +276,7 @@ superorchestrator route eval --require-live --min-accuracy 0.8
 `route eval` replays labelled cases and reports accuracy, complexity accuracy, eligible-model compliance, fallback count, source counts, p50 and p95 latency, and total cost. Reports never include task text or credentials. English and Vietnamese cases ship in the binary.
 
 - `--cases FILE` uses your cases instead. The file is JSON Lines, or one JSON array. Each case has `id`, `task` and `expected_choices`, which are model refs, plus `expected_complexity`, an inclusive `[min, max]` range on the 0-100 anchor scale (trivial `[0, 12]`, simple `[13, 37]`, moderate `[38, 62]`, complex `[63, 87]`, expert `[88, 100]`). Every bundled and held-out case has one. A `role` key is ignored.
-- `--require-live` fails when there is no Jev key, and when any case fell back from Jev.
+- `--require-live` requires a Jev key and a live Jev score for every case, including cases with only one eligible model.
 - `--min-accuracy X` (0 to 1) fails when accuracy is lower.
 - `--min-complexity-accuracy X` (0 to 1) fails when complexity accuracy is lower, or when no case has both a range and a score.
 

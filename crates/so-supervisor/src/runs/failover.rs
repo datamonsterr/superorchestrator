@@ -79,6 +79,7 @@ enum Moved {
 /// Where a failed-over run goes.
 struct Next {
     account: AccountFile,
+    pool: String,
     pending: Pending,
 }
 
@@ -177,12 +178,13 @@ impl RunManager {
         let (kind, why) = match self.move_to_next_account(&req).await {
             Ok(Moved::Started(next)) => {
                 let account = next.account.clone();
+                let pool = next.pool.clone();
                 match self.start_on(&req, *next).await {
                     Ok(()) => return,
                     // The new account's harness did not come up and said why: a limit or
                     // auth error there moves the run on again (within MAX_FAILOVERS).
                     Err(fail) => {
-                        let limit = Limit::for_account(&account, fail.kind, None);
+                        let limit = Limit::for_run(&pool, fail.kind, None, &fail.message);
                         // The failed launch is an attempt, so it counts and is not retried.
                         self.record_launch_attempt(&run_id, &account).await;
                         if self
@@ -400,10 +402,18 @@ impl RunManager {
         }
         let (account, routed) =
             chosen.ok_or_else(|| fail(&tried, "no account with a free slot".to_string()))?;
+        let pool = self
+            .run_pool(
+                routed.result.harness,
+                Some(routed.result.model.as_str()),
+                &account,
+            )
+            .await;
         // Only now is the old attempt over.
         self.close_attempt(old_attempt, "failover").await;
         Ok(Moved::Started(Box::new(Next {
             account,
+            pool,
             pending: Pending {
                 from,
                 from_harness: row.harness,
