@@ -483,3 +483,128 @@ async fn accept_merge_and_get_run_diff_reach_the_supervisor() {
     }
     f.sup.shutdown().await;
 }
+
+async fn real_fixture() -> Fixture {
+    let dir = tempfile::Builder::new()
+        .prefix("somcp-real-")
+        .tempdir_in("/tmp")
+        .unwrap();
+    let cfg = dir.path().join("cfg");
+    std::fs::create_dir_all(&cfg).unwrap();
+    let sock = dir.path().join("run/s.sock");
+    let opts = SupervisorOptions::new(Paths::from_dir(cfg), Config::default(), sock.clone())
+        .with_idle_exit(Duration::from_secs(600))
+        .with_setup(so_supervisor::default_handlers);
+    let sup = Supervisor::start(opts).await.unwrap();
+    let (sc, _) = SupervisorClient::connect_or_spawn_hello(
+        &sock,
+        || Ok(()),
+        "test",
+        dir.path().to_str().unwrap(),
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    let (st, ct) = tokio::io::duplex(65536);
+    let bridge = McpBridge::new(sc, false);
+    tokio::spawn(async move {
+        let svc = bridge.serve(st).await.unwrap();
+        let _ = svc.waiting().await;
+    });
+    let collector = Collector::default();
+    let client = collector.clone().serve(ct).await.unwrap();
+    Fixture {
+        _dir: dir,
+        sup,
+        client,
+        collector,
+    }
+}
+
+#[tokio::test]
+async fn mcp_actionable_errors_for_unknown_run_refs_and_unavailable_pins() {
+    let f = real_fixture().await;
+
+    // 1. get_run: unknown run ref
+    let r = f
+        .client
+        .call_tool(
+            CallToolRequestParams::new("get_run")
+                .with_arguments(json!({"run": "nonexistent"}).as_object().unwrap().clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(true));
+    let t = text(&r);
+    assert!(
+        t.contains("run not found; use exact run_id emitted by spawn or a longer prefix"),
+        "{t}"
+    );
+    assert!(t.contains("(code -32003)"), "{t}");
+
+    // 2. wait_agent: unknown run ref
+    let r = f
+        .client
+        .call_tool(
+            CallToolRequestParams::new("wait_agent").with_arguments(
+                json!({"runs": ["nonexistent"]})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(true));
+    let t = text(&r);
+    assert!(
+        t.contains("run not found; use exact run_id emitted by spawn or a longer prefix"),
+        "{t}"
+    );
+    assert!(t.contains("(code -32003)"), "{t}");
+
+    // 3. route: unavailable pin (no matching account)
+    let r = f
+        .client
+        .call_tool(
+            CallToolRequestParams::new("route").with_arguments(
+                json!({"prompt": "test task", "harness": "claude"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(true));
+    let t = text(&r);
+    assert!(
+        t.contains("nothing matches the named harness, account, model and effort with an available account; unpin to auto-route or check list_harnesses for available accounts and models"),
+        "{t}"
+    );
+    assert!(t.contains("(code -32004)"), "{t}");
+
+    // 4. spawn_agent: account not found (pinned harness + account)
+    let r = f
+        .client
+        .call_tool(
+            CallToolRequestParams::new("spawn_agent").with_arguments(
+                json!({"prompt": "test task", "harness": "claude", "account": "missing-acc"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(true));
+    let t = text(&r);
+    assert!(
+        t.contains("account not found: `missing-acc`; check list_harnesses for configured accounts or unpin to auto-route"),
+        "{t}"
+    );
+    assert!(t.contains("(code -32003)"), "{t}");
+
+    f.sup.shutdown().await;
+}
