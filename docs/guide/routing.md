@@ -46,7 +46,7 @@ models = ["codex/gpt-6-luna/medium", "agy/gemini-3.8-flash-high/high", "codex/gp
 families = { code_review = ["codex/gpt-6.1-sol/medium"], ui_design = ["agy/gemini-3.8-flash-high/high"] }
 ```
 
-The router scores complexity and classifies the [task family](#openrouter-workspace-classifier) in the same Decisions request. Complexity selects the level. Eligible models preferred for that family lead within the level, followed by the level's usual order. With an absent family answer, an unconfigured family, or unavailable preferred models, the level's usual order applies. Explicit pins still constrain routing.
+The router scores complexity and classifies the [task family](#openrouter-workspace-classifier) in the same Decisions request. Complexity selects the level. Eligible models preferred for that family lead within the level, followed by the level's usual order. Set preferences for models already available through the level's `models` list or tier. With an absent family answer, an unconfigured family, or unavailable preferred models, the level's usual order applies. Explicit pins still constrain routing.
 
 Use `superorchestrator models list` to check model refs and `superorchestrator route "Review the parser change for regressions" --explain` to verify how a real brief routes.
 
