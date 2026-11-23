@@ -1117,7 +1117,18 @@ async fn list_harnesses_brief_is_one_short_row_per_account_and_choice() {
     }
     assert_eq!(v["choices"].as_array().unwrap().len(), 5);
 
-    let free = v["free_models"]["opencode"].as_array().unwrap();
+    // The free catalog is opt-in: the default brief reply keeps the configured choice's
+    // `free` flag but does not carry the catalog.
+    assert!(v.get("free_models").is_none());
+    assert_eq!(choice(FREE)["free"], true);
+    let with_catalog: Value = c
+        .call(
+            "list_harnesses",
+            json!({"brief": true, "free_models": true}),
+        )
+        .await
+        .unwrap();
+    let free = with_catalog["free_models"]["opencode"].as_array().unwrap();
     assert!(free.contains(&json!("opencode/deepseek-v4.1-flash-free")));
     assert!(!free.contains(&json!("opencode/claude-opus-5-5")));
     // The plain call keeps the full shape for the CLI and the web UI.

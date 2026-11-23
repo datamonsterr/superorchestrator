@@ -171,6 +171,7 @@ async fn get_with(client: &SupervisorClient, run: &str, diff: bool) -> Result<Ru
             GetRunParams {
                 run: run.into(),
                 diff,
+                diff_stat: false,
                 verbose: false,
             },
         )

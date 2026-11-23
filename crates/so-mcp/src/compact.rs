@@ -184,6 +184,13 @@ pub fn run_view(raw: Value, brief: bool) -> Value {
         if d.get("truncated") == Some(&json!(false)) {
             d.remove("truncated");
         }
+        // A stat-only diff (`get_run` with `diff_stat`) has an empty patch; leaving it out
+        // keeps the compact reply to the changed-file list the caller asked for.
+        if d.get("patch")
+            .is_some_and(|p| p.as_str().is_none_or(str::is_empty))
+        {
+            d.remove("patch");
+        }
         out.insert("diff".into(), prune(Value::Object(d)));
     }
     out.insert("events".into(), Value::Array(select_events(&run)));
@@ -366,6 +373,19 @@ pub fn route_view(raw: Value) -> Value {
     prune(Value::Object(out))
 }
 
+/// `cancel_agent`: a receipt, `{run_id, state, error?}`, not the whole run view. `error` is
+/// the supervisor's `error_kind` (why the run ended) when it is set.
+pub fn cancel_view(raw: Value) -> Value {
+    let Value::Object(mut m) = raw else {
+        return raw;
+    };
+    let mut out = pick(&mut m, &["run_id", "state"]);
+    if let Some(e) = m.remove("error_kind").or_else(|| m.remove("error")) {
+        out.insert("error".into(), e);
+    }
+    prune(Value::Object(out))
+}
+
 /// `accept_run`: `{merged, branch?, merge_command?, note?}`; the call fails when it is refused.
 pub fn accept_view(raw: Value) -> Value {
     let Value::Object(mut m) = raw else {
@@ -498,6 +518,7 @@ pub fn project(tool: &str, args: &Value, raw: Value) -> Value {
         "get_run" => run_view(raw, false),
         "spawn_agent" | "fork_agent" => spawn_view(raw),
         "route" => route_view(raw),
+        "cancel_agent" => cancel_view(raw),
         "accept_run" => accept_view(raw),
         "read_messages" => messages_view(raw),
         "list_agents" => agents_view(raw),
@@ -617,6 +638,25 @@ mod tests {
     }
 
     #[test]
+    fn a_stat_only_diff_keeps_the_file_list_but_no_patch() {
+        let mut r = run();
+        r["diff"] = json!({"base": "0123456789abcdef", "branch": "so/f",
+                           "stat": " a.txt | 2 +-\n b.txt (untracked)", "patch": ""});
+        let v = run_view(r.clone(), false);
+        assert_eq!(
+            v["diff"],
+            json!({"base": "0123456789", "stat": " a.txt | 2 +-\n b.txt (untracked)"})
+        );
+        assert!(v["diff"].get("patch").is_none());
+        // The detail path still carries a patch when the supervisor computed one.
+        r["diff"]["patch"] = json!("diff --git a/a.txt b/a.txt");
+        assert_eq!(
+            run_view(r, false)["diff"]["patch"],
+            "diff --git a/a.txt b/a.txt"
+        );
+    }
+
+    #[test]
     fn verbose_get_run_is_the_raw_reply() {
         let raw = run();
         assert_eq!(
@@ -672,6 +712,25 @@ mod tests {
                     "source": "heuristic", "complexity": 55.0, "level": "mid", "rationale": "why",
                     "alternatives": ["d"]})
         );
+    }
+
+    #[test]
+    fn cancel_is_a_receipt_not_the_whole_run() {
+        let raw = json!({
+            "run_id": "r1", "session_id": "s", "state": "cancelled", "depth": 1,
+            "worktree": "/wt", "branch": "so/x", "result": "partial",
+            "recent_events": [{"type": "tool_call_started", "ts": "t", "data": {}}],
+            "error_kind": "timeout", "messages": [{"id": "m", "body": "x"}],
+        });
+        assert_eq!(
+            project("cancel_agent", &json!({}), raw.clone()),
+            json!({"run_id": "r1", "state": "cancelled", "error": "timeout"})
+        );
+        // A clean cancel has no error key.
+        let clean = json!({"run_id": "r2", "state": "cancelled", "session_id": "s"});
+        let projected = project("cancel_agent", &json!({}), clean);
+        assert_eq!(projected, json!({"run_id": "r2", "state": "cancelled"}));
+        assert!(projected.get("session_id").is_none());
     }
 
     #[test]

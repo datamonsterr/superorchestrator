@@ -463,6 +463,7 @@ fn fetch_diff(link: &mut Link, id: &str) -> Result<so_core::proto::RunDiff, Stri
         GetRunParams {
             run: id.to_string(),
             diff: true,
+            diff_stat: false,
             verbose: false,
         },
     )?;
