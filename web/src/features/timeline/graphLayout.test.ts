@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { RunState } from '@/api/generated'
 import type { Event, RunViewPublic } from '@/api/types'
-import { applyEvent } from './applyEvent'
+import { applyEvent, refreshNow } from './applyEvent'
 import { deriveTimeline } from './derive'
 import { computeGraphLayout, NODE_HEIGHT, NODE_WIDTH, ORCHESTRATOR_LANE } from './graphLayout'
 
@@ -222,5 +222,64 @@ describe('graphLayout', () => {
     const edgesNormal = layoutNormal.edges.map((e) => `${e.source}->${e.target}`).sort()
     const edgesReversed = layoutReversed.edges.map((e) => `${e.source}->${e.target}`).sort()
     expect(edgesNormal).toEqual(edgesReversed)
+  })
+
+  it('freezes duration after live finish and refreshNow', () => {
+    const t0 = Date.UTC(2026, 0, 1, 12, 0)
+    // Run snapshot initially running with no finished_at
+    const run = makeRun('run-live', 'agent-live', null, 0, 'running')
+    run.created_at = new Date(t0).toISOString()
+    delete run.finished_at
+
+    const initialEvents: Event[] = [
+      {
+        id: 'ev-1',
+        session_id: 'sess-test',
+        run_id: 'run-live',
+        ts: new Date(t0).toISOString(),
+        type: 'run_queued',
+        data: {},
+      },
+      {
+        id: 'ev-2',
+        session_id: 'sess-test',
+        run_id: 'run-live',
+        ts: new Date(t0 + 1000).toISOString(),
+        type: 'state_changed',
+        data: { from: 'queued', to: 'running' },
+      },
+    ]
+
+    // While running at t0 + 5000, duration is 5000ms
+    let model = deriveTimeline([run], initialEvents, t0 + 5000)
+    let layout = computeGraphLayout(model, 'hierarchy', t0 + 5000)
+    expect(layout.nodeMap.get('run-live')!.durationMs).toBe(5000)
+
+    // Live finish at t0 + 10000 (succeeded)
+    const tFinish = t0 + 10000
+    model = applyEvent(
+      model,
+      {
+        id: 'ev-3',
+        session_id: 'sess-test',
+        run_id: 'run-live',
+        ts: new Date(tFinish).toISOString(),
+        type: 'run_finished',
+        data: { status: 'succeeded' },
+      },
+      tFinish,
+    )
+
+    layout = computeGraphLayout(model, 'hierarchy', tFinish)
+    expect(layout.nodeMap.get('run-live')!.durationMs).toBe(10000)
+
+    // Now advance time significantly via refreshNow (e.g. 1 minute later)
+    const tLater = t0 + 70000
+    const refreshedModel = refreshNow(model, tLater)
+    const laterLayout = computeGraphLayout(refreshedModel, 'hierarchy', tLater)
+
+    // Duration MUST remain frozen at 10000ms, not advance to 70000ms
+    expect(laterLayout.nodeMap.get('run-live')!.durationMs).toBe(10000)
+    expect(laterLayout.nodeMap.get('run-live')!.state).toBe('succeeded')
   })
 })

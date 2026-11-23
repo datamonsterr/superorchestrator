@@ -42,6 +42,7 @@ export function cloneLane(l: RunLane): RunLane {
     openQuestions: l.openQuestions.slice(),
     openJoins: l.openJoins.slice(),
     cur: l.cur ? { ...l.cur } : null,
+    hasStateTransition: l.hasStateTransition,
   }
 }
 
@@ -92,6 +93,7 @@ export function applyCore(m: TimelineModel, l: RunLane, ev: Event, ms: number) {
       if (l.cur && from && l.cur.state !== from) m.warnings++ // trust the event, insert nothing
       closeCur(l, ms)
       openState(l, to, ms)
+      l.hasStateTransition = true
       break
     }
     case 'run_finished': {
@@ -104,6 +106,7 @@ export function applyCore(m: TimelineModel, l: RunLane, ev: Event, ms: number) {
         l.segments.push({ kind: 'state', runId: l.runId, state: status, start: ms, end: ms, open: false })
       }
       l.terminal = true
+      l.hasStateTransition = true
       const a = openAttempt(l)
       if (a) setLastAttempt(l, { ...a, end: ms, outcome: status === 'succeeded' ? 'ok' : 'failed' })
       break

@@ -84,6 +84,8 @@ export interface RunLane {
   eventCount: number
   /** Internal bookkeeping for incremental apply. */
   cur: { state: RunState; start: number } | null
+  /** True when an explicit state transition event (state_changed, run_finished) occurred on this lane. */
+  hasStateTransition?: boolean
   pendingTools: Record<string, number[]>
   openQuestions: number[]
   openJoins: number[]

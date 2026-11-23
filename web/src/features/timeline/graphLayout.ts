@@ -3,7 +3,7 @@ import type { RunViewPublic } from '@/api/types'
 import { formatDuration } from '@/lib/format'
 import { laneCurrentState, laneTitle } from './layout'
 export { ORCHESTRATOR_LANE } from './model'
-import { ORCHESTRATOR_LANE, type RunLane, type TimelineModel } from './model'
+import { isTerminalState, ORCHESTRATOR_LANE, type RunLane, type TimelineModel } from './model'
 
 export type GraphGroupingMode = 'hierarchy' | 'status' | 'harness'
 
@@ -83,22 +83,28 @@ const STATE_GROUPS: { id: string; label: string; states: RunState[] }[] = [
 ]
 
 function computeDuration(lane: RunLane, now: number): number {
-  if (lane.run?.created_at) {
-    const start = Date.parse(lane.run.created_at)
-    if (Number.isFinite(start)) {
-      if (lane.run.finished_at) {
-        const end = Date.parse(lane.run.finished_at)
-        if (Number.isFinite(end) && end >= start) return end - start
-      }
-      return Math.max(0, now - start)
-    }
+  let start = lane.run?.created_at ? Date.parse(lane.run.created_at) : NaN
+  if (!Number.isFinite(start) && lane.segments.length > 0) {
+    start = lane.segments[0].start
   }
-  if (lane.segments.length > 0) {
-    const start = lane.segments[0].start
-    const end = lane.segments[lane.segments.length - 1].end
+  if (!Number.isFinite(start)) return 0
+
+  if (lane.run?.finished_at) {
+    const end = Date.parse(lane.run.finished_at)
+    if (Number.isFinite(end) && end >= start) return end - start
+  }
+
+  const lastSeg = lane.segments[lane.segments.length - 1]
+  if (
+    lane.terminal ||
+    (lastSeg && !lastSeg.open && isTerminalState(lastSeg.state)) ||
+    (lane.run?.state && isTerminalState(lane.run.state))
+  ) {
+    const end = lastSeg ? lastSeg.end : start
     return Math.max(0, end - start)
   }
-  return 0
+
+  return Math.max(0, now - start)
 }
 
 /**

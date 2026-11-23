@@ -326,6 +326,69 @@ describe('AgentGraphView', () => {
     expect(within(updatedCard).queryByText('Pending review')).toBeNull()
   })
 
+  it('preserves live running state when tool_call_started is appended after live running transition', async () => {
+    // Snapshot pending_review -> live running -> tool_call_started
+    const runPending = makeRun('run-review', 'write-tests', null, 0, 'pending_review')
+    const t0 = Date.UTC(2026, 0, 1, 12, 0)
+    const initialEvents: Event[] = [
+      {
+        id: 'ev-1',
+        session_id: 'sess-test',
+        run_id: 'run-review',
+        ts: new Date(t0).toISOString(),
+        type: 'run_queued',
+        data: {},
+      },
+    ]
+    let model = deriveTimeline([runPending], initialEvents, t0 + 1000)
+    const onSelect = vi.fn()
+    const { rerender } = render(<AgentGraphView model={model} onSelect={onSelect} />)
+
+    // Snapshot authoritative state initially
+    const initialCard = screen.getByTestId('graph-node-run-review')
+    expect(initialCard).toHaveAttribute('aria-label', expect.stringContaining('state pending_review'))
+
+    // 1. Live state_changed to running arrives
+    const tRunning = t0 + 5000
+    model = applyEvent(
+      model,
+      {
+        id: 'ev-2',
+        session_id: 'sess-test',
+        run_id: 'run-review',
+        ts: new Date(tRunning).toISOString(),
+        type: 'state_changed',
+        data: { from: 'pending_review', to: 'running' },
+      },
+      tRunning,
+    )
+    rerender(<AgentGraphView model={model} onSelect={onSelect} />)
+    const runningCard = screen.getByTestId('graph-node-run-review')
+    expect(runningCard).toHaveAttribute('aria-label', expect.stringContaining('state running'))
+
+    // 2. A normal tool tick arrives later (tool_call_started)
+    const tTool = t0 + 8000
+    model = applyEvent(
+      model,
+      {
+        id: 'ev-3',
+        session_id: 'sess-test',
+        run_id: 'run-review',
+        ts: new Date(tTool).toISOString(),
+        type: 'tool_call_started',
+        data: { tool_id: 'call-1', tool_name: 'bash' },
+      },
+      tTool,
+    )
+    rerender(<AgentGraphView model={model} onSelect={onSelect} />)
+
+    // Must still remain running, NEVER reverting to stale pending_review snapshot
+    const postToolCard = screen.getByTestId('graph-node-run-review')
+    expect(postToolCard).toHaveAttribute('aria-label', expect.stringContaining('state running'))
+    expect(within(postToolCard).getByText('Running')).toBeInTheDocument()
+    expect(within(postToolCard).queryByText('Pending review')).toBeNull()
+  })
+
   it('follows focusedNodeId ahead of selectedRunId to preserve roving focus after navigating away', async () => {
     const user = userEvent.setup()
     const runs = [

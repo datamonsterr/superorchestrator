@@ -31,31 +31,34 @@ export function laneCurrentState(lane: RunLane): StateSegment['state'] | undefin
   if (!lastState) return snapshotState
   if (lastState === snapshotState) return lastState
 
-  // 1. Authoritative snapshot state when history is incomplete:
+  // 1. Terminal snapshot states are authoritative over non-terminal replayed states
+  // (e.g. historical events omitted run_finished).
+  if (isTerminalState(snapshotState) && !isTerminalState(lastState)) {
+    return snapshotState
+  }
+
+  // 2. Explicit state transition events (e.g. live state_changed or run_finished)
+  // take precedence over a stale snapshot. Routine tool ticks must never undo this.
+  if (lane.hasStateTransition) {
+    return lastState
+  }
+
+  // 3. Authoritative snapshot state when history is incomplete:
   // A run is never in queued or starting once its snapshot has reached an advanced state
   // (such as pending_review, running, stalled, escalated, succeeded, failed, cancelled).
   if ((lastState === 'queued' || lastState === 'starting') && snapshotState !== lastState) {
     return snapshotState
   }
 
-  // 2. Terminal snapshot states are authoritative over non-terminal event states:
-  if (isTerminalState(snapshotState) && !isTerminalState(lastState)) {
+  // 4. Attention snapshot states are authoritative over queued / starting:
+  if (
+    (snapshotState === 'pending_review' || snapshotState === 'escalated' || snapshotState === 'stalled') &&
+    (lastState === 'queued' || lastState === 'starting')
+  ) {
     return snapshotState
   }
 
-  // 3. If snapshot is pending_review, check whether any event was emitted after entering pending_review.
-  // When replayed events omitted later transitions, earlier state events (with later markers on lane)
-  // defer to the authoritative snapshot.
-  if (snapshotState === 'pending_review' && lastState !== 'pending_review') {
-    let latestActivity = lastSeg.start
-    for (const m of lane.markers) if (m.at > latestActivity) latestActivity = m.at
-    for (const t of lane.ticks) if (t.at > latestActivity) latestActivity = t.at
-    if (latestActivity > lastSeg.start) {
-      return snapshotState
-    }
-  }
-
-  // 4. Otherwise, newer live transitions from events win.
+  // 5. Otherwise, event state wins.
   return lastState
 }
 
