@@ -5,7 +5,7 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Once;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -27,27 +27,63 @@ pub const TRANSCRIPT: &str =
     include_str!("../../../so-harness/tests/fixtures/claude/transcript.jsonl");
 pub const PROMPT: &str = "do the task";
 
+/// Builds a `test-support` binary of `so-harness` and returns the executable path Cargo
+/// reports for it. Reading Cargo's JSON output is target-aware: integration tests can run
+/// from a build directory (`target/debug/build/...`) or with a target directory unrelated
+/// to `current_exe()`, so guessing the path from the running test is not reliable.
+pub fn harness_bin(bin: &str) -> PathBuf {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let out = Command::new(cargo)
+        .args([
+            "build",
+            "-p",
+            "so-harness",
+            "--features",
+            "test-support",
+            "--bin",
+            bin,
+            "--message-format=json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "cargo build --bin {bin} failed:\n{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for line in stdout.lines() {
+        let Ok(msg) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if msg["reason"].as_str() != Some("compiler-artifact")
+            || msg["target"]["name"].as_str() != Some(bin)
+        {
+            continue;
+        }
+        if let Some(exe) = msg["executable"].as_str() {
+            let path = PathBuf::from(exe);
+            assert!(
+                path.exists(),
+                "cargo reported {bin} at {} but it is missing",
+                path.display()
+            );
+            return path;
+        }
+    }
+    panic!("cargo build --bin {bin} reported no executable:\n{stdout}");
+}
+
+/// The scripted fake harness behind claude accounts. Each test binary builds it once.
 pub fn fake_harness() -> PathBuf {
-    static BUILD: Once = Once::new();
-    BUILD.call_once(|| {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let st = Command::new(cargo)
-            .args([
-                "build",
-                "-p",
-                "so-harness",
-                "--features",
-                "test-support",
-                "--bin",
-                "fake-harness",
-            ])
-            .status()
-            .unwrap();
-        assert!(st.success());
-    });
-    let p = sibling_bin("fake-harness");
-    assert!(p.exists(), "{} missing", p.display());
-    p
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| harness_bin("fake-harness")).clone()
+}
+
+/// The scripted fake Codex app-server, used by codex accounts on Linux.
+pub fn fake_codex() -> PathBuf {
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| harness_bin("fake-codex")).clone()
 }
 
 /// Lines of the first recorded claude turn (up to and including its `result`).
@@ -455,14 +491,6 @@ pub fn insert_session_and_run_in(store: &Store, depth: i64, state: RunState, cwd
     };
     store.insert_run(&row).unwrap();
     row
-}
-
-/// A binary of this workspace's `debug` profile, found next to the running test (test
-/// executables live in `<target>/debug/deps`). Works for any target directory.
-pub fn sibling_bin(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let debug = exe.parent().unwrap().parent().unwrap();
-    debug.join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
 /// Gives a manually inserted fixture the identity a real enqueue would create.

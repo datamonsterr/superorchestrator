@@ -5,22 +5,38 @@ on:
     - cron: "0 5 * * *"
   workflow_dispatch:
   push:
+    branches: [main]
     paths: ["Cargo.toml", "Cargo.lock", "**/Cargo.toml"]
   pull_request:
     paths: ["Cargo.toml", "Cargo.lock", "**/Cargo.toml"]
+
+concurrency:
+  group: audit-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
 
 jobs:
   audit:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
       checks: write
-    steps:
+    steps: &audit-steps
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  nightly:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      # RustSec publishes scheduled findings as GitHub issues.
+      issues: write
+    steps: *audit-steps

@@ -6,8 +6,7 @@ mod common;
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -33,29 +32,6 @@ use tempfile::TempDir;
 
 const TRANSCRIPT: &str = include_str!("../../so-harness/tests/fixtures/claude/transcript.jsonl");
 const PROMPT: &str = "do the task";
-
-fn fake_harness() -> PathBuf {
-    static BUILD: Once = Once::new();
-    BUILD.call_once(|| {
-        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-        let st = Command::new(cargo)
-            .args([
-                "build",
-                "-p",
-                "so-harness",
-                "--features",
-                "test-support",
-                "--bin",
-                "fake-harness",
-            ])
-            .status()
-            .unwrap();
-        assert!(st.success());
-    });
-    let p = common::sibling_bin("fake-harness");
-    assert!(p.exists(), "{} missing", p.display());
-    p
-}
 
 fn first_turn() -> Vec<Value> {
     let mut out = Vec::new();
@@ -173,7 +149,7 @@ impl Env {
                 first = first_p.display(),
                 resume = resume_p.display(),
                 fork = fork_p.display(),
-                fake = fake_harness().display()
+                fake = common::fake_harness().display()
             ),
         )
         .unwrap();
