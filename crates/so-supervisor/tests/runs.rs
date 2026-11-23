@@ -8,14 +8,14 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use serde_json::json;
+use serde_json::{Value, json};
 use so_core::proto::{
-    CAP_EXCEEDED, DEPTH_LIMIT, JoinResult, METHOD_CANCEL_AGENT, METHOD_JOIN_RUN,
-    METHOD_SPAWN_AGENT, RunRef, RunView, SpawnResult, UNAVAILABLE,
+    CAP_EXCEEDED, DEPTH_LIMIT, JoinResult, METHOD_CANCEL_AGENT, METHOD_GET_RUN, METHOD_JOIN_RUN,
+    METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, RunRef, RunView, SpawnResult, UNAVAILABLE,
 };
-use so_core::{EventType, RunState, new_id};
+use so_core::{AccountFile, EventType, RunState, new_id};
 use so_store::RunRow;
-use so_supervisor::SupervisorClient;
+use so_supervisor::{ClientError, SupervisorClient};
 use tempfile::TempDir;
 
 use common::*;
@@ -964,5 +964,166 @@ async fn run_tmp_dir_is_removed_when_the_run_is_cancelled() {
         .unwrap();
     assert_eq!(v.state, RunState::Cancelled);
     assert_run_tmp_removed(&env, &r.run_id);
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn run_lookups_unknown_and_ambiguous_give_actionable_errors() {
+    let env = Env::new();
+    let h = env.start().await;
+    let c = SupervisorClient::connect(h.socket_path()).await.unwrap();
+    let hello = c
+        .hello("test", env.repo.to_str().unwrap(), None, None)
+        .await
+        .unwrap();
+    let store = env.store();
+    let run = insert_session_and_run(&store, 1, RunState::Succeeded);
+    let pfx = "test-ambig-prefix-";
+    let id1 = format!("{pfx}111111111111");
+    let id2 = format!("{pfx}222222222222");
+    let mut run1 = run;
+    run1.session_id = hello.session_id.clone();
+    run1.id = id1.clone();
+    store.insert_run(&run1).unwrap();
+    let mut run2 = run1.clone();
+    run2.id = id2.clone();
+    store.insert_run(&run2).unwrap();
+
+    // 1. get_run: unknown run ref
+    let err = c
+        .call::<_, Value>(METHOD_GET_RUN, json!({"run": "missing-run"}))
+        .await
+        .unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::NOT_FOUND);
+            assert_eq!(
+                r.message,
+                "run not found; use exact run_id emitted by spawn or a longer prefix"
+            );
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 2. get_run: ambiguous prefix
+    let err = c
+        .call::<_, Value>(METHOD_GET_RUN, json!({"run": pfx}))
+        .await
+        .unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::INVALID_PARAMS);
+            assert_eq!(
+                r.message,
+                format!(
+                    "run prefix `{pfx}` is ambiguous; use exact run_id emitted by spawn or a longer prefix"
+                )
+            );
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 3. wait_agent: unknown run ref
+    let err = c
+        .call::<_, Value>(METHOD_WAIT_AGENT, json!({"runs": ["missing-run"]}))
+        .await
+        .unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::NOT_FOUND);
+            assert_eq!(
+                r.message,
+                "run not found; use exact run_id emitted by spawn or a longer prefix"
+            );
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 4. wait_agent: ambiguous prefix
+    let err = c
+        .call::<_, Value>(METHOD_WAIT_AGENT, json!({"runs": [pfx]}))
+        .await
+        .unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::INVALID_PARAMS);
+            assert_eq!(
+                r.message,
+                format!(
+                    "run prefix `{pfx}` is ambiguous; use exact run_id emitted by spawn or a longer prefix"
+                )
+            );
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 5. get_run: exact run_id succeeds
+    let res: Value = c.call(METHOD_GET_RUN, json!({"run": id1})).await.unwrap();
+    assert_eq!(res["run_id"], id1);
+
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn spawn_agent_pin_errors_give_actionable_recovery() {
+    let env = Env::new();
+    env.account("claude-enabled", 2, &ok_script(&[]));
+    env.account("claude-disabled", 2, &ok_script(&[]));
+    let mut dis = AccountFile::load(&env.paths.account_file("claude-disabled")).unwrap();
+    dis.enabled = false;
+    dis.save(&env.paths).unwrap();
+
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    // 1. Account not found
+    let mut p = env.spawn_params("claude-enabled");
+    p.account = Some("no-such-account".into());
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::NOT_FOUND);
+            assert!(
+                r.message.contains("account not found: `no-such-account`; check list_harnesses for configured accounts or unpin to auto-route"),
+                "unexpected message: {}",
+                r.message
+            );
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 2. Account disabled
+    let mut p = env.spawn_params("claude-disabled");
+    p.account = Some("claude-disabled".into());
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::UNAVAILABLE);
+            assert!(
+                r.message.contains("account claude-disabled is disabled; enable it or choose an enabled account from list_harnesses"),
+                "unexpected message: {}",
+                r.message
+            );
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 3. Harness mismatch
+    let mut p = env.spawn_params("claude-enabled");
+    p.harness = Some("codex".into());
+    p.account = Some("claude-enabled".into());
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::INVALID_PARAMS);
+            assert!(
+                r.message.contains("account claude-enabled is a claude account, not codex; use a matching account from list_harnesses or remove the harness pin"),
+                "unexpected message: {}",
+                r.message
+            );
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
     h.shutdown().await;
 }

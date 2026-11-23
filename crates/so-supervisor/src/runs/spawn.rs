@@ -75,7 +75,10 @@ impl RunManager {
         let name = name.to_string();
         self.blocking(move || {
             if !path.exists() {
-                return Err(rpc(NOT_FOUND, format!("account not found: {name}")));
+                return Err(rpc(
+                    NOT_FOUND,
+                    format!("account not found: `{name}`; check list_harnesses for configured accounts or unpin to auto-route"),
+                ));
             }
             AccountFile::load(&path).map_err(|e| rpc(UNAVAILABLE, format!("{e}: {name}")))
         })
@@ -110,7 +113,7 @@ impl RunManager {
             return Err(rpc(
                 INVALID_PARAMS,
                 format!(
-                    "account {} is a {} account, not {h}",
+                    "account {} is a {} account, not {h}; use a matching account from list_harnesses or remove the harness pin",
                     account.name, account.harness
                 ),
             ));
@@ -118,7 +121,10 @@ impl RunManager {
         if !account.enabled {
             return Err(rpc(
                 UNAVAILABLE,
-                format!("account {} is disabled", account.name),
+                format!(
+                    "account {} is disabled; enable it or choose an enabled account from list_harnesses",
+                    account.name
+                ),
             ));
         }
         AnyDriver::for_harness(account.harness, self.inner.driver_cfg)
@@ -260,7 +266,7 @@ impl RunManager {
             return Err(rpc(
                 INVALID_PARAMS,
                 format!(
-                    "agent `{}` may only run on: {}",
+                    "agent `{}` may only run on: {}; choose an allowed account from list_harnesses or unpin to auto-route",
                     p.agent.as_deref().unwrap_or_default(),
                     allow.join(", ")
                 ),
@@ -290,7 +296,10 @@ impl RunManager {
                     .route_run(&prompt, &pins, &[], ChoiceFilter::default(), true, None)
                     .await?;
                 let mut found = None;
-                let mut last = rpc(UNAVAILABLE, "no usable account");
+                let mut last = rpc(
+                    UNAVAILABLE,
+                    "no usable account for the requested route; check list_harnesses for available accounts or unpin to auto-route",
+                );
                 for name in &routed.result.ranked_accounts {
                     match self.usable_account(name, Some(routed.result.harness)).await {
                         Ok(a) => {
