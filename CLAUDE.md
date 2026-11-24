@@ -7,7 +7,7 @@ Read [SPEC.md](SPEC.md) for what to build, [CONTEXT.md](CONTEXT.md) for the term
 Implementation goes through superorchestrator, the tool this repository builds.
 
 - Implement through the `subagent-driven-development` skill in `.claude/skills/`. It dispatches each task through the superorchestrator MCP tools. Write the plan first, with the goal, acceptance criteria (the commands that must pass) and out-of-scope items for each task.
-- Load the `use-superorchestrator-mcp` skill and call `list_harnesses` before the first dispatch.
+- Load the `use-superorchestrator-mcp` skill and dispatch.
 - The main session is the orchestrator. It plans, briefs, dispatches, reviews diffs with `get_run(diff: true)`, and lands work with `accept_run(merge: true)`. It does not edit source files itself.
 - Agent profiles for the workflow are in `.superorchestrator/agents/`:
   - `implementer`: one task in its own worktree, held at the review gate

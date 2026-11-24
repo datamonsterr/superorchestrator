@@ -6,6 +6,7 @@ description: Drive the superorchestrator CLI for accounts, levels, config, model
 # superorchestrator CLI
 
 Prefix commands below with `superorchestrator`. Use `--help` for flags; globals: `--json`, `--yes`, `--config-dir DIR`.
+The CLI is the first tool for status and run investigation; use MCP inspection tools only when the CLI fails.
 If the shell lacks it, export `XDG_RUNTIME_DIR=/run/user/$(id -u)` so the CLI finds the supervisor socket.
 Delegate through `use-superorchestrator-mcp`; edit setup through `superorchestrator-config`.
 

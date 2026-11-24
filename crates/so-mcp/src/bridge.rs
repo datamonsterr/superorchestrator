@@ -24,7 +24,7 @@ use tokio::sync::{broadcast, mpsc};
 use crate::compact;
 use crate::tools::{ToolSpec, tool_specs};
 
-const INSTRUCTIONS: &str = "Delegates work to coding agents on other harnesses and accounts. Start with list_harnesses. Run ids accept unique prefixes. Omitted keys in replies mean null, empty or false. Failures come back as readable errors.";
+const INSTRUCTIONS: &str = "Delegates work to coding agents on other harnesses and accounts. Delegate in one call: spawn_agent(prompt, cwd?); routing picks harness, account and model. Skip list_harnesses and route. Check status and runs with the superorchestrator CLI (status, runs list, runs show RUN --diff) before MCP inspection tools. Run ids accept unique prefixes. Omitted keys in replies mean null, empty or false. Failures come back as readable errors.";
 
 const PROGRESS_QUEUE: usize = 64;
 /// Most times one `wait_agent` call asks the person before it returns what it has.

@@ -172,7 +172,7 @@ async fn daemon_build_mismatch_is_in_the_instructions() {
 
     let f = fixture_with(false, Some(&notice)).await;
     let text = f.client.peer_info().unwrap().instructions.clone().unwrap();
-    assert!(text.contains("list_harnesses"));
+    assert!(text.contains("spawn_agent"));
     assert!(text.starts_with("WARNING: "), "{text}");
     assert!(text.contains("Restart the daemon"), "{text}");
     f.sup.shutdown().await;
@@ -615,7 +615,7 @@ async fn mcp_actionable_errors_for_unknown_run_refs_and_unavailable_pins() {
     assert_eq!(r.is_error, Some(true));
     let t = text(&r);
     assert!(
-        t.contains("nothing matches the named harness, account, model and effort with an available account; unpin to auto-route or check list_harnesses for available accounts and models"),
+        t.contains("nothing matches the pinned `harness` with an available account: drop or relax the `harness` pin, run `superorchestrator status` for accounts and headroom, or pin `model` with a ref from `superorchestrator levels list`"),
         "{t}"
     );
     assert!(t.contains("(code -32004)"), "{t}");

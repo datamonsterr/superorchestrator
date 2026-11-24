@@ -180,14 +180,14 @@ Example: return await parallel(args.files.map(f => ag => ag('Test ' + f, {name: 
 pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     spec(
         "route",
-        "Preview which harness, account and model the router picks. Runs nothing. Optional pins: harness, account, model, effort.",
+        "Optional preview; spawn_agent routes itself. Shows harness, account and model the router picks. Runs nothing. Optional pins: harness, account, model, effort.",
         false,
         true,
         schema_of::<RouteParams>,
     ),
     spec(
         "spawn_agent",
-        "Start a run; unpinned fields auto-route. wait=true waits at most 30 minutes for finish or review, returns current state; run continues (use wait_agent). cmd checks require depth 0; subagents may use only ci/pr_threads and cwd inside their run worktree/cwd.",
+        "Delegate a task: prompt is enough; routing is automatic. Returns run_id, state. wait=true waits at most 30 minutes for finish or review, returns current state; run continues (use wait_agent). cmd checks require depth 0; subagents may use only ci/pr_threads and cwd inside their run worktree/cwd.",
         true,
         false,
         schema_of::<SpawnParams>,
@@ -250,7 +250,7 @@ pub const ORCHESTRATOR_TOOLS: &[ToolSpec] = &[
     ),
     spec(
         "list_harnesses",
-        "Accounts (sign-in, headroom, load), choices (eligible, free); free_models=true adds catalog.",
+        "Optional detail, not needed before spawn_agent: accounts (sign-in, headroom, load), choices (eligible, free); free_models=true adds catalog.",
         false,
         true,
         schema_of::<ListHarnessesParams>,

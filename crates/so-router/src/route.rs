@@ -308,8 +308,23 @@ pub async fn route_with(ctx: &RouteCtx<'_>, params: &RouteParams) -> Result<Rout
     }
     if cands.is_empty() {
         return Err(RouterError::NoEligible(if pinned {
-            "nothing matches the named harness, account, model and effort with an available account"
-                .into()
+            let mut set = Vec::new();
+            if pins.harness.is_some() {
+                set.push("`harness`");
+            }
+            if pins.account.is_some() {
+                set.push("`account`");
+            }
+            if pins.model.is_some() {
+                set.push("`model`");
+            }
+            if pins.effort.is_some() {
+                set.push("`effort`");
+            }
+            format!(
+                "nothing matches the pinned {} with an available account",
+                set.join(", ")
+            )
         } else if ctx.config.choices().is_empty() {
             "no level lists a model: add models = [\"harness/model/effort\"] to a [[router.levels]] entry"
                 .into()

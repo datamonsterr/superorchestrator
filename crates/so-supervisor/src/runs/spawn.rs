@@ -298,7 +298,7 @@ impl RunManager {
                 let mut found = None;
                 let mut last = rpc(
                     UNAVAILABLE,
-                    "no usable account for the requested route; check list_harnesses for available accounts or unpin to auto-route",
+                    "no usable account for the requested route: run `superorchestrator status` for accounts and headroom, or pin `model` with a ref from `superorchestrator levels list`",
                 );
                 for name in &routed.result.ranked_accounts {
                     match self.usable_account(name, Some(routed.result.harness)).await {

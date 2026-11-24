@@ -154,7 +154,7 @@ pub fn render_plugin_mcp_skill() -> String {
     out.push('\n');
     out.push_str(WORKFLOW);
     out.push_str(
-        "Accounts, choices: `list_harnesses`. Agents: `list_agents`, then `agent: \"<name>\"`.\n\n",
+        "Inspect setup with CLI: `superorchestrator status`, `levels list`, `agent list`. Use `agent: \"<name>\"` in `spawn_agent`.\n\n",
     );
     out.push_str(BODY);
     out
@@ -313,12 +313,14 @@ const WORKFLOW: &str = r#"# Delegate via superorchestrator
 
 ## Workflow
 
-1. `list_harnesses` first; inspect signed-in accounts, headroom and eligible choices. `list_agents` discovers agent profiles.
-2. Leave `harness: "auto"` and model/effort unset initially; keep accounts in `orchestrator.reserved_accounts` out of subagent pins. `route` previews a route.
-3. Reuse the agent profile for standing instructions and send a short goal, acceptance and file pointers; it has no conversation context.
-4. `spawn_agent(prompt, agent: "implementer", cwd: "/repo", review: true, wait: false)`. Default isolation is `worktree`.
-5. `wait_agent(runs: [id], include_progress: false, timeout_ms: 1800000)`: batch active run IDs and prefer quiet mode with up to 30-minute timeout (progress still streams as notifications). Returns on finish, questions, escalation, or `pending_review`; call `get_run` only for missing detail or review. Answer question updates with `send_message(run: id, text: "...", kind: "answer")`, then wait again. Codex orchestrator: prefer `spawn_agent(wait: false)`, then wait with `timeout_ms` ≤ `1800000` (30 min); install writes `startup_timeout_sec = 30` and `tool_timeout_sec = 1860` in `~/.codex/config.toml` or `$CODEX_HOME/config.toml` (rerun `superorchestrator install` if missing); resume with `superorchestrator join <run>` (or the `join_command` from `get_run`).
-6. At the review gate, inspect `get_run(run: id, diff: true)`; `accept_run(run: id, merge: true)` lands the branch, or `reject_run(run: id, feedback: "...")` continues fixes. Wait and review again.
+1. Delegate in one call: `spawn_agent(prompt)` (optional `cwd`, `agent`, `review: true`). Do not call `list_harnesses` or `route` first; routing, harness and account selection are automatic. A failed spawn returns an error naming the fix.
+2. Reuse the agent profile for standing instructions and send a short goal, acceptance and file pointers; it has no conversation context. Keep accounts in `orchestrator.reserved_accounts` out of subagent pins.
+3. `wait_agent(runs: [id], include_progress: false, timeout_ms: 1800000)`: batch active run IDs and prefer quiet mode with up to 30-minute timeout (progress still streams as notifications). Returns on finish, questions, escalation, or `pending_review`; call `get_run` only for missing detail or review. Answer question updates with `send_message(run: id, text: "...", kind: "answer")`, then wait again. Codex orchestrator: prefer `spawn_agent(wait: false)`, then wait with `timeout_ms` ≤ `1800000` (30 min); install writes `startup_timeout_sec = 30` and `tool_timeout_sec = 1860` in `~/.codex/config.toml` or `$CODEX_HOME/config.toml` (rerun `superorchestrator install` if missing); resume with `superorchestrator join <run>` (or the `join_command` from `get_run`).
+4. At the review gate, inspect with CLI `superorchestrator runs show RUN --diff` (fall back to `get_run(diff: true)` if the CLI fails); `accept_run(run: id, merge: true)` lands the branch, or `reject_run(run: id, feedback: "...")` continues fixes. Wait and review again.
+
+## Inspect: CLI first
+
+Inspect via CLI first: `status`, `runs list`, `runs show`, `runs watch` (export `XDG_RUNTIME_DIR=/run/user/$(id -u)` if the CLI says not running). Use MCP `get_run`, `list_agents`, `read_messages`, `list_harnesses` only if the CLI fails, and without `verbose` unless needed.
 
 "#;
 
@@ -333,7 +335,7 @@ const BODY: &str = r#"## Controls
 | `wait_agent` | Batch active IDs (`runs: [ids]`), quiet mode `include_progress: false`, 30-min max (`timeout_ms: 1800000`). Returns on finish, question, escalation, review gate; call `get_run` only for missing detail or review. |
 | `send_message(run, text)` | Steer an active run or resume a finished run. `read_messages` reads unread messages. |
 | `fork_agent(run, prompt)` | Start a new run from a finished run's context. |
-| Escalation | Use a new `spawn_agent` with a `model` ref from a higher level, e.g. `codex/gpt-6.1-sol/high`; use choices from `list_harnesses` and include prior findings. |
+| Escalation | Use a new `spawn_agent` with a `model` ref from a higher level, e.g. `codex/gpt-6.1-sol/high`; pick refs from `superorchestrator levels list` (CLI) and include prior findings. |
 | `cancel_agent(run)` | Cancel the run and its subtree. |
 | `get_run(run, verbose: true)` | Full record; `diff: true` adds the patch (cut at 64 KiB). |
 | `accept_run` | Merge requires the original checkout on its original branch and both trees clean; conflicts leave the run at the gate. Without `merge`, returns branch and merge command. |
@@ -348,6 +350,7 @@ Subagents use `report_progress(step, status)` each step and `ask_parent(question
 const CLI_BODY: &str = r#"# superorchestrator CLI
 
 Prefix commands below with `superorchestrator`. Use `--help` for flags; globals: `--json`, `--yes`, `--config-dir DIR`.
+The CLI is the first tool for status and run investigation; use MCP inspection tools only when the CLI fails.
 If the shell lacks it, export `XDG_RUNTIME_DIR=/run/user/$(id -u)` so the CLI finds the supervisor socket.
 Delegate through `use-superorchestrator-mcp`; edit setup through `superorchestrator-config`.
 
@@ -585,7 +588,7 @@ mod tests {
         assert!(s.contains("`list_harnesses`") && s.contains("## Workflow"));
         // The workflow comes first, right after the title.
         assert!(s.contains(
-            "# Delegate via superorchestrator\n\n## Workflow\n\n1. `list_harnesses` first;"
+            "# Delegate via superorchestrator\n\n## Workflow\n\n1. Delegate in one call: `spawn_agent(prompt)`"
         ));
         assert!(
             s.contains("accept_run(run: id, merge: true)")

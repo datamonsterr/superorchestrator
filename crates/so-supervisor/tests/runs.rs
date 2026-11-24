@@ -1127,3 +1127,55 @@ async fn spawn_agent_pin_errors_give_actionable_recovery() {
 
     h.shutdown().await;
 }
+
+#[tokio::test]
+async fn spawn_agent_routing_failure_names_next_steps() {
+    let mut env = Env::new();
+    env.config.router.levels = levels(&["claude/claude-sonnet-5-5/medium"]);
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    // 1. Unpinned routing failure: no accounts or no eligible choices
+    let mut p = env.spawn_params("any-account");
+    p.harness = None;
+    p.account = None;
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::UNAVAILABLE);
+            assert!(
+                r.message.contains("run `superorchestrator status` for accounts and headroom, or pin `model` with a ref from `superorchestrator levels list`"),
+                "unexpected message: {}",
+                r.message
+            );
+            assert_eq!(r.data.unwrap()["reason"], "no_eligible");
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 2. Pinned harness failure: names the specific pin to drop or relax
+    let mut p = env.spawn_params("any-account");
+    p.harness = Some("claude".into());
+    p.account = None;
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::UNAVAILABLE);
+            assert!(
+                r.message.contains("drop or relax the `harness` pin"),
+                "unexpected message: {}",
+                r.message
+            );
+            assert!(
+                r.message
+                    .contains("run `superorchestrator status` for accounts and headroom"),
+                "unexpected message: {}",
+                r.message
+            );
+            assert_eq!(r.data.unwrap()["reason"], "no_eligible");
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    h.shutdown().await;
+}
