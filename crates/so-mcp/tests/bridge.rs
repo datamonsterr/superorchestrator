@@ -636,7 +636,7 @@ async fn mcp_actionable_errors_for_unknown_run_refs_and_unavailable_pins() {
     assert_eq!(r.is_error, Some(true));
     let t = text(&r);
     assert!(
-        t.contains("account not found: `missing-acc`; check list_harnesses for configured accounts or unpin to auto-route"),
+        t.contains("account not found: `missing-acc`: run `superorchestrator account list` for configured accounts, or drop the `account` pin"),
         "{t}"
     );
     assert!(t.contains("(code -32003)"), "{t}");
