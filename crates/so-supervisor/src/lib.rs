@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use so_core::{Config, Paths};
 
-pub use client::{ClientError, SupervisorClient, spawn_daemon_process};
+pub use client::{ClientError, DaemonProcess, SpawnResult, SupervisorClient, spawn_daemon_process};
 pub use dispatch::{ConnCtx, HandlerFuture, Notifier, Router, status_result};
 pub use error::{Result, SupervisorError};
 pub use handlers::{agents_view, default_handlers, harnesses_view};
