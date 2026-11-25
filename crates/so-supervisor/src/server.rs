@@ -413,9 +413,25 @@ fn bind_socket(socket_path: &Path) -> Result<UnixListener> {
         }
         Err(e) => return Err(e.into()),
     }
-    // The lock is held, so any socket file left behind belongs to a dead supervisor.
+    // A stale socket from a dead supervisor can be removed, but a live listener must not be
+    // overwritten.
     match std::fs::symlink_metadata(socket_path) {
-        Ok(meta) if meta.file_type().is_socket() => std::fs::remove_file(socket_path)?,
+        Ok(meta) if meta.file_type().is_socket() => {
+            match std::os::unix::net::UnixStream::connect(socket_path) {
+                Ok(_) => {
+                    return Err(SupervisorError::SocketInUse(socket_path.to_path_buf()));
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+                    match std::fs::remove_file(socket_path) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
         Ok(_) => return Err(SupervisorError::NotASocket(socket_path.to_path_buf())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e.into()),

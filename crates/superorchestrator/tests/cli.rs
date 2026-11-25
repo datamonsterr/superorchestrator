@@ -1,13 +1,15 @@
 #![allow(clippy::unwrap_used)]
 
-use assert_cmd::Command;
+mod common;
+
+use common::Env;
 use predicates::prelude::*;
 
 #[test]
 fn version_prints_name_and_version() {
     let expected = format!("superorchestrator {}", env!("CARGO_PKG_VERSION"));
-    Command::cargo_bin("superorchestrator")
-        .unwrap()
+    let e = Env::new();
+    e.cmd()
         .arg("--version")
         .assert()
         .success()
@@ -16,8 +18,8 @@ fn version_prints_name_and_version() {
 
 #[test]
 fn help_prints_about_text() {
-    Command::cargo_bin("superorchestrator")
-        .unwrap()
+    let e = Env::new();
+    e.cmd()
         .arg("--help")
         .assert()
         .success()

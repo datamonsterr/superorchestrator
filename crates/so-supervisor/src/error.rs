@@ -6,6 +6,8 @@ use std::path::PathBuf;
 pub enum SupervisorError {
     #[error("another supervisor is already running (pid {})", pid.map_or("unknown".to_string(), |p| p.to_string()))]
     AlreadyRunning { pid: Option<u32> },
+    #[error("another supervisor is already listening on {}; stop it or set SUPERORCHESTRATOR_SOCKET", .0.display())]
+    SocketInUse(PathBuf),
     #[error("socket directory {0} is not owned by the current user")]
     InsecureSocketDir(PathBuf),
     #[error("{0} exists and is not a socket")]

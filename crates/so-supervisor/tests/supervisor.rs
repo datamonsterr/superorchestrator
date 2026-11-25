@@ -654,6 +654,46 @@ async fn socket_dir_owned_by_other_user_is_refused() {
 }
 
 #[tokio::test]
+async fn bind_refuses_active_socket_on_same_path() {
+    let env1 = Env::new();
+    let env2 = Env::new();
+    let h1 = env1.start().await;
+
+    let opts2 = SupervisorOptions::new(env2.paths.clone(), Config::default(), env1.sock.clone());
+    match Supervisor::start(opts2).await {
+        Err(SupervisorError::SocketInUse(path)) => {
+            assert_eq!(path, env1.sock);
+        }
+        other => panic!("expected SocketInUse, got {:?}", other.err()),
+    }
+
+    // The first listener still accepts connections and is untouched.
+    let c = SupervisorClient::connect(&env1.sock).await.unwrap();
+    hello(&c).await;
+
+    h1.shutdown().await;
+}
+
+#[tokio::test]
+async fn bind_removes_stale_refusing_socket() {
+    let env = Env::new();
+    let sock_dir = env.sock.parent().unwrap();
+    std::fs::create_dir_all(sock_dir).unwrap();
+    std::fs::set_permissions(sock_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+    // Bind a listener and immediately drop it without unlinking the socket file.
+    let listener = std::os::unix::net::UnixListener::bind(&env.sock).unwrap();
+    drop(listener);
+    assert!(env.sock.exists());
+
+    // Supervisor should detect the stale socket (ECONNREFUSED), remove it, and start.
+    let h = env.start().await;
+    let c = SupervisorClient::connect(&env.sock).await.unwrap();
+    hello(&c).await;
+    h.shutdown().await;
+}
+
+#[tokio::test]
 async fn oversized_line_gets_error_and_is_skipped() {
     let env = Env::new();
     let h = env.start().await;

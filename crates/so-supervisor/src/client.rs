@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -36,10 +36,57 @@ pub enum ClientError {
     Disconnected,
     #[error("supervisor did not come up within {0:?}")]
     Timeout(Duration),
+    #[error("{0}")]
+    Startup(String),
     #[error("call did not complete within {0:?}")]
     CallTimeout(Duration),
     #[error("request exceeds {MAX_LINE_BYTES} bytes")]
     RequestTooLarge,
+}
+
+/// Trait for the result of a supervisor spawn action.
+///
+/// Implementors can report if a child process has already terminated and provide
+/// any startup error output captured from standard error.
+pub trait SpawnResult {
+    fn check_exit(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        Ok(None)
+    }
+    fn read_stderr(&self) -> Option<String> {
+        None
+    }
+}
+
+impl SpawnResult for () {}
+
+impl SpawnResult for DaemonProcess {
+    fn check_exit(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        self.try_wait()
+    }
+    fn read_stderr(&self) -> Option<String> {
+        self.read_stderr_tail()
+    }
+}
+
+impl<T: SpawnResult> SpawnResult for Option<T> {
+    fn check_exit(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        match self {
+            Some(inner) => inner.check_exit(),
+            None => Ok(None),
+        }
+    }
+    fn read_stderr(&self) -> Option<String> {
+        self.as_ref().and_then(|inner| inner.read_stderr())
+    }
+}
+
+impl SpawnResult for std::process::Child {
+    fn check_exit(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        self.try_wait()
+    }
+    fn read_stderr(&self) -> Option<String> {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -181,14 +228,14 @@ impl SupervisorClient {
 
     /// Connects; if nothing listens (socket missing or refusing), runs `spawn` (which should
     /// start the daemon) and polls every 50 ms for up to 5 s.
-    pub async fn connect_or_spawn(
+    pub async fn connect_or_spawn<R: SpawnResult>(
         socket_path: &Path,
-        spawn: impl FnOnce() -> std::io::Result<()>,
+        spawn: impl FnOnce() -> std::io::Result<R>,
     ) -> Result<Self, ClientError> {
         let mut spawn = Some(spawn);
-        Self::connect_with(socket_path, &mut || match spawn.take() {
+        Self::connect_with(socket_path, move || match spawn.take() {
             Some(f) => f(),
-            None => Ok(()),
+            None => Err(std::io::Error::other("spawn already called")),
         })
         .await
     }
@@ -196,9 +243,9 @@ impl SupervisorClient {
     /// Like [`connect_or_spawn`](Self::connect_or_spawn) followed by `hello`. If the daemon
     /// closes the connection before answering (for example it was just idling out), the whole
     /// sequence is retried once, so `spawn` may be called twice.
-    pub async fn connect_or_spawn_hello(
+    pub async fn connect_or_spawn_hello<R: SpawnResult>(
         socket_path: &Path,
-        spawn: impl FnMut() -> std::io::Result<()>,
+        spawn: impl FnMut() -> std::io::Result<R>,
         client: &str,
         cwd: &str,
         run_id: Option<String>,
@@ -209,9 +256,9 @@ impl SupervisorClient {
 
     /// Like [`connect_or_spawn_hello`](Self::connect_or_spawn_hello), but the `hello` opens no
     /// session: for commands that only read or control (`status`, `runs show`, `join`).
-    pub async fn connect_or_spawn_inspect(
+    pub async fn connect_or_spawn_inspect<R: SpawnResult>(
         socket_path: &Path,
-        spawn: impl FnMut() -> std::io::Result<()>,
+        spawn: impl FnMut() -> std::io::Result<R>,
         client: &str,
         cwd: &str,
         pid: Option<u32>,
@@ -221,9 +268,9 @@ impl SupervisorClient {
         Ok(c)
     }
 
-    async fn connect_or_spawn_with(
+    async fn connect_or_spawn_with<R: SpawnResult>(
         socket_path: &Path,
-        spawn: impl FnMut() -> std::io::Result<()>,
+        spawn: impl FnMut() -> std::io::Result<R>,
         client: &str,
         cwd: &str,
         run_id: Option<String>,
@@ -246,9 +293,9 @@ impl SupervisorClient {
     }
 
     /// Connects and proves a run identity in `hello`, retrying a disconnected hello once.
-    pub async fn connect_or_spawn_authenticated(
+    pub async fn connect_or_spawn_authenticated<R: SpawnResult>(
         socket_path: &Path,
-        mut spawn: impl FnMut() -> std::io::Result<()>,
+        mut spawn: impl FnMut() -> std::io::Result<R>,
         params: HelloParams,
     ) -> Result<(Self, HelloResult), ClientError> {
         let mut attempt = 0;
@@ -270,23 +317,30 @@ impl SupervisorClient {
         }
     }
 
-    async fn connect_with(
+    async fn connect_with<R: SpawnResult>(
         socket_path: &Path,
-        spawn: &mut dyn FnMut() -> std::io::Result<()>,
+        mut spawn: impl FnMut() -> std::io::Result<R>,
     ) -> Result<Self, ClientError> {
         match Self::connect(socket_path).await {
             Ok(c) => return Ok(c),
             Err(e) if is_not_listening(&e) => {}
             Err(e) => return Err(e),
         }
-        spawn()?;
+        let mut spawned = spawn()?;
         let deadline = Instant::now() + SPAWN_WAIT;
         loop {
             tokio::time::sleep(POLL_INTERVAL).await;
             match Self::connect(socket_path).await {
                 Ok(c) => return Ok(c),
-                Err(e) if is_not_listening(&e) && Instant::now() < deadline => {}
-                Err(e) if is_not_listening(&e) => return Err(ClientError::Timeout(SPAWN_WAIT)),
+                Err(e) if is_not_listening(&e) => {
+                    if let Some(status) = spawned.check_exit()? {
+                        return Err(startup_error(Some(status), spawned.read_stderr(), false));
+                    }
+                    if Instant::now() >= deadline {
+                        let status = spawned.check_exit().ok().flatten();
+                        return Err(startup_error(status, spawned.read_stderr(), true));
+                    }
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -426,21 +480,217 @@ impl SupervisorClient {
     }
 }
 
-/// Starts `<exe> daemon` detached in its own process group with stdio on /dev/null.
+fn startup_error(
+    status: Option<ExitStatus>,
+    stderr: Option<String>,
+    timed_out: bool,
+) -> ClientError {
+    match (status, stderr, timed_out) {
+        (None, None, true) => ClientError::Timeout(SPAWN_WAIT),
+        (Some(status), Some(err), false) => {
+            ClientError::Startup(format!("supervisor did not come up ({status}): {err}"))
+        }
+        (Some(status), None, false) => {
+            ClientError::Startup(format!("supervisor did not come up ({status})"))
+        }
+        (Some(status), Some(err), true) => ClientError::Startup(format!(
+            "supervisor did not come up within {SPAWN_WAIT:?} ({status}): {err}"
+        )),
+        (Some(status), None, true) => ClientError::Startup(format!(
+            "supervisor did not come up within {SPAWN_WAIT:?} ({status})"
+        )),
+        (None, Some(err), true) => ClientError::Startup(format!(
+            "supervisor did not come up within {SPAWN_WAIT:?}: {err}"
+        )),
+        (None, None, false) => ClientError::Timeout(SPAWN_WAIT),
+        (None, Some(err), false) => {
+            ClientError::Startup(format!("supervisor did not come up: {err}"))
+        }
+    }
+}
+
+/// A spawned daemon child whose exit status and startup log can be monitored.
+pub struct DaemonProcess {
+    child: Option<std::process::Child>,
+    log_path: Option<PathBuf>,
+}
+
+impl DaemonProcess {
+    pub fn new(child: std::process::Child, log_path: Option<PathBuf>) -> Self {
+        Self {
+            child: Some(child),
+            log_path,
+        }
+    }
+
+    /// Checks if the child process has exited without blocking.
+    pub fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        if let Some(child) = self.child.as_mut() {
+            let res = child.try_wait()?;
+            if res.is_some() {
+                self.child = None;
+            }
+            Ok(res)
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Reads the last few non-empty lines from the daemon startup log if available.
+    pub fn read_stderr_tail(&self) -> Option<String> {
+        let path = self.log_path.as_ref()?;
+        let content = std::fs::read_to_string(path).ok()?;
+        let lines: Vec<&str> = content
+            .lines()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| {
+                s.strip_prefix("error: ")
+                    .or_else(|| s.strip_prefix("Error: "))
+                    .unwrap_or(s)
+            })
+            .collect();
+        if lines.is_empty() {
+            return None;
+        }
+        let tail = if lines.len() > 5 {
+            &lines[lines.len() - 5..]
+        } else {
+            &lines[..]
+        };
+        Some(tail.join("\n"))
+    }
+}
+
+impl Drop for DaemonProcess {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            // Reap the child if it exits while we are still alive.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        }
+    }
+}
+
+/// Starts `<exe> daemon` detached in its own process group with stderr redirected to
+/// `<config_dir>/logs/daemon-start.log` (truncated per spawn).
 /// `config_dir` is passed through `SUPERORCHESTRATOR_CONFIG_DIR`.
-pub fn spawn_daemon_process(exe: &Path, config_dir: &Path) -> std::io::Result<()> {
+pub fn spawn_daemon_process(exe: &Path, config_dir: &Path) -> std::io::Result<DaemonProcess> {
     use std::os::unix::process::CommandExt;
-    let mut child = Command::new(exe)
+
+    let logs_dir = config_dir.join("logs");
+    if let Err(e) = std::fs::create_dir_all(&logs_dir) {
+        tracing::debug!(
+            "could not create logs directory {}: {e}",
+            logs_dir.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = std::fs::set_permissions(&logs_dir, std::fs::Permissions::from_mode(0o700))
+        {
+            tracing::debug!("could not set permissions on {}: {e}", logs_dir.display());
+        }
+    }
+    let log_path = logs_dir.join("daemon-start.log");
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let (stderr_stdio, log_path_opt) = match opts.open(&log_path) {
+        Ok(f) => (Stdio::from(f), Some(log_path)),
+        Err(e) => {
+            tracing::warn!("could not open {}: {e}", log_path.display());
+            (Stdio::null(), None)
+        }
+    };
+
+    let child = Command::new(exe)
         .arg("daemon")
         .env("SUPERORCHESTRATOR_CONFIG_DIR", PathBuf::from(config_dir))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(stderr_stdio)
         .process_group(0)
         .spawn()?;
-    // Reap the child if it exits while we are still alive.
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-    Ok(())
+
+    Ok(DaemonProcess::new(child, log_path_opt))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    #[test]
+    fn daemon_process_reads_stderr_tail_and_strips_error_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("daemon-start.log");
+        std::fs::write(
+            &log,
+            "line 1\nerror: socket directory /tmp is not owned by the current user\n",
+        )
+        .unwrap();
+        let proc = DaemonProcess {
+            child: None,
+            log_path: Some(log),
+        };
+        let tail = proc.read_stderr_tail().unwrap();
+        assert_eq!(
+            tail,
+            "line 1\nsocket directory /tmp is not owned by the current user"
+        );
+    }
+
+    #[test]
+    fn startup_error_formats_exit_status_and_stderr() {
+        let status = ExitStatus::from_raw(1 << 8);
+
+        let err = startup_error(Some(status), Some("permission denied".into()), false);
+        let msg = err.to_string();
+        assert!(msg.contains("supervisor did not come up"));
+        assert!(msg.contains("exit status: 1") || msg.contains("status"));
+        assert!(msg.contains("permission denied"));
+
+        let timeout_err = startup_error(None, Some("timed out detail".into()), true);
+        assert_eq!(
+            timeout_err.to_string(),
+            format!("supervisor did not come up within {SPAWN_WAIT:?}: timed out detail")
+        );
+    }
+
+    struct MockFailedDaemon;
+
+    impl SpawnResult for MockFailedDaemon {
+        fn check_exit(&mut self) -> std::io::Result<Option<ExitStatus>> {
+            Ok(Some(ExitStatus::from_raw(3 << 8)))
+        }
+        fn read_stderr(&self) -> Option<String> {
+            Some("something crashed at startup".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_or_spawn_fails_fast_when_daemon_exits_early() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("missing.sock");
+
+        let start = Instant::now();
+        let Err(err) = SupervisorClient::connect_or_spawn(&sock, || Ok(MockFailedDaemon)).await
+        else {
+            panic!("expected connect_or_spawn to fail");
+        };
+
+        let elapsed = start.elapsed();
+        assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+        let msg = err.to_string();
+        assert!(msg.contains("something crashed at startup"), "{msg}");
+        assert!(msg.contains("3"), "{msg}");
+    }
 }
