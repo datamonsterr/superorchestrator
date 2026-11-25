@@ -151,6 +151,7 @@ fn codex_plugin_and_marketplace_are_wired() {
             .all(|key| key == "hooks" || key == "description")
     );
     assert_eq!(hooks["hooks"].as_object().unwrap().len(), 2);
+    let dir = tempfile::tempdir().unwrap();
     for (event, command) in [("SessionStart", "session-start"), ("Stop", "stop")] {
         assert_eq!(hooks["hooks"][event].as_array().unwrap().len(), 1);
         assert_eq!(
@@ -163,6 +164,8 @@ fn codex_plugin_and_marketplace_are_wired() {
         assert!(
             std::process::Command::new(env!("CARGO_BIN_EXE_superorchestrator"))
                 .args(["hook", command, "--help"])
+                .env("SUPERORCHESTRATOR_SOCKET", dir.path().join("so.sock"))
+                .env_remove("XDG_RUNTIME_DIR")
                 .output()
                 .unwrap()
                 .status
@@ -193,8 +196,8 @@ fn hook_stop_without_supervisor_is_silent() {
     let dir = tempfile::tempdir().unwrap();
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_superorchestrator"))
         .args(["hook", "stop"])
-        .env_remove("SUPERORCHESTRATOR_SOCKET")
-        .env("XDG_RUNTIME_DIR", dir.path())
+        .env("SUPERORCHESTRATOR_SOCKET", dir.path().join("so.sock"))
+        .env_remove("XDG_RUNTIME_DIR")
         .env("SUPERORCHESTRATOR_CONFIG_DIR", dir.path())
         .output()
         .unwrap();
@@ -207,8 +210,8 @@ fn hook_stop_returns_when_stdin_remains_open() {
     let dir = tempfile::tempdir().unwrap();
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_superorchestrator"))
         .args(["hook", "stop"])
-        .env_remove("SUPERORCHESTRATOR_SOCKET")
-        .env("XDG_RUNTIME_DIR", dir.path())
+        .env("SUPERORCHESTRATOR_SOCKET", dir.path().join("so.sock"))
+        .env_remove("XDG_RUNTIME_DIR")
         .env("SUPERORCHESTRATOR_CONFIG_DIR", dir.path())
         .stdin(std::process::Stdio::piped())
         .spawn()
@@ -241,6 +244,7 @@ fn hook_stop_returns_when_supervisor_does_not_reply() {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_superorchestrator"))
         .args(["hook", "stop"])
         .env("SUPERORCHESTRATOR_SOCKET", &socket)
+        .env_remove("XDG_RUNTIME_DIR")
         .env("SUPERORCHESTRATOR_CONFIG_DIR", dir.path())
         .stdin(std::process::Stdio::null())
         .spawn()

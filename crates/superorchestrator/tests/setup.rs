@@ -268,6 +268,7 @@ fn setup_leaves_a_poisoned_parent_environment_alone() {
         .arg(&e.cfg)
         .env("HOME", &e.home)
         .env("PATH", &e.bin)
+        .env("SUPERORCHESTRATOR_SOCKET", e.tmp.path().join("so.sock"))
         .args(["setup", "--yes", "--no-login"])
         .assert()
         .success();

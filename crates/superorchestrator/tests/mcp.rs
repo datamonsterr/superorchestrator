@@ -53,6 +53,7 @@ async fn mcp_serves_tools_and_list_harnesses_returns_configured_accounts() {
             .arg("mcp")
             .env("HOME", &home)
             .env("SUPERORCHESTRATOR_SOCKET", &sock)
+            .env_remove("XDG_RUNTIME_DIR")
             .env_remove("SUPERORCHESTRATOR_RUN_ID")
             .env_remove("SUPERORCHESTRATOR_RUN_TOKEN")
             .env_remove("SUPERORCHESTRATOR_CONFIG_DIR");
@@ -138,6 +139,7 @@ async fn mcp_forwards_run_identity_token_in_hello() {
             .arg("mcp")
             .env("HOME", dir.path())
             .env("SUPERORCHESTRATOR_SOCKET", &sock)
+            .env_remove("XDG_RUNTIME_DIR")
             .env("SUPERORCHESTRATOR_RUN_ID", "test-run")
             .env("SUPERORCHESTRATOR_RUN_TOKEN", "test-only-run-secret");
     }))
