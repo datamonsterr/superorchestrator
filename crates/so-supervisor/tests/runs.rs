@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use so_core::proto::{
     CAP_EXCEEDED, DEPTH_LIMIT, JoinResult, METHOD_CANCEL_AGENT, METHOD_GET_RUN, METHOD_JOIN_RUN,
-    METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, RunRef, RunView, SpawnResult, UNAVAILABLE,
+    METHOD_SPAWN_AGENT, METHOD_WAIT_AGENT, NOT_FOUND, RunRef, RunView, SpawnResult, UNAVAILABLE,
 };
 use so_core::{AccountFile, EventType, RunState, new_id};
 use so_store::RunRow;
@@ -350,7 +350,7 @@ async fn depth_two_caller_cannot_spawn_and_children_are_capped() {
 }
 
 #[tokio::test]
-async fn auto_routing_and_missing_account_are_unavailable() {
+async fn auto_routing_unavailable_and_missing_account_not_found() {
     let env = Env::new();
     let h = env.start().await;
     let c = env.client(&h).await;
@@ -360,7 +360,7 @@ async fn auto_routing_and_missing_account_are_unavailable() {
         .call::<_, SpawnResult>(METHOD_SPAWN_AGENT, p)
         .await
         .unwrap_err();
-    assert_eq!(rpc_code(e), UNAVAILABLE);
+    assert_eq!(rpc_code(e), NOT_FOUND);
     let mut p = env.spawn_params("x");
     p.account = None;
     let e = c
@@ -1076,7 +1076,7 @@ async fn spawn_agent_pin_errors_give_actionable_recovery() {
     let h = env.start().await;
     let c = env.client(&h).await;
 
-    // 1. Account not found
+    // 1. Account not found (with harness pin)
     let mut p = env.spawn_params("claude-enabled");
     p.account = Some("no-such-account".into());
     let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
@@ -1084,10 +1084,30 @@ async fn spawn_agent_pin_errors_give_actionable_recovery() {
         ClientError::Rpc(r) => {
             assert_eq!(r.code, so_core::proto::NOT_FOUND);
             assert!(
-                r.message.contains("account not found: `no-such-account`; check list_harnesses for configured accounts or unpin to auto-route"),
+                r.message.contains("account not found: `no-such-account`: run `superorchestrator account list` for configured accounts, or drop the `account` pin"),
                 "unexpected message: {}",
                 r.message
             );
+            assert!(!r.message.contains("list_harnesses"));
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 1b. Unknown pinned account without harness pin (B1: fail fast with NOT_FOUND, no routing)
+    let mut p = env.spawn_params("claude-enabled");
+    p.harness = None;
+    p.account = Some("ghost".into());
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::NOT_FOUND);
+            assert!(
+                r.message.contains("account not found: `ghost`: run `superorchestrator account list` for configured accounts, or drop the `account` pin"),
+                "unexpected message: {}",
+                r.message
+            );
+            assert!(!r.message.contains("list_harnesses"));
+            assert!(!r.message.contains("nothing matches"));
         }
         other => panic!("expected rpc error: {other:?}"),
     }
@@ -1100,15 +1120,17 @@ async fn spawn_agent_pin_errors_give_actionable_recovery() {
         ClientError::Rpc(r) => {
             assert_eq!(r.code, so_core::proto::UNAVAILABLE);
             assert!(
-                r.message.contains("account claude-disabled is disabled; enable it or choose an enabled account from list_harnesses"),
+                r.message.contains("account claude-disabled is disabled: run `superorchestrator account enable claude-disabled`, or drop the `account` pin"),
                 "unexpected message: {}",
                 r.message
             );
+            assert!(r.message.contains("superorchestrator"));
+            assert!(!r.message.contains("list_harnesses"));
         }
         other => panic!("expected rpc error: {other:?}"),
     }
 
-    // 3. Harness mismatch
+    // 3. Harness mismatch (explicit harness pin)
     let mut p = env.spawn_params("claude-enabled");
     p.harness = Some("codex".into());
     p.account = Some("claude-enabled".into());
@@ -1117,10 +1139,125 @@ async fn spawn_agent_pin_errors_give_actionable_recovery() {
         ClientError::Rpc(r) => {
             assert_eq!(r.code, so_core::proto::INVALID_PARAMS);
             assert!(
-                r.message.contains("account claude-enabled is a claude account, not codex; use a matching account from list_harnesses or remove the harness pin"),
+                r.message.contains("account claude-enabled is a claude account, not codex: drop the `harness` pin, or drop the `account` pin (accounts: `superorchestrator status`)"),
                 "unexpected message: {}",
                 r.message
             );
+            assert!(r.message.contains("superorchestrator"));
+            assert!(!r.message.contains("list_harnesses"));
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 3b. Harness mismatch (via model ref)
+    let mut p = env.spawn_params("claude-enabled");
+    p.harness = None;
+    p.model = Some("codex/gpt-5/high".into());
+    p.account = Some("claude-enabled".into());
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::INVALID_PARAMS);
+            assert!(
+                r.message.contains("account claude-enabled is a claude account, not codex: pin a claude model, or drop the `account` pin (accounts: `superorchestrator status`)"),
+                "unexpected message: {}",
+                r.message
+            );
+            assert!(r.message.contains("superorchestrator"));
+            assert!(!r.message.contains("list_harnesses"));
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 4. Invalid timeout (B3: prefix "timeout: ")
+    let mut p = env.spawn_params("claude-enabled");
+    p.timeout = Some("soon".into());
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::INVALID_PARAMS);
+            assert!(
+                r.message.starts_with("timeout: invalid duration `soon`:"),
+                "unexpected message: {}",
+                r.message
+            );
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 5. Agent account restriction (B2)
+    let agent_path = env.paths.agents_dir().join("picky.md");
+    std::fs::create_dir_all(agent_path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &agent_path,
+        "---\nname: picky\ndescription: test\nharness: claude\naccounts: [claude-disabled]\n---\nbody\n",
+    )
+    .unwrap();
+    let mut p = env.spawn_params("claude-enabled");
+    p.agent = Some("picky".into());
+    p.account = Some("claude-enabled".into());
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::INVALID_PARAMS);
+            assert!(
+                r.message.contains("agent `picky` may only run on: claude-disabled; pin one of those accounts or drop the `account` pin"),
+                "unexpected message: {}",
+                r.message
+            );
+            assert!(!r.message.contains("list_harnesses"));
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    h.shutdown().await;
+}
+
+#[tokio::test]
+async fn spawn_agent_routing_failure_names_next_steps() {
+    let mut env = Env::new();
+    env.config.router.levels = levels(&["claude/claude-sonnet-5-5/medium"]);
+    let h = env.start().await;
+    let c = env.client(&h).await;
+
+    // 1. Unpinned routing failure: no accounts or no eligible choices
+    let mut p = env.spawn_params("any-account");
+    p.harness = None;
+    p.account = None;
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::UNAVAILABLE);
+            assert!(
+                r.message.contains("run `superorchestrator status` for accounts and headroom, or pin `model` with a ref from `superorchestrator levels list`"),
+                "unexpected message: {}",
+                r.message
+            );
+            assert_eq!(r.data.unwrap()["reason"], "no_eligible");
+        }
+        other => panic!("expected rpc error: {other:?}"),
+    }
+
+    // 2. Pinned harness failure: names the specific pin to drop or relax
+    let mut p = env.spawn_params("any-account");
+    p.harness = Some("claude".into());
+    p.account = None;
+    let err = c.call::<_, Value>(METHOD_SPAWN_AGENT, p).await.unwrap_err();
+    match err {
+        ClientError::Rpc(r) => {
+            assert_eq!(r.code, so_core::proto::UNAVAILABLE);
+            assert!(
+                r.message.contains("drop or relax the `harness` pin"),
+                "unexpected message: {}",
+                r.message
+            );
+            assert!(
+                r.message
+                    .contains("run `superorchestrator status` for accounts and headroom"),
+                "unexpected message: {}",
+                r.message
+            );
+            assert_eq!(r.data.unwrap()["reason"], "no_eligible");
         }
         other => panic!("expected rpc error: {other:?}"),
     }

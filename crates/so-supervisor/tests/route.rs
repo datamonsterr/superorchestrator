@@ -108,7 +108,7 @@ async fn route_errors_give_actionable_recovery() {
         ClientError::Rpc(r) => {
             assert_eq!(r.code, so_core::proto::UNAVAILABLE);
             assert!(
-                r.message.contains("nothing matches the named harness, account, model and effort with an available account; unpin to auto-route or check list_harnesses for available accounts and models"),
+                r.message.contains("nothing matches the pinned `harness` with an available account: drop or relax the `harness` pin, run `superorchestrator status` for accounts and headroom, or pin `model` with a ref from `superorchestrator levels list`"),
                 "unexpected message: {}",
                 r.message
             );
@@ -128,7 +128,7 @@ async fn route_errors_give_actionable_recovery() {
         ClientError::Rpc(r) => {
             assert_eq!(r.code, so_core::proto::UNAVAILABLE);
             assert!(
-                r.message.contains("no eligible choice: every model listed on a level is excluded, over its cap or out of headroom; check list_harnesses for available accounts and models, or wait for active runs or headroom to clear"),
+                r.message.contains("no eligible choice: every model listed on a level is excluded, over its cap or out of headroom: run `superorchestrator status` for accounts and headroom, or pin `model` with a ref from `superorchestrator levels list`"),
                 "unexpected message: {}",
                 r.message
             );

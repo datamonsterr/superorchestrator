@@ -45,10 +45,9 @@ After `superorchestrator setup`, open Claude Code in your project and ask:
 
 Claude Code loads the `use-superorchestrator-mcp` skill and uses these tools.
 
-1. `list_harnesses` shows current accounts, levels and routing choices. Pass `free_models: true` to browse the full free model catalog.
-2. `spawn_agent` starts the task with `harness: auto`. Use the agent profile for standing instructions and give the run a short brief with its goal, acceptance criteria and file pointers.
-3. `wait_agent` with `include_progress: false` waits through routine progress. It returns when a run needs attention, finishes, or the wait expires.
-4. Read the finished result from the wait response. Use `get_run` when the result needs more detail.
+1. `spawn_agent` starts the task in one call with `harness: auto` (routing picks the harness, account and model). Use the agent profile for standing instructions and give the run a short brief with its goal, acceptance criteria and file pointers.
+2. `wait_agent` with `include_progress: false` waits through routine progress. It returns when a run needs attention, finishes, or the wait expires.
+3. Read the finished result from the wait response. Inspect status and diffs via the CLI (`superorchestrator runs show RUN --diff`), and use `get_run` only if the CLI fails or more detail is needed.
 
 To pin a harness, say so in the prompt: "run it on opencode". Claude Code passes `harness: "opencode"`. To use a saved custom agent, name it: "use the `pr-reviewer` agent on this branch". See [custom agents](agents.md).
 

@@ -15,7 +15,7 @@ Execute a plan one task at a time. Each task gets a fresh `implementer` run thro
 
 ## Before the First Task
 
-1. Load the `use-superorchestrator-mcp` skill and call `list_harnesses`. If the tools fail, or no non-Claude account is signed in with headroom, use the [native fallback](#native-fallback).
+1. Load the `use-superorchestrator-mcp` skill and check account availability via `superorchestrator status` (CLI first). If the tools fail, or no non-Claude account is signed in with headroom, use the [native fallback](#native-fallback).
 2. Have a plan with the goal, acceptance criteria (the commands that must pass) and out-of-scope items for each task. Commit it.
 3. Work in a feature branch checkout, never `main` without explicit user consent. Keep its tracked files clean while runs are open: `accept_run(merge: true)` refuses to merge into a dirty checkout or one that changed branch. Untracked files are fine.
 4. Read the plan once. Extract every task with its full text and context, and create the task list.
@@ -92,9 +92,9 @@ The router picks the harness, account and model from the task's complexity. On t
 - Leave `harness` at `auto`. Pass no `model`, `effort` or `account`.
 - Never pass `harness: "claude"` or a Claude account. Claude accounts belong to the orchestrator.
 - Never use the `implementer-haiku` or `implementer-sonnet` profiles through superorchestrator. They pin Claude models and exist for the native fallback.
-- `route(prompt, agent)` previews the pick without running anything.
+- `route(prompt, agent)` is an optional preview; `spawn_agent` routes itself.
 
-**Escalation:** re-dispatch with a `model` ref from a higher level, such as `codex/gpt-6.1-sol/high`. Take it from the `choices` that `list_harnesses` marks eligible. The ref also sets harness and effort.
+**Escalation:** re-dispatch with a `model` ref from a higher level, such as `codex/gpt-6.1-sol/high`. Take it from `superorchestrator levels list` (CLI). The ref also sets harness and effort.
 
 ## Handling Implementer Status
 
@@ -152,7 +152,7 @@ You: I'm using Subagent-Driven Development to execute this plan.
 
 [Read plan file once: docs/plans/feature-plan.md]
 [Extract all 5 tasks with full text and context, create the task list]
-[list_harnesses: agy and opencode accounts have headroom]
+[superorchestrator status: agy and opencode accounts have headroom]
 
 Task 1: Hook installation script
 
@@ -162,7 +162,7 @@ Task 1: Hook installation script
 [wait_agent: finished, state pending_review]
   status DONE: install-hook command, 5/5 tests passing, self-review added --force
 
-[get_run(diff: true): worktree, branch so/task-1-..., base]
+[superorchestrator runs show RUN --diff (or get_run(diff: true) if CLI fails): worktree, branch so/task-1-..., base]
 [spawn_agent(agent: "spec-reviewer", cwd: worktree) -> compliant: true]
 [spawn_agent(agent: "code-quality-reviewer", cwd: worktree) -> approved: true]
 [accept_run(merge: true): fast-forward]

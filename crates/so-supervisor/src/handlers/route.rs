@@ -35,15 +35,23 @@ pub fn map_no_eligible(m: &str) -> String {
     if m.contains("add models =") {
         // Existing behavior already gives a specific action on this path: keep it.
         m.to_string()
-    } else if m.contains("nothing matches the named harness") {
+    } else if let Some(rest) = m.strip_prefix("nothing matches the pinned ") {
+        let pins = rest
+            .strip_suffix(" with an available account")
+            .unwrap_or(rest);
+        let pin_word = if pins.contains(',') { "pins" } else { "pin" };
         format!(
-            "{m}; unpin to auto-route or check list_harnesses for available accounts and models"
+            "{m}: drop or relax the {pins} {pin_word}, run `superorchestrator status` for accounts and headroom, or pin `model` with a ref from `superorchestrator levels list`"
+        )
+    } else if m.contains("nothing matches") {
+        format!(
+            "{m}: drop or relax pins, run `superorchestrator status` for accounts and headroom, or pin `model` with a ref from `superorchestrator levels list`"
         )
     } else if m.starts_with("no eligible choice") {
-        "no eligible choice: every model listed on a level is excluded, over its cap or out of headroom; check list_harnesses for available accounts and models, or wait for active runs or headroom to clear".to_string()
+        "no eligible choice: every model listed on a level is excluded, over its cap or out of headroom: run `superorchestrator status` for accounts and headroom, or pin `model` with a ref from `superorchestrator levels list`".to_string()
     } else {
         format!(
-            "{m}; check list_harnesses for available accounts and models or unpin to auto-route"
+            "{m}: run `superorchestrator status` for accounts and headroom, or pin `model` with a ref from `superorchestrator levels list`"
         )
     }
 }

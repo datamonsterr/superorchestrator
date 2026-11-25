@@ -77,7 +77,7 @@ impl RunManager {
             if !path.exists() {
                 return Err(rpc(
                     NOT_FOUND,
-                    format!("account not found: `{name}`; check list_harnesses for configured accounts or unpin to auto-route"),
+                    format!("account not found: `{name}`: run `superorchestrator account list` for configured accounts, or drop the `account` pin"),
                 ));
             }
             AccountFile::load(&path).map_err(|e| rpc(UNAVAILABLE, format!("{e}: {name}")))
@@ -106,14 +106,28 @@ impl RunManager {
         name: &str,
         harness: Option<Harness>,
     ) -> R<AccountFile> {
+        self.usable_account_matching(name, harness, false).await
+    }
+
+    pub(super) async fn usable_account_matching(
+        &self,
+        name: &str,
+        harness: Option<Harness>,
+        from_model_ref: bool,
+    ) -> R<AccountFile> {
         let account = self.load_account(name).await?;
         if let Some(h) = harness
             && account.harness != h
         {
+            let hint = if from_model_ref {
+                format!("pin a {} model, or drop the `account` pin", account.harness)
+            } else {
+                "drop the `harness` pin, or drop the `account` pin".to_string()
+            };
             return Err(rpc(
                 INVALID_PARAMS,
                 format!(
-                    "account {} is a {} account, not {h}; use a matching account from list_harnesses or remove the harness pin",
+                    "account {} is a {} account, not {h}: {hint} (accounts: `superorchestrator status`)",
                     account.name, account.harness
                 ),
             ));
@@ -122,8 +136,8 @@ impl RunManager {
             return Err(rpc(
                 UNAVAILABLE,
                 format!(
-                    "account {} is disabled; enable it or choose an enabled account from list_harnesses",
-                    account.name
+                    "account {} is disabled: run `superorchestrator account enable {}`, or drop the `account` pin",
+                    account.name, account.name
                 ),
             ));
         }
@@ -189,9 +203,9 @@ impl RunManager {
         let timeout_ms = match &p.timeout {
             None => None,
             Some(t) => {
-                let d: HumanDuration = t
-                    .parse()
-                    .map_err(|e: so_core::CoreError| rpc(INVALID_PARAMS, e.to_string()))?;
+                let d: HumanDuration = t.parse().map_err(|e: so_core::CoreError| {
+                    rpc(INVALID_PARAMS, format!("timeout: {e}"))
+                })?;
                 u64::try_from(d.as_duration().as_millis()).ok()
             }
         };
@@ -266,18 +280,25 @@ impl RunManager {
             return Err(rpc(
                 INVALID_PARAMS,
                 format!(
-                    "agent `{}` may only run on: {}; choose an allowed account from list_harnesses or unpin to auto-route",
+                    "agent `{}` may only run on: {}; pin one of those accounts or drop the `account` pin",
                     p.agent.as_deref().unwrap_or_default(),
                     allow.join(", ")
                 ),
             ));
         }
 
+        if let Some(name) = &p.account {
+            self.load_account(name).await?;
+        }
+
         // Harness and account both named: nothing to route. Otherwise the router fills in
         // what is open and keeps to what is named.
         let (account, choice_id, route, model, effort) = match (harness_pin, p.account.clone()) {
             (Some(h), Some(name)) => {
-                let account = self.usable_account(&name, Some(h)).await?;
+                let from_model_ref = ref_harness.is_some() && explicit_harness.is_none();
+                let account = self
+                    .usable_account_matching(&name, Some(h), from_model_ref)
+                    .await?;
                 (account, None, None, model, effort)
             }
             (harness, account_pin) => {
@@ -298,7 +319,7 @@ impl RunManager {
                 let mut found = None;
                 let mut last = rpc(
                     UNAVAILABLE,
-                    "no usable account for the requested route; check list_harnesses for available accounts or unpin to auto-route",
+                    "no usable account for the requested route: run `superorchestrator status` for accounts and headroom, or pin `model` with a ref from `superorchestrator levels list`",
                 );
                 for name in &routed.result.ranked_accounts {
                     match self.usable_account(name, Some(routed.result.harness)).await {
